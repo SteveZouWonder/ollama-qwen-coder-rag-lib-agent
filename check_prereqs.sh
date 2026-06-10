@@ -1,0 +1,441 @@
+#!/bin/bash
+
+################################################################################
+# 前置条件检查脚本
+# 用于验证智能文档+代码助手项目所需的所有前置条件
+################################################################################
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 统计变量
+TOTAL_CHECKS=0
+PASSED_CHECKS=0
+FAILED_CHECKS=0
+WARNING_CHECKS=0
+
+# 问题分类统计
+PYTHON_ISSUES=0
+OLLAMA_ISSUES=0
+DEPENDENCY_ISSUES=0
+NETWORK_ISSUES=0
+
+# 打印标题
+print_header() {
+    echo ""
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}========================================${NC}"
+}
+
+# 打印检查结果
+print_result() {
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ $1 -eq 0 ]; then
+        echo -e "${GREEN}✓${NC} $2"
+        PASSED_CHECKS=$((PASSED_CHECKS + 1))
+    elif [ $1 -eq 1 ]; then
+        echo -e "${RED}✗${NC} $2"
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    else
+        echo -e "${YELLOW}⚠${NC} $2"
+        WARNING_CHECKS=$((WARNING_CHECKS + 1))
+    fi
+}
+
+# 检查命令是否存在
+check_command() {
+    if command -v $1 &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 检查Python版本
+check_python() {
+    if check_command python3; then
+        python3 --version &> /dev/null
+        if [ $? -eq 0 ]; then
+            version=$(python3 --version 2>&1 | awk '{print $2}')
+            major=$(echo $version | cut -d. -f1)
+            minor=$(echo $version | cut -d. -f2)
+            
+            if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 8 ]); then
+                print_result 0 "Python 版本: $version"
+                return 0
+            else
+                print_result 1 "Python 版本过低: $version (需要 3.8+)"
+                PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
+                return 1
+            fi
+        else
+            print_result 1 "Python 不可用"
+            PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
+            return 1
+        fi
+    else
+        print_result 1 "Python3 未安装"
+        PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
+        return 1
+    fi
+}
+
+# 检查pip
+check_pip() {
+    if check_command pip3; then
+        pip3 --version &> /dev/null
+        if [ $? -eq 0 ]; then
+            version=$(pip3 --version 2>&1 | awk '{print $2}')
+            print_result 0 "pip3 版本: $version"
+            return 0
+        else
+            print_result 1 "pip3 不可用"
+            return 1
+        fi
+    else
+        print_result 1 "pip3 未安装"
+        return 1
+    fi
+}
+
+# 检查Ollama
+check_ollama() {
+    if check_command ollama; then
+        print_result 0 "Ollama 已安装"
+        
+        # 检查版本
+        version=$(ollama --version 2>&1)
+        echo "  版本: $version"
+        
+        # 检查服务状态
+        if curl -s http://localhost:11434/api/tags &> /dev/null; then
+            print_result 0 "Ollama 服务运行中 (端口 11434)"
+        else
+            print_result 1 "Ollama 服务未运行"
+            echo "  请运行: ollama serve"
+            OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
+        fi
+        
+        # 检查模型
+        echo "  已安装的模型:"
+        models=$(ollama list 2>&1)
+        if echo "$models" | grep -q "qwen2.5-coder"; then
+            print_result 0 "qwen2.5-coder 模型已安装"
+        else
+            print_result 1 "qwen2.5-coder 模型未安装"
+            echo "  请运行: ollama pull qwen2.5-coder:7b"
+            OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
+        fi
+        
+        if echo "$models" | grep -q "nomic-embed-text"; then
+            print_result 0 "nomic-embed-text 模型已安装"
+        else
+            print_result 1 "nomic-embed-text 模型未安装"
+            echo "  请运行: ollama pull nomic-embed-text:latest"
+            OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
+        fi
+        
+        return 0
+    else
+        print_result 1 "Ollama 未安装"
+        echo "  请访问: https://ollama.com/download"
+        OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
+        return 1
+    fi
+}
+
+# 检查Git
+check_git() {
+    if check_command git; then
+        version=$(git --version 2>&1)
+        print_result 0 "Git 版本: $version"
+        return 0
+    else
+        print_result 2 "Git 未安装 (可选)"
+        return 2
+    fi
+}
+
+# 检查curl
+check_curl() {
+    if check_command curl; then
+        version=$(curl --version 2>&1 | head -n 1)
+        print_result 0 "curl 已安装: $version"
+        return 0
+    else
+        print_result 1 "curl 未安装"
+        return 1
+    fi
+}
+
+# 检查系统内存
+check_memory() {
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        mem_total=$(free -m | awk 'NR==2{print $2}')
+        mem_free=$(free -m | awk 'NR==2{print $7}')
+        
+        if [ $mem_total -gt 8192 ]; then
+            print_result 0 "系统内存: ${mem_total}MB (可用: ${mem_free}MB)"
+        else
+            print_result 1 "系统内存不足: ${mem_total}MB (建议 > 8GB)"
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        mem_total=$(( $(sysctl -n hw.memsize) / 1024 / 1024 ))
+        # 简化macOS的内存检查，使用系统命令获取可用内存
+        mem_free=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
+        
+        if [ $mem_total -gt 8192 ]; then
+            print_result 0 "系统内存: ${mem_total}MB"
+        else
+            print_result 1 "系统内存不足: ${mem_total}MB (建议 > 8GB)"
+        fi
+    else
+        print_result 2 "无法检测系统内存 (Windows)"
+    fi
+}
+
+# 检查磁盘空间
+check_disk() {
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        print_result 2 "无法检测磁盘空间 (Windows)"
+    else
+        # 简化的磁盘检查，只验证目录可写
+        if [ -w . ]; then
+            print_result 0 "当前目录可写"
+        else
+            print_result 1 "当前目录不可写"
+        fi
+    fi
+}
+
+# 检查Python依赖
+check_dependencies() {
+    if [ ! -f "requirements.txt" ]; then
+        print_result 1 "requirements.txt 文件不存在"
+        return 1
+    fi
+    
+    # 检查虚拟环境
+    if [[ "$VIRTUAL_ENV" != "" ]]; then
+        print_result 0 "虚拟环境已激活: $VIRTUAL_ENV"
+        PYTHON_CMD="python"
+    else
+        print_result 2 "未检测到虚拟环境 (推荐使用)"
+        PYTHON_CMD="python3"
+        echo "  提示: 使用虚拟环境可以避免依赖冲突"
+        echo "  创建方法: python3 -m venv venv && source venv/bin/activate"
+    fi
+    
+    # 检查pip命令
+    if command -v pip &> /dev/null; then
+        PIP_CMD="pip"
+    elif command -v pip3 &> /dev/null; then
+        PIP_CMD="pip3"
+    else
+        print_result 1 "pip未安装"
+        echo "  请运行: $PYTHON_CMD -m ensurepip --upgrade"
+        return 1
+    fi
+    
+    # 尝试导入关键模块并获取详细错误信息
+    check_module() {
+        local module=$1
+        local display_name=$2
+        
+        output=$($PYTHON_CMD -c "import $module" 2>&1)
+        exit_code=$?
+        
+        if [ $exit_code -eq 0 ]; then
+            print_result 0 "$display_name 已安装"
+            return 0
+        else
+            print_result 1 "$display_name 未安装"
+            
+            # 根据错误信息提供针对性建议
+            if echo "$output" | grep -q "ModuleNotFoundError"; then
+                echo "  错误: 模块未找到"
+                echo "  解决方案: $PIP_CMD install $module"
+            elif echo "$output" | grep -q "ImportError"; then
+                echo "  错误: 依赖导入失败"
+                echo "  解决方案: $PIP_CMD install --upgrade $module"
+            elif echo "$output" | grep -q "Permission denied"; then
+                echo "  错误: 权限不足"
+                echo "  解决方案: 使用虚拟环境或 sudo $PIP_CMD install"
+            else
+                echo "  错误: $output"
+                echo "  解决方案: $PIP_CMD install -r requirements.txt"
+            fi
+            return 1
+        fi
+    }
+    
+    # 检查关键依赖
+    local dep_failures=0
+    check_module "llama_index" "llama-index" || dep_failures=$((dep_failures + 1))
+    check_module "chromadb" "chromadb" || dep_failures=$((dep_failures + 1))
+    check_module "rich" "rich" || dep_failures=$((dep_failures + 1))
+    check_module "prompt_toolkit" "prompt-toolkit" || dep_failures=$((dep_failures + 1))
+    check_module "pypdf" "pypdf" || dep_failures=$((dep_failures + 1))
+    check_module "requests" "requests" || dep_failures=$((dep_failures + 1))
+    
+    if [ $dep_failures -gt 0 ]; then
+        DEPENDENCY_ISSUES=$((DEPENDENCY_ISSUES + dep_failures))
+        echo ""
+        echo "  提示: 运行 ./install_deps.sh 自动解决依赖问题"
+    fi
+}
+
+# 检查项目文件
+check_project_files() {
+    required_files=(
+        "config.py"
+        "query_interface.py"
+        "rag_engine.py"
+        "react_engine.py"
+        "agent_tools.py"
+        "document_loader.py"
+    )
+    
+    missing_files=0
+    for file in "${required_files[@]}"; do
+        if [ -f "$file" ]; then
+            : # 文件存在
+        else
+            echo -e "${RED}✗${NC} 缺少文件: $file"
+            missing_files=$((missing_files + 1))
+        fi
+    done
+    
+    if [ $missing_files -eq 0 ]; then
+        print_result 0 "所有项目文件完整"
+    else
+        print_result 1 "缺少 $missing_files 个项目文件"
+    fi
+}
+
+# 检查网络连接
+check_network() {
+    local network_issues=0
+    if curl -s --connect-timeout 5 https://www.google.com &> /dev/null; then
+        print_result 0 "网络连接正常"
+    else
+        print_result 1 "网络连接异常"
+        echo "  请检查网络设置或代理配置"
+        network_issues=$((network_issues + 1))
+    fi
+    
+    # 检查Ollama API
+    if curl -s --connect-timeout 5 http://localhost:11434/api/tags &> /dev/null; then
+        print_result 0 "Ollama API 可访问"
+    else
+        print_result 1 "Ollama API 不可访问"
+        echo "  请确保 Ollama 服务正在运行"
+        network_issues=$((network_issues + 1))
+    fi
+    
+    if [ $network_issues -gt 0 ]; then
+        NETWORK_ISSUES=$((NETWORK_ISSUES + network_issues))
+    fi
+}
+
+# 主函数
+main() {
+    print_header "前置条件检查开始"
+    
+    # 基础命令检查
+    print_header "基础命令检查"
+    check_python
+    check_pip
+    check_git
+    check_curl
+    
+    # 系统资源检查
+    print_header "系统资源检查"
+    check_memory
+    check_disk
+    
+    # Ollama检查
+    print_header "Ollama 检查"
+    check_ollama
+    
+    # Python依赖检查
+    print_header "Python 依赖检查"
+    check_dependencies
+    
+    # 项目文件检查
+    print_header "项目文件检查"
+    check_project_files
+    
+    # 网络检查
+    print_header "网络检查"
+    check_network
+    
+    # 总结
+    print_header "检查总结"
+    echo -e "总检查项: $TOTAL_CHECKS"
+    echo -e "${GREEN}通过: $PASSED_CHECKS${NC}"
+    echo -e "${RED}失败: $FAILED_CHECKS${NC}"
+    echo -e "${YELLOW}警告: $WARNING_CHECKS${NC}"
+    
+    if [ $FAILED_CHECKS -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✓ 所有必要条件已满足，可以开始使用！${NC}"
+        echo ""
+        echo "快速开始命令："
+        echo "  python query_interface.py --data ./data"
+        return 0
+    else
+        echo ""
+        echo -e "${RED}✗ 发现 $FAILED_CHECKS 个问题，请按以下顺序解决：${NC}"
+        echo ""
+        
+        # 根据问题类型提供针对性建议
+        if [ $PYTHON_ISSUES -gt 0 ]; then
+            echo -e "${YELLOW}Python相关问题 ($PYTHON_ISSUES 个):${NC}"
+            echo "  1. 安装或升级Python: sudo apt install python3.9  # Linux"
+            echo "  2. 或下载安装: https://www.python.org/downloads/  # Windows/macOS"
+            echo "  3. 验证版本: python3 --version"
+            echo ""
+        fi
+        
+        if [ $OLLAMA_ISSUES -gt 0 ]; then
+            echo -e "${YELLOW}Ollama相关问题 ($OLLAMA_ISSUES 个):${NC}"
+            echo "  1. 安装Ollama: curl -fsSL https://ollama.com/install.sh | sh"
+            echo "  2. 启动服务: ollama serve"
+            echo "  3. 下载模型: ollama pull qwen2.5-coder:7b"
+            echo "  4. 验证服务: curl http://localhost:11434/api/tags"
+            echo ""
+        fi
+        
+        if [ $DEPENDENCY_ISSUES -gt 0 ]; then
+            echo -e "${YELLOW}Python依赖相关问题 ($DEPENDENCY_ISSUES 个):${NC}"
+            echo "  1. 自动安装: ./install_deps.sh  # 推荐"
+            echo "  2. 手动安装: pip install -r requirements.txt"
+            echo "  3. 或使用备用配置: pip install -r requirements_alternative.txt"
+            echo "  4. 检查虚拟环境: 确保在虚拟环境中运行"
+            echo ""
+        fi
+        
+        if [ $NETWORK_ISSUES -gt 0 ]; then
+            echo -e "${YELLOW}网络相关问题 ($NETWORK_ISSUES 个):${NC}"
+            echo "  1. 检查网络连接: ping google.com"
+            echo "  2. 检查防火墙设置"
+            echo "  3. 配置代理（如果需要）: export HTTP_PROXY=..."
+            echo "  4. 重启Ollama服务: ollama serve"
+            echo ""
+        fi
+        
+        echo "解决所有问题后，重新运行此脚本验证："
+        echo "  ./check_prereqs.sh"
+        
+        return 1
+    fi
+}
+
+# 运行主函数
+main
