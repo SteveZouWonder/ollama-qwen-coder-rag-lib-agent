@@ -67,6 +67,18 @@ check_python() {
             
             if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 8 ]); then
                 print_result 0 "Python 版本: $version"
+                
+                # 检查是否为 Homebrew Python (macOS 用户推荐)
+                if [[ "$OSTYPE" == "darwin"* ]]; then
+                    python_path=$(which python3 2>/dev/null)
+                    if [[ "$python_path" == *"homebrew"* ]]; then
+                        print_result 0 "使用 Homebrew Python (推荐用于 urllib3 2.x 支持)"
+                    else
+                        print_result 2 "未使用 Homebrew Python (macOS 用户推荐)"
+                        echo "  建议: brew install python@3.9 以支持 urllib3 2.6.3"
+                        echo "  当前路径: $python_path"
+                    fi
+                fi
                 return 0
             else
                 print_result 1 "Python 版本过低: $version (需要 3.8+)"
@@ -229,6 +241,7 @@ check_dependencies() {
         PYTHON_CMD="python3"
         echo "  提示: 使用虚拟环境可以避免依赖冲突"
         echo "  创建方法: python3 -m venv venv && source venv/bin/activate"
+        echo "  macOS 用户推荐: python3.9 -m venv venv_homebrew && source venv_homebrew/bin/activate"
     fi
     
     # 检查pip命令
@@ -282,6 +295,61 @@ check_dependencies() {
     check_module "prompt_toolkit" "prompt-toolkit" || dep_failures=$((dep_failures + 1))
     check_module "pypdf" "pypdf" || dep_failures=$((dep_failures + 1))
     check_module "requests" "requests" || dep_failures=$((dep_failures + 1))
+    check_module "dotenv" "python-dotenv" || dep_failures=$((dep_failures + 1))
+    
+    # 检查新功能依赖
+    check_module "urllib3" "urllib3" || dep_failures=$((dep_failures + 1))
+    if [ $dep_failures -eq 0 ]; then
+        # 检查 urllib3 版本兼容性
+        urllib3_version=$($PYTHON_CMD -c "import urllib3; print(urllib3.__version__)" 2>&1)
+        echo "  urllib3 版本: $urllib3_version"
+        
+        # 检查 SSL 兼容性
+        ssl_check=$($PYTHON_CMD -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>&1)
+        if [[ "$ssl_check" == *"LibreSSL"* ]] && [[ "$urllib3_version" == "2."* ]]; then
+            print_result 1 "urllib3 2.x 与 LibreSSL 不兼容"
+            echo "  建议: 使用 Homebrew Python 或降级 urllib3 到 1.26.20"
+            dep_failures=$((dep_failures + 1))
+        else
+            print_result 0 "urllib3 SSL 兼容性正常"
+        fi
+    fi
+    
+    # 检查桌面应用依赖（必需）
+    output=$($PYTHON_CMD -c "import pystray" 2>&1)
+    if [ $? -ne 0 ]; then
+        print_result 1 "pystray 未安装 (桌面应用必需)"
+        echo "  解决方案: pip install pystray"
+        dep_failures=$((dep_failures + 1))
+    else
+        print_result 0 "pystray 已安装"
+    fi
+    
+    output=$($PYTHON_CMD -c "import PIL" 2>&1)
+    if [ $? -ne 0 ]; then
+        print_result 1 "PIL/pillow 未安装 (桌面应用必需)"
+        echo "  解决方案: pip install pillow"
+        dep_failures=$((dep_failures + 1))
+    else
+        print_result 0 "PIL/pillow 已安装"
+    fi
+    
+    # 检查测试工具（可选）
+    output=$($PYTHON_CMD -c "import pytest" 2>&1)
+    if [ $? -ne 0 ]; then
+        print_result 2 "pytest 未安装 (测试工具可选)"
+        echo "  提示: pip install pytest 用于运行测试"
+    else
+        print_result 0 "pytest 已安装 (测试工具)"
+    fi
+    
+    output=$($PYTHON_CMD -c "import pytest_cov" 2>&1)
+    if [ $? -ne 0 ]; then
+        print_result 2 "pytest-cov 未安装 (测试工具可选)"
+        echo "  提示: pip install pytest-cov 用于测试覆盖率"
+    else
+        print_result 0 "pytest-cov 已安装 (测试工具)"
+    fi
     
     if [ $dep_failures -gt 0 ]; then
         DEPENDENCY_ISSUES=$((DEPENDENCY_ISSUES + dep_failures))
@@ -299,6 +367,11 @@ check_project_files() {
         "react_engine.py"
         "agent_tools.py"
         "document_loader.py"
+        "desktop_app.py"
+        "knowledge_snapshot.py"
+        "knowledge_to_skills.py"
+        "content_security.py"
+        "chat_history.py"
     )
     
     missing_files=0
@@ -387,7 +460,10 @@ main() {
         echo -e "${GREEN}✓ 所有必要条件已满足，可以开始使用！${NC}"
         echo ""
         echo "快速开始命令："
-        echo "  python query_interface.py --data ./data"
+        echo "  python desktop_app.py              # 启动桌面应用（推荐）"
+        echo "  python desktop_app.py --status     # 检查服务状态"
+        echo "  python desktop_app.py --warm-up    # 预热模型"
+        echo "  python query_interface.py --data ./data  # 命令行模式"
         return 0
     else
         echo ""
@@ -397,9 +473,15 @@ main() {
         # 根据问题类型提供针对性建议
         if [ $PYTHON_ISSUES -gt 0 ]; then
             echo -e "${YELLOW}Python相关问题 ($PYTHON_ISSUES 个):${NC}"
-            echo "  1. 安装或升级Python: sudo apt install python3.9  # Linux"
-            echo "  2. 或下载安装: https://www.python.org/downloads/  # Windows/macOS"
-            echo "  3. 验证版本: python3 --version"
+            echo "  Linux:"
+            echo "    1. 安装或升级Python: sudo apt install python3.9"
+            echo "  macOS (推荐 Homebrew Python):"
+            echo "    1. brew install python@3.9"
+            echo "    2. python3.9 -m venv venv_homebrew"
+            echo "    3. source venv_homebrew/bin/activate"
+            echo "  Windows:"
+            echo "    1. 下载安装: https://www.python.org/downloads/"
+            echo "  2. 验证版本: python3 --version"
             echo ""
         fi
         
@@ -417,6 +499,7 @@ main() {
             echo "  1. 自动安装: ./install_deps.sh  # 推荐"
             echo "  2. 手动安装: pip install -r requirements.txt"
             echo "  3. 或使用备用配置: pip install -r requirements_alternative.txt"
+            echo "     注意: 备用配置不包含桌面应用等新功能"
             echo "  4. 检查虚拟环境: 确保在虚拟环境中运行"
             echo ""
         fi

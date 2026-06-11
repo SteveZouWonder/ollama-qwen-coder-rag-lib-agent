@@ -1,25 +1,37 @@
 # 核心依赖（指定具体版本以避免依赖冲突）
-llama-index==0.10.46
+llama-index==0.10.68
 llama-index-embeddings-ollama==0.1.3
 llama-index-llms-ollama==0.2.0
 llama-index-readers-file==0.1.4
 llama-index-vector-stores-chroma==0.1.8
 
 # 向量数据库（使用稳定版本避免遥测问题）
-chromadb==0.4.22
+chromadb==0.4.24
+posthog>=3.0.0,<4.0.0  # 修复ChromaDB遥测兼容性问题
 
 # 文档处理
 pypdf==4.3.1
 
 # 网络请求
-requests==2.32.3
-urllib3<2.0.0  # 使用v1.x版本避免LibreSSL兼容性警告
+requests==2.32.5
+urllib3==2.6.3  # 使用Homebrew Python (OpenSSL) 以支持最新版本
 
 # 环境配置
-python-dotenv==1.0.1
+python-dotenv==1.2.1
 
 # 终端美化
 rich==13.9.4
 
 # 命令行工具
-prompt-toolkit==3.0.48
+prompt-toolkit==3.0.52
+
+# 测试工具
+pytest==8.4.2
+pytest-cov==7.1.0
+
+# 桌面应用依赖
+pystray==0.19.5  # 系统托盘功能
+pillow==11.3.0   # 图像处理
+
+# 注意：此项目使用 Homebrew Python 以支持 urllib3 2.6.3
+# 激活虚拟环境：source venv_homebrew/bin/activate

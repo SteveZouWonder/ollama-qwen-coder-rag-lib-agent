@@ -7,12 +7,12 @@ import warnings
 
 # 禁用ChromaDB遥测，避免capture()错误
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'
+os.environ['DO_NOT_TRACK'] = '1'
 os.environ['CHROMA_TELEMETRY'] = 'False'
+# 禁用posthog日志
 logging.getLogger("chromadb").setLevel(logging.ERROR)
 logging.getLogger("chromadb.segment").setLevel(logging.ERROR)
-
-# 禁用urllib3的OpenSSL警告（macOS LibreSSL版本问题）
-warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL 1.1.1+")
+logging.getLogger("posthog").setLevel(logging.ERROR)
 
 from pathlib import Path
 from dataclasses import dataclass

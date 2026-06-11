@@ -1,0 +1,10 @@
+{
+  "autostart": false,
+  "warm_up_on_startup": true,
+  "warm_up_models": [
+    "qwen2.5-coder:7b",
+    "nomic-embed-text:latest"
+  ],
+  "ollama_base_url": "http://localhost:11434",
+  "check_interval": 300
+}

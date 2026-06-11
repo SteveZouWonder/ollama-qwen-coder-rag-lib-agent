@@ -231,7 +231,9 @@ function Test-Dependencies {
         @{name="rich"; display="rich"},
         @{name="prompt_toolkit"; display="prompt-toolkit"},
         @{name="pypdf"; display="pypdf"},
-        @{name="requests"; display="requests"}
+        @{name="requests"; display="requests"},
+        @{name="dotenv"; display="python-dotenv"},
+        @{name="urllib3"; display="urllib3"}
     )
     
     foreach ($module in $modules) {
@@ -271,6 +273,65 @@ function Test-Dependencies {
         Write-Host ""
         Write-Host "  提示: 运行 .\install_deps.ps1 自动解决依赖问题"
     }
+    
+    # 检查urllib3 SSL兼容性
+    try {
+        $sslVersion = python -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>$null
+        $urllib3Version = python -c "import urllib3; print(urllib3.__version__)" 2>$null
+        Write-Host "urllib3 版本: $urllib3Version"
+        if ($sslVersion -like "*LibreSSL*" -and $urllib3Version -like "2.*") {
+            Print-Result 1 "urllib3 2.x 与 LibreSSL 不兼容"
+            Write-Host "  建议: 使用Homebrew Python或降级urllib3"
+        } else {
+            Print-Result 0 "urllib3 SSL 兼容性正常"
+        }
+    } catch {
+        # 忽略错误
+    }
+    
+    # 检查桌面应用依赖（必需）
+    Write-Host "检查桌面应用依赖..."
+    $desktopDeps = @(
+        @{name="pystray"; display="pystray"; hint="pip install pystray"},
+        @{name="PIL"; display="PIL/pillow"; hint="pip install pillow"}
+    )
+    foreach ($dep in $desktopDeps) {
+        try {
+            python -c "import $($dep.name)" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Print-Result 0 "$($dep.display) 已安装"
+            } else {
+                Print-Result 1 "$($dep.display) 未安装 (桌面应用必需)"
+                Write-Host "  解决方案: $($dep.hint)"
+                $dep_failures++
+            }
+        } catch {
+            Print-Result 1 "$($dep.display) 未安装 (桌面应用必需)"
+            Write-Host "  解决方案: $($dep.hint)"
+            $dep_failures++
+        }
+    }
+    
+    # 检查测试工具（可选）
+    Write-Host "检查测试工具（可选）..."
+    $testDeps = @(
+        @{name="pytest"; display="pytest"; hint="pip install pytest 用于运行测试"},
+        @{name="pytest_cov"; display="pytest-cov"; hint="pip install pytest-cov 用于测试覆盖率"}
+    )
+    foreach ($dep in $testDeps) {
+        try {
+            python -c "import $($dep.name)" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Print-Result 0 "$($dep.display) 已安装 (测试工具)"
+            } else {
+                Print-Result 2 "$($dep.display) 未安装 (测试工具可选)"
+                Write-Host "  提示: $($dep.hint)"
+            }
+        } catch {
+            Print-Result 2 "$($dep.display) 未安装 (测试工具可选)"
+            Write-Host "  提示: $($dep.hint)"
+        }
+    }
 }
 
 # 检查项目文件
@@ -281,7 +342,12 @@ function Test-ProjectFiles {
         "rag_engine.py",
         "react_engine.py",
         "agent_tools.py",
-        "document_loader.py"
+        "document_loader.py",
+        "desktop_app.py",
+        "knowledge_snapshot.py",
+        "knowledge_to_skills.py",
+        "content_security.py",
+        "chat_history.py"
     )
     
     $missingFiles = 0
@@ -372,7 +438,10 @@ function Main {
         Write-Host "✓ 所有必要条件已满足，可以开始使用！" -ForegroundColor Green
         Write-Host ""
         Write-Host "快速开始命令："
-        Write-Host "  python query_interface.py --data .\data"
+        Write-Host "  python desktop_app.py              # 启动桌面应用（推荐）"
+        Write-Host "  python desktop_app.py --status     # 检查服务状态"
+        Write-Host "  python desktop_app.py --warm-up    # 预热模型"
+        Write-Host "  python query_interface.py --data .\data  # 命令行模式"
         return 0
     } else {
         Write-Host ""

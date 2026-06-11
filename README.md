@@ -1,6 +1,6 @@
-# 智能文档+代码助手 v3.0
+# 智能文档+代码助手 v4.0
 
-基于 **Ollama qwen2.5-coder:7b** 的融合型 AI 助手，同时支持 **RAG 知识库检索** 和 **ReAct Agent 代码操作**。
+基于 **Ollama qwen2.5-coder:7b** 的融合型 AI 助手，同时支持 **RAG 知识库检索**、**ReAct Agent 代码操作** 和 **多Agent 协作系统**。
 
 ---
 
@@ -9,25 +9,40 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        统一 CLI 交互层                               │
-│         /ask (知识库)  /agent (Agent任务)  /file /exec ...          │
+│         /ask /agent /multi-agent  /file /exec ...                     │
 └─────────────────────────────────────────────────────────────────────┘
                               │
           ┌───────────────────┴───────────────────┐
           ▼                                       ▼
 ┌─────────────────────────────┐    ┌─────────────────────────────┐
-│      📚 RAG 知识库引擎       │    │      🤖 ReAct Agent 引擎    │
-│  LlamaIndex + ChromaDB      │    │  Thought → Action → Observe │
-│  语义检索 + 来源追溯         │    │  自动工具调用 + 安全护栏      │
-│  PDF/论文/笔记/代码          │    │  读写文件 / 执行命令 / 搜索  │
-└─────────────────────────────┘    └─────────────────────────────┘
-          │                                       │
-          └───────────────────┬───────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Ollama qwen2.5-coder:7b                         │
-│              统一 LLM：文档理解 + 代码生成 + 推理                   │
-│              Embedding: nomic-embed-text (语义编码)                 │
-└─────────────────────────────────────────────────────────────────────┘
+│      📚 RAG 知识库引擎       │    │      🤖 Agent 系统          │
+│  LlamaIndex + ChromaDB      │    │  ┌─────────────────────────┐  │
+│  语义检索 + 来源追溯         │    │  │  Multi-Agent Orchestrator│ │
+│  PDF/论文/笔记/代码          │    │  └─────────┬───────────────┘  │
+└─────────────────────────────┘    │            │              │
+          │                           │    ┌───────┴──────┐         │
+          └───────────────────┬───────────┘    │  MasterAgent  │         │
+                              ▼              │  (主控Agent)  │         │
+┌─────────────────────────────────────────────────────────────┐    │  └───────┬──────┘         │
+│      🤖 ReAct Agent 引擎    │    │          │              │
+│  Thought → Action → Observe │    │    ┌─────┴────┬─────┐      │
+│  自动工具调用 + 安全护栏      │    │    │ CodeAgent│RAGAgent│      │
+│  读写文件 / 执行命令 / 搜索  │    │    │ (代码专家)│(知识库)│      │
+└─────────────────────────────┘    │    ├─────────┼───────┤      │
+          │                           │    │ TestAgent│DocAgent│      │
+          └───────────────────┬───────────┘    │ (测试专家)│(文档)│      │
+                              ▼              ├─────────┼───────┤      │
+┌─────────────────────────────────────────────────────────────┐    │AuditAgent│      │
+│                     Ollama qwen2.5-coder:7b                         │    │ (审计专家)│      │
+│              统一 LLM：文档理解 + 代码生成 + 推理 + 协作               │    └─────────┴───────┘      │
+│              Embedding: nomic-embed-text (语义编码)                 │                             │
+└─────────────────────────────────────────────────────────────┘                             │
+          ┌──────────────────────────────┴─────────────────────────┐
+          │                    协作机制                                 │
+          │  MessageBus (消息总线) + AgentRegistry (注册中心)       │
+          │  TaskDecomposer (任务分解) + TaskScheduler (调度)       │
+          │  ResultIntegrator (结果整合) + 4种协作模式              │
+          └─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -74,12 +89,12 @@
 
 **Linux/macOS:**
 ```bash
-./check_prereqs.sh
+./scripts/check_prereqs.sh
 ```
 
 **Windows:**
 ```powershell
-.\check_prereqs.ps1
+.\scripts\check_prereqs.ps1
 ```
 
 如果检查通过，继续以下步骤。如果有问题，请参考 [详细使用教程](TUTORIAL.md#前置条件检查与配置)。
@@ -99,8 +114,8 @@ ollama pull nomic-embed-text:latest
 
 **推荐方法：使用专用安装脚本（避免依赖冲突）**
 ```bash
-./install_deps.sh      # Linux/macOS
-.\install_deps.ps1     # Windows PowerShell
+./scripts/install_deps.sh      # Linux/macOS
+.\scripts\install_deps.ps1     # Windows PowerShell
 ```
 
 **标准方法：**
@@ -160,23 +175,49 @@ ollama-qwen-coder-rag-lib/
 ├── knowledge_to_skills.py # 知识库到Skill智能转化引擎
 ├── knowledge_snapshot.py  # 知识库快照系统
 ├── content_security.py    # 内容安全扫描器（防止提示词攻击）
-├── example.py             # 快速示例
+├── agents/               # Agent模块目录
+│   ├── agent_types.py     # Agent基础数据类型
+│   ├── base_agent.py     # Agent抽象基类
+│   ├── code_agent.py     # 代码专家Agent
+│   ├── rag_agent.py      # 知识库专家Agent
+│   ├── test_agent.py     # 测试专家Agent
+│   ├── doc_agent.py      # 文档专家Agent
+│   └── audit_agent.py    # 审计专家Agent
+├── collaboration/         # 协作机制目录
+│   ├── task_decomposer.py    # 任务分解器
+│   ├── task_scheduler.py     # 任务调度器
+│   ├── result_integrator.py  # 结果整合器
+│   └── message_bus.py        # 消息总线
+├── agent_registry.py      # Agent注册中心
+├── master_agent.py        # 主控Agent
+├── agent_orchestrator.py  # Agent编排器
+├── agent_config.py        # Agent配置管理
+├── examples/               # 示例代码
+│   └── example.py         # 快速示例
 ├── requirements.txt       # 依赖
 ├── data/                  # 文档存放目录
 ├── index_storage/         # 索引持久化存储
 │   ├── chroma_db/         # ChromaDB 向量数据库
 │   └── llama_index/       # LlamaIndex 索引文件
 ├── docs/                  # 文档目录
-│   ├── KNOWLEDGE_OPTIMIZATION_SUMMARY.md  # 知识库优化实现总结
-│   ├── SECURITY_DOCUMENTATION.md           # 安全功能文档
-│   └── ...                                # 其他文档
+│   ├── design/           # 设计文档
+│   ├── implementation/    # 实现文档
+│   ├── testing/          # 测试文档
+│   ├── general/          # 一般文档
+│   ├── future-feature-design/  # 未来特性设计
+│   └── tutorials/        # 教程文档
+├── scripts/               # 脚本文件
+│   ├── check_prereqs.sh   # 前置条件检查脚本
+│   ├── install_deps.sh    # 依赖安装脚本
+│   └── verify_deps.sh     # 依赖验证脚本
 ├── tests/                 # 单元测试
+│   └── multi_agent/      # 多Agent系统测试
 └── README.md
 ```
 
 ---
 
-## 双模式使用指南
+## 三模式使用指南
 
 ### 📚 模式一：RAG 知识库查询
 
@@ -231,6 +272,51 @@ Agent 会自动：
 [OK] [7/50] Step 7/50: 给出最终答案
 ```
 
+### 🤝 模式三：多Agent 协作系统 ⭐ 新功能
+
+适合 **复杂任务分解、专业化分工、并行处理、多视角分析** 等高级场景。
+
+```bash
+# 进入交互式模式
+python query_interface.py
+
+# 然后使用 /multi 命令：
+>>> /multi 实现用户认证系统，包括注册、登录、密码重置功能，并生成完整文档和测试 PARALLEL
+
+# 或指定协作模式：
+>>> /multi 重构 legacy.py，提高代码质量，添加测试，更新文档 SEQUENTIAL
+
+>>> /multi 分析项目架构，CodeAgent分析代码，AuditAgent检查安全，DocAgent生成文档 HIERARCHY
+```
+
+**支持的协作模式：**
+- `PARALLEL` - 并行执行多个独立任务
+- `SEQUENTIAL` - 按依赖顺序执行任务
+- `HIERARCHY` - 层级协作，任务分解和协调
+- `COMPETITIVE` - 多Agent竞争，选择最佳方案
+
+**专业Agent：**
+- `CodeAgent` - 代码专家（生成、重构、审查、调试）
+- `RAGAgent` - 知识库专家（检索、提取、综述）
+- `TestAgent` - 测试专家（生成、覆盖率分析、质量评估）
+- `DocAgent` - 文档专家（API文档、技术文档、用户指南）
+- `AuditAgent` - 审计专家（安全检查、合规验证、性能审计）
+
+**多Agent执行流程：**
+```
+MasterAgent 接收任务
+    ↓
+TaskDecomposer 分解为子任务
+    ↓
+TaskScheduler 分配给专业Agent
+    ↓
+专业Agent 并行/顺序执行
+    ↓
+ResultIntegrator 整合结果
+    ↓
+用户获得完整解决方案
+```
+
 ---
 
 ## 统一命令速查
@@ -239,6 +325,7 @@ Agent 会自动：
 |------|------|------|
 | `/ask <问题>` | RAG | 直接查询知识库 |
 | `/agent <任务>` | Agent | 进入 ReAct 自动任务模式 |
+| `/multi <任务> <模式>` | MultiAgent | 多Agent协作系统 (PARALLEL/SEQUENTIAL/HIERARCHY/COMPETITIVE) |
 | `/add <路径>` | RAG | 添加文档到知识库 |
 | `/stats` | RAG | 知识库统计 |
 | `/sources` | RAG | 显示上次回答来源 |
@@ -329,9 +416,110 @@ docs = load_documents("./data", file_types=[".pdf", ".md"])
 docs = load_documents("./论文.pdf")
 ```
 
+### 🆕 `agents/` — 专业Agent模块
+
+```python
+from agent_orchestrator import AgentOrchestrator
+from agent_config import AgentConfigManager
+
+# 使用多Agent系统
+config = AgentConfigManager.get_default_config()
+orchestrator = AgentOrchestrator(config)
+
+# 并行协作模式
+result = orchestrator.process_request(
+    "实现用户认证功能并测试",
+    CollaborationMode.PARALLEL
+)
+```
+
+**专业Agent类型：**
+- `CodeAgent` - 代码生成、重构、审查、调试
+- `RAGAgent` - 知识库检索、文档分析、文献综述
+- `TestAgent` - 测试生成、覆盖率分析、质量评估
+- `DocAgent` - 文档编写、API文档、用户指南
+- `AuditAgent` - 安全检查、合规验证、性能审计
+
+### 🆕 `collaboration/` — 协作机制模块
+
+- `TaskDecomposer` - 智能任务分解
+- `TaskScheduler` - 灵活任务调度
+- `ResultIntegrator` - 结果整合和报告
+- `MessageBus` - Agent间消息通信
+
+### 🆕 `agent_orchestrator.py` — Agent编排器
+
+```python
+from agent_orchestrator import AgentOrchestrator
+from agent_config import AgentConfigManager
+
+# 自定义配置
+config = AgentConfigManager.create_custom_config(
+    model="qwen2.5-coder:7b",
+    max_parallel_tasks=8,
+    default_mode="parallel"
+)
+
+orchestrator = AgentOrchestrator(config)
+status = orchestrator.get_status()
+```
+
 ---
 
-## 安全机制
+## 高级用法
+
+### 🆕 多Agent协作
+
+#### 复杂项目开发
+```python
+from agent_orchestrator import AgentOrchestrator
+from agent_config import AgentConfigManager
+
+config = AgentConfigManager.get_default_config()
+orchestrator = AgentOrchestrator(config)
+
+# 并行开发：代码 + 测试 + 文档
+result = orchestrator.process_request(
+    "实现用户注册登录功能，并生成测试和文档",
+    CollaborationMode.PARALLEL
+)
+
+# 查看执行结果
+print(result["summary"])
+print(result["detailed_report"])
+```
+
+#### 竞争协作：多方案对比
+```python
+# 竞争模式：多个Agent提供不同方案
+result = orchestrator.process_request(
+    "设计一个高效的数据结构",
+    CollaborationMode.COMPETITIVE
+)
+
+# 系统会自动选择最佳方案
+best_solution = result["best_result"]
+```
+
+#### 顺序协作：依赖任务链
+```python
+# 顺序模式：代码 → 测试 → 文档
+result = orchestrator.process_request(
+    "重构代码，添加测试，更新文档",
+    CollaborationMode.SEQUENTIAL
+)
+
+# 任务会按依赖顺序执行
+```
+
+#### 自定义Agent配置
+```python
+# 创建最小化配置（只启用需要的Agent）
+config = AgentConfigManager.get_minimal_config()
+orchestrator = AgentOrchestrator(config)
+```
+
+### 混合使用：Agent + 知识库
 
 ### 命令执行安全
 
@@ -362,7 +550,7 @@ engine = RAGEngine(enable_security=True)
 engine = RAGEngine(enable_security=False)
 ```
 
-详细安全说明请查看：[安全功能文档](docs/SECURITY_DOCUMENTATION.md)
+详细安全说明请查看：[安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)
 
 ---
 
@@ -384,6 +572,14 @@ TOP_K = 5                           # 检索片段数
 MAX_ITERATIONS = 50                 # 最大迭代步数
 TIMEOUT = 300                       # 模型超时
 AUTO_CONFIRM = False                # 自动确认
+
+# 🆕 多Agent配置
+DEFAULT_COLLABORATION_MODE = "hierarchy"  # 默认协作模式
+MAX_PARALLEL_TASKS = 5               # 最大并行任务数
+TASK_TIMEOUT = 600                   # 任务超时（秒）
+AGENT_TIMEOUT = 300                  # Agent执行超时（秒）
+ENABLE_LOGGING = True                # 启用日志
+LOG_LEVEL = "INFO"                   # 日志级别
 ```
 
 **环境变量方式**：
@@ -525,31 +721,31 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 - **内容净化**: 自动移除或标记危险内容
 - **威胁分级**: 5级威胁分类，灵活应对不同风险
 
-详细实现说明请查看：[知识库优化实现总结](docs/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
+详细实现说明请查看：[知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
 
 ---
 
 ## �📚 文档资源
 
 - **[详细使用教程](TUTORIAL.md)** - 完整的前置条件配置、安装指南、功能说明、故障排除
-- **[使用场景详细指南](docs/USE_CASES.md)** - 8大类别40+实战场景示例和最佳实践
-- **[快速开始检查](docs/QUICK_START_CHECK.md)** - 一键验证环境配置
-- **[警告问题修复说明](docs/WARNING_FIX.md)** - ChromaDB遥测错误和urllib3 OpenSSL警告的修复
-- **[测试设计文档](docs/TEST_DESIGN.md)** - 单元测试设计和覆盖率说明（当前覆盖率87%）
-- **[知识库优化实现总结](docs/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)** - 知识库智能优化功能的完整实现说明
-- **[安全功能文档](docs/SECURITY_DOCUMENTATION.md)** - 内容安全扫描器的详细使用指南
+- **[使用场景详细指南](docs/general/USE_CASES.md)** - 8大类别40+实战场景示例和最佳实践
+- **[快速开始检查](docs/general/QUICK_START_CHECK.md)** - 一键验证环境配置
+- **[警告问题修复说明](docs/general/WARNING_FIX.md)** - ChromaDB遥测错误和urllib3 OpenSSL警告的修复
+- **[测试设计文档](docs/testing/TEST_DESIGN.md)** - 单元测试设计和覆盖率说明（当前覆盖率87%）
+- **[知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)** - 知识库智能优化功能的完整实现说明
+- **[安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)** - 内容安全扫描器的详细使用指南
 
 ### 快速链接
 
-- **使用场景** → [使用场景详细指南](docs/USE_CASES.md)
+- **使用场景** → [使用场景详细指南](docs/general/USE_CASES.md)
 - **安装问题** → [前置条件检查与配置](TUTORIAL.md#前置条件检查与配置)
 - **功能详解** → [详细功能说明](TUTORIAL.md#详细功能说明)
 - **安全配置** → [安全机制](TUTORIAL.md#安全机制)
 - **故障排除** → [故障排除](TUTORIAL.md#故障排除)
 - **依赖冲突** → [依赖冲突问题](TUTORIAL.md#依赖冲突问题-resolution-too-deep)
-- **警告问题** → [警告问题修复说明](docs/WARNING_FIX.md)
-- **知识库优化** → [知识库优化实现总结](docs/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
-- **安全防护** → [安全功能文档](docs/SECURITY_DOCUMENTATION.md)
+- **警告问题** → [警告问题修复说明](docs/general/WARNING_FIX.md)
+- **知识库优化** → [知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
+- **安全防护** → [安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)
 
 ---
 

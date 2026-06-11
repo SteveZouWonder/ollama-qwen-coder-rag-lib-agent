@@ -45,6 +45,7 @@ nosetests.xml
 # Data and Runtime Files
 data/
 index_storage/
+config/
 *.db
 *.sqlite
 *.sqlite3
@@ -83,8 +84,5 @@ tmp/
 .dmypy.json
 dmypy.json
 
-# PyCharm
-.idea/
-
 # Devin
-.devin/sessions/
+.devin/
