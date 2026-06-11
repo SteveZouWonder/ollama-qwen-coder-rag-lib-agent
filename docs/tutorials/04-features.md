@@ -15,7 +15,115 @@ RAG引擎支持多种文档格式：
 - **代码文件**: .py, .js, .ts, .java, .c, .cpp, .go, .rs
 - **网页文件**: .html, .xml
 - **配置文件**: .json, .yaml, .yml
+- **图片文件**: .png, .jpg, .jpeg, .gif, .bmp, .tiff (需要 OCR 功能)
 - **其他**: 支持LlamaIndex的所有文档格式
+
+### OCR 图像识别功能 (NEW)
+
+系统集成了强大的 OCR 功能，可以处理扫描版 PDF 和图片文件：
+
+#### 功能特性
+
+- **扫描版 PDF**: 自动识别扫描版 PDF 中的文本内容
+- **图片文件**: 直接识别 PNG、JPG、JPEG、GIF、BMP、TIFF 等格式
+- **中英文混合**: 基于 PaddleOCR 实现高精度的中英文识别
+- **PDF 图片提取**: 自动提取 PDF 中的嵌入图片并进行 OCR 识别
+- **智能缓存**: 基于文件哈希的缓存机制，避免重复处理
+- **并行处理**: 支持批量图片并行处理，提升处理效率
+
+#### 安装 OCR 依赖
+
+```bash
+# 安装 OCR 核心依赖
+pip install paddlepaddle==2.5.2
+pip install paddleocr==2.7.0.3
+pip install pytesseract==0.3.10
+pip install pymupdf==1.23.8
+pip install opencv-python==4.8.1.78
+pip install pillow==10.1.0
+
+# 安装 Tesseract（系统级）
+# macOS
+brew install tesseract tesseract-lang
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
+
+# Windows
+# 下载安装程序：https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+#### 配置 OCR 功能
+
+在 `config.py` 中配置：
+
+```python
+# OCR 开关
+OCR_ENABLED = True  # 是否启用 OCR 功能
+OCR_ENGINE = "paddle"  # OCR 引擎：paddle | tesseract | hybrid
+
+# OCR 缓存配置
+OCR_CACHE_DIR = INDEX_DIR / "ocr_cache"
+OCR_PARALLEL_WORKERS = 2  # 并行处理任务数
+OCR_CACHE_TTL_DAYS = 30  # 缓存过期时间（天）
+
+# PaddleOCR 配置
+PADDLE_USE_GPU = False  # 是否使用 GPU
+PADDLE_LANG = "ch"  # 语言：ch(中文) | en(英文) | jk(日韩)
+
+# Tesseract 配置
+TESSERACT_PATH = "/usr/local/bin/tesseract"
+TESSERACT_LANG = "chi_sim+eng"  # 语言包
+```
+
+#### 使用 OCR 功能
+
+**在 RAG 知识库中使用**:
+```bash
+# 启用 OCR 加载文档
+python query_interface.py --data ./data
+
+# OCR 会自动处理：
+# - 扫描版 PDF
+# - 图片文件
+# - PDF 中的嵌入图片
+```
+
+**编程方式使用**:
+```python
+from document_loader import DocumentLoader
+
+# 创建启用 OCR 的加载器
+loader = DocumentLoader(enable_ocr=True)
+
+# 加载图片文件
+documents = loader.load_file('scanned_page.png')
+
+# 加载 PDF（自动提取图片并 OCR）
+documents = loader.load_file('document_with_images.pdf')
+```
+
+**直接使用 OCR 引擎**:
+```python
+from ocr_processor import PaddleOCREngine
+
+# 创建 OCR 引擎
+config = {
+    'use_gpu': False,
+    'lang': 'ch',
+    'cache_dir': './cache'
+}
+ocr = PaddleOCREngine(config)
+
+# 识别图片
+from pathlib import Path
+results = ocr.recognize_image(Path('image.png'))
+
+for result in results:
+    print(f"文本: {result.text}")
+    print(f"置信度: {result.confidence}")
+    print(f"位置: {result.bbox}")
+```
 
 ### 知识库构建
 

@@ -123,6 +123,21 @@ $PYTHON_CMD -c "import pytest" 2>/dev/null && echo -e "${GREEN}✓ pytest${NC}" 
 $PYTHON_CMD -c "import pytest_cov" 2>/dev/null && echo -e "${GREEN}✓ pytest-cov${NC}" || echo -e "${YELLOW}⚠ pytest-cov未安装（测试工具可选）${NC}"
 
 echo ""
+echo "验证OCR功能（可选）..."
+$PYTHON_CMD -c "import paddleocr" 2>/dev/null && echo -e "${GREEN}✓ paddleocr${NC}" || echo -e "${YELLOW}⚠ paddleocr未安装（OCR功能可选）${NC}"
+$PYTHON_CMD -c "import pytesseract" 2>/dev/null && echo -e "${GREEN}✓ pytesseract${NC}" || echo -e "${YELLOW}⚠ pytesseract未安装（OCR功能可选）${NC}"
+$PYTHON_CMD -c "import fitz" 2>/dev/null && echo -e "${GREEN}✓ pymupdf${NC}" || echo -e "${YELLOW}⚠ pymupdf未安装（OCR功能可选）${NC}"
+$PYTHON_CMD -c "import cv2" 2>/dev/null && echo -e "${GREEN}✓ opencv-python${NC}" || echo -e "${YELLOW}⚠ opencv-python未安装（OCR功能可选）${NC}"
+
+# 检查Tesseract系统级依赖
+if command -v tesseract &> /dev/null; then
+    tesseract_version=$(tesseract --version 2>&1 | head -n 1)
+    echo -e "${GREEN}✓ tesseract${NC} ($tesseract_version)"
+else
+    echo -e "${YELLOW}⚠ tesseract未安装（OCR功能可选）${NC}"
+fi
+
+echo ""
 echo -e "${BLUE}=== 安装完成 ===${NC}"
 echo ""
 echo "验证安装："

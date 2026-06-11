@@ -79,6 +79,14 @@
 - **故障排查**: 分析错误日志，提供解决方案
 - **配置迁移**: 系统升级时的配置转换和验证
 
+### 🖼️ OCR 图像识别 (NEW)
+- **扫描版 PDF**: 自动识别扫描版 PDF 中的文本内容
+- **图片文件**: 支持 PNG、JPG、JPEG、GIF、BMP、TIFF 等格式
+- **中英文混合**: 基于 PaddleOCR 实现高精度的中英文识别
+- **PDF 图片提取**: 自动提取 PDF 中的嵌入图片并进行 OCR 识别
+- **智能缓存**: 基于文件哈希的缓存机制，避免重复处理
+- **并行处理**: 支持批量图片并行处理，提升处理效率
+
 ---
 
 ## 快速开始
@@ -139,6 +147,27 @@ export ANONYMIZED_TELEMETRY=False
 # 或查看详细文档：[ChromaDB遥测错误](TUTORIAL.md#问题5chromadb遥测错误)
 ```
 
+**OCR 功能依赖（可选）：**
+```bash
+# 安装 OCR 核心依赖
+pip install paddlepaddle==2.5.2
+pip install paddleocr==2.7.0.3
+pip install pytesseract==0.3.10
+pip install pymupdf==1.23.8
+pip install opencv-python==4.8.1.78
+pip install pillow==10.1.0
+
+# 安装 Tesseract（系统级）
+# macOS
+brew install tesseract tesseract-lang
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
+
+# Windows
+# 下载安装程序：https://github.com/UB-Mannheim/tesseract/wiki
+```
+
 ### 3. 启动
 
 **交互式模式**（推荐）：
@@ -165,8 +194,15 @@ python query_interface.py --agent "检查 main.py 的语法错误"
 
 ```
 ollama-qwen-coder-rag-lib/
-├── config.py              # 统一配置（RAG + Agent）
-├── document_loader.py     # 多格式文档加载器
+├── config.py              # 统一配置（RAG + Agent + OCR）
+├── document_loader.py     # 多格式文档加载器（支持 OCR）
+├── ocr_processor/         # OCR 处理模块
+│   ├── base.py            # OCR 抽象基类
+│   ├── paddle_ocr.py      # PaddleOCR 引擎实现
+│   ├── tesseract_ocr.py   # Tesseract OCR 引擎实现
+│   ├── image_extractor.py # PDF 图片提取器
+│   ├── preprocessor.py    # 图像预处理器
+│   └── cache.py           # OCR 结果缓存
 ├── rag_engine.py          # RAG 核心引擎（向量索引 + Agent 工具接口）
 ├── react_engine.py        # ReAct 推理引擎（qwen2.5-coder:7b）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
@@ -217,6 +253,64 @@ ollama-qwen-coder-rag-lib/
 
 ---
 
+## 配置说明
+
+### OCR 配置
+
+在 `config.py` 中配置 OCR 功能：
+
+```python
+# OCR 开关
+OCR_ENABLED = True  # 是否启用 OCR 功能
+OCR_ENGINE = "paddle"  # OCR 引擎：paddle | tesseract | hybrid
+
+# OCR 缓存配置
+OCR_CACHE_DIR = INDEX_DIR / "ocr_cache"  # OCR 缓存目录
+OCR_PARALLEL_WORKERS = 2  # 并行处理任务数
+OCR_CACHE_TTL_DAYS = 30  # 缓存过期时间（天）
+
+# PaddleOCR 配置
+PADDLE_USE_GPU = False  # 是否使用 GPU
+PADDLE_LANG = "ch"  # 语言：ch(中文) | en(英文) | jk(日韩)
+PADDLE_USE_ANGLE_CLS = True  # 是否启用方向分类
+
+# Tesseract 配置
+TESSERACT_PATH = "/usr/local/bin/tesseract"  # Tesseract 可执行文件路径
+TESSERACT_LANG = "chi_sim+eng"  # 语言包
+
+# 图像预处理配置
+OCR_PREPROCESS = True  # 是否启用图像预处理
+OCR_DENOISE = True  # 去噪
+OCR_BINARIZE = True  # 二值化
+OCR_DESKEW = True  # 倾斜校正
+OCR_ENHANCE_CONTRAST = True  # 对比度增强
+
+# PDF 图片提取配置
+PDF_EXTRACT_IMAGES = True  # 是否提取 PDF 中的图片
+PDF_MIN_IMAGE_SIZE = (50, 50)  # 最小图片尺寸
+```
+
+### 环境变量配置
+
+也可以通过环境变量配置：
+
+```bash
+# OCR 功能
+export OCR_ENABLED=true
+export OCR_ENGINE=paddle
+export OCR_PARALLEL_WORKERS=2
+
+# PaddleOCR
+export PADDLE_USE_GPU=false
+export PADDLE_LANG=ch
+
+# Tesseract
+export TESSERACT_PATH=/usr/local/bin/tesseract
+export TESSERACT_LANG=chi_sim+eng
+```
+
+---
+
 ## 三模式使用指南
 
 ### 📚 模式一：RAG 知识库查询
@@ -239,6 +333,12 @@ python query_interface.py --data ./data
 ```
 
 **支持的格式**：PDF、Markdown、TXT、Python、JS/TS、Java、C/C++、Go、Rust、HTML、JSON、YAML、XML
+
+**OCR 增强功能**（需要安装 OCR 依赖）：
+- 扫描版 PDF 自动识别
+- 图片文件直接识别：PNG、JPG、JPEG、GIF、BMP、TIFF
+- PDF 嵌入图片自动提取并识别
+- 中英文混合识别支持
 
 ### 🤖 模式二：ReAct Agent 任务
 

@@ -91,6 +91,35 @@ foreach ($dep in $testDeps) {
 }
 
 Write-Host ""
+Write-Host "验证OCR功能（可选）..."
+$ocrDeps = @(
+    @{name="paddleocr"; display="paddleocr"},
+    @{name="pytesseract"; display="pytesseract"},
+    @{name="fitz"; display="pymupdf"},
+    @{name="cv2"; display="opencv-python"}
+)
+foreach ($dep in $ocrDeps) {
+    try {
+        python -c "import $($dep.name)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "✓ $($dep.display)" -ForegroundColor Green
+        } else {
+            Write-Host "⚠ $($dep.display) 未安装（OCR功能可选）" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "⚠ $($dep.display) 未安装（OCR功能可选）" -ForegroundColor Yellow
+    }
+}
+
+# 检查Tesseract系统级依赖
+if (Get-Command tesseract -ErrorAction SilentlyContinue) {
+    $tesseractVersion = tesseract --version 2>&1 | Select-Object -First 1
+    Write-Host "✓ tesseract ($tesseractVersion)" -ForegroundColor Green
+} else {
+    Write-Host "⚠ tesseract未安装（OCR功能可选）" -ForegroundColor Yellow
+}
+
+Write-Host ""
 Write-Host "=== 安装完成 ===" -ForegroundColor Blue
 Write-Host ""
 Write-Host "验证安装："

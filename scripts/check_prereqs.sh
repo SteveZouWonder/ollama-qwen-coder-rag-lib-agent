@@ -358,6 +358,63 @@ check_dependencies() {
     fi
 }
 
+# 检查OCR功能依赖（可选）
+check_ocr_dependencies() {
+    if [ ! -f "requirements.txt" ]; then
+        print_result 1 "requirements.txt 文件不存在"
+        return 1
+    fi
+    
+    # 检查虚拟环境
+    if [[ "$VIRTUAL_ENV" != "" ]]; then
+        PYTHON_CMD="python"
+    else
+        PYTHON_CMD="python3"
+    fi
+    
+    # 检查pip命令
+    if command -v pip &> /dev/null; then
+        PIP_CMD="pip"
+    elif command -v pip3 &> /dev/null; then
+        PIP_CMD="pip3"
+    else
+        print_result 1 "pip未安装"
+        return 1
+    fi
+    
+    echo "  OCR 功能是可选的，用于扫描版PDF和图片文档识别"
+    echo "  如需启用OCR功能，请安装以下依赖："
+    
+    # 检查OCR Python包
+    ocr_module_failures=0
+    
+    check_module "paddleocr" "paddleocr" || ocr_module_failures=$((ocr_module_failures + 1))
+    check_module "pytesseract" "pytesseract" || ocr_module_failures=$((ocr_module_failures + 1))
+    check_module "fitz" "pymupdf" || ocr_module_failures=$((ocr_module_failures + 1))
+    check_module "cv2" "opencv-python" || ocr_module_failures=$((ocr_module_failures + 1))
+    
+    # 检查Tesseract系统级依赖
+    if command -v tesseract &> /dev/null; then
+        tesseract_version=$(tesseract --version 2>&1 | head -n 1)
+        print_result 0 "tesseract 已安装: $tesseract_version"
+    else
+        print_result 2 "tesseract 未安装 (OCR功能可选)"
+        echo "  macOS 安装: brew install tesseract tesseract-lang"
+        echo "  Linux 安装: sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim"
+        echo "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki"
+    fi
+    
+    # 总结OCR依赖状态
+    if [ $ocr_module_failures -eq 0 ]; then
+        print_result 0 "OCR Python依赖完整"
+        echo "  OCR 功能已可用：扫描版PDF和图片识别"
+    else
+        print_result 2 "OCR Python依赖不完整 (功能可选)"
+        echo "  安装OCR依赖: pip install paddleocr pytesseract pymupdf opencv-python pillow"
+        echo "  不影响核心功能使用，只在需要OCR时安装"
+    fi
+}
+
 # 检查项目文件
 check_project_files() {
     required_files=(
@@ -439,6 +496,10 @@ main() {
     # Python依赖检查
     print_header "Python 依赖检查"
     check_dependencies
+    
+    # OCR功能检查（可选）
+    print_header "OCR 功能检查（可选）"
+    check_ocr_dependencies
     
     # 项目文件检查
     print_header "项目文件检查"

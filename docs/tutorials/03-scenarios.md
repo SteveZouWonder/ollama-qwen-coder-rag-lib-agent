@@ -262,6 +262,79 @@ python query_interface.py
 
 ---
 
+## 场景12：OCR 图像识别 - 扫描文档处理 ⭐ 新功能
+
+**目标**: 使用 OCR 功能处理扫描版 PDF 和图片文档，提取文本内容进行分析
+
+**前提条件**: 已安装 OCR 依赖（参见安装指南）
+
+```bash
+# 准备扫描文档
+mkdir scanned_docs
+cp 扫描论文.pdf scanned_docs/
+cp 截图.png scanned_docs/
+cp 扫描笔记.jpg scanned_docs/
+
+# 启动助手（OCR 会自动处理扫描文档）
+python query_interface.py --data ./scanned_docs
+
+# 查询示例
+>>> /ask 总结扫描论文的主要内容和结论
+>>> /ask 截图中的代码实现了什么功能？
+>>> /ask 扫描笔记中的关键知识点有哪些？
+>>> /ask 对比扫描文档和普通文档的处理结果
+```
+
+**OCR 功能特性**:
+- 自动识别扫描版 PDF 中的文本
+- 支持图片文件：PNG、JPG、JPEG、GIF、BMP、TIFF
+- 中英文混合识别
+- PDF 嵌入图片自动提取和识别
+- 智能缓存避免重复处理
+- 并行处理提升效率
+
+**编程方式使用**:
+```python
+from document_loader import DocumentLoader
+
+# 创建启用 OCR 的加载器
+loader = DocumentLoader(enable_ocr=True)
+
+# 加载扫描版 PDF
+documents = loader.load_file('扫描论文.pdf')
+
+# 加载图片文件
+documents = loader.load_file('截图.png')
+
+# 文档会自动包含 OCR 识别的文本
+for doc in documents:
+    print(f"内容: {doc.text}")
+    print(f"OCR 置信度: {doc.metadata.get('ocr_confidence')}")
+```
+
+**预期效果**:
+- 扫描版 PDF 可被检索和分析
+- 图片中的文本内容可被提取
+- 中英文混合内容准确识别
+- 处理结果可与其他文档一起检索
+
+**OCR 高级用法**:
+```python
+from ocr_processor import PaddleOCREngine, PDFImageExtractor
+
+# 直接使用 OCR 引擎
+ocr = PaddleOCREngine({'use_gpu': False, 'lang': 'ch'})
+results = ocr.recognize_image('image.png')
+
+# 提取 PDF 中的图片
+extractor = PDFImageExtractor()
+images = extractor.extract_images('document.pdf')
+for img in images:
+    print(f"第 {img.page_num} 页，图片 {img.image_index}")
+```
+
+---
+
 ## 使用建议
 
 1. **明确目标**: 在每个场景开始前，明确你要达到的目标

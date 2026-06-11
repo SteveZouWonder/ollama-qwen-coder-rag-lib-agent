@@ -71,6 +71,32 @@ pip install -r requirements.txt
 pip install -r requirements_alternative.txt
 ```
 
+### 步骤5.5：安装OCR功能依赖（可选）
+
+如果需要使用 OCR 图像识别功能，请安装以下依赖：
+
+```bash
+# OCR 核心依赖
+pip install paddlepaddle==2.5.2
+pip install paddleocr==2.7.0.3
+pip install pytesseract==0.3.10
+pip install pymupdf==1.23.8
+pip install opencv-python==4.8.1.78
+pip install pillow==10.1.0
+
+# 安装 Tesseract（系统级）
+# macOS
+brew install tesseract tesseract-lang
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
+
+# Windows
+# 下载安装程序：https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+> **注意**: OCR 功能是可选的，如果不安装这些依赖，系统会自动禁用 OCR 相关功能，不影响其他功能的使用。
+
 ### 步骤6：验证安装
 
 ```bash

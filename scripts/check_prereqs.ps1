@@ -334,6 +334,81 @@ function Test-Dependencies {
     }
 }
 
+# 检查OCR功能依赖（可选）
+function Test-OCRDependencies {
+    if (-not (Test-Path "requirements.txt")) {
+        Print-Result 1 "requirements.txt 文件不存在"
+        return $false
+    }
+    
+    # 检查虚拟环境
+    if ($env:VIRTUAL_ENV) {
+        $PYTHON_CMD = "python"
+    } else {
+        $PYTHON_CMD = "python3"
+    }
+    
+    # 检查pip命令
+    if (Get-Command pip -ErrorAction SilentlyContinue) {
+        $PIP_CMD = "pip"
+    } elseif (Get-Command pip3 -ErrorAction SilentlyContinue) {
+        $PIP_CMD = "pip3"
+    } else {
+        Print-Result 1 "pip未安装"
+        return $false
+    }
+    
+    Write-Host "  OCR 功能是可选的，用于扫描版PDF和图片文档识别"
+    Write-Host "  如需启用OCR功能，请安装以下依赖："
+    
+    # 检查OCR Python包
+    $ocrDeps = @(
+        @{name="paddleocr"; display="paddleocr"; hint="pip install paddleocr"},
+        @{name="pytesseract"; display="pytesseract"; hint="pip install pytesseract"},
+        @{name="fitz"; display="pymupdf"; hint="pip install pymupdf"},
+        @{name="cv2"; display="opencv-python"; hint="pip install opencv-python"}
+    )
+    
+    $ocrModuleFailures = 0
+    foreach ($dep in $ocrDeps) {
+        try {
+            $output = python -c "import $($dep.name)" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Print-Result 0 "$($dep.display) 已安装"
+            } else {
+                Print-Result 2 "$($dep.display) 未安装 (OCR功能可选)"
+                Write-Host "  解决方案: $($dep.hint)"
+                $ocrModuleFailures++
+            }
+        } catch {
+            Print-Result 2 "$($dep.display) 未安装 (OCR功能可选)"
+            Write-Host "  解决方案: $($dep.hint)"
+            $ocrModuleFailures++
+        }
+    }
+    
+    # 检查Tesseract系统级依赖
+    if (Get-Command tesseract -ErrorAction SilentlyContinue) {
+        $tesseractVersion = tesseract --version 2>&1 | Select-Object -First 1
+        Print-Result 0 "tesseract 已安装: $tesseractVersion"
+    } else {
+        Print-Result 2 "tesseract 未安装 (OCR功能可选)"
+        Write-Host "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki"
+    }
+    
+    # 总结OCR依赖状态
+    if ($ocrModuleFailures -eq 0) {
+        Print-Result 0 "OCR Python依赖完整"
+        Write-Host "  OCR 功能已可用：扫描版PDF和图片识别"
+    } else {
+        Print-Result 2 "OCR Python依赖不完整 (功能可选)"
+        Write-Host "  安装OCR依赖: pip install paddleocr pytesseract pymupdf opencv-python pillow"
+        Write-Host "  不影响核心功能使用，只在需要OCR时安装"
+    }
+    
+    return $true
+}
+
 # 检查项目文件
 function Test-ProjectFiles {
     $requiredFiles = @(
@@ -417,6 +492,10 @@ function Main {
     # Python依赖检查
     Print-Header "Python 依赖检查"
     Test-Dependencies
+    
+    # OCR功能检查（可选）
+    Print-Header "OCR 功能检查（可选）"
+    Test-OCRDependencies
     
     # 项目文件检查
     Print-Header "项目文件检查"

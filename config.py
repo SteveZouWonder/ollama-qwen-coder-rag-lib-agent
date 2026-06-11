@@ -67,6 +67,35 @@ DANGEROUS_PATTERNS = (
 FIRST_RUN_MARKER = os.path.expanduser("~/.code_agent_first_run")
 
 
+# ==================== OCR 配置 ====================
+OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() == "true"
+OCR_ENGINE = os.getenv("OCR_ENGINE", "paddle")  # paddle | tesseract | hybrid
+OCR_CACHE_DIR = INDEX_DIR / "ocr_cache"
+OCR_PARALLEL_WORKERS = int(os.getenv("OCR_PARALLEL_WORKERS", "2"))
+OCR_TIMEOUT = int(os.getenv("OCR_TIMEOUT", "60"))
+OCR_CACHE_TTL_DAYS = int(os.getenv("OCR_CACHE_TTL_DAYS", "30"))
+
+# PaddleOCR 特定配置
+PADDLE_USE_GPU = os.getenv("PADDLE_USE_GPU", "false").lower() == "true"
+PADDLE_LANG = os.getenv("PADDLE_LANG", "ch")  # ch | en | jk
+PADDLE_USE_ANGLE_CLS = os.getenv("PADDLE_USE_ANGLE_CLS", "true").lower() == "true"
+
+# Tesseract 特定配置
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/usr/local/bin/tesseract")
+TESSERACT_LANG = os.getenv("TESSERACT_LANG", "chi_sim+eng")
+
+# 图像预处理配置
+OCR_PREPROCESS = os.getenv("OCR_PREPROCESS", "true").lower() == "true"
+OCR_DENOISE = os.getenv("OCR_DENOISE", "true").lower() == "true"
+OCR_BINARIZE = os.getenv("OCR_BINARIZE", "true").lower() == "true"
+OCR_DESKEW = os.getenv("OCR_DESKEW", "true").lower() == "true"
+OCR_ENHANCE_CONTRAST = os.getenv("OCR_ENHANCE_CONTRAST", "true").lower() == "true"
+
+# PDF 图片提取配置
+PDF_EXTRACT_IMAGES = os.getenv("PDF_EXTRACT_IMAGES", "true").lower() == "true"
+PDF_MIN_IMAGE_SIZE = tuple(map(int, os.getenv("PDF_MIN_IMAGE_SIZE", "50,50").split(",")))
+
+
 # ==================== 兼容 Config dataclass（供 query_interface / react_engine 引用）====================
 @dataclass
 class Config:
@@ -83,3 +112,23 @@ class Config:
     READONLY_COMMANDS: tuple = READONLY_COMMANDS
     DANGEROUS_PATTERNS: tuple = DANGEROUS_PATTERNS
     FIRST_RUN_MARKER: str = FIRST_RUN_MARKER
+    
+    # OCR 配置
+    OCR_ENABLED: bool = OCR_ENABLED
+    OCR_ENGINE: str = OCR_ENGINE
+    OCR_CACHE_DIR: Path = OCR_CACHE_DIR
+    OCR_PARALLEL_WORKERS: int = OCR_PARALLEL_WORKERS
+    OCR_TIMEOUT: int = OCR_TIMEOUT
+    OCR_CACHE_TTL_DAYS: int = OCR_CACHE_TTL_DAYS
+    PADDLE_USE_GPU: bool = PADDLE_USE_GPU
+    PADDLE_LANG: str = PADDLE_LANG
+    PADDLE_USE_ANGLE_CLS: bool = PADDLE_USE_ANGLE_CLS
+    TESSERACT_PATH: str = TESSERACT_PATH
+    TESSERACT_LANG: str = TESSERACT_LANG
+    OCR_PREPROCESS: bool = OCR_PREPROCESS
+    OCR_DENOISE: bool = OCR_DENOISE
+    OCR_BINARIZE: bool = OCR_BINARIZE
+    OCR_DESKEW: bool = OCR_DESKEW
+    OCR_ENHANCE_CONTRAST: bool = OCR_ENHANCE_CONTRAST
+    PDF_EXTRACT_IMAGES: bool = PDF_EXTRACT_IMAGES
+    PDF_MIN_IMAGE_SIZE: tuple = PDF_MIN_IMAGE_SIZE
