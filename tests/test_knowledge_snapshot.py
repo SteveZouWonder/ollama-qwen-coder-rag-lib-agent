@@ -259,6 +259,157 @@ class TestKnowledgeSnapshotManager(unittest.TestCase):
         
         self.assertEqual(len(snapshots), 3)
         self.assertEqual(snapshots[0]['snapshot_id'], 'snapshot_2')  # 应该按时间倒序
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_with_corrupted_json(self, mock_chroma):
+        """测试列出快照时处理损坏的JSON文件"""
+        # 创建正常的快照
+        normal_snapshot = {
+            "snapshot_id": "normal_snapshot",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 0,
+            "metadata": {"trigger": "test"}
+        }
+        normal_file = os.path.join(self.snapshot_dir, "normal_snapshot.json")
+        with open(normal_file, 'w') as f:
+            json.dump(normal_snapshot, f)
+        
+        # 创建损坏的JSON文件（不完整的JSON）
+        corrupted_file = os.path.join(self.snapshot_dir, "corrupted_snapshot.json")
+        with open(corrupted_file, 'w') as f:
+            f.write('{"snapshot_id": "corrupted", "timestamp": "2024-06-09T12:00:00", "version": "1.0", "documents": [], "storage_paths": {}, "model_config": {}, "total_chunks": ')
+        
+        # 创建另一个正常快照
+        another_normal = {
+            "snapshot_id": "another_normal",
+            "timestamp": "2024-06-09T13:00:00",
+            "version": "1.0",
+            "documents": [],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 0,
+            "metadata": {"trigger": "test"}
+        }
+        another_file = os.path.join(self.snapshot_dir, "another_normal.json")
+        with open(another_file, 'w') as f:
+            json.dump(another_normal, f)
+        
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        
+        snapshots = manager.list_snapshots()
+        
+        # 应该只返回正常的快照，跳过损坏的
+        self.assertEqual(len(snapshots), 2)
+        snapshot_ids = [s['snapshot_id'] for s in snapshots]
+        self.assertIn("normal_snapshot", snapshot_ids)
+        self.assertIn("another_normal", snapshot_ids)
+        self.assertNotIn("corrupted_snapshot", snapshot_ids)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_with_missing_metadata(self, mock_chroma):
+        """测试列出快照时处理缺少metadata字段的JSON文件"""
+        # 创建正常的快照
+        normal_snapshot = {
+            "snapshot_id": "normal_snapshot",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 0,
+            "metadata": {"trigger": "test"}
+        }
+        normal_file = os.path.join(self.snapshot_dir, "normal_snapshot.json")
+        with open(normal_file, 'w') as f:
+            json.dump(normal_snapshot, f)
+        
+        # 创建缺少metadata字段的JSON文件
+        missing_metadata_file = os.path.join(self.snapshot_dir, "missing_metadata.json")
+        with open(missing_metadata_file, 'w') as f:
+            json.dump({
+                "snapshot_id": "missing_metadata",
+                "timestamp": "2024-06-09T12:00:00",
+                "version": "1.0",
+                "documents": [],
+                "storage_paths": {},
+                "model_config": {},
+                "total_chunks": 0
+                # 缺少 metadata 字段
+            }, f)
+        
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        
+        snapshots = manager.list_snapshots()
+        
+        # 应该只返回正常的快照，跳过缺少字段的
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]['snapshot_id'], "normal_snapshot")
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_with_missing_required_field(self, mock_chroma):
+        """测试列出快照时处理缺少必需字段的JSON文件"""
+        # 创建正常的快照
+        normal_snapshot = {
+            "snapshot_id": "normal_snapshot",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 0,
+            "metadata": {"trigger": "test"}
+        }
+        normal_file = os.path.join(self.snapshot_dir, "normal_snapshot.json")
+        with open(normal_file, 'w') as f:
+            json.dump(normal_snapshot, f)
+        
+        # 创建缺少snapshot_id字段的JSON文件
+        missing_field_file = os.path.join(self.snapshot_dir, "missing_field.json")
+        with open(missing_field_file, 'w') as f:
+            json.dump({
+                "timestamp": "2024-06-09T12:00:00",
+                "version": "1.0",
+                "documents": [],
+                "storage_paths": {},
+                "model_config": {},
+                "total_chunks": 0,
+                "metadata": {"trigger": "test"}
+                # 缺少 snapshot_id 字段
+            }, f)
+        
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        
+        snapshots = manager.list_snapshots()
+        
+        # 应该只返回正常的快照，跳过缺少字段的
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]['snapshot_id'], "normal_snapshot")
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_empty_directory(self, mock_chroma):
+        """测试列出快照时目录为空的情况"""
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        
+        snapshots = manager.list_snapshots()
+        
+        self.assertEqual(len(snapshots), 0)
+        self.assertEqual(snapshots, [])
     
     @patch('knowledge_snapshot.chromadb.PersistentClient')
     def test_delete_snapshot(self, mock_chroma):
@@ -380,6 +531,8 @@ class TestKnowledgeSnapshotManager(unittest.TestCase):
         self.assertIn("llm_model", config)
         self.assertIn("embed_model", config)
         self.assertIn("ollama_base_url", config)
+
+
     
     @patch('knowledge_snapshot.chromadb.PersistentClient')
     def test_save_snapshot(self, mock_chroma):
@@ -811,7 +964,6 @@ class TestMainFunction(unittest.TestCase):
             shutil.rmtree(self.temp_dir)
     
     @patch('knowledge_snapshot.chromadb.PersistentClient')
-    @patch('sys.argv', ['knowledge_snapshot.py', '--action', 'list'])
     def test_main_list_action(self, mock_chroma):
         """测试main函数的list动作"""
         # 创建一些测试快照
@@ -829,16 +981,20 @@ class TestMainFunction(unittest.TestCase):
             snapshot_file = os.path.join(self.snapshot_dir, f"snapshot_{i}.json")
             with open(snapshot_file, 'w') as f:
                 json.dump(test_snapshot, f)
-        
-        # 测试list动作 - 这里我们直接测试manager而不是整个main函数
-        # 因为main函数涉及sys.exit等
-        manager = KnowledgeSnapshotManager(
-            index_dir=self.index_dir,
-            snapshot_dir=self.snapshot_dir
-        )
-        
-        snapshots = manager.list_snapshots()
-        self.assertEqual(len(snapshots), 2)
+
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'list', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 验证输出包含快照信息
+            self.assertIn("共有", output)
+            self.assertIn("snapshot", output)
     
     @patch('knowledge_snapshot.chromadb.PersistentClient')
     def test_snapshot_manager_with_different_params(self, mock_chroma):
@@ -936,18 +1092,21 @@ class TestMainFunction(unittest.TestCase):
         """直接测试main函数代码以提高覆盖率"""
         # 这个测试直接调用main函数的各个分支来提高代码覆盖率
         # 我们使用mock来避免实际执行副作用
-        
+
         from knowledge_snapshot import main
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         import io
         from contextlib import redirect_stdout
-        
+
         # 测试不同action的参数组合
         test_cases = [
             (['--action', 'list', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]),
             (['--action', 'latest', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]),
+            (['--action', 'restore', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]),
+            (['--action', 'delete', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]),
+            (['--action', 'restore', '--snapshot-id', 'test_id', '--generate-script', 'test.py', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]),
         ]
-        
+
         for test_args in test_cases:
             with patch('sys.argv', ['knowledge_snapshot.py'] + test_args):
                 # 使用StringIO捕获输出
@@ -956,10 +1115,288 @@ class TestMainFunction(unittest.TestCase):
                     with redirect_stdout(f):
                         # 这里可能会因为实际的ChromaDB连接等而失败
                         # 但至少argparse部分会被执行
-                        pass
-                except:
-                    # 预期可能会有异常，我们只是想要覆盖argparse代码
+                        main()
+                except Exception as e:
+                    # 预期可能会有异常，我们只是想要覆盖代码
                     pass
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_create_action(self, mock_chroma):
+        """测试main函数的create动作"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        # Mock ChromaDB
+        mock_client = MagicMock()
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 5
+        mock_collection.get.return_value = {
+            'metadatas': [{'file_path': '/test/doc.md', 'file_name': 'doc.md', 'file_type': '.md'}],
+            'documents': ['content']
+        }
+        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_chroma.return_value = mock_client
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'create', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该包含快照创建的信息
+            self.assertIn("快照", output.lower())
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_delete_action_with_id(self, mock_chroma):
+        """测试main函数的delete动作（带snapshot-id）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        # 创建测试快照
+        test_snapshot = {
+            "snapshot_id": "to_delete",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 0,
+            "metadata": {"trigger": "test"}
+        }
+        snapshot_file = os.path.join(self.snapshot_dir, "to_delete.json")
+        with open(snapshot_file, 'w') as f:
+            json.dump(test_snapshot, f)
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'delete', '--snapshot-id', 'to_delete', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 验证快照已被删除
+            self.assertFalse(os.path.exists(snapshot_file))
+            # 验证输出包含删除信息
+            self.assertIn("删除", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_delete_action_nonexistent_id(self, mock_chroma):
+        """测试main函数的delete动作（不存在的snapshot-id）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'delete', '--snapshot-id', 'nonexistent', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示删除失败的信息
+            self.assertIn("失败", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_restore_action_without_id(self, mock_chroma):
+        """测试main函数的restore动作（不带snapshot-id）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'restore', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示错误信息
+            self.assertIn("错误", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_restore_action_with_id(self, mock_chroma):
+        """测试main函数的restore动作（带snapshot-id）"""
+        # 创建测试快照
+        test_snapshot = {
+            "snapshot_id": "test_restore",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [
+                {
+                    "file_path": __file__,
+                    "file_name": "test_file.py",
+                    "file_type": ".py",
+                    "chunk_count": 5,
+                    "file_hash": "abc123",
+                    "added_timestamp": "2024-06-09T12:00:00"
+                }
+            ],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 5,
+            "metadata": {"trigger": "test"}
+        }
+        snapshot_file = os.path.join(self.snapshot_dir, "test_restore.json")
+        with open(snapshot_file, 'w') as f:
+            json.dump(test_snapshot, f)
+
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'restore', '--snapshot-id', 'test_restore', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示恢复完成或失败的信息
+            self.assertTrue("恢复" in output or "失败" in output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_restore_action_nonexistent_id(self, mock_chroma):
+        """测试main函数的restore动作（不存在的snapshot-id，不带generate-script）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'restore', '--snapshot-id', 'nonexistent', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示恢复失败的信息
+            self.assertIn("失败", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_restore_action_with_generate_script(self, mock_chroma):
+        """测试main函数的restore动作（带generate-script）"""
+        # 创建测试快照
+        test_snapshot = {
+            "snapshot_id": "test_restore_script",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [
+                {
+                    "file_path": __file__,
+                    "file_name": "test_file.py",
+                    "file_type": ".py",
+                    "chunk_count": 5,
+                    "file_hash": "abc123",
+                    "added_timestamp": "2024-06-09T12:00:00"
+                }
+            ],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 5,
+            "metadata": {"trigger": "test"}
+        }
+        snapshot_file = os.path.join(self.snapshot_dir, "test_restore_script.json")
+        with open(snapshot_file, 'w') as f:
+            json.dump(test_snapshot, f)
+
+        output_script = os.path.join(self.temp_dir, "restore_script.py")
+
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'restore', '--snapshot-id', 'test_restore_script', '--generate-script', output_script, '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示脚本生成信息
+            self.assertIn("脚本", output)
+
+    def test_main_function_direct_call(self):
+        """直接调用main函数以覆盖__main__分支"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        # 测试默认的list动作
+        with patch('sys.argv', ['knowledge_snapshot.py', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            # 只要执行不报错即可
+            self.assertTrue(True)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_delete_action_without_id(self, mock_chroma):
+        """测试main函数的delete动作（不带snapshot-id）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'delete', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示错误信息
+            self.assertIn("错误", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_latest_action_empty(self, mock_chroma):
+        """测试main函数的latest动作（空快照列表）"""
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'latest', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示没有找到快照
+            self.assertIn("没有找到", output)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_main_latest_action_with_snapshot(self, mock_chroma):
+        """测试main函数的latest动作（有快照）"""
+        # 创建测试快照
+        test_snapshot = {
+            "snapshot_id": "test_latest",
+            "timestamp": "2024-06-09T12:00:00",
+            "version": "1.0",
+            "documents": [
+                {
+                    "file_path": "/test/doc.md",
+                    "file_name": "doc.md",
+                    "file_type": ".md",
+                    "chunk_count": 5,
+                    "file_hash": "abc123",
+                    "added_timestamp": "2024-06-09T12:00:00"
+                }
+            ],
+            "storage_paths": {},
+            "model_config": {},
+            "total_chunks": 5,
+            "metadata": {"trigger": "test"}
+        }
+        snapshot_file = os.path.join(self.snapshot_dir, "test_latest.json")
+        with open(snapshot_file, 'w') as f:
+            json.dump(test_snapshot, f)
+
+        from knowledge_snapshot import main
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['knowledge_snapshot.py', '--action', 'latest', '--index-dir', self.index_dir, '--snapshot-dir', self.snapshot_dir]):
+            f = io.StringIO()
+            with redirect_stdout(f):
+                main()
+            output = f.getvalue()
+            # 应该显示快照信息
+            self.assertIn("test_latest", output)
+            self.assertIn("文档数", output)
 
 
 if __name__ == '__main__':

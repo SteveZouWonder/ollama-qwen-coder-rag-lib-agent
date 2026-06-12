@@ -176,17 +176,23 @@ class KnowledgeSnapshotManager:
         snapshots = []
         
         for snapshot_file in sorted(self.snapshot_dir.glob("*.json"), reverse=True):
-            with open(snapshot_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            snapshots.append({
-                "snapshot_id": data['snapshot_id'],
-                "timestamp": data['timestamp'],
-                "document_count": len(data['documents']),
-                "total_chunks": data['total_chunks'],
-                "trigger": data['metadata'].get('trigger', 'unknown'),
-                "file": str(snapshot_file)
-            })
+            try:
+                with open(snapshot_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                snapshots.append({
+                    "snapshot_id": data['snapshot_id'],
+                    "timestamp": data['timestamp'],
+                    "document_count": len(data['documents']),
+                    "total_chunks": data['total_chunks'],
+                    "trigger": data['metadata'].get('trigger', 'unknown'),
+                    "file": str(snapshot_file)
+                })
+            except (json.JSONDecodeError, KeyError) as e:
+                self.logger.warning(f"跳过损坏的快照文件 {snapshot_file.name}: {e}")
+                # 可选：删除损坏的文件
+                # snapshot_file.unlink()
+                continue
         
         return snapshots
     
