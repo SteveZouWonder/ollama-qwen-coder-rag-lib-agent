@@ -58,6 +58,20 @@ check_command() {
 
 # 检查Python版本
 check_python() {
+    if check_command python3.13; then
+        python3.13 --version &> /dev/null
+        if [ $? -eq 0 ]; then
+            version=$(python3.13 --version 2>&1 | awk '{print $2}')
+            print_result 0 "Python 版本: $version (推荐 3.13.13)"
+            return 0
+        else
+            print_result 1 "Python3.13 不可用"
+            PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
+            return 1
+        fi
+    fi
+    
+    # 检查其他 Python 版本作为备选
     if check_command python3; then
         python3 --version &> /dev/null
         if [ $? -eq 0 ]; then
@@ -65,14 +79,11 @@ check_python() {
             major=$(echo $version | cut -d. -f1)
             minor=$(echo $version | cut -d. -f2)
             
-            if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 10 ]); then
-                print_result 0 "Python 版本: $version"
+            if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 13 ]); then
+                print_result 0 "Python 版本: $version (推荐 3.13+)"
                 
-                # 检查是否为 Python 3.13+ (推荐)
-                if [ $major -eq 3 ] && [ $minor -ge 13 ]; then
-                    print_result 0 "使用 Python 3.13+ (推荐)"
                 # 检查是否为 Homebrew Python (macOS 用户推荐)
-                elif [[ "$OSTYPE" == "darwin"* ]]; then
+                if [[ "$OSTYPE" == "darwin"* ]]; then
                     python_path=$(which python3 2>/dev/null)
                     if [[ "$python_path" == *"homebrew"* ]]; then
                         print_result 0 "使用 Homebrew Python (推荐)"
@@ -84,12 +95,13 @@ check_python() {
                 fi
                 return 0
             else
-                print_result 1 "Python 版本过低: $version (需要 3.10+)"
+                print_result 1 "Python 版本过低: $version (需要 3.13+)"
                 PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
+                echo "  建议: brew install python@3.13 或使用 pyenv 安装 Python 3.13.13"
                 return 1
             fi
         else
-            print_result 1 "Python 不可用"
+            print_result 1 "Python3 不可用"
             PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
             return 1
         fi
@@ -386,15 +398,41 @@ check_ocr_dependencies() {
     fi
     
     echo "  OCR 功能是可选的，用于扫描版PDF和图片文档识别"
+    echo "  当前使用 Python 3.13，推荐使用 Tesseract OCR（兼容性更好）"
     echo "  如需启用OCR功能，请安装以下依赖："
     
     # 检查OCR Python包
     ocr_module_failures=0
     
-    check_module "paddleocr" "paddleocr" || ocr_module_failures=$((ocr_module_failures + 1))
+    # 检查 Tesseract OCR 相关包（Python 3.13 兼容）
     check_module "pytesseract" "pytesseract" || ocr_module_failures=$((ocr_module_failures + 1))
     check_module "fitz" "pymupdf" || ocr_module_failures=$((ocr_module_failures + 1))
     check_module "cv2" "opencv-python" || ocr_module_failures=$((ocr_module_failures + 1))
+    
+    # 检查数据处理依赖（现在在 requirements.txt 中）
+    check_module "numpy" "numpy" || ocr_module_failures=$((ocr_module_failures + 1))
+    check_module "pandas" "pandas" || ocr_module_failures=$((ocr_module_failures + 1))
+    
+    # 检查 opencv-python 兼容性
+    opencv_check_result=$($PYTHON_CMD -c "import cv2; print(cv2.__version__)" 2>&1)
+    if [ $? -eq 0 ]; then
+        print_result 0 "opencv-python 已安装 (版本: $opencv_check_result)"
+        
+        # 检查 opencv-python 与 NumPy 的兼容性
+        numpy_version=$($PYTHON_CMD -c "import numpy; print(numpy.__version__)" 2>&1)
+        # 检查 numpy 版本是否 >= 2.0
+        if [[ "$numpy_version" == 2.* ]]; then
+            print_result 0 "opencv-python 与 NumPy 2.x 兼容"
+        else
+            print_result 2 "opencv-python 可能与 NumPy $numpy_version 不兼容"
+            echo "  建议: pip install --upgrade opencv-python>=4.13.0"
+        fi
+    else
+        print_result 1 "opencv-python 未安装或与 NumPy 2.x 不兼容"
+        echo "  解决方案: pip install --upgrade opencv-python>=4.13.0"
+        echo "  或者: pip install opencv-python-headless (无GUI版本)"
+        ocr_module_failures=$((ocr_module_failures + 1))
+    fi
     
     # 检查Tesseract系统级依赖
     if command -v tesseract &> /dev/null; then
@@ -405,17 +443,20 @@ check_ocr_dependencies() {
         echo "  macOS 安装: brew install tesseract tesseract-lang"
         echo "  Linux 安装: sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim"
         echo "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki"
+        ocr_module_failures=$((ocr_module_failures + 1))
     fi
     
     # 总结OCR依赖状态
     if [ $ocr_module_failures -eq 0 ]; then
-        print_result 0 "OCR Python依赖完整"
+        print_result 0 "OCR Python依赖完整 (Tesseract OCR + NumPy 2.x 兼容)"
         echo "  OCR 功能已可用：扫描版PDF和图片识别"
     else
         print_result 2 "OCR Python依赖不完整 (功能可选)"
-        echo "  安装OCR依赖: pip install paddlepaddle paddleocr pytesseract pymupdf opencv-python pillow"
+        echo "  安装OCR依赖: pip install pytesseract pymupdf opencv-python>=4.13.0"
         echo "  或运行主安装脚本: ./scripts/install_deps.sh (会提示是否安装OCR依赖)"
         echo "  不影响核心功能使用，只在需要OCR时安装"
+        echo "  注意: opencv-python 需要 >=4.13.0 版本以兼容 NumPy 2.x"
+        echo "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
     fi
 }
 
@@ -563,9 +604,8 @@ main() {
             echo -e "${YELLOW}Python依赖相关问题 ($DEPENDENCY_ISSUES 个):${NC}"
             echo "  1. 自动安装: ./scripts/install_deps.sh  # 推荐"
             echo "  2. 手动安装: pip install -r requirements.txt"
-            echo "  3. 或使用备用配置: pip install -r requirements_alternative.txt"
-            echo "     注意: 备用配置不包含桌面应用等新功能"
-            echo "  4. 检查虚拟环境: 确保在虚拟环境中运行"
+            echo "  3. 检查虚拟环境: 确保在虚拟环境中运行"
+            echo "  4. 确保 Python 版本为 3.13+ (推荐 Python 3.13.13)"
             echo ""
         fi
         

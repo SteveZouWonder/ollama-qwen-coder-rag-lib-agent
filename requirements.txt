@@ -45,9 +45,10 @@ pillow
 # OCR 功能依赖（可选）
 # 注意：由于 Python 3.13 兼容性问题，推荐使用 Tesseract OCR
 # PaddleOCR 需要 paddlex，而 paddlex 依赖老版本 pandas（<=1.5.3），不支持 Python 3.13
+# opencv-python 需要与 NumPy 2.x 兼容的版本（4.13.0+）
 # 如需使用 PaddleOCR，请降级到 Python 3.9 或更低版本
 # 推荐安装命令（Python 3.13 兼容）：
-#   pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80
+#   pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0
 # 
 # PaddleOCR 用户（需要 Python 3.9 或更低）：
 #   pip install paddlepaddle==2.6.2 paddleocr==2.7.0.3 pytesseract==0.3.10

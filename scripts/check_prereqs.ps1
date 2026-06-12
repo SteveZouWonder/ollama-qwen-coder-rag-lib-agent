@@ -59,25 +59,42 @@ function Test-Command {
 
 # 检查Python版本
 function Test-PythonVersion {
+    # 优先检查 Python 3.13
+    if (Test-Command python3.13) {
+        try {
+            $version = python3.13 --version 2>&1
+            Print-Result 0 "Python 版本: $version (推荐 3.13.13)"
+            return $true
+        } catch {
+            Print-Result 1 "Python3.13 不可用"
+            $script:PYTHON_ISSUES++
+            return $false
+        }
+    }
+    
+    # 检查其他 Python 版本作为备选
     if (Test-Command python) {
         try {
             $version = python --version 2>&1
             $versionNumber = $version -replace 'Python ', ''
             $major, $minor = $versionNumber.Split('.')[0..1]
             
-            if ([int]$major -gt 3 -or ([int]$major -eq 3 -and [int]$minor -ge 8)) {
-                Print-Result 0 "Python 版本: $version"
+            if ([int]$major -gt 3 -or ([int]$major -eq 3 -and [int]$minor -ge 13)) {
+                Print-Result 0 "Python 版本: $version (推荐 3.13+)"
                 return $true
             } else {
-                Print-Result 1 "Python 版本过低: $version (需要 3.8+)"
+                Print-Result 1 "Python 版本过低: $version (需要 3.13+)"
+                $script:PYTHON_ISSUES++
                 return $false
             }
         } catch {
             Print-Result 1 "Python 不可用"
+            $script:PYTHON_ISSUES++
             return $false
         }
     } else {
         Print-Result 1 "Python 未安装"
+        $script:PYTHON_ISSUES++
         return $false
     }
 }

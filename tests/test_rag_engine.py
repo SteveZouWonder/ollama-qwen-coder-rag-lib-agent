@@ -222,6 +222,162 @@ class TestRAGEngineQueryWithSources:
         result = engine.query_with_sources("test")
         assert result["sources"] == []
 
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_with_progress_callback(self, mock_chroma, mock_embed, mock_llm):
+        """测试带进度回调的查询"""
+        
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        engine = RAGEngine()
+        mock_response = MagicMock()
+        mock_node = MagicMock()
+        mock_node.node.get_content.return_value = "片段内容"
+        mock_node.node.metadata = {"file_name": "test.pdf", "file_path": "/tmp/test.pdf"}
+        mock_node.score = 0.85
+        mock_response.source_nodes = [mock_node]
+        mock_response.__str__ = lambda self: "回答内容"
+
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = mock_response
+
+        # 创建进度回调 mock
+        progress_callback = MagicMock()
+        
+        result = engine.query_with_sources("test", progress_callback=progress_callback)
+        
+        # 验证结果
+        assert result["answer"] == "回答内容"
+        assert len(result["sources"]) == 1
+        
+        # 验证进度回调被调用
+        # embedding + retrieving + scoring (1个节点) + generating = 4次
+        assert progress_callback.call_count == 4
+        
+        # 验证回调参数
+        calls = progress_callback.call_args_list
+        assert calls[0][0][0]["phase"] == "embedding"
+        assert calls[1][0][0]["phase"] == "retrieving"
+        assert calls[2][0][0]["phase"] == "scoring"
+        assert calls[3][0][0]["phase"] == "generating"
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_progress_callback_scoring(self, mock_chroma, mock_embed, mock_llm):
+        """测试进度回调的评分阶段"""
+        
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        engine = RAGEngine()
+        mock_response = MagicMock()
+        # 创建多个节点
+        mock_nodes = []
+        for i in range(3):
+            mock_node = MagicMock()
+            mock_node.node.get_content.return_value = f"片段内容{i}"
+            mock_node.node.metadata = {"file_name": f"test{i}.pdf", "file_path": f"/tmp/test{i}.pdf"}
+            mock_node.score = 0.8 + i * 0.05
+            mock_nodes.append(mock_node)
+        
+        mock_response.source_nodes = mock_nodes
+        mock_response.__str__ = lambda self: "回答内容"
+
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = mock_response
+
+        # 创建进度回调 mock
+        progress_callback = MagicMock()
+        
+        result = engine.query_with_sources("test", progress_callback=progress_callback)
+        
+        # 验证结果
+        assert result["answer"] == "回答内容"
+        assert len(result["sources"]) == 3
+        
+        # 验证进度回调被调用
+        # embedding + retrieving + 3次scoring + generating = 6次
+        assert progress_callback.call_count == 6
+        
+        # 验证评分回调
+        calls = progress_callback.call_args_list
+        scoring_calls = [c for c in calls if c[0][0].get("phase") == "scoring"]
+        assert len(scoring_calls) == 3
+        assert scoring_calls[0][0][0]["current"] == 1
+        assert scoring_calls[0][0][0]["total"] == 3
+        assert scoring_calls[1][0][0]["current"] == 2
+        assert scoring_calls[2][0][0]["current"] == 3
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_without_progress_callback(self, mock_chroma, mock_embed, mock_llm):
+        """测试不使用进度回调的查询"""
+        
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        engine = RAGEngine()
+        mock_response = MagicMock()
+        mock_node = MagicMock()
+        mock_node.node.get_content.return_value = "片段内容"
+        mock_node.node.metadata = {"file_name": "test.pdf", "file_path": "/tmp/test.pdf"}
+        mock_node.score = 0.85
+        mock_response.source_nodes = [mock_node]
+        mock_response.__str__ = lambda self: "回答内容"
+
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = mock_response
+
+        # 不传入进度回调
+        result = engine.query_with_sources("test")
+        
+        # 验证结果正常返回
+        assert result["answer"] == "回答内容"
+        assert len(result["sources"]) == 1
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_progress_callback_with_multiple_nodes(self, mock_chroma, mock_embed, mock_llm):
+        """测试进度回调处理多个文档节点"""
+        
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        engine = RAGEngine()
+        mock_response = MagicMock()
+        # 创建5个节点
+        mock_nodes = []
+        for i in range(5):
+            mock_node = MagicMock()
+            mock_node.node.get_content.return_value = f"片段内容{i}"
+            mock_node.node.metadata = {"file_name": f"test{i}.pdf", "file_path": f"/tmp/test{i}.pdf"}
+            mock_node.score = 0.7 + i * 0.04
+            mock_nodes.append(mock_node)
+        
+        mock_response.source_nodes = mock_nodes
+        mock_response.__str__ = lambda self: "回答内容"
+
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = mock_response
+
+        # 创建进度回调 mock
+        progress_callback = MagicMock()
+        
+        result = engine.query_with_sources("test", progress_callback=progress_callback)
+        
+        # 验证结果
+        assert result["answer"] == "回答内容"
+        assert len(result["sources"]) == 5
+        
+        # 验证进度回调被调用次数
+        # embedding + retrieving + 5次scoring + generating = 8次
+        assert progress_callback.call_count == 8
+
 
 class TestRAGEngineAgentTools:
     """测试 Agent 工具接口"""

@@ -202,3 +202,101 @@ class TestConfigEnvOverride:
         import config
         importlib.reload(config)
         assert config.AUTO_CONFIRM is False
+
+
+class TestProgressConfig:
+    """测试进度显示配置"""
+
+    def test_show_progress_default(self, clean_env):
+        from config import SHOW_PROGRESS
+        assert SHOW_PROGRESS is True
+
+    def test_progress_bar_style_default(self, clean_env):
+        from config import PROGRESS_BAR_STYLE
+        assert PROGRESS_BAR_STYLE == "rich"
+
+    def test_estimate_time_default(self, clean_env):
+        from config import ESTIMATE_TIME
+        assert ESTIMATE_TIME is True
+
+    def test_show_stats_default(self, clean_env):
+        from config import SHOW_STATS
+        assert SHOW_STATS is False
+
+    def test_verbose_mode_default(self, clean_env):
+        from config import VERBOSE_MODE
+        assert VERBOSE_MODE is False
+
+    def test_show_progress_override_true(self, monkeypatch, clean_env):
+        monkeypatch.setenv("SHOW_PROGRESS", "true")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.SHOW_PROGRESS is True
+
+    def test_show_progress_override_false(self, monkeypatch, clean_env):
+        monkeypatch.setenv("SHOW_PROGRESS", "false")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.SHOW_PROGRESS is False
+
+    def test_progress_bar_style_override_rich(self, monkeypatch, clean_env):
+        monkeypatch.setenv("PROGRESS_BAR_STYLE", "rich")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.PROGRESS_BAR_STYLE == "rich"
+
+    def test_progress_bar_style_override_simple(self, monkeypatch, clean_env):
+        monkeypatch.setenv("PROGRESS_BAR_STYLE", "simple")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.PROGRESS_BAR_STYLE == "simple"
+
+    def test_estimate_time_override_true(self, monkeypatch, clean_env):
+        monkeypatch.setenv("ESTIMATE_TIME", "true")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.ESTIMATE_TIME is True
+
+    def test_estimate_time_override_false(self, monkeypatch, clean_env):
+        monkeypatch.setenv("ESTIMATE_TIME", "false")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.ESTIMATE_TIME is False
+
+    def test_show_stats_override_true(self, monkeypatch, clean_env):
+        monkeypatch.setenv("SHOW_STATS", "true")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.SHOW_STATS is True
+
+    def test_verbose_mode_override_true(self, monkeypatch, clean_env):
+        monkeypatch.setenv("VERBOSE_MODE", "true")
+        import importlib
+        import config
+        importlib.reload(config)
+        assert config.VERBOSE_MODE is True
+
+    def test_config_dataclass_progress_config(self, clean_env):
+        # 由于环境变量的缓存特性，需要重新导入 Config
+        import importlib
+        import config
+        importlib.reload(config)
+        
+        # 确保 VERBOSE_MODE 被正确重置为默认值
+        if "VERBOSE_MODE" in os.environ:
+            del os.environ["VERBOSE_MODE"]
+        
+        importlib.reload(config)
+        
+        assert config.SHOW_PROGRESS is True
+        assert config.PROGRESS_BAR_STYLE == "rich"
+        assert config.ESTIMATE_TIME is True
+        assert config.SHOW_STATS is False
+        assert config.VERBOSE_MODE is False

@@ -69,7 +69,7 @@ FIRST_RUN_MARKER = os.path.expanduser("~/.code_agent_first_run")
 
 # ==================== OCR 配置 ====================
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() == "true"
-OCR_ENGINE = os.getenv("OCR_ENGINE", "paddle")  # paddle | tesseract | hybrid
+OCR_ENGINE = os.getenv("OCR_ENGINE", "tesseract")  # paddle | tesseract | hybrid (默认 tesseract 以兼容 Python 3.13)
 OCR_CACHE_DIR = INDEX_DIR / "ocr_cache"
 OCR_PARALLEL_WORKERS = int(os.getenv("OCR_PARALLEL_WORKERS", "2"))
 OCR_TIMEOUT = int(os.getenv("OCR_TIMEOUT", "60"))
@@ -81,7 +81,7 @@ PADDLE_LANG = os.getenv("PADDLE_LANG", "ch")  # ch | en | jk
 PADDLE_USE_ANGLE_CLS = os.getenv("PADDLE_USE_ANGLE_CLS", "true").lower() == "true"
 
 # Tesseract 特定配置
-TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/usr/local/bin/tesseract")
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/opt/homebrew/bin/tesseract")  # macOS Homebrew 路径
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "chi_sim+eng")
 
 # 图像预处理配置
@@ -94,6 +94,19 @@ OCR_ENHANCE_CONTRAST = os.getenv("OCR_ENHANCE_CONTRAST", "true").lower() == "tru
 # PDF 图片提取配置
 PDF_EXTRACT_IMAGES = os.getenv("PDF_EXTRACT_IMAGES", "true").lower() == "true"
 PDF_MIN_IMAGE_SIZE = tuple(map(int, os.getenv("PDF_MIN_IMAGE_SIZE", "50,50").split(",")))
+
+
+# ==================== 进度显示配置 ====================
+# 是否显示进度信息
+SHOW_PROGRESS = os.getenv("SHOW_PROGRESS", "true").lower() == "true"
+# 进度条样式 (rich | simple)
+PROGRESS_BAR_STYLE = os.getenv("PROGRESS_BAR_STYLE", "rich").lower()
+# 是否显示时间估算
+ESTIMATE_TIME = os.getenv("ESTIMATE_TIME", "true").lower() == "true"
+# 是否显示详细统计信息
+SHOW_STATS = os.getenv("SHOW_STATS", "false").lower() == "true"
+# 详细模式（显示技术参数）
+VERBOSE_MODE = os.getenv("VERBOSE_MODE", "false").lower() == "true"
 
 
 # ==================== 兼容 Config dataclass（供 query_interface / react_engine 引用）====================
@@ -132,3 +145,10 @@ class Config:
     OCR_ENHANCE_CONTRAST: bool = OCR_ENHANCE_CONTRAST
     PDF_EXTRACT_IMAGES: bool = PDF_EXTRACT_IMAGES
     PDF_MIN_IMAGE_SIZE: tuple = PDF_MIN_IMAGE_SIZE
+    
+    # 进度显示配置
+    SHOW_PROGRESS: bool = SHOW_PROGRESS
+    PROGRESS_BAR_STYLE: str = PROGRESS_BAR_STYLE
+    ESTIMATE_TIME: bool = ESTIMATE_TIME
+    SHOW_STATS: bool = SHOW_STATS
+    VERBOSE_MODE: bool = VERBOSE_MODE

@@ -100,37 +100,43 @@ class TesseractOCREngine(BaseOCREngine):
         
         # OCR 识别
         try:
-            # 获取文本和置信度
-            data = pytesseract.image_to_data(
+            # 使用 image_to_string 获得完整文本
+            full_text = pytesseract.image_to_string(
                 pil_image,
                 lang=self.lang,
-                config=self.tesseract_config,
-                output_type=pytesseract.outputdict.DICT
+                config=self.tesseract_config
             )
+            
+            # 如果识别结果太短，尝试不同语言配置
+            if len(full_text.strip()) < 10:
+                # 尝试只用英文
+                full_text = pytesseract.image_to_string(
+                    pil_image,
+                    lang='eng',
+                    config=self.tesseract_config
+                )
+                
+                # 如果还是很短，尝试不指定语言
+                if len(full_text.strip()) < 10:
+                    full_text = pytesseract.image_to_string(
+                        pil_image,
+                        config=self.tesseract_config
+                    )
         except Exception as e:
             raise RuntimeError(f"OCR 识别失败: {e}")
         
-        # 解析结果
+        # 解析结果 - 使用完整的文本创建单个 OCRResult
         ocr_results = []
-        n_blocks = len(data['text'])
         
-        for i in range(n_blocks):
-            text = data['text'][i].strip()
-            conf = data['conf'][i]
+        # 将完整文本作为单个结果返回
+        text = full_text.strip()
+        if text:
+            # 估算置信度（基于文本长度和清晰度）
+            confidence = min(0.95, max(0.5, len(text) / 200.0))
             
-            # 跳过空文本和低置信度结果
-            if not text or conf == -1:
-                continue
-            
-            # 转换置信度 (Tesseract 使用 0-100，转换为 0-1)
-            confidence = conf / 100.0 if conf > 0 else 0.0
-            
-            # 获取边界框
-            left = data['left'][i]
-            top = data['top'][i]
-            width = data['width'][i]
-            height = data['height'][i]
-            bbox = (left, top, left + width, top + height)
+            # 使用整个图片作为边界框
+            width, height = pil_image.size
+            bbox = (0, 0, width, height)
             
             ocr_results.append(OCRResult(
                 text=text,
@@ -139,7 +145,7 @@ class TesseractOCREngine(BaseOCREngine):
                 language=self.lang,
                 image_hash=image_hash,
                 page_num=None,
-                metadata={'engine': 'tesseract', 'block_num': data['block_num'][i]}
+                metadata={'engine': 'tesseract', 'method': 'image_to_string'}
             ))
         
         # 缓存第一个结果

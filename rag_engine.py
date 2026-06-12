@@ -239,21 +239,54 @@ class RAGEngine:
         response = self.query_engine.query(question)
         return str(response)
 
-    def query_with_sources(self, question: str) -> dict:
-        """查询并返回来源信息"""
+    def query_with_sources(self, question: str, progress_callback=None) -> dict:
+        """
+        查询并返回来源信息
+        
+        Args:
+            question: 查询问题
+            progress_callback: 进度回调函数，接收字典参数：
+                - phase: 当前阶段 (embedding|retrieving|scoring|generating)
+                - message: 进度消息
+                - current: 当前步骤（可选）
+                - total: 总步骤（可选）
+        """
         if self.query_engine is None:
             raise RuntimeError("索引未初始化")
+        
+        # 调用进度回调：开始生成查询向量
+        if progress_callback:
+            progress_callback({"phase": "embedding", "message": "正在生成查询向量..."})
+        
         response = self.query_engine.query(question)
+        
+        # 调用进度回调：检索完成
+        source_count = len(response.source_nodes) if hasattr(response, "source_nodes") else 0
+        if progress_callback:
+            progress_callback({"phase": "retrieving", "message": f"检索到 {source_count} 个相关文档"})
 
         sources = []
         if hasattr(response, "source_nodes"):
-            for node in response.source_nodes:
+            for i, node in enumerate(response.source_nodes):
+                # 调用进度回调：评分文档
+                if progress_callback:
+                    progress_callback({
+                        "phase": "scoring",
+                        "message": f"评分文档 {i+1}/{source_count}",
+                        "current": i+1,
+                        "total": source_count
+                    })
+                
                 sources.append({
                     "content": node.node.get_content()[:300],
                     "score": float(node.score) if hasattr(node, "score") else None,
                     "file": node.node.metadata.get("file_name", "未知"),
                     "path": node.node.metadata.get("file_path", ""),
                 })
+        
+        # 调用进度回调：生成回答
+        if progress_callback:
+            progress_callback({"phase": "generating", "message": "正在生成回答..."})
 
         return {
             "answer": str(response),

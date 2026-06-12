@@ -8,6 +8,7 @@ import os
 import argparse
 import logging
 import warnings
+from pathlib import Path
 
 # 在任何导入之前禁用各种警告
 # 禁用ChromaDB遥测错误
@@ -163,6 +164,11 @@ def check_first_run():
 # ==================== 回调函数 ====================
 
 def on_step_callback(data: dict):
+    from config import Config
+    
+    if not Config.SHOW_PROGRESS:
+        return
+    
     step = data.get("step", "?")
     total = data.get("total", "?")
     phase = data.get("phase", "?")
@@ -178,7 +184,10 @@ def on_step_callback(data: dict):
         "final": "[OK]"
     }.get(phase, "[?]")
 
-    if HAS_RICH:
+    if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+        from rich.console import Console as RichConsole
+        
         color = {
             "thinking": "cyan",
             "executing": "yellow",
@@ -186,7 +195,23 @@ def on_step_callback(data: dict):
             "rejected": "red",
             "final": "green"
         }.get(phase, "white")
-        console.print(f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}]")
+        
+        # 计算进度百分比
+        if step != "?" and total != "?":
+            try:
+                progress_percent = (int(step) / int(total)) * 100
+                progress_bar = "█" * int(progress_percent / 5) + "░" * (20 - int(progress_percent / 5))
+            except:
+                progress_percent = 0
+                progress_bar = "░" * 20
+        else:
+            progress_percent = 0
+            progress_bar = "░" * 20
+        
+        console.print(
+            f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
+            f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
+        )
     else:
         print(f"[{step}/{total}] {phase_emoji} {msg}")
 
@@ -216,6 +241,33 @@ def on_confirm_callback(data: dict) -> bool:
         print("\n已取消")
         return False
     return answer in ("y", "yes", "是", "确认")
+
+def ask_progress_callback(data: dict):
+    """RAG 查询进度回调函数"""
+    from config import Config
+    
+    if not Config.SHOW_PROGRESS:
+        return
+    
+    phase = data.get("phase", "")
+    msg = data.get("message", "")
+    
+    if HAS_RICH:
+        phase_colors = {
+            "embedding": "cyan",
+            "retrieving": "blue",
+            "scoring": "yellow",
+            "generating": "magenta"
+        }.get(phase, "white")
+        
+        if phase == "scoring":
+            current = data.get("current", 0)
+            total = data.get("total", 1)
+            console.print(f"[dim]🔄 {msg} [progress]{current}/{total}[/progress][/dim]")
+        else:
+            console.print(f"[{phase_colors}]🔄 {msg}[/{phase_colors}]")
+    else:
+        print(f"🔄 {msg}")
 
 # ==================== 界面渲染 ====================
 
@@ -921,8 +973,55 @@ def main():
             if rag_engine.query_engine is None:
                 console.print("⚠️  知识库未初始化，请先添加文档", style="yellow")
                 continue
-            with console.status("[bold green]检索知识库..."):
-                result = rag_engine.query_with_sources(question)
+            
+            # 检测用户是否提供了文件路径（支持图片、PDF、MD、TXT等常见文档格式）
+            import re
+            file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
+            file_path_match = re.search(file_pattern, question)
+            
+            if file_path_match:
+                # 提取文件路径
+                file_path = file_path_match.group()
+                console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
+                console.print("🔄 正在添加到知识库...", style="yellow")
+                
+                try:
+                    # 先添加文件到知识库
+                    from document_loader import load_documents
+                    documents = load_documents(file_path)
+                    if documents:
+                        rag_engine.add_documents(documents, [file_path])
+                        if Config.SHOW_PROGRESS:
+                            console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
+                            total_chars = sum(len(doc.text) for doc in documents)
+                            console.print(f"✅ 总字符数: {total_chars}", style="dim")
+                        else:
+                            console.print("✅ 文件已添加到知识库", style="green")
+                        # 更新问题，移除文件路径部分，保持语义完整性
+                        question = re.sub(re.escape(file_path), '', question)
+                        # 清理多余空格和标点
+                        question = re.sub(r'\s+', ' ', question).strip()
+                        question = question.rstrip('，。,.')
+                        # 如果问题太模糊，添加更具体的查询指导
+                        if not question or question == "/ask" or question in ["请帮我检查", "请帮我分析", "分析", "检查", "看一下", "这张图片里面有什么"]:
+                            question = f"刚刚添加的文件中包含什么内容？文件名是 {Path(file_path).name}"
+                            print(f"💡 使用精确查询: {question}")
+                        else:
+                            # 添加文件名到查询中以提高检索精度
+                            filename = Path(file_path).name
+                            if filename not in question:
+                                question = f"{filename} {question}"
+                        console.print(f"❓ 查询: {question}", style="cyan")
+                    else:
+                        console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
+                except Exception as e:
+                    console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
+            
+            if Config.SHOW_PROGRESS:
+                result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
+            else:
+                with console.status("[bold green]检索知识库..."):
+                    result = rag_engine.query_with_sources(question)
             console.print("\n🤖 回答:", style="bold blue")
             if HAS_RICH:
                 console.print(Panel(Markdown(result["answer"]), border_style="green"))

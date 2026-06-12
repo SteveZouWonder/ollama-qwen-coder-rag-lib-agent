@@ -213,4 +213,4 @@
 
 ---
 
-**上一篇**: [TUTORIAL.md](../TUTORIAL.md) | **下一篇**: [前置条件检查与配置](02-prerequisites.md)
+**上一篇**: [TUTORIAL.md](../TUTORIAL.md) | **下一篇**: [安装和配置指南](02-installation.md)

@@ -161,12 +161,12 @@ if [ "$install_ocr" = "y" ]; then
     fi
     
     # 安装 OCR 核心依赖（Python 3.13 兼容）
-    if $PIP_CMD install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80; then
+    if $PIP_CMD install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0; then
         echo -e "${GREEN}✓ OCR 依赖安装完成（Tesseract OCR）${NC}"
     else
         echo -e "${RED}✗ OCR 依赖安装失败${NC}"
         echo -e "${YELLOW}跳过 OCR 依赖安装，可以稍后手动安装${NC}"
-        echo "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+        echo "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0"
     fi
 else
     echo -e "${YELLOW}⚠ 跳过 OCR 依赖安装${NC}"
