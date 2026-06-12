@@ -86,3 +86,11 @@ dmypy.json
 
 # Devin
 .devin/
+
+# CI/CD Reports
+bandit-report.json
+safety-report.json
+safety-check.json
+/.flake8
+/.pylintrc
+/pytest.ini

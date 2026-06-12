@@ -15,7 +15,7 @@ logging.getLogger("chromadb.segment").setLevel(logging.ERROR)
 logging.getLogger("posthog").setLevel(logging.ERROR)
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # ==================== 路径配置 ====================
 BASE_DIR = Path(__file__).parent.resolve()
@@ -48,6 +48,35 @@ MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
 TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
 AUTO_CONFIRM = os.getenv("CODE_AGENT_AUTO_CONFIRM", "false").lower() == "true"
+
+# ==================== 文件上传配置 ====================
+# 文件大小限制（字节）
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", "10485760"))  # 10MB
+MAX_TOTAL_SIZE = int(os.getenv("MAX_TOTAL_SIZE", "104857600"))  # 100MB
+
+# 文件类型控制
+ALLOWED_FILE_TYPES = os.getenv("ALLOWED_FILE_TYPES", "pdf,md,txt,py,js,ts,java,cpp,go,rs,html,json,yaml,xml").split(",")
+BLOCKED_FILE_PATTERNS = os.getenv("BLOCKED_FILE_PATTERNS", "*.tmp,*.cache,*.log,node_modules,__pycache__").split(",")
+
+# 文件去重和清理
+ENABLE_FILE_DEDUPLICATION = os.getenv("ENABLE_FILE_DEDUPLICATION", "true").lower() == "true"
+TEMPORARY_FILE_TTL_HOURS = int(os.getenv("TEMPORARY_FILE_TTL_HOURS", "24"))
+
+# OCR优化配置
+OCR_CACHE_ENABLED = os.getenv("OCR_CACHE_ENABLED", "true").lower() == "true"
+OCR_QUALITY_THRESHOLD = float(os.getenv("OCR_QUALITY_THRESHOLD", "0.3"))
+OCR_MAX_IMAGE_SIZE = int(os.getenv("OCR_MAX_IMAGE_SIZE", "5242880"))  # 5MB
+
+# ==================== 会话管理配置 ====================
+SESSION_STORAGE_PATH = Path(os.getenv("SESSION_STORAGE_PATH", "~/.code_agent_sessions"))
+SESSION_STORAGE_PATH = SESSION_STORAGE_PATH.expanduser()
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))
+MAX_MESSAGES_PER_SESSION = int(os.getenv("MAX_MESSAGES_PER_SESSION", "100"))
+AUTO_ARCHIVE_DAYS = int(os.getenv("AUTO_ARCHIVE_DAYS", "30"))
+
+# 历史压缩配置
+HISTORY_COMPRESSION_RATIO = float(os.getenv("HISTORY_COMPRESSION_RATIO", "0.5"))
+AUTO_COMPRESS_ENABLED = os.getenv("AUTO_COMPRESS_ENABLED", "true").lower() == "true"
 
 # ==================== 安全策略 ====================
 READONLY_COMMANDS = (
@@ -152,3 +181,22 @@ class Config:
     ESTIMATE_TIME: bool = ESTIMATE_TIME
     SHOW_STATS: bool = SHOW_STATS
     VERBOSE_MODE: bool = VERBOSE_MODE
+    
+    # 文件上传配置
+    MAX_FILE_SIZE: int = MAX_FILE_SIZE
+    MAX_TOTAL_SIZE: int = MAX_TOTAL_SIZE
+    ALLOWED_FILE_TYPES: list = field(default_factory=lambda: ALLOWED_FILE_TYPES)
+    BLOCKED_FILE_PATTERNS: list = field(default_factory=lambda: BLOCKED_FILE_PATTERNS)
+    ENABLE_FILE_DEDUPLICATION: bool = ENABLE_FILE_DEDUPLICATION
+    TEMPORARY_FILE_TTL_HOURS: int = TEMPORARY_FILE_TTL_HOURS
+    OCR_CACHE_ENABLED: bool = OCR_CACHE_ENABLED
+    OCR_QUALITY_THRESHOLD: float = OCR_QUALITY_THRESHOLD
+    OCR_MAX_IMAGE_SIZE: int = OCR_MAX_IMAGE_SIZE
+    
+    # 会话管理配置
+    SESSION_STORAGE_PATH: Path = SESSION_STORAGE_PATH
+    MAX_SESSIONS: int = MAX_SESSIONS
+    MAX_MESSAGES_PER_SESSION: int = MAX_MESSAGES_PER_SESSION
+    AUTO_ARCHIVE_DAYS: int = AUTO_ARCHIVE_DAYS
+    HISTORY_COMPRESSION_RATIO: float = HISTORY_COMPRESSION_RATIO
+    AUTO_COMPRESS_ENABLED: bool = AUTO_COMPRESS_ENABLED

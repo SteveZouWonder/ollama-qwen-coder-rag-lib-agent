@@ -141,6 +141,24 @@ TUTORIAL_TEXT = """
   /model     显示模型信息
   /reset     重置 Agent 对话上下文
   /quit      退出
+
+文件管理命令：
+  /file-list           列出知识库中的所有文件
+  /file-info <path>    查看文件详细信息
+  /file-cleanup        清理临时/重复文件
+  /file-deduplicate    手动触发去重
+  /file-stats          显示文件统计信息
+
+会话管理命令：
+  /session-new [title]        创建新会话
+  /session-list               列出所有会话
+  /session-switch <id>        切换到指定会话
+  /session-archive <id>       归档会话
+  /session-delete <id>       删除会话
+  /session-info <id>          查看会话详情
+  /session-search <query>     搜索会话
+  /session-current            显示当前会话信息
+  /session-compress           压缩当前会话历史
 """
 
 def show_tutorial():
@@ -315,6 +333,24 @@ def print_help():
   /snapshot-create  手动创建知识库快照
   /snapshot-restore <id>  恢复指定快照的知识库
   /knowledge-summary  查看知识库文档摘要
+
+文件管理命令（新功能）：
+  /file-list           列出知识库中的所有文件
+  /file-info <path>    查看文件详细信息
+  /file-cleanup        清理临时/重复文件
+  /file-deduplicate    手动触发去重
+  /file-stats          显示文件统计信息
+
+会话管理命令（新功能）：
+  /session-new [title]        创建新会话
+  /session-list               列出所有会话
+  /session-switch <id>        切换到指定会话
+  /session-archive <id>       归档会话
+  /session-delete <id>       删除会话
+  /session-info <id>          查看会话详情
+  /session-search <query>     搜索会话
+  /session-current            显示当前会话信息
+  /session-compress           压缩当前会话历史
 
 使用示例：
   >>> /ask 这篇论文的实验结果是什么？
@@ -502,6 +538,39 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("snapshot_restore", user_input, arg)
     if cmd == "/knowledge-summary":
         return ParsedCommand("knowledge_summary", user_input, arg)
+
+    # 文件管理命令
+    if cmd == "/file-list":
+        return ParsedCommand("file_list", user_input, arg)
+    if cmd == "/file-info":
+        return ParsedCommand("file_info", user_input, arg)
+    if cmd == "/file-cleanup":
+        return ParsedCommand("file_cleanup", user_input, arg)
+    if cmd == "/file-deduplicate":
+        return ParsedCommand("file_deduplicate", user_input, arg)
+    if cmd == "/file-stats":
+        return ParsedCommand("file_stats", user_input, arg)
+
+    # 会话管理命令
+    if cmd == "/session-new":
+        return ParsedCommand("session_new", user_input, arg)
+    if cmd == "/session-list":
+        return ParsedCommand("session_list", user_input, arg)
+    if cmd == "/session-switch":
+        return ParsedCommand("session_switch", user_input, arg)
+    if cmd == "/session-archive":
+        return ParsedCommand("session_archive", user_input, arg)
+    if cmd == "/session-delete":
+        return ParsedCommand("session_delete", user_input, arg)
+    if cmd == "/session-info":
+        return ParsedCommand("session_info", user_input, arg)
+    if cmd == "/session-search":
+        return ParsedCommand("session_search", user_input, arg)
+    if cmd == "/session-current":
+        return ParsedCommand("session_current", user_input, arg)
+    if cmd == "/session-compress":
+        return ParsedCommand("session_compress", user_input, arg)
+
     if cmd == "/write":
         return ParsedCommand("write", user_input, arg)
     if cmd == "/exec":
@@ -527,7 +596,11 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
                      "clear", "history", "summary", "reset",
                      "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
-                     "snapshot_restore", "knowledge_summary"):
+                     "snapshot_restore", "knowledge_summary",
+                     "file_list", "file_info", "file_cleanup", "file_deduplicate", "file_stats",
+                     "session_new", "session_list", "session_switch", "session_archive",
+                     "session_delete", "session_info", "session_search", "session_current",
+                     "session_compress"):
         return "cmd"
 
     # 明确指定 RAG
@@ -854,7 +927,370 @@ def main():
                     console.print(f"  {type_indicator} (置信度: {doc['confidence']:.2f})", style="dim")
                     console.print(f"  🧩 Chunks: {doc['chunk_count']}", style="dim")
             except Exception as e:
-                console.print(f"❌ 获取摘要失败: {e}", style="red")
+                console.print(f"❌ 获取知识库摘要失败: {e}", style="red")
+            continue
+
+        # ---- 文件管理命令 ----
+        elif parsed.cmd_type == "file_list":
+            try:
+                from file_metadata import get_global_metadata_manager
+                manager = get_global_metadata_manager()
+                files = manager.list_files()
+
+                if not files:
+                    console.print("📭 知识库中没有文件", style="yellow")
+                else:
+                    console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
+                    for file_meta in files:
+                        console.print(f"\n  📄 {file_meta.file_path}", style="bold")
+                        console.print(f"  📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
+                        console.print(f"  🏷️  类型: {file_meta.persistence_type}", style="dim")
+                        console.print(f"  📅 上传: {file_meta.upload_time[:19]}", style="dim")
+                        if file_meta.tags:
+                            console.print(f"  🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
+            except Exception as e:
+                console.print(f"❌ 列出文件失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "file_info":
+            file_path = parsed.arg
+            if not file_path:
+                console.print("❌ 请指定文件路径: /file-info <path>", style="yellow")
+                continue
+
+            try:
+                from file_metadata import get_global_metadata_manager
+                manager = get_global_metadata_manager()
+                file_meta = manager.get_file_metadata(file_path)
+
+                if not file_meta:
+                    console.print(f"❌ 文件不在知识库中: {file_path}", style="yellow")
+                else:
+                    console.print(f"📄 文件信息: {file_path}", style="cyan")
+                    console.print(f"📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
+                    console.print(f"🏷️  类型: {file_meta.persistence_type}", style="dim")
+                    console.print(f"📅 上传: {file_meta.upload_time}", style="dim")
+                    console.print(f"🔢 访问次数: {file_meta.access_count}", style="dim")
+                    console.print(f"📄 文档数: {file_meta.document_count}", style="dim")
+                    console.print(f"🧩 Chunk数: {file_meta.chunk_count}", style="dim")
+                    if file_meta.last_access:
+                        console.print(f"🕐 最后访问: {file_meta.last_access[:19]}", style="dim")
+                    if file_meta.tags:
+                        console.print(f"🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
+            except Exception as e:
+                console.print(f"❌ 获取文件信息失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "file_stats":
+            try:
+                from file_metadata import get_global_metadata_manager
+                from file_validator import get_global_validator
+
+                metadata_manager = get_global_metadata_manager()
+                validator = get_global_validator()
+
+                stats = metadata_manager.get_stats()
+                validator_stats = validator.get_stats()
+
+                console.print("📊 文件统计信息:", style="cyan")
+                console.print(f"📁 总文件数: {stats['total_files']}", style="bold")
+                console.print(f"💾 总大小: {stats['total_size_formatted']}", style="dim")
+                console.print(f"📌 永久文件: {stats['permanent_count']}", style="dim")
+                console.print(f"⏰ 临时文件: {stats['temporary_count']}", style="dim")
+                console.print(f"🎯 会话文件: {stats['session_count']}", style="dim")
+                console.print(f"🧹 待清理: {stats['cleanup_count']}", style="dim")
+                console.print(f"🔗 已知文件: {validator_stats['known_file_count']}", style="dim")
+                console.print(f"📈 利用率: {validator_stats['utilization_percent']:.1f}%", style="dim")
+            except Exception as e:
+                console.print(f"❌ 获取统计信息失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "file_cleanup":
+            try:
+                from file_metadata import get_global_metadata_manager
+                manager = get_global_metadata_manager()
+
+                files_to_cleanup = manager.get_files_to_cleanup()
+                if not files_to_cleanup:
+                    console.print("✅ 没有需要清理的文件", style="green")
+                else:
+                    console.print(f"🧹 发现 {len(files_to_cleanup)} 个需要清理的文件", style="yellow")
+                    for file_meta in files_to_cleanup:
+                        console.print(f"  - {file_meta.file_path} ({file_meta.persistence_type})", style="dim")
+
+                    # 执行清理
+                    cleaned = manager.cleanup_files()
+                    console.print(f"✅ 已清理 {len(cleaned)} 个文件", style="green")
+            except Exception as e:
+                console.print(f"❌ 清理文件失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "file_deduplicate":
+            try:
+                from file_metadata import get_global_metadata_manager
+                from file_validator import get_global_validator
+
+                metadata_manager = get_global_metadata_manager()
+                validator = get_global_validator()
+
+                console.print("🔄 正在检查重复文件...", style="cyan")
+                files = metadata_manager.list_files()
+
+                duplicates = []
+                seen_hashes = {}
+
+                for file_meta in files:
+                    if file_meta.file_hash:
+                        if file_meta.file_hash in seen_hashes:
+                            duplicates.append(file_meta)
+                        else:
+                            seen_hashes[file_meta.file_hash] = file_meta
+
+                if not duplicates:
+                    console.print("✅ 没有发现重复文件", style="green")
+                else:
+                    console.print(f"⚠️  发现 {len(duplicates)} 个重复文件:", style="yellow")
+                    for file_meta in duplicates:
+                        console.print(f"  - {file_meta.file_path}", style="dim")
+
+                    # 询问是否删除重复文件
+                    try:
+                        answer = console.input("是否删除重复文件? (y/n): ").strip().lower()
+                        if answer in ("y", "yes", "是", "确认"):
+                            for file_meta in duplicates:
+                                metadata_manager.remove_file(file_meta.file_path)
+                                console.print(f"✅ 已删除: {file_meta.file_path}", style="green")
+                            console.print(f"✅ 共删除 {len(duplicates)} 个重复文件", style="green")
+                        else:
+                            console.print("❌ 取消删除", style="yellow")
+                    except (EOFError, KeyboardInterrupt):
+                        console.print("\n❌ 取消操作", style="yellow")
+
+            except Exception as e:
+                console.print(f"❌ 去重失败: {e}", style="red")
+            continue
+
+        # ---- 会话管理命令 ----
+        elif parsed.cmd_type == "session_new":
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                title = parsed.arg if parsed.arg else None
+                session = manager.create_session(title=title)
+
+                console.print(f"✅ 新会话已创建: {session.session_id}", style="green")
+                console.print(f"📋 标题: {session.title}", style="dim")
+                console.print(f"📅 创建时间: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+            except Exception as e:
+                console.print(f"❌ 创建会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_list":
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                sessions = manager.list_sessions()
+
+                if not sessions:
+                    console.print("📭 没有会话", style="yellow")
+                else:
+                    console.print(f"💬 共有 {len(sessions)} 个会话:", style="cyan")
+                    current_session = manager.get_current_session()
+
+                    for session in sessions:
+                        is_current = "🔸" if session.session_id == (current_session.session_id if current_session else None) else " "
+                        status_emoji = "🟢" if session.status.value == "active" else "📦" if session.status.value == "archived" else "🗑️"
+                        console.print(f"{is_current} {status_emoji} {session.session_id[:8]}... - {session.title}", style="bold" if session.session_id == (current_session.session_id if current_session else None) else "dim")
+                        console.print(f"    📅 {session.updated_at.strftime('%Y-%m-%d %H:%M')}", style="dim")
+                        console.print(f"    💬 {len(session.messages)} 条消息", style="dim")
+            except Exception as e:
+                console.print(f"❌ 列出会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_switch":
+            session_id = parsed.arg
+            if not session_id:
+                console.print("❌ 请指定会话ID: /session-switch <id>", style="yellow")
+                continue
+
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                success = manager.switch_session(session_id)
+
+                if success:
+                    session = manager.get_current_session()
+                    console.print(f"✅ 已切换到会话: {session.title}", style="green")
+                    console.print(f"💬 该会话有 {len(session.messages)} 条消息", style="dim")
+                else:
+                    console.print(f"❌ 会话不存在或已删除: {session_id}", style="yellow")
+            except Exception as e:
+                console.print(f"❌ 切换会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_current":
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                current = manager.get_current_session()
+
+                if not current:
+                    console.print("📭 没有当前会话，请使用 /session-new 创建新会话", style="yellow")
+                else:
+                    console.print(f"💬 当前会话信息:", style="cyan")
+                    console.print(f"🆔 ID: {current.session_id}", style="bold")
+                    console.print(f"📋 标题: {current.title}", style="dim")
+                    console.print(f"📊 状态: {current.status.value}", style="dim")
+                    console.print(f"📅 创建: {current.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+                    console.print(f"🕐 更新: {current.updated_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+                    console.print(f"💬 消息数: {len(current.messages)}", style="dim")
+                    if current.tags:
+                        console.print(f"🏷️  标签: {', '.join(current.tags)}", style="dim")
+            except Exception as e:
+                console.print(f"❌ 获取当前会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_info":
+            session_id = parsed.arg
+            if not session_id:
+                console.print("❌ 请指定会话ID: /session-info <id>", style="yellow")
+                continue
+
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                sessions = manager.list_sessions()
+
+                # 查找匹配的会话
+                matching_sessions = [s for s in sessions if session_id in s.session_id]
+
+                if not matching_sessions:
+                    console.print(f"❌ 未找到会话: {session_id}", style="yellow")
+                else:
+                    session = matching_sessions[0]
+                    console.print(f"💬 会话详细信息:", style="cyan")
+                    console.print(f"🆔 ID: {session.session_id}", style="bold")
+                    console.print(f"📋 标题: {session.title}", style="dim")
+                    console.print(f"📊 状态: {session.status.value}", style="dim")
+                    console.print(f"📅 创建: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+                    console.print(f"🕐 更新: {session.updated_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+                    console.print(f"💬 消息数: {len(session.messages)}", style="dim")
+                    if session.tags:
+                        console.print(f"🏷️  标签: {', '.join(session.tags)}", style="dim")
+                    if session.metadata:
+                        console.print(f"📝 元数据: {session.metadata}", style="dim")
+            except Exception as e:
+                console.print(f"❌ 获取会话信息失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_search":
+            query = parsed.arg
+            if not query:
+                console.print("❌ 请指定搜索查询: /session-search <query>", style="yellow")
+                continue
+
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                results = manager.search_sessions(query)
+
+                if not results:
+                    console.print(f"🔍 未找到包含 '{query}' 的会话", style="yellow")
+                else:
+                    console.print(f"🔍 找到 {len(results)} 个包含 '{query}' 的会话:", style="cyan")
+                    for session in results:
+                        console.print(f"  • {session.title} ({session.session_id[:8]}...)", style="dim")
+                        console.print(f"    💬 {len(session.messages)} 条消息", style="dim")
+            except Exception as e:
+                console.print(f"❌ 搜索会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_compress":
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+                from history_compressor import HistoryCompressor
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                current = manager.get_current_session()
+
+                if not current:
+                    console.print("📭 没有当前会话", style="yellow")
+                else:
+                    console.print(f"🔄 正在压缩会话历史...", style="cyan")
+                    compressor = HistoryCompressor()
+                    original_count = len(current.messages)
+                    compressed_messages = compressor.compress_history(current.messages)
+
+                    # 更新会话消息
+                    current.messages = compressed_messages
+                    manager.save_session(current)
+
+                    console.print(f"✅ 压缩完成: {original_count} → {len(compressed_messages)} 条消息", style="green")
+                    console.print(f"📊 压缩率: {(1 - len(compressed_messages)/original_count)*100:.1f}%", style="dim")
+            except Exception as e:
+                console.print(f"❌ 压缩会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_delete":
+            session_id = parsed.arg
+            if not session_id:
+                console.print("❌ 请指定会话ID: /session-delete <id>", style="yellow")
+                continue
+
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                current = manager.get_current_session()
+
+                # 防止删除当前会话
+                if current and session_id in current.session_id:
+                    console.print("⚠️  不能删除当前会话，请先切换到其他会话", style="yellow")
+                    continue
+
+                success = manager.delete_session(session_id)
+
+                if success:
+                    console.print(f"✅ 会话已删除: {session_id}", style="green")
+                else:
+                    console.print(f"❌ 会话不存在: {session_id}", style="yellow")
+            except Exception as e:
+                console.print(f"❌ 删除会话失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "session_archive":
+            session_id = parsed.arg
+            if not session_id:
+                console.print("❌ 请指定会话ID: /session-archive <id>", style="yellow")
+                continue
+
+            try:
+                from session_manager import SessionManager
+                from config import SESSION_STORAGE_PATH
+
+                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                success = manager.archive_session(session_id)
+
+                if success:
+                    console.print(f"📦 会话已归档: {session_id}", style="green")
+                else:
+                    console.print(f"❌ 会话不存在: {session_id}", style="yellow")
+            except Exception as e:
+                console.print(f"❌ 归档会话失败: {e}", style="red")
             continue
 
         # ---- Agent 历史与上下文 ----

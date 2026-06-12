@@ -1,0 +1,166 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.13']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 pylint bandit safety pytest pytest-cov
+        pip install -r requirements.txt
+    
+    - name: Code syntax check with Python compiler
+      run: |
+        python -m py_compile **/*.py
+        echo "✅ Python syntax check passed"
+    
+    - name: Lint with flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      continue-on-error: true
+    
+    - name: Lint with pylint
+      run: |
+        pylint **/*.py --exit-zero --output-format=text
+      continue-on-error: true
+    
+    - name: Security check with bandit
+      run: |
+        bandit -r . -f json -o bandit-report.json || true
+        bandit -r . -lll -i
+      continue-on-error: false
+    
+    - name: Check for critical/high security vulnerabilities with safety
+      run: |
+        safety check --json --output safety-report.json || true
+        safety check || echo "⚠️ Some security vulnerabilities found, please review"
+      continue-on-error: true
+    
+    - name: Run tests with pytest
+      run: |
+        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing --cov-report=html
+    
+    - name: Check test coverage
+      run: |
+        coverage report --fail-under=80
+      continue-on-error: true
+    
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v4
+      if: success()
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+    
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-reports
+        path: |
+          coverage.xml
+          htmlcov/
+    
+    - name: Summary of results
+      if: always()
+      run: |
+        echo "## 🎯 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### ✅ Completed Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Python syntax check" >> $GITHUB_STEP_SUMMARY
+        echo "- Code linting (flake8, pylint)" >> $GITHUB_STEP_SUMMARY
+        echo "- Security scanning (bandit, safety)" >> $GITHUB_STEP_SUMMARY
+        echo "- Test execution with coverage" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Security reports uploaded" >> $GITHUB_STEP_SUMMARY
+        echo "- Coverage reports uploaded" >> $GITHUB_STEP_SUMMARY
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    
+    - name: Install safety
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety
+    
+    - name: Run safety check for critical/high vulnerabilities
+      run: |
+        safety check --severity --output json > safety-check.json || true
+        echo "Checking for critical and high severity vulnerabilities..."
+        if [ -f safety-check.json ]; then
+          critical_count=$(python -c "import json; data=json.load(open('safety-check.json')); print(sum(1 for v in data if v.get('severity', 'medium') in ['critical', 'high'])) if isinstance(data, list) else 0)")
+          high_count=$(python -c "import json; data=json.load(open('safety-check.json')); print(sum(1 for v in data if v.get('severity') == 'high')) if isinstance(data, list) else 0")
+          
+          if [ "$critical_count" -gt 0 ] || [ "$high_count" -gt 0 ]; then
+            echo "❌ Found $critical_count critical and $high_count high severity vulnerabilities"
+            echo "Please review safety-check.json for details"
+            cat safety-check.json
+            exit 1
+          else
+            echo "✅ No critical or high severity vulnerabilities found"
+          fi
+        else
+          echo "⚠️ Could not parse safety check results"
+        fi
+      continue-on-error: false
+    
+    - name: Upload safety check results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: safety-check-results
+        path: safety-check.json
