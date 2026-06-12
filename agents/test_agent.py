@@ -1,5 +1,5 @@
 """
-TestAgent - 测试专家Agent
+QAExpertAgent - 质量保证专家Agent
 """
 from typing import Dict, Any
 import time
@@ -7,12 +7,12 @@ from agents.base_agent import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType
 
 
-class TestAgent(BaseAgent):
-    """测试专家Agent，专注于测试相关任务"""
+class QAExpertAgent(BaseAgent):
+    """质量保证专家Agent"""
     
     def __init__(self, agent_id: str = "test_agent_1", config: Dict[str, Any] = None):
         """
-        初始化TestAgent
+        初始化QAExpertAgent
         
         Args:
             agent_id: Agent ID

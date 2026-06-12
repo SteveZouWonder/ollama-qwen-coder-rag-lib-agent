@@ -32,7 +32,9 @@ class TestRAGEngineBuildIndex:
     @patch("rag_engine.chromadb.PersistentClient")
     @patch("rag_engine.VectorStoreIndex")
     @patch("rag_engine.SentenceSplitter")
-    def test_build_index(self, mock_splitter, mock_index_cls, mock_chroma, mock_embed, mock_llm):
+    @patch("rag_engine.Settings")
+    def test_build_index(self, mock_settings, mock_splitter, mock_index_cls, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -51,7 +53,9 @@ class TestRAGEngineBuildIndex:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     @patch("rag_engine.VectorStoreIndex")
-    def test_build_index_no_persist(self, mock_index_cls, mock_chroma, mock_embed, mock_llm):
+    @patch("rag_engine.Settings")
+    def test_build_index_no_persist(self, mock_settings, mock_index_cls, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
         mock_index = MagicMock()
@@ -71,7 +75,9 @@ class TestRAGEngineLoadIndex:
     @patch("rag_engine.chromadb.PersistentClient")
     @patch("rag_engine.load_index_from_storage")
     @patch("rag_engine.StorageContext")
-    def test_load_index_exists(self, mock_storage, mock_load, mock_chroma, mock_embed, mock_llm, temp_dir):
+    @patch("rag_engine.Settings")
+    def test_load_index_exists(self, mock_settings, mock_storage, mock_load, mock_chroma, mock_embed, mock_llm, temp_dir):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -90,6 +96,7 @@ class TestRAGEngineLoadIndex:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_load_index_not_exists(self, mock_chroma, mock_embed, mock_llm, temp_dir):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -106,6 +113,7 @@ class TestRAGEngineAddDocuments:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_add_documents_no_index(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -119,6 +127,7 @@ class TestRAGEngineAddDocuments:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_add_documents_with_index(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -140,6 +149,7 @@ class TestRAGEngineQuery:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -155,6 +165,7 @@ class TestRAGEngineQuery:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_without_engine_raises(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -170,6 +181,7 @@ class TestRAGEngineQueryWithSources:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -195,6 +207,7 @@ class TestRAGEngineQueryWithSources:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources_no_nodes(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -217,6 +230,7 @@ class TestRAGEngineAgentTools:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_tool(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -234,6 +248,7 @@ class TestRAGEngineAgentTools:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_tool_no_engine(self, mock_chroma, mock_embed, mock_llm):
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -246,6 +261,7 @@ class TestRAGEngineAgentTools:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_tool_exception_handling(self, mock_chroma, mock_embed, mock_llm):
         """测试query_tool的异常处理"""
+        
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 

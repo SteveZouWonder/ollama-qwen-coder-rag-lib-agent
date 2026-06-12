@@ -26,7 +26,7 @@ class TestPDFImageExtractor:
     def sample_pdf_with_images(self, tmp_path):
         """创建包含图片的测试 PDF"""
         try:
-            import fitz
+            import pymupdf as fitz
         except ImportError:
             pytest.skip("PyMuPDF not installed")
         
@@ -60,7 +60,7 @@ class TestPDFImageExtractor:
     def sample_pdf_without_images(self, tmp_path):
         """创建不包含图片的测试 PDF"""
         try:
-            import fitz
+            import pymupdf as fitz
         except ImportError:
             pytest.skip("PyMuPDF not installed")
         
@@ -368,7 +368,7 @@ class TestPDFImageExtractor:
     def test_extract_images_with_various_sizes(self, tmp_path):
         """测试提取不同大小的图片"""
         try:
-            import fitz
+            import pymupdf as fitz
         except ImportError:
             pytest.skip("PyMuPDF not installed")
         
@@ -398,7 +398,7 @@ class TestPDFImageExtractor:
         """测试获取图片边界框的边界情况"""
         # 测试 None 值处理
         try:
-            import fitz
+            import pymupdf as fitz
             page = extractor.fitz.open().new_page()
             
             # 测试在没有图片的页面上获取边界框

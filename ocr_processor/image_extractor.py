@@ -65,7 +65,7 @@ class PDFImageExtractor:
         self.output_dir = Path(output_dir) if output_dir else None
         
         try:
-            import fitz
+            import pymupdf as fitz
             self.fitz = fitz
         except ImportError:
             raise ImportError(

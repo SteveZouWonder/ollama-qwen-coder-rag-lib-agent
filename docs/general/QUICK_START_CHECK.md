@@ -7,13 +7,13 @@
 ### Linux/macOS 用户
 
 ```bash
-./check_prereqs.sh
+./scripts/check_prereqs.sh
 ```
 
 ### Windows 用户
 
 ```powershell
-.\check_prereqs.ps1
+.\scrpits\check_prereqs.ps1
 ```
 
 ## 检查结果说明
@@ -29,10 +29,10 @@
 ```bash
 # Ubuntu/Debian
 sudo apt update
-sudo apt install python3.9
+sudo apt install python3.13
 
 # macOS
-brew install python@3.9
+brew install python@3.13
 
 # 验证
 python3 --version
@@ -69,7 +69,7 @@ ollama list
 **诊断问题：**
 ```bash
 # 运行详细依赖验证脚本
-./verify_deps.sh
+./scripts/verify_deps.sh
 
 # 这会显示：
 # - 当前使用的Python环境
@@ -79,8 +79,8 @@ ollama list
 
 **推荐方法：使用专用安装脚本（解决依赖冲突）**
 ```bash
-./install_deps.sh      # Linux/macOS
-.\install_deps.ps1     # Windows PowerShell
+./scripts/install_deps.sh      # Linux/macOS
+.\scripts\install_deps.ps1     # Windows PowerShell
 ```
 
 **标准方法：**
@@ -101,7 +101,7 @@ source venv/bin/activate  # Linux/macOS
 venv\Scripts\activate  # Windows
 
 # 重新验证
-./check_prereqs.sh
+./scripts/check_prereqs.sh
 ```
 
 **如果遇到依赖冲突：**

@@ -15,7 +15,11 @@ NC='\033[0m'
 
 # 确定默认Python命令
 PYTHON_CMD="python3"
-if command -v python3.9 &> /dev/null; then
+if command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3.14 &> /dev/null; then
+    PYTHON_CMD="python3.14"
+elif command -v python3.9 &> /dev/null; then
     PYTHON_CMD="python3.9"
 fi
 
@@ -28,20 +32,24 @@ if [[ "$VIRTUAL_ENV" == "" ]]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
         python_path=$(which python3 2>/dev/null)
         if [[ "$python_path" != *"homebrew"* ]]; then
-            echo -e "${YELLOW}  检测到macOS，推荐使用Homebrew Python以支持urllib3 2.6.3${NC}"
-            echo -e "${YELLOW}  安装命令: brew install python@3.9${NC}"
-            echo -e "${YELLOW}  创建虚拟环境: python3.9 -m venv venv_homebrew${NC}"
+            echo -e "${YELLOW}  检测到macOS，推荐使用Homebrew Python以支持最新依赖${NC}"
+            echo -e "${YELLOW}  安装命令: brew install python@3.13${NC}"
+            echo -e "${YELLOW}  创建虚拟环境: python3.13 -m venv venv${NC}"
         fi
     fi
     
     read -p "是否创建虚拟环境? (y/n): " create_venv
     if [ "$create_venv" = "y" ]; then
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS 推荐使用 python3.9 创建 venv_homebrew
-            if command -v python3.9 &> /dev/null; then
-                python3.9 -m venv venv_homebrew
-                source venv_homebrew/bin/activate
-                echo -e "${GREEN}✓ 虚拟环境已创建并激活 (Homebrew Python): $VIRTUAL_ENV${NC}"
+            # macOS 优先使用 python3.13 创建 venv
+            if command -v python3.13 &> /dev/null; then
+                python3.13 -m venv venv
+                source venv/bin/activate
+                echo -e "${GREEN}✓ 虚拟环境已创建并激活 (Python 3.13): $VIRTUAL_ENV${NC}"
+            elif command -v python3.14 &> /dev/null; then
+                python3.14 -m venv venv
+                source venv/bin/activate
+                echo -e "${GREEN}✓ 虚拟环境已创建并激活 (Python 3.14): $VIRTUAL_ENV${NC}"
             else
                 python3 -m venv venv
                 source venv/bin/activate
@@ -86,17 +94,105 @@ if [ ! -f "requirements.txt" ]; then
     exit 1
 fi
 
-# 方法1：升级pip
-echo -e "${BLUE}步骤 1/3: 升级pip和setuptools${NC}"
+# 方法1：升级pip和setuptools
+echo -e "${BLUE}步骤 1/4: 升级pip、setuptools和wheel${NC}"
 $PYTHON_CMD -m $PIP_CMD install --upgrade pip setuptools wheel
 
+# 确保 pkg_resources 可用（修复 setuptools 新版本兼容性问题）
+echo -e "${BLUE}步骤 1.5/4: 确保 setuptools 兼容性${NC}"
+$PYTHON_CMD -c "from setuptools import setup" 2>/dev/null || {
+    echo -e "${YELLOW}⚠ setuptools 版本可能不兼容，尝试重新安装${NC}"
+    $PIP_CMD install --force-reinstall setuptools
+}
+
 # 方法2：从requirements.txt安装依赖
-echo -e "${BLUE}步骤 2/3: 从requirements.txt安装依赖${NC}"
+echo -e "${BLUE}步骤 2/4: 从requirements.txt安装依赖${NC}"
 echo "安装依赖（版本号来自requirements.txt）..."
-$PIP_CMD install -r requirements.txt
+
+# 先安装数据处理依赖（使用预编译版本，避免构建错误）
+echo "步骤 2.1: 安装数据处理依赖..."
+if $PIP_CMD install numpy pandas --prefer-binary; then
+    echo -e "${GREEN}✓ 数据处理依赖安装成功${NC}"
+else
+    echo -e "${YELLOW}⚠ 数据处理依赖安装失败，尝试备用方案...${NC}"
+    $PIP_CMD install numpy pandas
+fi
+
+# 执行安装并捕获错误码
+if $PIP_CMD install -r requirements.txt --prefer-binary; then
+    echo -e "${GREEN}✓ 核心依赖安装成功${NC}"
+    INSTALL_STATUS=0
+else
+    echo -e "${RED}✗ 核心依赖安装失败${NC}"
+    INSTALL_STATUS=1
+    echo -e "${YELLOW}尝试使用备用方案...${NC}"
+    
+    # 备用方案：不使用 --prefer-binary
+    echo "尝试不使用 --prefer-binary 选项..."
+    if $PIP_CMD install -r requirements.txt; then
+        echo -e "${GREEN}✓ 备用方案安装成功${NC}"
+        INSTALL_STATUS=0
+    else
+        echo -e "${RED}✗ 备用方案也失败了${NC}"
+        INSTALL_STATUS=1
+    fi
+fi
+
+# 方法2.5：安装OCR功能依赖（可选）
+echo ""
+echo -e "${BLUE}是否安装 OCR 功能依赖？${NC}"
+echo "OCR 功能用于扫描版 PDF 和图片文档识别"
+echo "这会安装额外的依赖：paddlepaddle、paddleocr、pytesseract、pymupdf、opencv-python"
+read -p "是否安装 OCR 依赖? (y/n): " install_ocr
+
+if [ "$install_ocr" = "y" ]; then
+    echo -e "${BLUE}步骤 2.5/4: 安装 OCR 功能依赖（可选）${NC}"
+    echo "安装 OCR 依赖..."
+    
+    # 注意：paddleocr 在 Python 3.13 上有兼容性问题
+    # 我们使用 Tesseract OCR 作为主要 OCR 引擎
+    echo "⚠ PaddleOCR 在 Python 3.13 上有兼容性问题"
+    echo "安装 Tesseract OCR 相关依赖..."
+    
+    # 先安装数据处理依赖（如果有）
+    if ! $PYTHON_CMD -c "import pandas" 2>/dev/null; then
+        echo "安装数据处理依赖..."
+        $PIP_CMD install numpy pandas --prefer-binary
+    fi
+    
+    # 安装 OCR 核心依赖（Python 3.13 兼容）
+    if $PIP_CMD install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80; then
+        echo -e "${GREEN}✓ OCR 依赖安装完成（Tesseract OCR）${NC}"
+    else
+        echo -e "${RED}✗ OCR 依赖安装失败${NC}"
+        echo -e "${YELLOW}跳过 OCR 依赖安装，可以稍后手动安装${NC}"
+        echo "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    fi
+else
+    echo -e "${YELLOW}⚠ 跳过 OCR 依赖安装${NC}"
+    echo "  提示: 如需使用 OCR 功能，可以运行: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    echo "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
+fi
 
 # 方法3：验证安装
-echo -e "${BLUE}步骤 3/3: 验证安装${NC}"
+echo -e "${BLUE}步骤 3/4: 检查安装状态${NC}"
+
+# 检查核心安装状态
+if [ "$INSTALL_STATUS" -ne 0 ]; then
+    echo -e "${RED}✗ 核心依赖安装失败，跳过验证步骤${NC}"
+    echo -e "${YELLOW}请查看上述错误信息，并尝试以下解决方案：${NC}"
+    echo "1. 清理 pip 缓存: pip cache purge"
+    echo "2. 重新安装: pip install -r requirements.txt --no-cache-dir"
+    echo "3. 手动安装失败的包"
+    echo "4. 使用预编译包: pip install -r requirements.txt --prefer-binary"
+    echo ""
+    echo -e "${RED}安装未完成，请解决上述问题后重新运行安装脚本${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ 依赖安装成功，开始验证...${NC}"
+echo ""
+echo -e "${BLUE}步骤 4/4: 验证安装${NC}"
 
 echo "验证核心依赖..."
 $PYTHON_CMD -c "import llama_index" 2>/dev/null && echo -e "${GREEN}✓ llama-index${NC}" || echo -e "${RED}✗ llama-index${NC}"
@@ -123,33 +219,14 @@ $PYTHON_CMD -c "import pytest" 2>/dev/null && echo -e "${GREEN}✓ pytest${NC}" 
 $PYTHON_CMD -c "import pytest_cov" 2>/dev/null && echo -e "${GREEN}✓ pytest-cov${NC}" || echo -e "${YELLOW}⚠ pytest-cov未安装（测试工具可选）${NC}"
 
 echo ""
-echo "验证OCR功能（可选）..."
-$PYTHON_CMD -c "import paddleocr" 2>/dev/null && echo -e "${GREEN}✓ paddleocr${NC}" || echo -e "${YELLOW}⚠ paddleocr未安装（OCR功能可选）${NC}"
-$PYTHON_CMD -c "import pytesseract" 2>/dev/null && echo -e "${GREEN}✓ pytesseract${NC}" || echo -e "${YELLOW}⚠ pytesseract未安装（OCR功能可选）${NC}"
-$PYTHON_CMD -c "import fitz" 2>/dev/null && echo -e "${GREEN}✓ pymupdf${NC}" || echo -e "${YELLOW}⚠ pymupdf未安装（OCR功能可选）${NC}"
-$PYTHON_CMD -c "import cv2" 2>/dev/null && echo -e "${GREEN}✓ opencv-python${NC}" || echo -e "${YELLOW}⚠ opencv-python未安装（OCR功能可选）${NC}"
-
-# 检查Tesseract系统级依赖
-if command -v tesseract &> /dev/null; then
-    tesseract_version=$(tesseract --version 2>&1 | head -n 1)
-    echo -e "${GREEN}✓ tesseract${NC} ($tesseract_version)"
-else
-    echo -e "${YELLOW}⚠ tesseract未安装（OCR功能可选）${NC}"
-fi
-
-echo ""
 echo -e "${BLUE}=== 安装完成 ===${NC}"
 echo ""
 echo "验证安装："
 if [[ "$VIRTUAL_ENV" != "" ]]; then
-    echo "  在虚拟环境中运行: ./check_prereqs.sh"
-    if [[ "$VIRTUAL_ENV" == *"venv_homebrew"* ]]; then
-        echo "  或者: source venv_homebrew/bin/activate && ./check_prereqs.sh"
-    else
-        echo "  或者: source venv/bin/activate && ./check_prereqs.sh"
-    fi
+    echo "  在虚拟环境中运行: ./scripts/check_prereqs.sh"
+    echo "  或者: source venv/bin/activate && ./scripts/check_prereqs.sh"
 else
-    echo "  运行: ./check_prereqs.sh"
+    echo "  运行: ./scripts/check_prereqs.sh"
     echo "  注意: 如果没有使用虚拟环境，可能需要使用 sudo"
 fi
 echo ""
@@ -162,9 +239,9 @@ echo "如果验证失败，请尝试以下替代方案："
 echo "1. 使用 --no-cache-dir: pip install -r requirements.txt --no-cache-dir"
 echo "2. 使用 --prefer-binary: pip install -r requirements.txt --prefer-binary"
 echo "3. macOS用户: 使用Homebrew Python创建新虚拟环境"
-echo "   brew install python@3.9"
-echo "   python3.9 -m venv venv_homebrew"
-echo "   source venv_homebrew/bin/activate"
+echo "   brew install python@3.13"
+echo "   python3.13 -m venv venv"
+echo "   source venv/bin/activate"
 echo "   pip install -r requirements.txt"
 echo ""
 echo "注意: 版本号在 requirements.txt 中统一管理，如需升级请修改该文件"

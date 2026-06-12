@@ -5,7 +5,7 @@ import pytest
 from master_agent import MasterAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType, CollaborationMode
 from agents.code_agent import CodeAgent
-from agents.test_agent import TestAgent
+from agents import TestAgent
 
 
 class TestMasterAgent:

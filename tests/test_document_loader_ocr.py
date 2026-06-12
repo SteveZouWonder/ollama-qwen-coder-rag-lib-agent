@@ -34,7 +34,7 @@ class TestDocumentLoaderOCR:
     def sample_pdf(self, tmp_path):
         """创建测试 PDF 文件"""
         try:
-            import fitz
+            import pymupdf as fitz
         except ImportError:
             pytest.skip("PyMuPDF not installed")
         
@@ -362,7 +362,7 @@ class TestDocumentLoaderOCR:
     def test_loader_pdf_with_mixed_content(self, data_dir, tmp_path):
         """测试包含混合内容的 PDF"""
         try:
-            import fitz
+            import pymupdf as fitz
         except ImportError:
             pytest.skip("PyMuPDF not installed")
         

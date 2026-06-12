@@ -10,10 +10,10 @@
 
 ```bash
 # Linux/macOS
-./install_deps.sh
+./scripts/install_deps.sh
 
 # Windows PowerShell
-.\install_deps.ps1
+.\scripts\install_deps.ps1
 ```
 
 ### 🔧 方案2：使用备用依赖配置
@@ -352,7 +352,7 @@ cat logs/*.log | grep ERROR
 
 2. **运行诊断脚本**:
 ```bash
-./check_prereqs.sh
+./scripts/check_prereqs.sh
 ```
 
 3. **检查文档**:

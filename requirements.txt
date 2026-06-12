@@ -1,37 +1,56 @@
-# 核心依赖（指定具体版本以避免依赖冲突）
-llama-index==0.10.68
-llama-index-embeddings-ollama==0.1.3
-llama-index-llms-ollama==0.2.0
-llama-index-readers-file==0.1.4
-llama-index-vector-stores-chroma==0.1.8
+# 核心依赖（Python 3.13 兼容的最新版本）
+# 先安装构建依赖
+setuptools>=60.0.0
+wheel
 
-# 向量数据库（使用稳定版本避免遥测问题）
-chromadb==0.4.24
+# 数据处理依赖（使用预编译版本，避免构建错误）
+numpy
+pandas
+
+llama-index
+llama-index-embeddings-ollama
+llama-index-llms-ollama
+llama-index-readers-file
+llama-index-vector-stores-chroma
+
+# 向量数据库（最新稳定版本）
+chromadb
 posthog>=3.0.0,<4.0.0  # 修复ChromaDB遥测兼容性问题
 
 # 文档处理
-pypdf==4.3.1
+pypdf>=6.1.3,<7
+pymupdf>=1.25.0  # PDF图像提取（兼容新版本，使用 import pymupdf as fitz）
 
 # 网络请求
-requests==2.32.5
-urllib3==2.6.3  # 使用Homebrew Python (OpenSSL) 以支持最新版本
+requests
+urllib3
 
 # 环境配置
-python-dotenv==1.2.1
+python-dotenv
 
 # 终端美化
-rich==13.9.4
+rich
 
 # 命令行工具
-prompt-toolkit==3.0.52
+prompt-toolkit
 
 # 测试工具
-pytest==8.4.2
-pytest-cov==7.1.0
+pytest
+pytest-cov
 
 # 桌面应用依赖
-pystray==0.19.5  # 系统托盘功能
-pillow==11.3.0   # 图像处理
+pystray
+pillow
 
-# 注意：此项目使用 Homebrew Python 以支持 urllib3 2.6.3
-# 激活虚拟环境：source venv_homebrew/bin/activate
+# OCR 功能依赖（可选）
+# 注意：由于 Python 3.13 兼容性问题，推荐使用 Tesseract OCR
+# PaddleOCR 需要 paddlex，而 paddlex 依赖老版本 pandas（<=1.5.3），不支持 Python 3.13
+# 如需使用 PaddleOCR，请降级到 Python 3.9 或更低版本
+# 推荐安装命令（Python 3.13 兼容）：
+#   pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80
+# 
+# PaddleOCR 用户（需要 Python 3.9 或更低）：
+#   pip install paddlepaddle==2.6.2 paddleocr==2.7.0.3 pytesseract==0.3.10
+
+# 注意：项目已升级到 Python 3.13.13（推荐）
+# 激活虚拟环境：source venv/bin/activate

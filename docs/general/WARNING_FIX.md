@@ -104,11 +104,11 @@ urllib3<2.0.0  # 使用v1.x版本避免LibreSSL兼容性警告
 
 ```bash
 # 使用pyenv安装带有OpenSSL的Python版本
-pyenv install 3.9.18
-pyenv local 3.9.18
+pyenv install 3.13.13
+pyenv local 3.13.13
 
 # 或使用Homebrew安装Python
-brew install python@3.9
+brew install python@3.13
 ```
 
 ---

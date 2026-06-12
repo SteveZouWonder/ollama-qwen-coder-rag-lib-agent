@@ -24,17 +24,111 @@ if (-not (Test-Path "requirements.txt")) {
     exit 1
 }
 
-# 方法1：升级pip
-Write-Host "步骤 1/3: 升级pip和setuptools" -ForegroundColor Blue
+# 方法1：升级pip和setuptools
+Write-Host "步骤 1/4: 升级pip、setuptools和wheel" -ForegroundColor Blue
 python -m pip install --upgrade pip setuptools wheel
 
+# 确保 setuptools 兼容性
+Write-Host "步骤 1.5/4: 确保 setuptools 兼容性" -ForegroundColor Blue
+try {
+    python -c "from setuptools import setup" 2>$null
+} catch {
+    Write-Host "⚠ setuptools 版本可能不兼容，尝试重新安装" -ForegroundColor Yellow
+    python -m pip install --force-reinstall setuptools
+}
+
 # 方法2：从requirements.txt安装依赖
-Write-Host "步骤 2/3: 从requirements.txt安装依赖" -ForegroundColor Blue
+Write-Host "步骤 2/4: 从requirements.txt安装依赖" -ForegroundColor Blue
 Write-Host "安装依赖（版本号来自requirements.txt）..."
-python -m pip install -r requirements.txt
+
+# 先安装数据处理依赖（使用预编译版本，避免构建错误）
+Write-Host "步骤 2.1: 安装数据处理依赖..."
+$depsResult = python -m pip install numpy pandas --prefer-binary
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✓ 数据处理依赖安装成功" -ForegroundColor Green
+} else {
+    Write-Host "⚠ 数据处理依赖安装失败，尝试备用方案..." -ForegroundColor Yellow
+    python -m pip install numpy pandas
+}
+
+# 执行安装并捕获错误
+$installResult = python -m pip install -r requirements.txt --prefer-binary
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✓ 核心依赖安装成功" -ForegroundColor Green
+    $installStatus = 0
+} else {
+    Write-Host "✗ 核心依赖安装失败" -ForegroundColor Red
+    Write-Host "尝试使用备用方案..." -ForegroundColor Yellow
+    
+    # 备用方案：不使用 --prefer-binary
+    Write-Host "尝试不使用 --prefer-binary 选项..."
+    $installResult = python -m pip install -r requirements.txt
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ 备用方案安装成功" -ForegroundColor Green
+        $installStatus = 0
+    } else {
+        Write-Host "✗ 备用方案也失败了" -ForegroundColor Red
+        $installStatus = 1
+    }
+}
+
+# 方法2.5：安装OCR功能依赖（可选）
+Write-Host ""
+Write-Host "是否安装 OCR 功能依赖？" -ForegroundColor Blue
+Write-Host "OCR 功能用于扫描版 PDF 和图片文档识别"
+Write-Host "这会安装额外的依赖：paddlepaddle、paddleocr、pytesseract、pymupdf、opencv-python"
+$installOcr = Read-Host "是否安装 OCR 依赖? (y/n)"
+
+if ($installOcr -eq "y") {
+    Write-Host "步骤 2.5/4: 安装 OCR 功能依赖（可选）" -ForegroundColor Blue
+    Write-Host "安装 OCR 依赖..."
+    
+    # 注意：paddleocr 在 Python 3.13 上有兼容性问题
+    # 我们使用 Tesseract OCR 作为主要 OCR 引擎
+    Write-Host "⚠ PaddleOCR 在 Python 3.13 上有兼容性问题" -ForegroundColor Yellow
+    Write-Host "安装 Tesseract OCR 相关依赖..."
+    
+    # 先安装数据处理依赖（如果有）
+    $numpyCheck = python -c "import pandas" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "安装数据处理依赖..."
+        python -m pip install numpy pandas --prefer-binary
+    }
+    
+    # 安装 OCR 核心依赖（Python 3.13 兼容）
+    $ocrResult = python -m pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ OCR 依赖安装完成（Tesseract OCR）" -ForegroundColor Green
+    } else {
+        Write-Host "✗ OCR 依赖安装失败" -ForegroundColor Red
+        Write-Host "跳过 OCR 依赖安装，可以稍后手动安装" -ForegroundColor Yellow
+        Write-Host "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    }
+} else {
+    Write-Host "⚠ 跳过 OCR 依赖安装" -ForegroundColor Yellow
+    Write-Host "  提示: 如需使用 OCR 功能，可以运行: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    Write-Host "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
+}
 
 # 方法3：验证安装
-Write-Host "步骤 3/3: 验证安装" -ForegroundColor Blue
+Write-Host "步骤 3/4: 检查安装状态" -ForegroundColor Blue
+
+# 检查核心安装状态
+if ($installStatus -ne 0) {
+    Write-Host "✗ 核心依赖安装失败，跳过验证步骤" -ForegroundColor Red
+    Write-Host "请查看上述错误信息，并尝试以下解决方案：" -ForegroundColor Yellow
+    Write-Host "1. 清理 pip 缓存: pip cache purge"
+    Write-Host "2. 重新安装: pip install -r requirements.txt --no-cache-dir"
+    Write-Host "3. 手动安装失败的包"
+    Write-Host "4. 使用预编译包: pip install -r requirements.txt --prefer-binary"
+    Write-Host ""
+    Write-Host "安装未完成，请解决上述问题后重新运行安装脚本" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "✓ 依赖安装成功，开始验证..." -ForegroundColor Green
+Write-Host ""
+Write-Host "步骤 4/4: 验证安装" -ForegroundColor Blue
 
 Write-Host "验证核心依赖..."
 
@@ -91,42 +185,13 @@ foreach ($dep in $testDeps) {
 }
 
 Write-Host ""
-Write-Host "验证OCR功能（可选）..."
-$ocrDeps = @(
-    @{name="paddleocr"; display="paddleocr"},
-    @{name="pytesseract"; display="pytesseract"},
-    @{name="fitz"; display="pymupdf"},
-    @{name="cv2"; display="opencv-python"}
-)
-foreach ($dep in $ocrDeps) {
-    try {
-        python -c "import $($dep.name)" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "✓ $($dep.display)" -ForegroundColor Green
-        } else {
-            Write-Host "⚠ $($dep.display) 未安装（OCR功能可选）" -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Host "⚠ $($dep.display) 未安装（OCR功能可选）" -ForegroundColor Yellow
-    }
-}
-
-# 检查Tesseract系统级依赖
-if (Get-Command tesseract -ErrorAction SilentlyContinue) {
-    $tesseractVersion = tesseract --version 2>&1 | Select-Object -First 1
-    Write-Host "✓ tesseract ($tesseractVersion)" -ForegroundColor Green
-} else {
-    Write-Host "⚠ tesseract未安装（OCR功能可选）" -ForegroundColor Yellow
-}
-
-Write-Host ""
 Write-Host "=== 安装完成 ===" -ForegroundColor Blue
 Write-Host ""
 Write-Host "验证安装："
 if ($env:VIRTUAL_ENV) {
-    Write-Host "  在虚拟环境中运行: .\check_prereqs.ps1"
+    Write-Host "  在虚拟环境中运行: .\scripts\check_prereqs.ps1"
 } else {
-    Write-Host "  运行: .\check_prereqs.ps1"
+    Write-Host "  运行: .\scripts\check_prereqs.ps1"
 }
 Write-Host ""
 Write-Host "快速开始命令："

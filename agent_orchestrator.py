@@ -10,7 +10,7 @@ from agent_registry import AgentRegistry
 from collaboration.message_bus import MessageBus
 from agents.code_agent import CodeAgent
 from agents.rag_agent import RAGAgent
-from agents.test_agent import TestAgent
+from agents import TestAgent
 from agents.doc_agent import DocAgent
 from agents.audit_agent import AuditAgent
 

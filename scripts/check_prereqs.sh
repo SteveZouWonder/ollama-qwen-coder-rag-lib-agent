@@ -65,23 +65,26 @@ check_python() {
             major=$(echo $version | cut -d. -f1)
             minor=$(echo $version | cut -d. -f2)
             
-            if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 8 ]); then
+            if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 10 ]); then
                 print_result 0 "Python 版本: $version"
                 
+                # 检查是否为 Python 3.13+ (推荐)
+                if [ $major -eq 3 ] && [ $minor -ge 13 ]; then
+                    print_result 0 "使用 Python 3.13+ (推荐)"
                 # 检查是否为 Homebrew Python (macOS 用户推荐)
-                if [[ "$OSTYPE" == "darwin"* ]]; then
+                elif [[ "$OSTYPE" == "darwin"* ]]; then
                     python_path=$(which python3 2>/dev/null)
                     if [[ "$python_path" == *"homebrew"* ]]; then
-                        print_result 0 "使用 Homebrew Python (推荐用于 urllib3 2.x 支持)"
+                        print_result 0 "使用 Homebrew Python (推荐)"
                     else
                         print_result 2 "未使用 Homebrew Python (macOS 用户推荐)"
-                        echo "  建议: brew install python@3.9 以支持 urllib3 2.6.3"
+                        echo "  建议: brew install python@3.13 以获得最佳兼容性"
                         echo "  当前路径: $python_path"
                     fi
                 fi
                 return 0
             else
-                print_result 1 "Python 版本过低: $version (需要 3.8+)"
+                print_result 1 "Python 版本过低: $version (需要 3.10+)"
                 PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
                 return 1
             fi
@@ -240,8 +243,8 @@ check_dependencies() {
         print_result 2 "未检测到虚拟环境 (推荐使用)"
         PYTHON_CMD="python3"
         echo "  提示: 使用虚拟环境可以避免依赖冲突"
-        echo "  创建方法: python3 -m venv venv && source venv/bin/activate"
-        echo "  macOS 用户推荐: python3.9 -m venv venv_homebrew && source venv_homebrew/bin/activate"
+        echo "  创建方法: python3.13 -m venv venv && source venv/bin/activate"
+        echo "  macOS 用户推荐: brew install python@3.13 && python3.13 -m venv venv && source venv/bin/activate"
     fi
     
     # 检查pip命令
@@ -354,7 +357,7 @@ check_dependencies() {
     if [ $dep_failures -gt 0 ]; then
         DEPENDENCY_ISSUES=$((DEPENDENCY_ISSUES + dep_failures))
         echo ""
-        echo "  提示: 运行 ./install_deps.sh 自动解决依赖问题"
+        echo "  提示: 运行 ./scripts/install_deps.sh 自动解决依赖问题"
     fi
 }
 
@@ -410,7 +413,8 @@ check_ocr_dependencies() {
         echo "  OCR 功能已可用：扫描版PDF和图片识别"
     else
         print_result 2 "OCR Python依赖不完整 (功能可选)"
-        echo "  安装OCR依赖: pip install paddleocr pytesseract pymupdf opencv-python pillow"
+        echo "  安装OCR依赖: pip install paddlepaddle paddleocr pytesseract pymupdf opencv-python pillow"
+        echo "  或运行主安装脚本: ./scripts/install_deps.sh (会提示是否安装OCR依赖)"
         echo "  不影响核心功能使用，只在需要OCR时安装"
     fi
 }
@@ -535,11 +539,11 @@ main() {
         if [ $PYTHON_ISSUES -gt 0 ]; then
             echo -e "${YELLOW}Python相关问题 ($PYTHON_ISSUES 个):${NC}"
             echo "  Linux:"
-            echo "    1. 安装或升级Python: sudo apt install python3.9"
+            echo "    1. 安装或升级Python: sudo apt install python3.13"
             echo "  macOS (推荐 Homebrew Python):"
-            echo "    1. brew install python@3.9"
-            echo "    2. python3.9 -m venv venv_homebrew"
-            echo "    3. source venv_homebrew/bin/activate"
+            echo "    1. brew install python@3.13"
+            echo "    2. python3.13 -m venv venv"
+            echo "    3. source venv/bin/activate"
             echo "  Windows:"
             echo "    1. 下载安装: https://www.python.org/downloads/"
             echo "  2. 验证版本: python3 --version"
@@ -557,7 +561,7 @@ main() {
         
         if [ $DEPENDENCY_ISSUES -gt 0 ]; then
             echo -e "${YELLOW}Python依赖相关问题 ($DEPENDENCY_ISSUES 个):${NC}"
-            echo "  1. 自动安装: ./install_deps.sh  # 推荐"
+            echo "  1. 自动安装: ./scripts/install_deps.sh  # 推荐"
             echo "  2. 手动安装: pip install -r requirements.txt"
             echo "  3. 或使用备用配置: pip install -r requirements_alternative.txt"
             echo "     注意: 备用配置不包含桌面应用等新功能"
@@ -575,7 +579,7 @@ main() {
         fi
         
         echo "解决所有问题后，重新运行此脚本验证："
-        echo "  ./check_prereqs.sh"
+        echo "  ./scripts/check_prereqs.sh"
         
         return 1
     fi

@@ -271,7 +271,7 @@ function Test-Dependencies {
     if ($dep_failures -gt 0) {
         $script:DEPENDENCY_ISSUES += $dep_failures
         Write-Host ""
-        Write-Host "  提示: 运行 .\install_deps.ps1 自动解决依赖问题"
+        Write-Host "  提示: 运行 .\scripts\install_deps.ps1 自动解决依赖问题"
     }
     
     # 检查urllib3 SSL兼容性
@@ -402,7 +402,8 @@ function Test-OCRDependencies {
         Write-Host "  OCR 功能已可用：扫描版PDF和图片识别"
     } else {
         Print-Result 2 "OCR Python依赖不完整 (功能可选)"
-        Write-Host "  安装OCR依赖: pip install paddleocr pytesseract pymupdf opencv-python pillow"
+        Write-Host "  安装OCR依赖: pip install paddlepaddle paddleocr pytesseract pymupdf opencv-python pillow"
+        Write-Host "  或运行主安装脚本: .\scripts\install_deps.ps1 (会提示是否安装OCR依赖)"
         Write-Host "  不影响核心功能使用，只在需要OCR时安装"
     }
     
@@ -546,7 +547,7 @@ function Main {
         
         if ($DEPENDENCY_ISSUES -gt 0) {
             Write-Host "Python依赖相关问题 ($DEPENDENCY_ISSUES 个):" -ForegroundColor Yellow
-            Write-Host "  1. 自动安装: .\install_deps.ps1  # 推荐"
+            Write-Host "  1. 自动安装: .\scripts\install_deps.ps1  # 推荐"
             Write-Host "  2. 手动安装: pip install -r requirements.txt"
             Write-Host "  3. 或使用备用配置: pip install -r requirements_alternative.txt"
             Write-Host "  4. 检查虚拟环境: 确保在虚拟环境中运行"
@@ -563,7 +564,7 @@ function Main {
         }
         
         Write-Host "解决所有问题后，重新运行此脚本验证："
-        Write-Host "  .\check_prereqs.ps1"
+        Write-Host "  .\scripts\check_prereqs.ps1"
         
         return 1
     }

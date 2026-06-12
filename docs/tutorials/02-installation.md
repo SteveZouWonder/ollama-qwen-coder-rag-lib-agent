@@ -56,8 +56,8 @@ pip install --upgrade pip
 
 **推荐方法：使用专用安装脚本**
 ```bash
-./install_deps.sh      # Linux/macOS
-.\install_deps.ps1     # Windows PowerShell
+./scripts/install_deps.sh      # Linux/macOS
+.\scripts\install_deps.ps1     # Windows PowerShell
 ```
 
 **标准方法：**
@@ -67,8 +67,8 @@ pip install -r requirements.txt
 
 **如果遇到依赖冲突：**
 ```bash
-# 使用备用配置
-pip install -r requirements_alternative.txt
+# 使用 --no-cache-dir 选项
+pip install -r requirements.txt --no-cache-dir
 ```
 
 ### 步骤5.5：安装OCR功能依赖（可选）
@@ -76,13 +76,12 @@ pip install -r requirements_alternative.txt
 如果需要使用 OCR 图像识别功能，请安装以下依赖：
 
 ```bash
-# OCR 核心依赖
-pip install paddlepaddle==2.5.2
-pip install paddleocr==2.7.0.3
-pip install pytesseract==0.3.10
-pip install pymupdf==1.23.8
-pip install opencv-python==4.8.1.78
-pip install pillow==10.1.0
+# 运行安装脚本时会提示是否安装 OCR 依赖
+./scripts/install_deps.sh      # Linux/macOS
+.\scripts\install_deps.ps1     # Windows PowerShell
+
+# 或手动安装 OCR 核心依赖（使用兼容版本）
+pip install paddlepaddle==3.0.0 paddleocr==3.0.0 pytesseract==0.3.13 opencv-python==4.9.0.80
 
 # 安装 Tesseract（系统级）
 # macOS
@@ -213,7 +212,7 @@ python query_interface.py --agent "检查main.py的语法错误"
 **症状**: `pip install -r requirements.txt` 报错 "resolution-too-deep"
 
 **解决方案**:
-1. 使用专用安装脚本: `./install_deps.sh`
+1. 使用专用安装脚本: `./scripts/install_deps.sh`
 2. 使用备用依赖配置: `pip install -r requirements_alternative.txt`
 3. 清理环境重新安装
 

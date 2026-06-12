@@ -66,7 +66,7 @@ check_module "requests" "requests"
 echo ""
 echo "=== 如果有模块未安装，运行以下命令 ==="
 if [[ "$VIRTUAL_ENV" != "" ]]; then
-    echo "  在虚拟环境中运行: ./install_deps.sh"
+    echo "  在虚拟环境中运行: ./scripts/install_deps.sh"
 else
-    echo "  或创建虚拟环境: python3 -m venv venv && source venv/bin/activate && ./install_deps.sh"
+    echo "  或创建虚拟环境: python3 -m venv venv && source venv/bin/activate && ./scripts/install_deps.sh"
 fi
