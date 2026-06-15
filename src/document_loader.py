@@ -1,11 +1,9 @@
 """
 文档加载器 - 支持 PDF、Markdown、TXT、代码文件等
 """
-import os
 from pathlib import Path
 from typing import List, Optional
 
-from llama_index.core.readers.base import BaseReader
 from llama_index.core.schema import Document
 from llama_index.readers.file import (
     PDFReader,

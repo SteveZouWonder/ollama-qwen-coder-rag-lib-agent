@@ -50,6 +50,7 @@ class AgentTask:
 - `from_dict(data: Dict) -> AgentTask`: 从字典创建实例
 
 **示例**:
+
 ```python
 from agents.agent_types import AgentTask
 
@@ -233,9 +234,10 @@ registry = AgentRegistry()
 - `bool`: 注册是否成功
 
 **示例**:
+
 ```python
 from agent_registry import AgentRegistry
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 
 registry = AgentRegistry()
 agent = BaseAgent(config)
@@ -951,8 +953,8 @@ except Exception as e:
 ```python
 from agent_config import MultiAgentConfigLoader
 from agent_registry import AgentRegistry
-from collaboration.message_bus import MessageBus
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import MessageBus
+from collaboration import TaskDecomposer
 from master_agent import MasterAgent
 from agents.agent_types import CollaborationMode
 
@@ -989,18 +991,19 @@ registry.shutdown_all()
 ### 自定义Agent示例
 
 ```python
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentConfig, AgentType
+
 
 class CustomAgent(BaseAgent):
     """自定义Agent"""
-    
+
     def process_task(self, task: AgentTask) -> AgentResult:
         """实现自定义任务处理逻辑"""
         try:
             # 处理任务
             result_output = f"Custom processing for: {task.description}"
-            
+
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -1009,7 +1012,7 @@ class CustomAgent(BaseAgent):
                 metadata={"custom_info": "additional data"},
                 execution_time=0.5
             )
-            
+
         except Exception as e:
             return AgentResult(
                 task_id=task.task_id,
@@ -1020,6 +1023,7 @@ class CustomAgent(BaseAgent):
                 execution_time=0,
                 error_message=str(e)
             )
+
 
 # 使用自定义Agent
 config = AgentConfig(

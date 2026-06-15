@@ -1,4 +1,4 @@
-# 智能文档+代码助手 v4.0
+# 智能文档+代码助手 v4.1
 
 基于 **Ollama qwen2.5-coder:7b** 的融合型 AI 助手，同时支持 **RAG 知识库检索**、**ReAct Agent 代码操作** 和 **多Agent 协作系统**。
 
@@ -147,6 +147,27 @@ export ANONYMIZED_TELEMETRY=False
 # 或查看详细文档：[ChromaDB遥测错误](TUTORIAL.md#问题5chromadb遥测错误)
 ```
 
+### 3. Python 路径设置
+
+项目代码已重构到 `src/` 目录。在使用示例代码时，需要确保 Python 能找到模块：
+
+**方法1：设置 PYTHONPATH（推荐）**
+```bash
+export PYTHONPATH="${PYTHONPATH}:$(pwd)/src"
+```
+
+**方法2：在代码中添加路径**
+```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+```
+
+**方法3：使用项目提供的脚本**
+```bash
+python src/query_interface.py  # 直接运行 src 目录下的脚本
+```
+
 **OCR 功能依赖（可选）：**
 ```bash
 # 运行安装脚本时会提示是否安装 OCR 依赖
@@ -210,6 +231,10 @@ ollama-qwen-coder-rag-lib/
 ├── knowledge_to_skills.py # 知识库到Skill智能转化引擎
 ├── knowledge_snapshot.py  # 知识库快照系统
 ├── content_security.py    # 内容安全扫描器（防止提示词攻击）
+├── file_validator.py      # 文件上传验证器（NEW）
+├── file_metadata.py       # 文件元数据管理（NEW）
+├── session_manager.py     # 会话管理器（NEW）
+└── history_compressor.py  # 历史压缩器（NEW）
 ├── agents/               # Agent模块目录
 │   ├── agent_types.py     # Agent基础数据类型
 │   ├── base_agent.py     # Agent抽象基类
@@ -443,6 +468,20 @@ ResultIntegrator 整合结果
 | `/clear` | - | 清屏 |
 | `/reset` | Agent | 重置对话上下文 |
 | `/pwd` / `/cd` | - | 目录操作 |
+| `/file-list` | - | 🆕 列出知识库中的所有文件 |
+| `/file-info <path>` | - | 🆕 查看文件详细信息 |
+| `/file-cleanup` | - | 🆕 清理临时/重复文件 |
+| `/file-deduplicate` | - | 🆕 手动触发去重 |
+| `/file-stats` | - | 🆕 显示文件统计信息 |
+| `/session-new [title]` | - | 🆕 创建新会话 |
+| `/session-list` | - | 🆕 列出所有会话 |
+| `/session-switch <id>` | - | 🆕 切换到指定会话 |
+| `/session-archive <id>` | - | 🆕 归档会话 |
+| `/session-delete <id>` | - | 🆕 删除会话 |
+| `/session-info <id>` | - | 🆕 查看会话详情 |
+| `/session-search <query>` | - | 🆕 搜索会话 |
+| `/session-current` | - | 🆕 显示当前会话信息 |
+| `/session-compress` | - | 🆕 压缩当前会话历史 |
 | `/model` | - | 显示模型信息 |
 | `/tutorial` | - | 使用教程 |
 | `/help` | - | 帮助 |
@@ -455,6 +494,10 @@ ResultIntegrator 整合结果
 ### `rag_engine.py` — RAG 引擎
 
 ```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
 from rag_engine import build_knowledge_base
 
 # 一键构建知识库
@@ -477,6 +520,10 @@ print(engine.add_document_tool("./新论文.pdf"))
 ### `react_engine.py` — ReAct 推理引擎
 
 ```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
 from react_engine import ReActEngine
 
 engine = ReActEngine()
@@ -501,6 +548,13 @@ print(engine.get_step_summary())
 | `get_knowledge_stats` | 安全 | 知识库统计 |
 
 ### `document_loader.py` — 文档加载
+
+> **注意**：以下所有示例代码都需要先设置 Python 路径：
+> ```python
+> import sys
+> from pathlib import Path
+> sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+> ```
 
 ```python
 from document_loader import load_documents

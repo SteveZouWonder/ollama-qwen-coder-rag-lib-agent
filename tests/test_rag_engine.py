@@ -3,8 +3,7 @@
 test_rag_engine.py — RAG 引擎单元测试（Mock Ollama + ChromaDB + LlamaIndex）
 """
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from rag_engine import RAGEngine, build_knowledge_base
 

@@ -31,15 +31,29 @@
 - [安全功能文档](general/SECURITY_DOCUMENTATION.md)
 - [使用场景详细指南](general/USE_CASES.md)
 - [快速开始检查](general/QUICK_START_CHECK.md)
-- [警告问题修复说明](general/WARNING_FIX.md)
 - [项目路线图](general/PROJECT_ROADMAP.md)
-- [文档重组总结](general/DOCUMENTATION_REORG_SUMMARY.md)
-- [文档更新报告](general/DOCUMENTATION_UPDATE_REPORT.md)
-- [教程重组总结](general/TUTORIAL_RESTRUCTURE_SUMMARY.md)
+- [v4.1.0实施总结](general/v4.1.0_IMPLEMENTATION_SUMMARY.md) ⭐ v4.1.0
+
+### 📜 历史文档 (history/)
+- [Agent功能认知修复](history/AGENT_FIX_SUMMARY.md)
+- [OCR配置完整修复](history/OCR_CONFIG_FIX_COMPLETE.md)
+- [图片处理修复](history/IMAGE_HANDLING_FIX.md)
+- [进度显示实现](history/PROGRESS_DISPLAY_IMPLEMENTATION_REPORT.md)
+- [教程重组总结](history/TUTORIAL_RESTRUCTURE_SUMMARY.md)
+- [文档重组总结](history/DOCUMENTATION_REORG_SUMMARY.md)
+- [文档更新报告](history/DOCUMENTATION_UPDATE_REPORT.md)
+- [警告问题修复](history/WARNING_FIX.md)
+- [综合修复报告](history/COMPREHENSIVE_FIX_REPORT.md)
 
 ### 🚀 未来特性设计 (future-feature-design/)
-- OCR提取功能设计
-- 多Agent系统设计
+- OCR提取功能设计 ✅ 已完成
+- 多Agent系统设计 ✅ 已完成
+- 文件管理和会话管理优化 ✅ 已完成
+
+### 🎯 功能实现文档 (implemented-features/)
+- [OCR提取功能实现](implemented-features/f1-ocr-extrace/) ✅ v4.0.0
+- [多Agent系统实现](implemented-features/f2-multiple-agent/) ✅ v4.0.0
+- [文件管理和会话管理实现](implemented-features/f3-file-session-management/) ⭐ v4.1.0
 
 ##  相关链接
 
@@ -51,7 +65,7 @@
 如果您是：
 - **新用户** → 先阅读 [README.md](../README.md) 了解项目概览
 - **想要快速开始** → 查看 [TUTORIAL.md](../TUTORIAL.md#快速开始)
-- **遇到问题** → 查看 [TUTORIAL.md](../TUTORIAL.md#故障排除) 或 [警告问题修复说明](general/WARNING_FIX.md)
+- **遇到问题** → 查看 [TUTORIAL.md](../TUTORIAL.md#故障排除) 或 [警告问题修复](history/WARNING_FIX.md)
 - **想了解新功能** → 查看 [知识库优化实现总结](general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
 - **关注安全问题** → 查看 [安全功能文档](general/SECURITY_DOCUMENTATION.md)
 - **查看实际应用** → 查看 [使用场景详细指南](general/USE_CASES.md)

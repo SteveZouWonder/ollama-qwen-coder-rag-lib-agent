@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 from abc import ABC
 
-from ocr_processor.base import BaseOCREngine, OCRResult
+from ocr_processor import BaseOCREngine, OCRResult
 
 
 class MockOCREngine(BaseOCREngine):

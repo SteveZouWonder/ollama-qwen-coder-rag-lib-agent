@@ -214,6 +214,96 @@ def list_directory(path: str = ".") -> str:
     except Exception as e:
         return "[错误] " + str(e)
 
+def analyze_project_structure(project_path: str = ".") -> str:
+    """分析项目结构，提供项目概览"""
+    if not os.path.exists(project_path):
+        return "[错误] 项目路径不存在: " + project_path
+    if not os.path.isdir(project_path):
+        return "[错误] 提供的路径不是目录: " + project_path
+    
+    try:
+        analysis = {
+            "project_path": os.path.abspath(project_path),
+            "structure": {},
+            "key_files": [],
+            "tech_stack": []
+        }
+        
+        # 列出根目录内容
+        items = os.listdir(project_path)
+        dirs = [item for item in items if os.path.isdir(os.path.join(project_path, item)) and not item.startswith(".")]
+        files = [item for item in items if os.path.isfile(os.path.join(project_path, item)) and not item.startswith(".")]
+        
+        analysis["structure"]["root_directories"] = dirs
+        analysis["structure"]["root_files"] = files
+        
+        # 识别关键文件
+        key_files = []
+        tech_indicators = {
+            "package.json": "JavaScript/Node.js",
+            "requirements.txt": "Python",
+            "setup.py": "Python",
+            "pyproject.toml": "Python",
+            "Cargo.toml": "Rust",
+            "go.mod": "Go",
+            "pom.xml": "Java/Maven",
+            "build.gradle": "Java/Gradle",
+            "Gemfile": "Ruby",
+            "composer.json": "PHP",
+            "README.md": "Documentation",
+            "README.rst": "Documentation",
+            "Dockerfile": "Docker",
+            "docker-compose.yml": "Docker",
+            "Makefile": "Make",
+            "CMakeLists.txt": "CMake",
+        }
+        
+        for file in files:
+            if file in tech_indicators:
+                key_files.append(file)
+                if tech_indicators[file] not in analysis["tech_stack"]:
+                    analysis["tech_stack"].append(tech_indicators[file])
+        
+        analysis["key_files"] = key_files
+        
+        # 分析主要目录
+        dir_analysis = {}
+        for dir_name in dirs[:10]:  # 限制分析前10个目录
+            dir_path = os.path.join(project_path, dir_name)
+            try:
+                sub_items = os.listdir(dir_path)
+                sub_files = [item for item in sub_items if os.path.isfile(os.path.join(dir_path, item))]
+                sub_dirs = [item for item in sub_items if os.path.isdir(os.path.join(dir_path, item))]
+                dir_analysis[dir_name] = {
+                    "files_count": len(sub_files),
+                    "dirs_count": len(sub_dirs),
+                    "sample_files": sub_files[:5]
+                }
+            except PermissionError:
+                dir_analysis[dir_name] = {"error": "权限不足"}
+        
+        analysis["structure"]["directory_details"] = dir_analysis
+        
+        # 格式化输出
+        lines = ["=== 项目结构分析 ==="]
+        lines.append(f"项目路径: {analysis['project_path']}")
+        lines.append(f"根目录数: {len(dirs)}")
+        lines.append(f"根文件数: {len(files)}")
+        lines.append(f"\n主要目录: {', '.join(dirs)}")
+        lines.append(f"主要文件: {', '.join(files)}")
+        lines.append(f"\n识别的技术栈: {', '.join(analysis['tech_stack']) if analysis['tech_stack'] else '未知'}")
+        lines.append(f"\n关键文件: {', '.join(key_files) if key_files else '无'}")
+        lines.append(f"\n目录详情:")
+        for dir_name, details in dir_analysis.items():
+            if "error" not in details:
+                lines.append(f"  {dir_name}/: {details['files_count']} 文件, {details['dirs_count']} 子目录")
+            else:
+                lines.append(f"  {dir_name}/: {details['error']}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return "[错误] 分析项目结构失败: " + str(e)
+
 def search_files(query: str, path: str = ".", max_results: int = 10) -> str:
     results = []
     exts = {".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt", ".json", ".yaml", ".yml", ".sql", ".sh"}
@@ -332,6 +422,20 @@ def check_knowledge_status() -> str:
     except Exception as e:
         return "[错误] 状态检查失败: " + str(e)
 
+
+def read_system_prompt():
+    """读取系统提示文件（.devin/SYSTEM_PROMPT.md）"""
+    try:
+        prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
+        if os.path.exists(prompt_file):
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return f"=== 系统提示内容 ===\n\n{content}\n\n=== 文件路径 ===\n{prompt_file}"
+        else:
+            return "[提示] 系统提示文件不存在，将使用内置默认提示"
+    except Exception as e:
+        return f"[错误] 读取系统提示文件失败: {str(e)}"
+
 # ========== 初始化注册表 ==========
 registry = ToolRegistry()
 registry.register("read_file", read_file, "读取文件内容，支持指定行范围",
@@ -342,9 +446,12 @@ registry.register("execute_command", execute_command, "执行shell命令（如py
                   {"command": "命令字符串(必填)", "timeout": "超时秒数，默认30"}, safe=False)
 registry.register("list_directory", list_directory, "列出目录内容",
                   {"path": "目录路径，默认当前目录"}, safe=True)
+registry.register("analyze_project_structure", analyze_project_structure, "分析项目结构，识别技术栈和关键文件",
+                  {"project_path": "项目路径，默认当前目录"}, safe=True)
 registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件",
                   {"query": "搜索关键字(必填)", "path": "搜索目录，默认当前目录", "max_results": "最大结果数，默认10"}, safe=True)
 registry.register("get_current_dir", get_current_dir, "获取当前工作目录路径", {}, safe=True)
+registry.register("read_system_prompt", read_system_prompt, "读取系统提示文件（必须优先阅读）", {}, safe=True)
 
 # RAG 工具
 registry.register("query_knowledge_base", query_knowledge_base, "查询个人知识库（PDF、论文、笔记、OCR识别的图片等文档）",

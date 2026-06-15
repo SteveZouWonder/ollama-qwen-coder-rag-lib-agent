@@ -1,8 +1,7 @@
 """
 测试result_integrator模块
 """
-import pytest
-from collaboration.result_integrator import ResultIntegrator
+from collaboration import ResultIntegrator
 from agents.agent_types import AgentResult, AgentTask
 
 

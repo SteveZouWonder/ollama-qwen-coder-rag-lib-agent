@@ -3,7 +3,7 @@ Agent注册中心 - 管理所有Agent实例的注册表
 """
 from typing import Dict, List, Optional
 import logging
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentType, AgentState
 
 

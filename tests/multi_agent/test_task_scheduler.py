@@ -1,10 +1,9 @@
 """
 测试task_scheduler模块
 """
-import pytest
 from collaboration.task_scheduler import TaskScheduler
 from agents.agent_types import AgentTask, AgentResult, AgentType, AgentState, TaskStatus
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 
 
 class MockAgentForScheduler(BaseAgent):

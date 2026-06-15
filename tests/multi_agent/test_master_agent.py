@@ -1,9 +1,8 @@
 """
 测试master_agent模块
 """
-import pytest
 from master_agent import MasterAgent
-from agents.agent_types import AgentTask, AgentResult, AgentType, CollaborationMode
+from agents.agent_types import AgentTask, AgentType, CollaborationMode
 from agents.code_agent import CodeAgent
 from agents import TestAgent
 

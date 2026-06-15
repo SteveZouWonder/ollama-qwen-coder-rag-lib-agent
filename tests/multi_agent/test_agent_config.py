@@ -1,7 +1,6 @@
 """
 测试agent_config模块
 """
-import pytest
 import tempfile
 import os
 from agent_config import AgentConfigManager

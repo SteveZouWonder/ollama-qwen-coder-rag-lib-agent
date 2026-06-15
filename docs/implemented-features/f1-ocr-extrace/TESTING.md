@@ -37,7 +37,8 @@ import pytest
 from pathlib import Path
 from PIL import Image, ImageDraw
 from ocr_processor.paddle_ocr import PaddleOCREngine
-from ocr_processor.base import OCRResult
+from ocr_processor import OCRResult
+
 
 class TestPaddleOCREngine:
     """PaddleOCR 引擎测试"""
@@ -122,8 +123,9 @@ class TestPaddleOCREngine:
 import pytest
 from pathlib import Path
 import pickle
-from ocr_processor.cache import OCRCache
-from ocr_processor.base import OCRResult
+from ocr_processor import OCRCache
+from ocr_processor import OCRResult
+
 
 class TestOCRCache:
     """OCR 缓存测试"""
@@ -199,6 +201,7 @@ class TestOCRCache:
 import pytest
 from pathlib import Path
 from ocr_processor.image_extractor import PDFImageExtractor, ExtractedImage
+
 
 class TestPDFImageExtractor:
     """PDF 图片提取器测试"""
@@ -428,6 +431,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 from ocr_processor.paddle_ocr import PaddleOCREngine
 
+
 class TestOCRPerformance:
     """OCR 性能测试"""
 
@@ -530,6 +534,7 @@ import pytest
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from ocr_processor.paddle_ocr import PaddleOCREngine
+
 
 class TestOCRAccuracy:
     """OCR 准确性测试"""
@@ -636,6 +641,7 @@ import time
 from pathlib import Path
 from PIL import Image, ImageDraw
 from ocr_processor.paddle_ocr import PaddleOCREngine
+
 
 class TestOCRStability:
     """OCR 稳定性测试"""

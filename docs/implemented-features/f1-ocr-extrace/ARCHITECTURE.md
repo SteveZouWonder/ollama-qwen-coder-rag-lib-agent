@@ -470,8 +470,9 @@ from llama_index.core.schema import Document
 
 # 新增 OCR 处理器导入
 from ocr_processor.paddle_ocr import PaddleOCREngine
-from ocr_processor.tesseract_ocr import TesseractOCREngine
+from ocr_processor import TesseractOCREngine
 from ocr_processor.image_extractor import PDFImageExtractor
+
 
 class DocumentLoader:
     """统一文档加载器（扩展版）"""

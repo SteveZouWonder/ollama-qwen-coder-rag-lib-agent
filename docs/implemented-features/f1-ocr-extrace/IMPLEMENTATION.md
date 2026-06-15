@@ -491,7 +491,8 @@ OCR 处理器单元测试
 import pytest
 from pathlib import Path
 from ocr_processor.paddle_ocr import PaddleOCREngine
-from ocr_processor.cache import OCRCache
+from ocr_processor import OCRCache
+
 
 class TestPaddleOCREngine:
     """PaddleOCR 引擎测试"""
@@ -532,7 +533,7 @@ class TestPaddleOCREngine:
         cache = OCRCache(Path(ocr_config['cache_dir']))
 
         # 测试缓存写入
-        from ocr_processor.base import OCRResult
+        from ocr_processor import OCRResult
         result = OCRResult(text="test", confidence=0.9)
         cache.set("test_hash", result)
 

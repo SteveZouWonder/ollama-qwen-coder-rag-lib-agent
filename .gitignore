@@ -94,3 +94,4 @@ safety-check.json
 /.flake8
 /.pylintrc
 /pytest.ini
+/coverage.xml

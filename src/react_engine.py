@@ -7,13 +7,59 @@ import re
 import json
 import requests
 import threading
-from typing import List, Dict, Optional, Callable
+import os
+from typing import List, Dict, Callable
 
 from config import Config
 from chat_history import ChatHistory
 from agent_tools import registry, CommandSafetyChecker
 
+
+def read_system_prompt_from_file():
+    """
+    从 .devin/SYSTEM_PROMPT.md 读取系统提示
+    如果文件不存在，返回None，使用内置的默认提示
+    """
+    prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
+    if os.path.exists(prompt_file):
+        try:
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            # 如果读取失败，返回None使用默认提示
+            return None
+    return None
+
 SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 CodeAgent。
+
+## 🚨 强制步骤（最高优先级 - MUST READ）
+
+**在执行任何任务之前，必须按照以下顺序操作：**
+
+1. **首先使用 read_system_prompt 工具读取系统提示文件**（这是最关键的步骤）
+2. **读取配置文件**（按优先级）：
+   - 首先读取 `~/.config/devin/AI_DEBUGGING_WORKFLOW.md`（全局工作流程）
+   - 其次读取 `~/.config/devin/AGENTS.md`（全局质量标准）
+   - 最后读取 `.devin/AGENTS.md`（项目特定配置）
+   - **严格遵循配置文件中的所有要求**
+
+3. **使用任务追踪**：
+   - 使用 todo_write 工具创建任务列表
+   - 每完成一个步骤，立即更新状态
+   - 确保所有步骤都完成后才能交付
+
+4. **质量标准检查**：
+   - 确保测试覆盖率 ≥ 95%
+   - 所有测试必须通过
+   - 代码必须符合PEP 8规范
+   - 添加适当的错误处理
+
+**绝对禁止的行为：**
+- ❌ 跳过工作流程直接修改代码
+- ❌ 修改代码后不添加测试
+- ❌ 测试失败后强行交付
+- ❌ 破坏向后兼容性
+- ❌ 不读取系统提示就开始执行任务
 
 你的核心能力：
 1. 代码生成与重构
@@ -56,10 +102,30 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 Cod
 - 保持回答简洁专业，代码块用 markdown 格式
 - 如果不需要工具，直接输出 Final Answer
 
+=== 项目结构分析任务 ===
+当用户要求分析项目结构时，按以下步骤进行：
+
+1. 首先使用 list_directory 列出项目根目录的内容
+2. 识别主要目录和文件（如 src/, tests/, README.md, package.json 等）
+3. 根据项目类型，读取关键配置文件和文档
+4. 分析项目架构和技术栈
+5. 提供结构化的项目分析报告
+
+**重要**：不要尝试直接读取目录路径作为文件，必须先列出目录内容，再读取具体文件。
+
+=== 错误处理和恢复 ===
+- 如果工具调用失败，分析失败原因
+- 如果是参数错误，修正参数后重试
+- 如果是方法不当，尝试其他工具或方法
+- 如果多次失败，向用户说明问题并建议替代方案
+- 不要因为一次失败就放弃任务，要尝试多种解决方法
+
 === 重要提醒 ===
 - 知识库数据已持久化存储在 index_storage 目录，重启后数据不会丢失
 - OCR 功能已启用，可以自动识别图片和扫描版 PDF 中的文字
 - 不要告诉用户这些功能不存在，如果工具调用失败，说明是配置或依赖问题，而非功能缺失
+- 遇到错误时要保持冷静，分析原因，尝试不同方法
+- **必须在开始任务前读取系统提示并严格执行要求**
 
 === 安全规则 ===
 - 执行命令前确认安全性，避免 rm -rf / 等危险命令
@@ -83,8 +149,17 @@ class ReActEngine:
         msgs = self.history.get_messages()
         has_system = any(m.get("role") == "system" for m in msgs)
         if not has_system:
-            tool_desc = registry.get_descriptions()
-            system_msg = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
+            # 优先从文件读取系统提示
+            custom_prompt = read_system_prompt_from_file()
+            if custom_prompt:
+                # 使用自定义提示，替换工具描述占位符
+                tool_desc = registry.get_descriptions()
+                system_msg = custom_prompt.replace("{tool_descriptions}", tool_desc)
+            else:
+                # 使用内置默认提示
+                tool_desc = registry.get_descriptions()
+                system_msg = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
+            
             self.history.messages.insert(0, {"role": "system", "content": system_msg})
             self.history.save()
 
@@ -261,6 +336,25 @@ class ReActEngine:
         if not clean_messages:
             return "[错误] 消息列表为空"
 
+        # 启动进度更新线程
+        stop_progress = threading.Event()
+        def update_progress():
+            dots = 0
+            while not stop_progress.is_set():
+                if self.on_step and not stop_progress.is_set():
+                    dot_str = "." * (dots % 4)
+                    self.on_step({
+                        "step": "?",
+                        "total": "?",
+                        "phase": "thinking",
+                        "message": f"模型推理中{dot_str}"
+                    })
+                dots += 1
+                stop_progress.wait(0.5)  # 每0.5秒更新一次
+        
+        progress_thread = threading.Thread(target=update_progress, daemon=True)
+        progress_thread.start()
+
         try:
             resp = requests.post(
                 self.host + "/api/chat",
@@ -285,6 +379,9 @@ class ReActEngine:
             return "[错误] 模型响应超时，请检查模型是否已加载到内存"
         except Exception as e:
             return "[错误] 模型调用失败: " + str(e)
+        finally:
+            stop_progress.set()
+            progress_thread.join(timeout=1.0)
 
     def clear_history(self):
         self.history.clear()

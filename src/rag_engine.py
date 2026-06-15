@@ -40,7 +40,6 @@ from config import (
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     TOP_K,
-    SIMILARITY_CUTOFF,
 )
 from document_loader import load_documents
 

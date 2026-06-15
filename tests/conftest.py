@@ -6,6 +6,7 @@ import subprocess
 import os
 import tempfile
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import pytest
@@ -13,6 +14,9 @@ import warnings
 
 # 忽略 pymupdf 的 Swig 类型警告（库的问题）
 warnings.filterwarnings("ignore", category=DeprecationWarning, message="builtin type.*Swig.*")
+
+# 添加src目录到Python路径，支持模块导入
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 
 @pytest.fixture(autouse=True)

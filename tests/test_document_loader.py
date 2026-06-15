@@ -65,6 +65,13 @@ class TestDocumentLoaderLoadFile:
 
         import document_loader
         monkeypatch.setattr(document_loader.DocumentLoader, "READERS", {".xyz": lambda: mock_reader})
+        
+        # Mock文件验证器以允许测试文件类型
+        from file_validator import FileValidator
+        mock_validator = MagicMock()
+        mock_validator.validate_file.return_value = (True, "Mock validation passed")
+        monkeypatch.setattr(FileValidator, 'validate_file', mock_validator.validate_file)
+        
         dl = DocumentLoader(temp_dir)
         docs = dl.load_file(path)
 

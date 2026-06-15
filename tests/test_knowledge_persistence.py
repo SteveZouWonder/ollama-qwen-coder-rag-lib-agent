@@ -3,11 +3,13 @@
 测试知识库持久化功能
 验证知识库是否能正确保存和加载
 """
+import pytest
 from rag_engine import RAGEngine
 from document_loader import load_documents
 from pathlib import Path
 import sys
 
+@pytest.mark.integration
 def test_persistence():
     print("=" * 50)
     print("测试知识库持久化功能")

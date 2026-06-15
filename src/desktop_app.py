@@ -27,8 +27,8 @@ except ImportError:
     DESKTOP_AVAILABLE = False
 
 # ==================== 配置 ====================
-CONFIG_FILE = Path("config/app_config.json")
-LOG_FILE = Path("logs/app.log")
+CONFIG_FILE = Path("../config/app_config.json")
+LOG_FILE = Path("../logs/app.log")
 STATUS_FILE = Path("logs/status.log")
 
 DEFAULT_CONFIG = {

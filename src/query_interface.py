@@ -181,6 +181,13 @@ def check_first_run():
 
 # ==================== 回调函数 ====================
 
+# 进度条状态管理
+_progress_state = {
+    "last_line_length": 0,
+    "important_phases": {"executing", "observed", "blocked", "rejected", "final"},
+    "current_thinking_dots": 0
+}
+
 def on_step_callback(data: dict):
     from config import Config
     
@@ -203,7 +210,6 @@ def on_step_callback(data: dict):
     }.get(phase, "[?]")
 
     if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
         from rich.console import Console as RichConsole
         
         color = {
@@ -226,11 +232,40 @@ def on_step_callback(data: dict):
             progress_percent = 0
             progress_bar = "░" * 20
         
-        console.print(
-            f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
-            f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
-        )
+        # 根据阶段选择显示策略
+        if phase == "thinking":
+            # 推理期间：单行刷新，添加动态点
+            _progress_state["current_thinking_dots"] = (_progress_state["current_thinking_dots"] + 1) % 4
+            dots = "." * _progress_state["current_thinking_dots"]
+            content = f"[{color}]{phase_emoji} [{step}/{total}] 模型推理中{dots}[/{color}] [dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
+            console.print(content, end="\r")
+            _progress_state["last_line_length"] = len(content)
+            
+        elif phase in _progress_state["important_phases"]:
+            # 重要步骤：换行输出，保留历史记录
+            # 先清理上一行的推理状态
+            if _progress_state["last_line_length"] > 0:
+                console.print(" " * _progress_state["last_line_length"], end="\r")
+                _progress_state["last_line_length"] = 0
+            
+            console.print(
+                f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
+                f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
+            )
+            
+        else:
+            # 其他阶段：也换行输出
+            if _progress_state["last_line_length"] > 0:
+                console.print(" " * _progress_state["last_line_length"], end="\r")
+                _progress_state["last_line_length"] = 0
+                
+            console.print(
+                f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
+                f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
+            )
+            
     else:
+        # 非rich模式：保持原有行为
         print(f"[{step}/{total}] {phase_emoji} {msg}")
 
 def on_confirm_callback(data: dict) -> bool:

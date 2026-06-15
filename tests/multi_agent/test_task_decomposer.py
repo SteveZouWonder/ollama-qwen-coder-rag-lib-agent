@@ -1,8 +1,7 @@
 """
 测试task_decomposer模块
 """
-import pytest
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import TaskDecomposer
 from agents.agent_types import AgentTask
 
 

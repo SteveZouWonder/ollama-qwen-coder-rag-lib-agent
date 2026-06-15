@@ -4,8 +4,7 @@
 from typing import List, Dict, Any
 import uuid
 import logging
-from agents.agent_types import AgentTask, TaskStatus
-from agents.agent_types import AgentType
+from agents.agent_types import AgentTask
 
 
 class TaskDecomposer:

@@ -2,13 +2,11 @@
 OCR 缓存系统单元测试
 """
 import pytest
-from pathlib import Path
 import pickle
-import time
 from datetime import datetime, timedelta
 
-from ocr_processor.cache import OCRCache
-from ocr_processor.base import OCRResult
+from ocr_processor import OCRCache
+from ocr_processor import OCRResult
 
 
 class TestOCRCache:

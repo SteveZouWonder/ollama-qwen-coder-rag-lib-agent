@@ -2,14 +2,12 @@
 """
 test_query_interface_render.py — 渲染函数单元测试（Mock HAS_RICH）
 """
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from query_interface import (
     print_banner, print_help, print_tools, print_rag_sources,
     print_knowledge_stats, show_tutorial, check_first_run,
-    on_step_callback, on_confirm_callback, ask_progress_callback,
-)
+    on_step_callback, on_confirm_callback, )
 
 
 class TestOnStepCallback:
@@ -238,7 +236,6 @@ class TestEnhancedOnStepCallback:
     @patch("query_interface.HAS_RICH", True)
     @patch("query_interface.console")
     def test_on_step_progress_calculation(self, mock_console):
-        from query_interface import on_step_callback as original_callback
         from query_interface import Config
         
         original_value = Config.SHOW_PROGRESS

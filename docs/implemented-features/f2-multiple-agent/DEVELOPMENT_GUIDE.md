@@ -290,6 +290,7 @@ from agents.agent_types import (
     AgentTask, AgentResult, AgentMessage, AgentConfig, OrchestratorConfig
 )
 
+
 class TestAgentTypes:
     """测试Agent类型定义"""
 
@@ -327,12 +328,12 @@ class TestAgentTypes:
             required_capabilities=["code"],
             input_data={"test": "data"}
         )
-        
+
         # 转换为字典
         task_dict = task.to_dict()
         assert "task_id" in task_dict
         assert task_dict["status"] == "pending"
-        
+
         # 从字典创建
         restored_task = AgentTask.from_dict(task_dict)
         assert restored_task.task_id == task.task_id
@@ -377,6 +378,7 @@ class TestAgentTypes:
         assert config.agent_id == "test_agent"
         assert config.agent_type == AgentType.CODE
         assert config.enabled is True
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
@@ -655,7 +657,8 @@ import time
 from agents.agent_types import (
     AgentTask, AgentResult, AgentConfig, AgentType, TaskStatus, AgentState
 )
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
+
 
 class MockAgent(BaseAgent):
     """用于测试的Mock Agent"""
@@ -664,7 +667,7 @@ class MockAgent(BaseAgent):
         """简单的任务处理实现"""
         if "fail" in task.description.lower():
             raise Exception("Task failed as requested")
-        
+
         return AgentResult(
             task_id=task.task_id,
             agent_id=self.agent_id,
@@ -673,6 +676,7 @@ class MockAgent(BaseAgent):
             metadata={},
             execution_time=0.1
         )
+
 
 class TestBaseAgent:
     """测试Agent基类"""
@@ -715,7 +719,7 @@ class TestBaseAgent:
     def test_can_handle(self, agent, sample_task):
         """测试任务处理能力判断"""
         assert agent.can_handle(sample_task) is True
-        
+
         # 测试不能处理的任务
         sample_task.required_capabilities = ["unknown_capability"]
         assert agent.can_handle(sample_task) is False
@@ -723,7 +727,7 @@ class TestBaseAgent:
     def test_execute_task_success(self, agent, sample_task):
         """测试成功执行任务"""
         result = agent.execute_task(sample_task)
-        
+
         assert result.success is True
         assert result.agent_id == "test_agent"
         assert agent.state == AgentState.IDLE
@@ -733,7 +737,7 @@ class TestBaseAgent:
         """测试任务执行失败"""
         sample_task.description = "fail this task"
         result = agent.execute_task(sample_task)
-        
+
         assert result.success is False
         assert "Task failed as requested" in result.error_message
         assert agent.state == AgentState.ERROR
@@ -742,20 +746,20 @@ class TestBaseAgent:
         """测试Agent状态管理"""
         # 初始状态
         assert agent.state == AgentState.IDLE
-        
+
         # 执行任务时的状态
         def delayed_execution():
             time.sleep(0.1)
             agent.process_task(sample_task)
-        
+
         import threading
         thread = threading.Thread(target=delayed_execution)
         thread.start()
         time.sleep(0.05)
-        
+
         # 任务执行中应该是BUSY状态
         assert agent.state == AgentState.BUSY
-        
+
         thread.join()
         # 任务完成后应该是IDLE状态
         assert agent.state == AgentState.IDLE
@@ -763,12 +767,12 @@ class TestBaseAgent:
     def test_message_handling(self, agent):
         """测试消息处理"""
         received_messages = []
-        
+
         def test_handler(message):
             received_messages.append(message)
-        
+
         agent.register_message_handler("test", test_handler)
-        
+
         from agents.agent_types import AgentMessage
         message = AgentMessage(
             from_agent="other_agent",
@@ -776,9 +780,9 @@ class TestBaseAgent:
             message_type="test",
             content={"data": "test"}
         )
-        
+
         agent.handle_message(message)
-        
+
         assert len(received_messages) == 1
         assert received_messages[0].message_type == "test"
 
@@ -794,7 +798,7 @@ class TestBaseAgent:
                 input_data={}
             )
             agent.execute_task(task)
-        
+
         history = agent.get_task_history(limit=3)
         assert len(history) == 3
         assert history[0].task_id == "task_2"  # 最后3个任务
@@ -802,7 +806,7 @@ class TestBaseAgent:
     def test_get_status(self, agent, sample_task):
         """测试获取状态信息"""
         agent.execute_task(sample_task)
-        
+
         status = agent.get_status()
         assert status["agent_id"] == "test_agent"
         assert status["state"] == "idle"
@@ -813,12 +817,13 @@ class TestBaseAgent:
         """测试停止和重置"""
         agent.execute_task(sample_task)
         assert agent.state == AgentState.IDLE
-        
+
         agent.stop()
         assert agent.state == AgentState.OFFLINE
-        
+
         agent.reset()
         assert agent.state == AgentState.IDLE
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
@@ -854,6 +859,7 @@ import time
 from agents.agent_types import AgentMessage
 
 logger = logging.getLogger(__name__)
+
 
 class MessageBus:
     """
@@ -929,8 +935,8 @@ class MessageBus:
         self.message_queue.put(message)
         logger.debug(f"Message published: {message.message_id} from {message.from_agent} to {message.to_agent}")
 
-    def send_direct(self, from_agent: str, to_agent: str, 
-                   message_type: str, content: Dict) -> str:
+    def send_direct(self, from_agent: str, to_agent: str,
+                    message_type: str, content: Dict) -> str:
         """
         点对点发送消息
         
@@ -950,7 +956,7 @@ class MessageBus:
             content=content,
             timestamp=time.time()
         )
-        
+
         self.publish(message)
         return message.message_id
 
@@ -965,7 +971,7 @@ class MessageBus:
         """
         with self.lock:
             subscribers = list(self.subscribers.keys())
-        
+
         for agent_id in subscribers:
             if agent_id != from_agent:
                 message = AgentMessage(
@@ -976,15 +982,15 @@ class MessageBus:
                     timestamp=time.time()
                 )
                 self.publish(message)
-        
-        logger.info(f"Broadcast message from {from_agent} to {len(subscribers)-1} subscribers")
+
+        logger.info(f"Broadcast message from {from_agent} to {len(subscribers) - 1} subscribers")
 
     def start(self):
         """启动消息处理线程"""
         if self._running:
             logger.warning("MessageBus is already running")
             return
-        
+
         self._running = True
         self._worker_thread = Thread(target=self._process_messages, daemon=True)
         self._worker_thread.start()
@@ -994,7 +1000,7 @@ class MessageBus:
         """停止消息处理线程"""
         if not self._running:
             return
-        
+
         self._running = False
         if self._worker_thread:
             self._worker_thread.join(timeout=5.0)
@@ -1015,7 +1021,7 @@ class MessageBus:
         """投递消息给订阅者"""
         with self.lock:
             callbacks = self.subscribers.get(message.to_agent, []).copy()
-        
+
         for callback in callbacks:
             try:
                 callback(message)
@@ -1078,7 +1084,7 @@ class MessageBus:
                 "total_messages": len(self.message_history),
                 "queue_size": self.message_queue.qsize(),
                 "subscribers": {
-                    agent_id: len(callbacks) 
+                    agent_id: len(callbacks)
                     for agent_id, callbacks in self.subscribers.items()
                 }
             }
@@ -1102,136 +1108,138 @@ import pytest
 import time
 import threading
 from agents.agent_types import AgentMessage
-from collaboration.message_bus import MessageBus
+from collaboration import MessageBus
+
 
 class TestMessageBus:
-    """测试消息总线"""
+   """测试消息总线"""
 
-    @pytest.fixture
-    def message_bus(self):
-        """创建消息总线实例"""
-        bus = MessageBus()
-        bus.start()
-        yield bus
-        bus.stop()
+   @pytest.fixture
+   def message_bus(self):
+      """创建消息总线实例"""
+      bus = MessageBus()
+      bus.start()
+      yield bus
+      bus.stop()
 
-    def test_subscribe_unsubscribe(self, message_bus):
-        """测试订阅和取消订阅"""
-        received_messages = []
-        
-        def handler(message):
-            received_messages.append(message)
-        
-        message_bus.subscribe("agent1", handler)
-        assert "agent1" in message_bus.subscribers
-        
-        message_bus.unsubscribe("agent1", handler)
-        # 应该没有处理器了
-        assert len(message_bus.subscribers.get("agent1", [])) == 0
+   def test_subscribe_unsubscribe(self, message_bus):
+      """测试订阅和取消订阅"""
+      received_messages = []
 
-    def test_publish_and_receive(self, message_bus):
-        """测试消息发布和接收"""
-        received_messages = []
-        
-        def handler(message):
-            received_messages.append(message)
-        
-        message_bus.subscribe("agent1", handler)
-        
-        message = AgentMessage(
+      def handler(message):
+         received_messages.append(message)
+
+      message_bus.subscribe("agent1", handler)
+      assert "agent1" in message_bus.subscribers
+
+      message_bus.unsubscribe("agent1", handler)
+      # 应该没有处理器了
+      assert len(message_bus.subscribers.get("agent1", [])) == 0
+
+   def test_publish_and_receive(self, message_bus):
+      """测试消息发布和接收"""
+      received_messages = []
+
+      def handler(message):
+         received_messages.append(message)
+
+      message_bus.subscribe("agent1", handler)
+
+      message = AgentMessage(
+         from_agent="agent2",
+         to_agent="agent1",
+         message_type="test",
+         content={"data": "test"}
+      )
+
+      message_bus.publish(message)
+
+      # 等待消息被处理
+      time.sleep(0.1)
+
+      assert len(received_messages) == 1
+      assert received_messages[0].message_type == "test"
+
+   def test_send_direct(self, message_bus):
+      """测试点对点发送"""
+      received_messages = []
+
+      def handler(message):
+         received_messages.append(message)
+
+      message_bus.subscribe("agent1", handler)
+
+      message_id = message_bus.send_direct(
+         from_agent="agent2",
+         to_agent="agent1",
+         message_type="direct_test",
+         content={"key": "value"}
+      )
+
+      # 等待消息被处理
+      time.sleep(0.1)
+
+      assert len(received_messages) == 1
+      assert received_messages[0].message_type == "direct_test"
+      assert received_messages[0].content["key"] == "value"
+
+   def test_broadcast(self, message_bus):
+      """测试广播消息"""
+      received_count = {"agent1": 0, "agent2": 0, "agent3": 0}
+
+      def handler1(message):
+         received_count["agent1"] += 1
+
+      def handler2(message):
+         received_count["agent2"] += 1
+
+      def handler3(message):
+         received_count["agent3"] += 1
+
+      message_bus.subscribe("agent1", handler1)
+      message_bus.subscribe("agent2", handler2)
+      message_bus.subscribe("agent3", handler3)
+
+      message_bus.broadcast("agent1", "broadcast_test", {"data": "test"})
+
+      # 等待消息被处理
+      time.sleep(0.1)
+
+      # agent1不应该收到自己的广播
+      assert received_count["agent1"] == 0
+      assert received_count["agent2"] == 1
+      assert received_count["agent3"] == 1
+
+   def test_message_history(self, message_bus):
+      """测试消息历史"""
+      message_bus.subscribe("agent1", lambda m: None)
+
+      for i in range(5):
+         message_bus.send_direct(
             from_agent="agent2",
             to_agent="agent1",
-            message_type="test",
-            content={"data": "test"}
-        )
-        
-        message_bus.publish(message)
-        
-        # 等待消息被处理
-        time.sleep(0.1)
-        
-        assert len(received_messages) == 1
-        assert received_messages[0].message_type == "test"
+            message_type=f"test_{i}",
+            content={"index": i}
+         )
 
-    def test_send_direct(self, message_bus):
-        """测试点对点发送"""
-        received_messages = []
-        
-        def handler(message):
-            received_messages.append(message)
-        
-        message_bus.subscribe("agent1", handler)
-        
-        message_id = message_bus.send_direct(
-            from_agent="agent2",
-            to_agent="agent1",
-            message_type="direct_test",
-            content={"key": "value"}
-        )
-        
-        # 等待消息被处理
-        time.sleep(0.1)
-        
-        assert len(received_messages) == 1
-        assert received_messages[0].message_type == "direct_test"
-        assert received_messages[0].content["key"] == "value"
+      time.sleep(0.2)
 
-    def test_broadcast(self, message_bus):
-        """测试广播消息"""
-        received_count = {"agent1": 0, "agent2": 0, "agent3": 0}
-        
-        def handler1(message):
-            received_count["agent1"] += 1
-        
-        def handler2(message):
-            received_count["agent2"] += 1
-        
-        def handler3(message):
-            received_count["agent3"] += 1
-        
-        message_bus.subscribe("agent1", handler1)
-        message_bus.subscribe("agent2", handler2)
-        message_bus.subscribe("agent3", handler3)
-        
-        message_bus.broadcast("agent1", "broadcast_test", {"data": "test"})
-        
-        # 等待消息被处理
-        time.sleep(0.1)
-        
-        # agent1不应该收到自己的广播
-        assert received_count["agent1"] == 0
-        assert received_count["agent2"] == 1
-        assert received_count["agent3"] == 1
+      history = message_bus.get_message_history(limit=3)
+      assert len(history) == 3
 
-    def test_message_history(self, message_bus):
-        """测试消息历史"""
-        message_bus.subscribe("agent1", lambda m: None)
-        
-        for i in range(5):
-            message_bus.send_direct(
-                from_agent="agent2",
-                to_agent="agent1",
-                message_type=f"test_{i}",
-                content={"index": i}
-            )
-        
-        time.sleep(0.2)
-        
-        history = message_bus.get_message_history(limit=3)
-        assert len(history) == 3
+   def test_statistics(self, message_bus):
+      """测试统计信息"""
+      message_bus.subscribe("agent1", lambda m: None)
+      message_bus.subscribe("agent2", lambda m: None)
 
-    def test_statistics(self, message_bus):
-        """测试统计信息"""
-        message_bus.subscribe("agent1", lambda m: None)
-        message_bus.subscribe("agent2", lambda m: None)
-        
-        stats = message_bus.get_statistics()
-        assert stats["total_subscribers"] == 2
-        assert "agent1" in stats["subscribers"]
-        assert "agent2" in stats["subscribers"]
+      stats = message_bus.get_statistics()
+      assert stats["total_subscribers"] == 2
+      assert "agent1" in stats["subscribers"]
+      assert "agent2" in stats["subscribers"]
+
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+   pytest.main([__file__, "-v"])
 ```
 
 #### 3.3 运行测试
@@ -1257,10 +1265,11 @@ Agent注册中心实现
 """
 from typing import Dict, List, Optional
 import logging
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 class AgentRegistry:
     """
@@ -1296,20 +1305,20 @@ class AgentRegistry:
             if agent.agent_id in self.agents:
                 logger.warning(f"Agent {agent.agent_id} already registered")
                 return False
-            
+
             self.agents[agent.agent_id] = agent
-            
+
             # 更新能力索引
             for capability in agent.capabilities:
                 if capability not in self.capabilities_index:
                     self.capabilities_index[capability] = []
                 self.capabilities_index[capability].append(agent.agent_id)
-            
+
             # 更新类型索引
             if agent.agent_type not in self.type_index:
                 self.type_index[agent.agent_type] = []
             self.type_index[agent.agent_type].append(agent.agent_id)
-            
+
             logger.info(f"Agent {agent.agent_id} registered successfully")
             return True
 
@@ -1327,22 +1336,22 @@ class AgentRegistry:
             if agent_id not in self.agents:
                 logger.warning(f"Agent {agent_id} not found")
                 return False
-            
+
             agent = self.agents[agent_id]
-            
+
             # 更新能力索引
             for capability in agent.capabilities:
                 if capability in self.capabilities_index:
                     self.capabilities_index[capability].remove(agent_id)
                     if not self.capabilities_index[capability]:
                         del self.capabilities_index[capability]
-            
+
             # 更新类型索引
             if agent.agent_type in self.type_index:
                 self.type_index[agent.agent_type].remove(agent_id)
                 if not self.type_index[agent.agent_type]:
                     del self.type_index[agent.agent_type]
-            
+
             del self.agents[agent_id]
             logger.info(f"Agent {agent_id} unregistered successfully")
             return True
@@ -1371,12 +1380,12 @@ class AgentRegistry:
         """
         agent_ids = self.capabilities_index.get(capability, [])
         agents = []
-        
+
         with self._lock:
             for agent_id in agent_ids:
                 if agent_id in self.agents:
                     agents.append(self.agents[agent_id])
-        
+
         return agents
 
     def find_agents_by_type(self, agent_type: AgentType) -> List[BaseAgent]:
@@ -1391,12 +1400,12 @@ class AgentRegistry:
         """
         agent_ids = self.type_index.get(agent_type, [])
         agents = []
-        
+
         with self._lock:
             for agent_id in agent_ids:
                 if agent_id in self.agents:
                     agents.append(self.agents[agent_id])
-        
+
         return agents
 
     def get_all_agents(self) -> List[BaseAgent]:
@@ -1441,7 +1450,7 @@ class AgentRegistry:
             for agent in self.agents.values():
                 status = agent.get_status()
                 agent_states[agent.agent_id] = status["state"]
-            
+
             return {
                 "total_agents": len(self.agents),
                 "total_capabilities": len(self.capabilities_index),
@@ -1461,7 +1470,7 @@ class AgentRegistry:
                     agent.stop()
                 except Exception as e:
                     logger.error(f"Error stopping agent {agent.agent_id}: {e}")
-        
+
         logger.info("All agents shut down")
 ```
 
@@ -1475,11 +1484,13 @@ class AgentRegistry:
 """
 import pytest
 from agents.agent_types import AgentConfig, AgentType
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agent_registry import AgentRegistry
+
 
 class MockAgent(BaseAgent):
     """用于测试的Mock Agent"""
+
     def process_task(self, task):
         from agents.agent_types import AgentResult
         return AgentResult(
@@ -1490,6 +1501,7 @@ class MockAgent(BaseAgent):
             metadata={},
             execution_time=0.1
         )
+
 
 class TestAgentRegistry:
     """测试Agent注册中心"""
@@ -1517,7 +1529,7 @@ class TestAgentRegistry:
         # 注册
         result = registry.register(mock_agent)
         assert result is True
-        
+
         # 获取
         retrieved = registry.get_agent("test_agent")
         assert retrieved is not None
@@ -1526,7 +1538,7 @@ class TestAgentRegistry:
     def test_register_duplicate(self, registry, mock_agent):
         """测试重复注册"""
         registry.register(mock_agent)
-        
+
         # 尝试重复注册
         result = registry.register(mock_agent)
         assert result is False
@@ -1534,11 +1546,11 @@ class TestAgentRegistry:
     def test_unregister(self, registry, mock_agent):
         """测试注销"""
         registry.register(mock_agent)
-        
+
         # 注销
         result = registry.unregister("test_agent")
         assert result is True
-        
+
         # 确认已删除
         retrieved = registry.get_agent("test_agent")
         assert retrieved is None
@@ -1562,18 +1574,18 @@ class TestAgentRegistry:
             capabilities=["test", "debug"],
             specialized_tools=[]
         )
-        
+
         agent1 = MockAgent(config1)
         agent2 = MockAgent(config2)
-        
+
         registry.register(agent1)
         registry.register(agent2)
-        
+
         # 查找具有code能力的Agent
         code_agents = registry.find_agents_by_capability("code")
         assert len(code_agents) == 1
         assert code_agents[0].agent_id == "agent1"
-        
+
         # 查找具有test能力的Agent
         test_agents = registry.find_agents_by_capability("test")
         assert len(test_agents) == 2
@@ -1596,20 +1608,20 @@ class TestAgentRegistry:
             capabilities=["code"],
             specialized_tools=[]
         )
-        
+
         agent1 = MockAgent(config1)
         agent2 = MockAgent(config2)
-        
+
         registry.register(agent1)
         registry.register(agent2)
-        
+
         code_agents = registry.find_agents_by_type(AgentType.CODE)
         assert len(code_agents) == 2
 
     def test_statistics(self, registry, mock_agent):
         """测试统计信息"""
         registry.register(mock_agent)
-        
+
         stats = registry.get_statistics()
         assert stats["total_agents"] == 1
         assert stats["total_capabilities"] == 2
@@ -1627,11 +1639,12 @@ class TestAgentRegistry:
         )
         agent = MockAgent(config)
         registry.register(agent)
-        
+
         registry.shutdown_all()
-        
+
         # 验证Agent已停止
         assert agent.state.value == "offline"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
@@ -1664,6 +1677,7 @@ import logging
 from agents.agent_types import AgentTask, CollaborationMode
 
 logger = logging.getLogger(__name__)
+
 
 class TaskDecomposer:
     """
@@ -1724,27 +1738,27 @@ class TaskDecomposer:
         """
         context = context or {}
         tasks = []
-        
+
         logger.info(f"Decomposing request: {request}")
-        
+
         # 分析请求，识别需要的任务类型
         detected_types = self._detect_task_types(request)
         logger.info(f"Detected task types: {detected_types}")
-        
+
         # 为每种类型创建任务
         for task_type in detected_types:
             task = self._create_task_by_type(task_type, request, context)
             if task:
                 tasks.append(task)
-        
+
         # 设置任务依赖关系
         self._set_dependencies(tasks)
-        
+
         # 如果没有检测到任何任务类型，创建通用任务
         if not tasks:
             logger.warning("No specific task types detected, creating generic task")
             tasks.append(self._create_generic_task(request, context))
-        
+
         logger.info(f"Decomposed into {len(tasks)} tasks")
         return tasks
 
@@ -1759,14 +1773,14 @@ class TaskDecomposer:
             List[str]: 检测到的任务类型列表
         """
         detected = []
-        
+
         for task_type, patterns in self.decomposition_patterns.items():
             for pattern in patterns:
                 if re.search(pattern, request, re.IGNORECASE):
                     if task_type not in detected:
                         detected.append(task_type)
                     break
-        
+
         return detected
 
     def _create_task_by_type(self, task_type: str, request: str, context: Dict) -> AgentTask:
@@ -1782,7 +1796,7 @@ class TaskDecomposer:
             AgentTask: 创建的任务
         """
         task_id = f"{task_type}_{hash(request) % 10000}"
-        
+
         task_configs = {
             "code_generation": {
                 "description": f"代码生成: {request}",
@@ -1812,9 +1826,9 @@ class TaskDecomposer:
                 "priority": 8
             }
         }
-        
+
         config = task_configs.get(task_type, {})
-        
+
         return AgentTask(
             task_id=task_id,
             task_type=task_type,
@@ -1860,7 +1874,7 @@ class TaskDecomposer:
         """
         # 创建任务ID到任务的映射
         task_map = {task.task_type: task for task in tasks}
-        
+
         for task in tasks:
             # 根据规则设置依赖
             for task_type, deps in self.dependency_rules.items():
@@ -1925,15 +1939,15 @@ class TaskDecomposer:
             "debugging": 8,
             "generic": 5
         }
-        
+
         complexity = base_complexity.get(task.task_type, 5)
-        
+
         # 根据依赖数量调整
         complexity += len(task.dependencies) * 0.5
-        
+
         # 根据优先级调整
         complexity += (task.priority - 5) * 0.3
-        
+
         # 确保在1-10范围内
         return max(1, min(10, int(complexity)))
 
@@ -1962,29 +1976,29 @@ class TaskDecomposer:
         """
         task_map = {task.task_id: task for task in tasks}
         in_degree = {task.task_id: len(task.dependencies) for task in tasks}
-        
+
         # 队列：存储入度为0的任务
         queue = [task_id for task_id, degree in in_degree.items() if degree == 0]
         result = []
-        
+
         while queue:
             # 按优先级排序
             queue.sort(key=lambda tid: task_map[tid].priority, reverse=True)
             current_id = queue.pop(0)
             result.append(task_map[current_id])
-            
+
             # 更新依赖任务的入度
             for task in tasks:
                 if current_id in task.dependencies:
                     in_degree[task.task_id] -= 1
                     if in_degree[task.task_id] == 0:
                         queue.append(task.task_id)
-        
+
         # 检查是否有循环依赖
         if len(result) != len(tasks):
             logger.warning("Circular dependency detected, returning original order")
             return tasks
-        
+
         return result
 ```
 
@@ -1997,95 +2011,97 @@ class TaskDecomposer:
 测试任务分解器
 """
 import pytest
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import TaskDecomposer
 from agents.agent_types import AgentTask
 
+
 class TestTaskDecomposer:
-    """测试任务分解器"""
+   """测试任务分解器"""
 
-    @pytest.fixture
-    def decomposer(self):
-        """创建任务分解器实例"""
-        return TaskDecomposer()
+   @pytest.fixture
+   def decomposer(self):
+      """创建任务分解器实例"""
+      return TaskDecomposer()
 
-    def test_simple_code_task(self, decomposer):
-        """测试简单代码任务分解"""
-        request = "实现一个用户登录功能"
-        tasks = decomposer.decompose(request)
-        
-        assert len(tasks) >= 1
-        assert any("code" in task.task_type for task in tasks)
+   def test_simple_code_task(self, decomposer):
+      """测试简单代码任务分解"""
+      request = "实现一个用户登录功能"
+      tasks = decomposer.decompose(request)
 
-    def test_complex_task_with_test_and_doc(self, decomposer):
-        """测试包含测试和文档的复杂任务"""
-        request = "实现用户认证功能，编写测试，并生成文档"
-        tasks = decomposer.decompose(request)
-        
-        # 应该包含代码、测试、文档任务
-        task_types = [task.task_type for task in tasks]
-        assert "code_generation" in task_types or "code" in str(task_types)
-        assert "testing" in task_types or "test" in str(task_types)
-        assert "documentation" in task_types or "doc" in str(task_types)
+      assert len(tasks) >= 1
+      assert any("code" in task.task_type for task in tasks)
 
-    def test_dependency_detection(self, decomposer):
-        """测试依赖关系检测"""
-        request = "实现功能并编写测试"
-        tasks = decomposer.decompose(request)
-        
-        # 测试任务应该依赖代码生成任务
-        test_tasks = [t for t in tasks if "test" in t.task_type]
-        code_tasks = [t for t in tasks if "code" in t.task_type]
-        
-        if test_tasks and code_tasks:
-            # 检查依赖关系
-            dependencies = decomposer.detect_dependencies(tasks)
-            assert len(dependencies) > 0
+   def test_complex_task_with_test_and_doc(self, decomposer):
+      """测试包含测试和文档的复杂任务"""
+      request = "实现用户认证功能，编写测试，并生成文档"
+      tasks = decomposer.decompose(request)
 
-    def test_complexity_estimation(self, decomposer):
-        """测试复杂度评估"""
-        task = AgentTask(
-            task_id="test",
-            task_type="code_generation",
-            description="Test",
-            required_capabilities=["code"],
-            input_data={},
-            dependencies=["dep1", "dep2"],
-            priority=8
-        )
-        
-        complexity = decomposer.estimate_complexity(task)
-        assert 1 <= complexity <= 10
-        assert complexity >= 7  # 基础复杂度
+      # 应该包含代码、测试、文档任务
+      task_types = [task.task_type for task in tasks]
+      assert "code_generation" in task_types or "code" in str(task_types)
+      assert "testing" in task_types or "test" in str(task_types)
+      assert "documentation" in task_types or "doc" in str(task_types)
 
-    def test_topological_sort(self, decomposer):
-        """测试拓扑排序"""
-        tasks = [
-            AgentTask("task1", "code", "Code", ["code"], {}, dependencies=[]),
-            AgentTask("task2", "test", "Test", ["test"], {}, dependencies=["task1"]),
-            AgentTask("task3", "doc", "Doc", ["doc"], {}, dependencies=["task1"])
-        ]
-        
-        sorted_tasks = decomposer.optimize_task_order(tasks)
-        
-        # task1应该在task2和task3之前
-        task1_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task1")
-        task2_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task2")
-        task3_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task3")
-        
-        assert task1_index < task2_index
-        assert task1_index < task3_index
+   def test_dependency_detection(self, decomposer):
+      """测试依赖关系检测"""
+      request = "实现功能并编写测试"
+      tasks = decomposer.decompose(request)
 
-    def test_generic_task_fallback(self, decomposer):
-        """测试通用任务回退"""
-        request = "这是一个无法识别的请求"
-        tasks = decomposer.decompose(request)
-        
-        # 应该创建通用任务
-        assert len(tasks) == 1
-        assert tasks[0].task_type == "generic"
+      # 测试任务应该依赖代码生成任务
+      test_tasks = [t for t in tasks if "test" in t.task_type]
+      code_tasks = [t for t in tasks if "code" in t.task_type]
+
+      if test_tasks and code_tasks:
+         # 检查依赖关系
+         dependencies = decomposer.detect_dependencies(tasks)
+         assert len(dependencies) > 0
+
+   def test_complexity_estimation(self, decomposer):
+      """测试复杂度评估"""
+      task = AgentTask(
+         task_id="test",
+         task_type="code_generation",
+         description="Test",
+         required_capabilities=["code"],
+         input_data={},
+         dependencies=["dep1", "dep2"],
+         priority=8
+      )
+
+      complexity = decomposer.estimate_complexity(task)
+      assert 1 <= complexity <= 10
+      assert complexity >= 7  # 基础复杂度
+
+   def test_topological_sort(self, decomposer):
+      """测试拓扑排序"""
+      tasks = [
+         AgentTask("task1", "code", "Code", ["code"], {}, dependencies=[]),
+         AgentTask("task2", "test", "Test", ["test"], {}, dependencies=["task1"]),
+         AgentTask("task3", "doc", "Doc", ["doc"], {}, dependencies=["task1"])
+      ]
+
+      sorted_tasks = decomposer.optimize_task_order(tasks)
+
+      # task1应该在task2和task3之前
+      task1_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task1")
+      task2_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task2")
+      task3_index = next(i for i, t in enumerate(sorted_tasks) if t.task_id == "task3")
+
+      assert task1_index < task2_index
+      assert task1_index < task3_index
+
+   def test_generic_task_fallback(self, decomposer):
+      """测试通用任务回退"""
+      request = "这是一个无法识别的请求"
+      tasks = decomposer.decompose(request)
+
+      # 应该创建通用任务
+      assert len(tasks) == 1
+      assert tasks[0].task_type == "generic"
+
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+   pytest.main([__file__, "-v"])
 ```
 
 #### 5.3 运行测试
@@ -2252,6 +2268,7 @@ import logging
 from agents.agent_types import AgentConfig, OrchestratorConfig, CollaborationMode, AgentType
 
 logger = logging.getLogger(__name__)
+
 
 class MultiAgentConfigLoader:
     """多Agent配置加载器"""
@@ -2444,13 +2461,14 @@ from pathlib import Path
 from agent_config import MultiAgentConfigLoader
 from agents.agent_types import AgentConfig, OrchestratorConfig, CollaborationMode, AgentType
 
+
 class TestMultiAgentConfigLoader:
     """测试配置加载器"""
 
     def test_load_default_config(self):
         """测试加载默认配置"""
         config = MultiAgentConfigLoader.load_config()
-        
+
         assert isinstance(config, OrchestratorConfig)
         assert config.master_agent_config.agent_id == "master"
         assert len(config.agent_configs) >= 1
@@ -2460,7 +2478,7 @@ class TestMultiAgentConfigLoader:
         # 创建临时配置文件
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             temp_path = f.name
-        
+
         try:
             # 创建测试配置
             master_config = AgentConfig(
@@ -2471,21 +2489,21 @@ class TestMultiAgentConfigLoader:
                 capabilities=["test"],
                 specialized_tools=[]
             )
-            
+
             orchestrator_config = OrchestratorConfig(
                 master_agent_config=master_config,
                 agent_configs=[],
                 default_collaboration_mode=CollaborationMode.SEQUENTIAL
             )
-            
+
             # 保存配置
             MultiAgentConfigLoader.save_config(orchestrator_config, temp_path)
-            
+
             # 加载配置
             loaded_config = MultiAgentConfigLoader.load_config(temp_path)
-            
+
             assert loaded_config.master_agent_config.agent_id == "test_master"
-            
+
         finally:
             # 清理临时文件
             Path(temp_path).unlink(missing_ok=True)
@@ -2500,11 +2518,12 @@ class TestMultiAgentConfigLoader:
             capabilities=["code"],
             specialized_tools=[]
         )
-        
+
         # 转换为字典
         config_dict = config.to_dict()
         assert "agent_id" in config_dict
         assert config_dict["agent_type"] == "code"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
@@ -2539,80 +2558,82 @@ import pytest
 import time
 from agent_config import MultiAgentConfigLoader
 from agent_registry import AgentRegistry
-from collaboration.message_bus import MessageBus
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import MessageBus
+from collaboration import TaskDecomposer
 from agents.agent_types import AgentTask, CollaborationMode
 
+
 class TestMultiAgentIntegration:
-    """测试多Agent系统集成"""
+   """测试多Agent系统集成"""
 
-    @pytest.fixture
-    def config(self):
-        """加载配置"""
-        return MultiAgentConfigLoader.load_config()
+   @pytest.fixture
+   def config(self):
+      """加载配置"""
+      return MultiAgentConfigLoader.load_config()
 
-    @pytest.fixture
-    def registry(self):
-        """创建注册中心"""
-        return AgentRegistry()
+   @pytest.fixture
+   def registry(self):
+      """创建注册中心"""
+      return AgentRegistry()
 
-    @pytest.fixture
-    def message_bus(self):
-        """创建消息总线"""
-        bus = MessageBus()
-        bus.start()
-        yield bus
-        bus.stop()
+   @pytest.fixture
+   def message_bus(self):
+      """创建消息总线"""
+      bus = MessageBus()
+      bus.start()
+      yield bus
+      bus.stop()
 
-    @pytest.fixture
-    def task_decomposer(self):
-        """创建任务分解器"""
-        return TaskDecomposer()
+   @pytest.fixture
+   def task_decomposer(self):
+      """创建任务分解器"""
+      return TaskDecomposer()
 
-    def test_full_workflow(self, config, registry, task_decomposer):
-        """测试完整工作流程"""
-        # 1. 加载配置
-        assert config.master_agent_config is not None
-        assert len(config.agent_configs) > 0
+   def test_full_workflow(self, config, registry, task_decomposer):
+      """测试完整工作流程"""
+      # 1. 加载配置
+      assert config.master_agent_config is not None
+      assert len(config.agent_configs) > 0
 
-        # 2. 任务分解
-        request = "实现用户登录功能并编写测试"
-        tasks = task_decomposer.decompose(request)
-        
-        assert len(tasks) >= 1
-        task_types = [task.task_type for task in tasks]
-        assert any("code" in t for t in task_types)
+      # 2. 任务分解
+      request = "实现用户登录功能并编写测试"
+      tasks = task_decomposer.decompose(request)
 
-        # 3. 依赖关系检查
-        dependencies = task_decomposer.detect_dependencies(tasks)
-        assert isinstance(dependencies, dict)
+      assert len(tasks) >= 1
+      task_types = [task.task_type for task in tasks]
+      assert any("code" in t for t in task_types)
 
-    def test_message_bus_integration(self, message_bus):
-        """测试消息总线集成"""
-        received_messages = []
-        
-        def handler(message):
-            received_messages.append(message)
-        
-        message_bus.subscribe("test_agent", handler)
-        message_bus.send_direct("sender", "test_agent", "test", {"data": "test"})
-        
-        time.sleep(0.1)
-        
-        assert len(received_messages) == 1
+      # 3. 依赖关系检查
+      dependencies = task_decomposer.detect_dependencies(tasks)
+      assert isinstance(dependencies, dict)
 
-    def test_collaboration_modes(self, task_decomposer):
-        """测试不同协作模式"""
-        request = "测试请求"
-        tasks = task_decomposer.decompose(request)
-        
-        # 测试所有协作模式
-        for mode in CollaborationMode:
-            assert mode is not None
-            assert isinstance(mode.value, str)
+   def test_message_bus_integration(self, message_bus):
+      """测试消息总线集成"""
+      received_messages = []
+
+      def handler(message):
+         received_messages.append(message)
+
+      message_bus.subscribe("test_agent", handler)
+      message_bus.send_direct("sender", "test_agent", "test", {"data": "test"})
+
+      time.sleep(0.1)
+
+      assert len(received_messages) == 1
+
+   def test_collaboration_modes(self, task_decomposer):
+      """测试不同协作模式"""
+      request = "测试请求"
+      tasks = task_decomposer.decompose(request)
+
+      # 测试所有协作模式
+      for mode in CollaborationMode:
+         assert mode is not None
+         assert isinstance(mode.value, str)
+
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+   pytest.main([__file__, "-v"])
 ```
 
 运行集成测试：
@@ -2681,9 +2702,11 @@ ollama list
 **症状**: Agent间无法通信
 
 **解决方案**:
+
 ```python
 # 检查消息总线状态
-from collaboration.message_bus import MessageBus
+from collaboration import MessageBus
+
 bus = MessageBus()
 print(bus.get_statistics())
 ```

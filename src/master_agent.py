@@ -1,14 +1,13 @@
 """
 MasterAgent - 主控Agent，负责任务分解和协调
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import time
-import logging
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType, CollaborationMode
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import TaskDecomposer
 from collaboration.task_scheduler import TaskScheduler
-from collaboration.result_integrator import ResultIntegrator
+from collaboration import ResultIntegrator
 
 
 class MasterAgent(BaseAgent):

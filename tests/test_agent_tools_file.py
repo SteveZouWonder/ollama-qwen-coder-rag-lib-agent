@@ -60,6 +60,23 @@ class TestReadFile:
         result = read_file(str(path))
         assert "总行数" in result
 
+    def test_read_permission_error(self, temp_dir, monkeypatch):
+        """测试读取文件时的权限错误"""
+        # 首先创建文件
+        test_file = temp_dir / "test.txt"
+        test_file.write_text("content")
+        
+        # 然后mock open函数在读取时报错
+        original_open = open
+        def mock_open_with_permission_error(*args, **kwargs):
+            if len(args) > 0 and "test.txt" in str(args[0]):
+                raise PermissionError("Permission denied")
+            return original_open(*args, **kwargs)
+        
+        monkeypatch.setattr("builtins.open", mock_open_with_permission_error)
+        result = read_file(str(test_file))
+        assert "[错误] 读取失败" in result
+
 
 class TestWriteFile:
     """测试 write_file"""
@@ -123,6 +140,20 @@ class TestListDirectory:
         (temp_dir / "here.txt").write_text("x")
         result = list_directory()
         assert "here.txt" in result
+
+    def test_list_permission_error(self, temp_dir, monkeypatch):
+        """测试列出目录时的权限错误"""
+        def mock_listdir(path):
+            if "test_dir" in str(path):
+                raise PermissionError("Permission denied")
+            return os.listdir.__wrapped__(path)  # 使用原始listdir
+        
+        test_dir = temp_dir / "test_dir"
+        test_dir.mkdir()
+        monkeypatch.setattr(os, "listdir", mock_listdir)
+        
+        result = list_directory(str(test_dir))
+        assert "[错误]" in result
 
 
 class TestSearchFiles:

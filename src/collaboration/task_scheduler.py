@@ -3,9 +3,8 @@
 """
 from typing import List, Dict, Any, Optional
 import logging
-import heapq
 from agents.agent_types import AgentTask, AgentResult, AgentState
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 
 
 class TaskScheduler:

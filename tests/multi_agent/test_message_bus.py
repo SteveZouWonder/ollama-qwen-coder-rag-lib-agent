@@ -1,10 +1,8 @@
 """
 测试message_bus模块
 """
-import pytest
 import os
-import tempfile
-from collaboration.message_bus import MessageBus
+from collaboration import MessageBus
 from agents.agent_types import AgentMessage
 
 

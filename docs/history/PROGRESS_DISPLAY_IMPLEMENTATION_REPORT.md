@@ -63,10 +63,12 @@
 **测试状态**: ✅ 全部通过
 
 **测试示例**：
+
 ```python
 def test_show_progress_default(self, clean_env):
     from config import SHOW_PROGRESS
     assert SHOW_PROGRESS is True
+
 
 def test_show_progress_override_true(self, monkeypatch, clean_env):
     monkeypatch.setenv("SHOW_PROGRESS", "true")

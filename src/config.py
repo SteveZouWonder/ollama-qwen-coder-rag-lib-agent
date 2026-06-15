@@ -18,7 +18,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 # ==================== 路径配置 ====================
-BASE_DIR = Path(__file__).parent.resolve()
+BASE_DIR = Path(__file__).parent.parent.resolve()
 DATA_DIR = BASE_DIR / "data"
 INDEX_DIR = BASE_DIR / "index_storage"
 

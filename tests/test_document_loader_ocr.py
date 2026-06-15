@@ -3,12 +3,11 @@ DocumentLoader OCR 集成测试
 """
 import pytest
 import io
-from pathlib import Path
 from PIL import Image, ImageDraw
 from unittest.mock import Mock, patch
 
 from document_loader import DocumentLoader
-from ocr_processor.base import OCRResult
+from ocr_processor import OCRResult
 
 
 class TestDocumentLoaderOCR:
@@ -71,9 +70,18 @@ class TestDocumentLoaderOCR:
         # 应该返回空列表（图片文件需要 OCR）
         assert len(documents) == 0
     
-    def test_loader_load_image_with_mock_ocr(self, data_dir, sample_image):
+    def test_loader_load_image_with_mock_ocr(self, data_dir, sample_image, monkeypatch):
         """测试使用模拟 OCR 加载图片"""
+        # Mock文件验证器以允许测试文件类型
+        from file_validator import FileValidator
+        mock_validator = Mock()
+        mock_validator.validate_file.return_value = (True, "Mock validation passed")
+        monkeypatch.setattr(FileValidator, 'validate_file', mock_validator.validate_file)
+        
         loader = DocumentLoader(data_dir, enable_ocr=True)
+        
+        # Mock图片质量评估返回高质量分数
+        monkeypatch.setattr(loader, '_assess_image_quality', lambda x: 0.9)
         
         # 模拟 OCR 引擎
         mock_ocr = Mock()

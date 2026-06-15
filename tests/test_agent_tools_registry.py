@@ -3,7 +3,7 @@
 test_agent_tools_registry.py — ToolRegistry 单元测试
 """
 import pytest
-from agent_tools import ToolRegistry
+from agent_tools import ToolRegistry, set_rag_engine
 
 
 def dummy_func(x: str) -> str:
@@ -105,3 +105,24 @@ class TestToolRegistryExecute:
         reg.register("a", dummy_func, "A", {}, safe=True)
         reg.register("b", dummy_func, "B", {}, safe=True)
         assert reg.list_tools() == ["a", "b"]
+
+
+class TestSetRAGEngine:
+    """测试 RAG 引擎设置函数"""
+
+    def test_set_rag_engine(self):
+        """测试设置 RAG 引擎"""
+        mock_engine = {"name": "test_engine"}
+        set_rag_engine(mock_engine)
+        
+        # 导入 _rag_engine 来验证
+        from agent_tools import _rag_engine
+        assert _rag_engine == mock_engine
+
+    def test_set_rag_engine_none(self):
+        """测试设置 None RAG 引擎"""
+        set_rag_engine(None)
+        
+        # 导入 _rag_engine 来验证
+        from agent_tools import _rag_engine
+        assert _rag_engine is None

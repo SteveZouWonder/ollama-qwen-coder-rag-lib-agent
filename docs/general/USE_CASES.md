@@ -421,6 +421,6 @@ python query_interface.py --data ./data
 
 ## 获取更多帮助
 
-- [详细使用教程](TUTORIAL.md) - 完整的功能说明和配置指南
-- [前置条件检查](QUICK_START_CHECK.md) - 环境配置验证
-- [测试设计文档](TEST_DESIGN.md) - 单元测试和覆盖率说明
+- [详细使用教程](../TUTORIAL.md) - 完整的功能说明和配置指南
+- [前置条件检查](./QUICK_START_CHECK.md) - 环境配置验证
+- [测试设计文档](../testing/TEST_DESIGN.md) - 单元测试和覆盖率说明

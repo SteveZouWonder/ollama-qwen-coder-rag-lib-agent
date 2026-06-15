@@ -228,56 +228,57 @@ class MessageBus:
 
 ```python
 from typing import Dict, List, Optional
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentType
+
 
 class AgentRegistry:
     """Agent注册中心"""
-    
+
     def __init__(self):
         self.agents: Dict[str, BaseAgent] = {}
         self.capabilities_index: Dict[str, List[str]] = {}
-    
+
     def register(self, agent: BaseAgent):
         """注册Agent"""
         self.agents[agent.agent_id] = agent
-        
+
         # 更新能力索引
         for capability in agent.capabilities:
             if capability not in self.capabilities_index:
                 self.capabilities_index[capability] = []
             self.capabilities_index[capability].append(agent.agent_id)
-    
+
     def unregister(self, agent_id: str):
         """注销Agent"""
         if agent_id in self.agents:
             agent = self.agents[agent_id]
-            
+
             # 更新能力索引
             for capability in agent.capabilities:
                 if capability in self.capabilities_index:
                     self.capabilities_index[capability].remove(agent_id)
-            
+
             del self.agents[agent_id]
-    
+
     def get_agent(self, agent_id: str) -> Optional[BaseAgent]:
         """获取Agent实例"""
         return self.agents.get(agent_id)
-    
+
     def find_agents_by_capability(self, capability: str) -> List[BaseAgent]:
         """根据能力查找Agent"""
         agent_ids = self.capabilities_index.get(capability, [])
         return [self.agents[aid] for aid in agent_ids if aid in self.agents]
-    
+
     def find_agents_by_type(self, agent_type: AgentType) -> List[BaseAgent]:
         """根据类型查找Agent"""
-        return [agent for agent in self.agents.values() 
+        return [agent for agent in self.agents.values()
                 if agent.agent_type == agent_type]
-    
+
     def get_all_agents(self) -> List[BaseAgent]:
         """获取所有Agent"""
         return list(self.agents.values())
-    
+
     def get_agent_count(self) -> int:
         """获取Agent数量"""
         return len(self.agents)
@@ -292,9 +293,10 @@ from typing import List, Dict, Tuple
 import re
 from agents.agent_types import AgentTask, AgentType
 
+
 class TaskDecomposer:
     """任务分解器"""
-    
+
     def __init__(self):
         self.decomposition_patterns = {
             "code_generation": [
@@ -314,32 +316,32 @@ class TaskDecomposer:
                 r"优化|重构"
             ]
         }
-    
+
     def decompose(self, request: str, context: Dict = None) -> List[AgentTask]:
         """分解复杂任务为子任务"""
         context = context or {}
         tasks = []
-        
+
         # 简单实现：基于关键词匹配
         if self._contains_keywords(request, ["代码", "功能", "实现"]):
             tasks.append(self._create_code_task(request, context))
-        
+
         if self._contains_keywords(request, ["测试", "验证"]):
             tasks.append(self._create_test_task(request, context))
-        
+
         if self._contains_keywords(request, ["文档", "说明"]):
             tasks.append(self._create_doc_task(request, context))
-        
+
         # 如果没有匹配到任何模式，返回单一任务
         if not tasks:
             tasks.append(self._create_generic_task(request, context))
-        
+
         return tasks
-    
+
     def _contains_keywords(self, text: str, keywords: List[str]) -> bool:
         """检查文本是否包含关键词"""
         return any(keyword in text for keyword in keywords)
-    
+
     def _create_code_task(self, request: str, context: Dict) -> AgentTask:
         """创建代码任务"""
         return AgentTask(
@@ -350,7 +352,7 @@ class TaskDecomposer:
             input_data={"request": request, "context": context},
             priority=5
         )
-    
+
     def _create_test_task(self, request: str, context: Dict) -> AgentTask:
         """创建测试任务"""
         return AgentTask(
@@ -362,7 +364,7 @@ class TaskDecomposer:
             priority=4,
             dependencies=["code_generation"]  # 依赖代码生成
         )
-    
+
     def _create_doc_task(self, request: str, context: Dict) -> AgentTask:
         """创建文档任务"""
         return AgentTask(
@@ -374,7 +376,7 @@ class TaskDecomposer:
             priority=3,
             dependencies=["code_generation"]  # 依赖代码生成
         )
-    
+
     def _create_generic_task(self, request: str, context: Dict) -> AgentTask:
         """创建通用任务"""
         return AgentTask(
@@ -385,14 +387,14 @@ class TaskDecomposer:
             input_data={"request": request, "context": context},
             priority=5
         )
-    
+
     def detect_dependencies(self, tasks: List[AgentTask]) -> Dict[str, List[str]]:
         """检测任务依赖关系"""
         dependency_map = {}
         for task in tasks:
             dependency_map[task.task_id] = task.dependencies
         return dependency_map
-    
+
     def estimate_complexity(self, task: AgentTask) -> int:
         """评估任务复杂度（1-10）"""
         # 简单实现：基于任务类型
@@ -414,22 +416,23 @@ class TaskDecomposer:
 from typing import List, Dict, Optional
 import time
 from agents.agent_types import AgentTask, AgentResult, CollaborationMode
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agent_registry import AgentRegistry
+
 
 class TaskScheduler:
     """任务调度器"""
-    
+
     def __init__(self, registry: AgentRegistry):
         self.registry = registry
         self.active_tasks: Dict[str, AgentTask] = {}
         self.task_results: Dict[str, AgentResult] = {}
-    
-    def schedule(self, tasks: List[AgentTask], 
+
+    def schedule(self, tasks: List[AgentTask],
                  mode: CollaborationMode) -> Dict[str, BaseAgent]:
         """根据协作模式调度任务"""
         assignment = {}
-        
+
         if mode == CollaborationMode.PARALLEL:
             assignment = self._schedule_parallel(tasks)
         elif mode == CollaborationMode.SEQUENTIAL:
@@ -440,9 +443,9 @@ class TaskScheduler:
             assignment = self._schedule_competitive(tasks)
         else:
             assignment = self._schedule_parallel(tasks)
-        
+
         return assignment
-    
+
     def _schedule_parallel(self, tasks: List[AgentTask]) -> Dict[str, BaseAgent]:
         """并行调度"""
         assignment = {}
@@ -451,7 +454,7 @@ class TaskScheduler:
             if agent:
                 assignment[task.task_id] = agent
         return assignment
-    
+
     def _schedule_sequential(self, tasks: List[AgentTask]) -> Dict[str, BaseAgent]:
         """顺序调度（考虑依赖）"""
         assignment = {}
@@ -462,7 +465,7 @@ class TaskScheduler:
             if agent:
                 assignment[task.task_id] = agent
         return assignment
-    
+
     def _schedule_hierarchy(self, tasks: List[AgentTask]) -> Dict[str, BaseAgent]:
         """层级调度"""
         # 优先级调度
@@ -473,7 +476,7 @@ class TaskScheduler:
             if agent:
                 assignment[task.task_id] = agent
         return assignment
-    
+
     def _schedule_competitive(self, tasks: List[AgentTask]) -> Dict[str, BaseAgent]:
         """竞争调度（同一任务分配给多个Agent）"""
         assignment = {}
@@ -483,53 +486,53 @@ class TaskScheduler:
             for agent in self.registry.get_all_agents():
                 if agent.can_handle(task):
                     capable_agents.append(agent)
-            
+
             # 竞争模式下，分配给所有能处理的Agent
             if capable_agents:
                 assignment[task.task_id] = capable_agents[0]  # 简化：只分配第一个
         return assignment
-    
+
     def _assign_agent(self, task: AgentTask) -> Optional[BaseAgent]:
         """为任务分配最合适的Agent"""
         capable_agents = []
         for agent in self.registry.get_all_agents():
             if agent.can_handle(task):
                 capable_agents.append(agent)
-        
+
         if not capable_agents:
             return None
-        
+
         # 简单策略：选择第一个
         return capable_agents[0]
-    
+
     def _topological_sort(self, tasks: List[AgentTask]) -> List[AgentTask]:
         """拓扑排序（基于依赖关系）"""
         task_map = {task.task_id: task for task in tasks}
         in_degree = {task.task_id: 0 for task in tasks}
-        
+
         # 计算入度
         for task in tasks:
             for dep_id in task.dependencies:
                 if dep_id in in_degree:
                     in_degree[task.task_id] += 1
-        
+
         # 拓扑排序
         queue = [task_id for task_id, degree in in_degree.items() if degree == 0]
         result = []
-        
+
         while queue:
             current_id = queue.pop(0)
             result.append(task_map[current_id])
-            
+
             # 减少依赖任务的入度
             for task in tasks:
                 if current_id in task.dependencies:
                     in_degree[task.task_id] -= 1
                     if in_degree[task.task_id] == 0:
                         queue.append(task.task_id)
-        
+
         return result
-    
+
     def execute_task(self, task: AgentTask, agent: BaseAgent) -> AgentResult:
         """执行单个任务"""
         start_time = time.time()
@@ -565,9 +568,10 @@ class TaskScheduler:
 from typing import List, Dict
 from agents.agent_types import AgentResult
 
+
 class ResultIntegrator:
     """结果整合器"""
-    
+
     def __init__(self):
         self.integration_strategies = {
             "concatenate": self._concatenate_results,
@@ -575,32 +579,32 @@ class ResultIntegrator:
             "vote": self._vote_results,
             "select_best": self._select_best_result
         }
-    
-    def integrate(self, results: List[AgentResult], 
-                 strategy: str = "merge") -> Dict:
+
+    def integrate(self, results: List[AgentResult],
+                  strategy: str = "merge") -> Dict:
         """整合多个Agent的结果"""
         strategy_func = self.integration_strategies.get(strategy, self._merge_results)
         return strategy_func(results)
-    
+
     def _concatenate_results(self, results: List[AgentResult]) -> Dict:
         """拼接结果"""
         combined_output = "\n\n".join([
             f"=== {result.agent_id} ===\n{result.output}"
             for result in results
         ])
-        
+
         return {
             "success": all(r.success for r in results),
             "output": combined_output,
             "details": [self._result_to_dict(r) for r in results],
             "total_time": sum(r.execution_time for r in results)
         }
-    
+
     def _merge_results(self, results: List[AgentResult]) -> Dict:
         """合并结果"""
         # 简单实现：合并成功的结果
         successful_results = [r for r in results if r.success]
-        
+
         if not successful_results:
             return {
                 "success": False,
@@ -608,31 +612,31 @@ class ResultIntegrator:
                 "details": [self._result_to_dict(r) for r in results],
                 "total_time": sum(r.execution_time for r in results)
             }
-        
+
         merged_output = "\n\n".join([r.output for r in successful_results])
-        
+
         return {
             "success": True,
             "output": merged_output,
             "details": [self._result_to_dict(r) for r in results],
             "total_time": sum(r.execution_time for r in results)
         }
-    
+
     def _vote_results(self, results: List[AgentResult]) -> Dict:
         """投票机制（用于竞争模式）"""
         from collections import Counter
-        
+
         if not results:
             return {"success": False, "output": "无结果"}
-        
+
         # 简单实现：选择最常见的输出
         outputs = [r.output for r in results if r.success]
         if not outputs:
             return {"success": False, "output": "无成功结果"}
-        
+
         counter = Counter(outputs)
         most_common = counter.most_common(1)[0][0]
-        
+
         return {
             "success": True,
             "output": most_common,
@@ -640,21 +644,21 @@ class ResultIntegrator:
             "details": [self._result_to_dict(r) for r in results],
             "total_time": sum(r.execution_time for r in results)
         }
-    
+
     def _select_best_result(self, results: List[AgentResult]) -> Dict:
         """选择最佳结果"""
         successful_results = [r for r in results if r.success]
-        
+
         if not successful_results:
             return {
                 "success": False,
                 "output": "无成功结果",
                 "details": [self._result_to_dict(r) for r in results]
             }
-        
+
         # 简单实现：选择执行时间最短的成功结果
         best = min(successful_results, key=lambda r: r.execution_time)
-        
+
         return {
             "success": True,
             "output": best.output,
@@ -662,7 +666,7 @@ class ResultIntegrator:
             "execution_time": best.execution_time,
             "details": [self._result_to_dict(r) for r in results]
         }
-    
+
     def _result_to_dict(self, result: AgentResult) -> Dict:
         """将结果转换为字典"""
         return {
@@ -682,17 +686,18 @@ class ResultIntegrator:
 
 ```python
 from typing import List, Dict, Optional
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType, CollaborationMode
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import TaskDecomposer
 from collaboration.task_scheduler import TaskScheduler
-from collaboration.result_integrator import ResultIntegrator
+from collaboration import ResultIntegrator
 from agent_registry import AgentRegistry
+
 
 class MasterAgent(BaseAgent):
     """主控Agent"""
-    
-    def __init__(self, agent_id: str = "master", 
+
+    def __init__(self, agent_id: str = "master",
                  registry: Optional[AgentRegistry] = None):
         super().__init__(
             agent_id=agent_id,
@@ -703,7 +708,7 @@ class MasterAgent(BaseAgent):
         self.decomposer = TaskDecomposer()
         self.scheduler = TaskScheduler(self.registry)
         self.integrator = ResultIntegrator()
-    
+
     def process_task(self, task: AgentTask) -> AgentResult:
         """处理任务（MasterAgent的特殊实现）"""
         try:
@@ -712,14 +717,14 @@ class MasterAgent(BaseAgent):
                 task.input_data.get("request", ""),
                 task.input_data.get("context", {})
             )
-            
+
             # 2. 调度任务
             collaboration_mode = task.input_data.get(
-                "collaboration_mode", 
+                "collaboration_mode",
                 CollaborationMode.SEQUENTIAL
             )
             assignment = self.scheduler.schedule(subtasks, collaboration_mode)
-            
+
             # 3. 执行任务
             results = []
             for subtask in subtasks:
@@ -727,11 +732,11 @@ class MasterAgent(BaseAgent):
                 if agent:
                     result = self.scheduler.execute_task(subtask, agent)
                     results.append(result)
-            
+
             # 4. 整合结果
             integration_strategy = task.input_data.get("integration_strategy", "merge")
             final_result = self.integrator.integrate(results, integration_strategy)
-            
+
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -740,7 +745,7 @@ class MasterAgent(BaseAgent):
                 metadata=final_result,
                 execution_time=final_result.get("total_time", 0)
             )
-            
+
         except Exception as e:
             return AgentResult(
                 task_id=task.task_id,
@@ -751,9 +756,9 @@ class MasterAgent(BaseAgent):
                 execution_time=0,
                 error_message=str(e)
             )
-    
-    def coordinate_agents(self, request: str, 
-                        mode: CollaborationMode = CollaborationMode.SEQUENTIAL) -> str:
+
+    def coordinate_agents(self, request: str,
+                          mode: CollaborationMode = CollaborationMode.SEQUENTIAL) -> str:
         """协调多个Agent处理请求"""
         task = AgentTask(
             task_id="master_task",
@@ -766,7 +771,7 @@ class MasterAgent(BaseAgent):
                 "context": {}
             }
         )
-        
+
         result = self.process_task(task)
         return result.output if result.success else f"执行失败: {result.error_message}"
 ```
@@ -785,18 +790,20 @@ from agents.agent_types import CollaborationMode
 agent_registry = AgentRegistry()
 master_agent = None
 
+
 def initialize_multi_agent():
     """初始化多Agent系统"""
     global master_agent, agent_registry
-    
+
     # 创建MasterAgent
     master_agent = MasterAgent(registry=agent_registry)
-    
+
     # 注册专业Agent（后续实现）
     # code_agent = CodeAgent(...)
     # agent_registry.register(code_agent)
-    
+
     agent_registry.register(master_agent)
+
 
 # 在CLI命令中添加多Agent相关命令
 def handle_multi_agent_command(command_parts):
@@ -805,17 +812,17 @@ def handle_multi_agent_command(command_parts):
         if len(command_parts) < 2:
             console.print("[yellow]用法: /multi <请求> [模式][/yellow]")
             return
-        
+
         request = " ".join(command_parts[1:])
         mode = CollaborationMode.SEQUENTIAL
-        
+
         if len(command_parts) > 2:
             mode_str = command_parts[2].upper()
             try:
                 mode = CollaborationMode[mode_str]
             except KeyError:
                 console.print(f"[yellow]未知模式: {mode_str}，使用默认模式[/yellow]")
-        
+
         result = master_agent.coordinate_agents(request, mode)
         console.print(f"[green]{result}[/green]")
 ```
@@ -831,18 +838,19 @@ def handle_multi_agent_command(command_parts):
 ```python
 import pytest
 from agents.agent_types import AgentTask, CollaborationMode
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agent_registry import AgentRegistry
-from collaboration.task_decomposer import TaskDecomposer
+from collaboration import TaskDecomposer
 from collaboration.task_scheduler import TaskScheduler
-from collaboration.result_integrator import ResultIntegrator
+from collaboration import ResultIntegrator
+
 
 class TestBaseAgent:
     def test_agent_creation(self):
         agent = BaseAgent("test", None, ["test_capability"])
         assert agent.agent_id == "test"
         assert "test_capability" in agent.capabilities
-    
+
     def test_can_handle(self):
         agent = BaseAgent("test", None, ["code", "test"])
         task = AgentTask(
@@ -854,47 +862,50 @@ class TestBaseAgent:
         )
         assert agent.can_handle(task) is True
 
+
 class TestAgentRegistry:
     def test_register_and_get(self):
         registry = AgentRegistry()
         agent = BaseAgent("agent1", None, ["test"])
         registry.register(agent)
-        
+
         retrieved = registry.get_agent("agent1")
         assert retrieved is not None
         assert retrieved.agent_id == "agent1"
-    
+
     def test_find_by_capability(self):
         registry = AgentRegistry()
         agent1 = BaseAgent("agent1", None, ["code", "test"])
         agent2 = BaseAgent("agent2", None, ["doc"])
         registry.register(agent1)
         registry.register(agent2)
-        
+
         code_agents = registry.find_agents_by_capability("code")
         assert len(code_agents) == 1
         assert code_agents[0].agent_id == "agent1"
+
 
 class TestTaskDecomposer:
     def test_simple_decomposition(self):
         decomposer = TaskDecomposer()
         tasks = decomposer.decompose("实现用户登录功能并编写测试")
-        
+
         assert len(tasks) >= 2  # 至少包含代码和测试任务
         task_types = [task.task_type for task in tasks]
         assert "code_generation" in task_types or "code" in task_types
         assert "testing" in task_types or "test" in task_types
 
+
 class TestResultIntegrator:
     def test_merge_results(self):
         integrator = ResultIntegrator()
         from agents.agent_types import AgentResult
-        
+
         results = [
             AgentResult("task1", "agent1", True, "Result 1", {}, 1.0),
             AgentResult("task2", "agent2", True, "Result 2", {}, 2.0)
         ]
-        
+
         integrated = integrator.integrate(results, "merge")
         assert integrated["success"] is True
         assert "Result 1" in integrated["output"]
@@ -911,30 +922,31 @@ from master_agent import MasterAgent
 from agent_registry import AgentRegistry
 from agents.agent_types import CollaborationMode
 
+
 class TestMultiAgentIntegration:
     def test_end_to_end_flow(self):
         registry = AgentRegistry()
         master = MasterAgent(registry=registry)
-        
+
         # 测试简单任务
         result = master.coordinate_agents(
             "分析当前代码",
             CollaborationMode.SEQUENTIAL
         )
-        
+
         assert result is not None
         assert isinstance(result, str)
-    
+
     def test_collaboration_modes(self):
         registry = AgentRegistry()
         master = MasterAgent(registry=registry)
-        
+
         modes = [
             CollaborationMode.SEQUENTIAL,
             CollaborationMode.PARALLEL,
             CollaborationMode.HIERARCHY
         ]
-        
+
         for mode in modes:
             result = master.coordinate_agents("测试任务", mode)
             assert result is not None

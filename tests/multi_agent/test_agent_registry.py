@@ -1,10 +1,9 @@
 """
 测试agent_registry模块
 """
-import pytest
 from agent_registry import AgentRegistry
-from agents.base_agent import BaseAgent
-from agents.agent_types import AgentTask, AgentResult, AgentType, AgentState, TaskStatus
+from agents import BaseAgent
+from agents.agent_types import AgentTask, AgentResult, AgentType, AgentState
 
 
 class MockAgentForRegistry(BaseAgent):

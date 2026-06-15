@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 # Skip tests if pytesseract is not installed
 pytest.importorskip("pytesseract", reason="pytesseract not installed")
 
-from ocr_processor.tesseract_ocr import TesseractOCREngine
+from ocr_processor import TesseractOCREngine
 
 
 class TestTesseractOCREngine:

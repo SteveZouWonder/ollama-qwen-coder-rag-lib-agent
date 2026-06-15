@@ -1,7 +1,6 @@
 """
 测试agent_types模块的数据类型
 """
-import pytest
 from datetime import datetime
 from agents.agent_types import (
     CollaborationMode, AgentType, TaskStatus, AgentState,

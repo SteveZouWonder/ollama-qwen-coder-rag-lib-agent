@@ -1,8 +1,7 @@
 """
 测试base_agent模块
 """
-import pytest
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType, AgentState, TaskStatus
 
 

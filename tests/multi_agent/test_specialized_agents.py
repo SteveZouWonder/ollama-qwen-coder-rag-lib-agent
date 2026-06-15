@@ -1,12 +1,11 @@
 """
 测试专业Agent（CodeAgent, RAGAgent, TestAgent, DocAgent, AuditAgent）
 """
-import pytest
 from agents.code_agent import CodeAgent
 from agents.rag_agent import RAGAgent
 from agents import TestAgent
 from agents.doc_agent import DocAgent
-from agents.audit_agent import AuditAgent
+from agents import AuditAgent
 from agents.agent_types import AgentTask, AgentType, AgentState
 
 

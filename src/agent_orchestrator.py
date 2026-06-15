@@ -3,16 +3,16 @@ Agent编排器 - 协调多个Agent的交互和执行
 """
 from typing import List, Dict, Any, Optional
 import logging
-from agents.base_agent import BaseAgent
+from agents import BaseAgent
 from agents.agent_types import CollaborationMode, OrchestratorConfig, AgentConfig
 from master_agent import MasterAgent
 from agent_registry import AgentRegistry
-from collaboration.message_bus import MessageBus
+from collaboration import MessageBus
 from agents.code_agent import CodeAgent
 from agents.rag_agent import RAGAgent
 from agents import TestAgent
 from agents.doc_agent import DocAgent
-from agents.audit_agent import AuditAgent
+from agents import AuditAgent
 
 
 class AgentOrchestrator:

@@ -1,7 +1,6 @@
 """
 测试agent_orchestrator模块
 """
-import pytest
 from agent_orchestrator import AgentOrchestrator
 from agent_config import AgentConfigManager
 from agents.agent_types import CollaborationMode, AgentConfig, OrchestratorConfig, AgentType

@@ -3,7 +3,6 @@
 """
 import pytest
 import numpy as np
-from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 # Skip tests if OpenCV is not installed
@@ -140,7 +139,8 @@ class TestImagePreprocessor:
         
         angle = preprocessor._get_skew_angle(image)
         
-        assert isinstance(angle, (int, float))
+        # 接受 numpy 浮点类型
+        assert isinstance(angle, (int, float, np.floating, np.integer))
         assert -90 <= angle <= 90  # 角度应该在合理范围内
     
     def test_resize_image(self, preprocessor):
