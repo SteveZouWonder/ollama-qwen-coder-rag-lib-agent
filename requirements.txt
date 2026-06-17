@@ -33,6 +33,9 @@ trafilatura>=1.6.0        # 网页内容提取（主要方案）
 # Git 集成功能
 gitpython>=3.1.0          # Git 操作（可选，系统有 git 命令时不需要）
 
+# 知识图谱功能
+networkx>=3.6.0          # 知识图谱构建和查询
+
 # 环境配置
 python-dotenv
 
