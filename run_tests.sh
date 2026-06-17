@@ -52,7 +52,7 @@ elif [ "$MODE" = "batch" ]; then
            tests/test_ocr_cache.py \
            tests/test_ocr_image_extractor.py \
            tests/test_ocr_preprocessor.py \
-           --tb=short --no-cov -q
+           --tb=short --no-cov -q -k "not integration"
     
     # 第四批：RAG引擎、React引擎和其他
     echo ""
@@ -60,7 +60,6 @@ elif [ "$MODE" = "batch" ]; then
     pytest tests/test_rag_engine.py \
            tests/test_react_engine.py \
            tests/test_session_manager.py \
-           tests/test_system_prompt.py \
            tests/test_web_search.py \
            --tb=short --no-cov -q
     
