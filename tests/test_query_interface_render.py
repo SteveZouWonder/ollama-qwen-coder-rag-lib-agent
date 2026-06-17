@@ -23,7 +23,13 @@ class TestOnStepCallback:
     @patch("query_interface.console")
     def test_on_step_blocked(self, mock_console):
         on_step_callback({"step": 2, "total": 10, "phase": "blocked", "message": "msg"})
-        mock_console.print.assert_called_once()
+        # blocked 阶段会输出步骤信息
+        mock_console.print.assert_called()
+        # 验证调用了至少一次
+        assert mock_console.print.call_count >= 1
+        # 验证最后一次调用包含预期内容
+        last_call = mock_console.print.call_args_list[-1]
+        assert "[X]" in str(last_call)
 
     @patch("query_interface.HAS_RICH", False)
     def test_on_step_no_rich(self, capsys):
