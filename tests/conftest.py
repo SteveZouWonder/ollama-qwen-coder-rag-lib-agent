@@ -50,7 +50,7 @@ def setup_settings_mock():
         mock_settings = MagicMock()
         mock_settings.llm = MagicMock()
         mock_settings.embed_model = MagicMock()
-        mock_settings.node_parser = MagicMock()  # 添加node_parser mock
+        mock_settings.node_parser = MagicMock()
         mock_settings_class.return_value = mock_settings
         
         yield
@@ -128,6 +128,12 @@ def reset_module_state():
                 'important_phases': {"executing", "observed", "blocked", "rejected", "final"},
                 'current_thinking_dots': 0
             }
+    
+    # 重置query_interface中的全局rag_engine状态
+    if 'query_interface' in sys.modules:
+        module = sys.modules['query_interface']
+        if hasattr(module, 'rag_engine'):
+            module.rag_engine = None
     
     # 重置agent_tools中的全局rag_engine状态
     if 'agent_tools' in sys.modules:
