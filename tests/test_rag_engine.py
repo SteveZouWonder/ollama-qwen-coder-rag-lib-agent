@@ -2,10 +2,32 @@
 """
 test_rag_engine.py — RAG 引擎单元测试（Mock Ollama + ChromaDB + LlamaIndex）
 """
+import sys
 from unittest.mock import MagicMock, patch
 import pytest
+import importlib
+
+# 在导入rag_engine之前，强制清理可能被污染的模块
+if 'rag_engine' in sys.modules:
+    del sys.modules['rag_engine']
 
 from rag_engine import RAGEngine, build_knowledge_base
+
+@pytest.fixture(autouse=True)
+def ensure_rag_not_mocked(request):
+    """
+    在每个test_rag_engine.py测试前后确保rag_engine没有被mock
+    """
+    # 测试开始前检查RAGEngine是否被mock
+    import rag_engine as rag_module
+    # 如果RAGEngine类被mock了，重新加载模块
+    if hasattr(rag_module.RAGEngine, '_mock_name'):
+        importlib.reload(rag_module)
+    
+    yield
+    
+    # 测试结束后重新加载模块
+    importlib.reload(rag_module)
 
 
 class TestRAGEngineInit:
