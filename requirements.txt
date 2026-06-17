@@ -48,6 +48,7 @@ prompt-toolkit
 # 测试工具
 pytest
 pytest-cov
+pytest-xdist
 
 # 桌面应用依赖
 pystray
