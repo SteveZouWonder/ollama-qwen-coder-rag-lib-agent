@@ -707,6 +707,65 @@ engine = RAGEngine(enable_security=False)
 
 ---
 
+## 测试
+
+项目使用 pytest 进行单元测试，测试覆盖了所有核心功能。
+
+### 测试策略
+
+**完整测试套件**：项目支持完整的测试套件运行，所有测试都能通过。
+
+```bash
+# 完整测试套件（排除集成测试和Tesseract相关测试）
+pytest tests/ -k "not integration and not tesseract" -v
+```
+
+### 测试脚本
+
+项目提供了多种测试运行脚本：
+
+```bash
+# 使用测试脚本
+./run_tests.sh
+
+# 分批模式
+./run_tests.sh batch
+
+# 并行模式
+./run_tests_parallel.sh
+
+# 覆盖率模式
+./run_tests.sh coverage
+```
+
+### 测试覆盖率
+
+项目要求测试覆盖率 ≥ 95%。
+
+```bash
+# 检查覆盖率
+pytest tests/ --cov=src --cov-report=term-missing
+
+# 生成HTML覆盖率报告
+pytest tests/ --cov=src --cov-report=html
+# 打开 htmlcov/index.html 查看详细报告
+```
+
+### 测试架构
+
+- **tests/test_rag_engine.py** - RAG引擎测试
+- **tests/test_react_engine.py** - ReAct推理引擎测试
+- **tests/test_agent_tools_*.py** - 工具链测试
+- **tests/test_knowledge_*.py** - 知识管理测试
+- **tests/test_query_interface_*.py** - 查询接口测试
+- **tests/multi_agent/** - 多Agent系统测试
+- **tests/test_web_search.py** - 网络搜索功能测试
+- **tests/test_ocr_*.py** - OCR功能测试
+
+详细测试文档请查看：[TESTING.md](TESTING.md)
+
+---
+
 ## 配置说明
 
 编辑 `config.py` 或通过环境变量：

@@ -40,7 +40,7 @@ echo ""
 
 # 检查已安装的包
 echo "=== 已安装的Python包 ==="
-$PIP_CMD list | grep -E "(llama|chroma|rich|prompt|pypdf|requests)"
+$PIP_CMD list | grep -E "(llama|chroma|rich|prompt|pypdf|requests|pytest)"
 echo ""
 
 # 验证导入
@@ -62,6 +62,13 @@ check_module "rich" "rich"
 check_module "prompt_toolkit" "prompt-toolkit"
 check_module "pypdf" "pypdf"
 check_module "requests" "requests"
+
+# 测试工具检查
+echo ""
+echo "=== 测试工具检查 ==="
+check_module "pytest" "pytest"
+check_module "pytest_cov" "pytest-cov"
+check_module "xdist" "pytest-xdist"
 
 echo ""
 echo "=== 如果有模块未安装，运行以下命令 ==="

@@ -312,6 +312,11 @@ check_dependencies() {
     check_module "requests" "requests" || dep_failures=$((dep_failures + 1))
     check_module "dotenv" "python-dotenv" || dep_failures=$((dep_failures + 1))
     
+    # 检查测试工具
+    check_module "pytest" "pytest" || dep_failures=$((dep_failures + 1))
+    check_module "pytest_cov" "pytest-cov" || dep_failures=$((dep_failures + 1))
+    check_module "xdist" "pytest-xdist" || dep_failures=$((dep_failures + 1))
+    
     # 检查新功能依赖
     check_module "urllib3" "urllib3" || dep_failures=$((dep_failures + 1))
     if [ $dep_failures -eq 0 ]; then
