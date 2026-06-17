@@ -15,6 +15,10 @@ class TestRAGEngineInit:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_init_sets_up_components(self, mock_chroma, mock_embed, mock_llm):
+        # Mock chroma client's methods to avoid side effects
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        
         engine = RAGEngine()
         assert engine.index is None
         assert engine.query_engine is None
@@ -34,6 +38,7 @@ class TestRAGEngineBuildIndex:
     @patch("rag_engine.Settings")
     def test_build_index(self, mock_settings, mock_splitter, mock_index_cls, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -55,8 +60,10 @@ class TestRAGEngineBuildIndex:
     @patch("rag_engine.Settings")
     def test_build_index_no_persist(self, mock_settings, mock_index_cls, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        
         mock_index = MagicMock()
         mock_index_cls.from_documents.return_value = mock_index
 
@@ -77,6 +84,7 @@ class TestRAGEngineLoadIndex:
     @patch("rag_engine.Settings")
     def test_load_index_exists(self, mock_settings, mock_storage, mock_load, mock_chroma, mock_embed, mock_llm, temp_dir):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -96,6 +104,7 @@ class TestRAGEngineLoadIndex:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_load_index_not_exists(self, mock_chroma, mock_embed, mock_llm, temp_dir):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -113,6 +122,7 @@ class TestRAGEngineAddDocuments:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_add_documents_no_index(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -127,6 +137,7 @@ class TestRAGEngineAddDocuments:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_add_documents_with_index(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -149,6 +160,7 @@ class TestRAGEngineQuery:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -165,6 +177,7 @@ class TestRAGEngineQuery:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_without_engine_raises(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -181,6 +194,7 @@ class TestRAGEngineQueryWithSources:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
@@ -207,6 +221,7 @@ class TestRAGEngineQueryWithSources:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources_no_nodes(self, mock_chroma, mock_embed, mock_llm):
         
+        # Mock chroma client's methods to avoid side effects
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
