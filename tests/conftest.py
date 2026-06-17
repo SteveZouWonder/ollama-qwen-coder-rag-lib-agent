@@ -128,3 +128,9 @@ def reset_module_state():
                 'important_phases': {"executing", "observed", "blocked", "rejected", "final"},
                 'current_thinking_dots': 0
             }
+    
+    # 重置agent_tools中的全局rag_engine状态
+    if 'agent_tools' in sys.modules:
+        module = sys.modules['agent_tools']
+        if hasattr(module, '_rag_engine'):
+            module._rag_engine = None
