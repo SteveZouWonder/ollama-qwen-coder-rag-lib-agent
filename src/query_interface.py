@@ -62,10 +62,18 @@ try:
 except ImportError:
     KNOWLEDGE_MANAGEMENT_AVAILABLE = False
 
+# 导入命令推荐系统
+try:
+    from command_recommender import CommandRecommender, RecommendationSource
+    RECOMMENDER_AVAILABLE = True
+except ImportError:
+    RECOMMENDER_AVAILABLE = False
+
 # ==================== 全局状态 ====================
 rag_engine: RAGEngine = None
 react_engine: ReActEngine = None
 last_rag_sources = []
+command_recommender: CommandRecommender = None
 
 # ==================== Rich 控制台 ====================
 
@@ -754,10 +762,49 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
     return "noop"
 
 
+# ==================== 命令推荐系统辅助函数 ====================
+
+def show_command_recommendations():
+    """显示命令推荐"""
+    if not command_recommender or not command_recommender.is_enabled():
+        return
+    
+    try:
+        recommendations = command_recommender.get_recommendations()
+        if recommendations:
+            formatted = command_recommender.format_recommendations(recommendations, use_rich=HAS_RICH)
+            if formatted:
+                console.print(formatted)
+    except Exception as e:
+        console.print(f"[dim]⚠️  推荐系统错误: {e}[/dim]", style="dim")
+
+def record_command_execution(cmd_type: str, args: str = "", result: str = "", error: str = ""):
+    """记录命令执行到推荐系统"""
+    if not command_recommender:
+        return
+    
+    try:
+        # 记录命令
+        command_recommender.record_command(f"/{cmd_type}", args, result)
+        
+        # 记录错误（如果有）
+        if error:
+            command_recommender.record_error(error)
+        
+        # 更新RAG状态（可能变化）
+        if rag_engine:
+            rag_available = rag_engine.query_engine is not None
+            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
+            command_recommender.update_rag_status(rag_available, rag_empty)
+        
+    except Exception as e:
+        console.print(f"[dim]⚠️  记录命令失败: {e}[/dim]", style="dim")
+
+
 # ==================== 主程序 ====================
 
 def main():
-    global rag_engine, react_engine, last_rag_sources
+    global rag_engine, react_engine, last_rag_sources, command_recommender
 
     parser = argparse.ArgumentParser(
         description="智能文档+代码助手 - RAG + Agent",
@@ -833,6 +880,24 @@ def main():
                 f"[dim]未找到已有索引。使用 --data 指定数据路径构建知识库。[/dim]\n"
                 f"[dim]默认数据目录: {DATA_DIR}[/dim]"
             )
+    
+    # ==================== 初始化命令推荐系统 ====================
+    if RECOMMENDER_AVAILABLE:
+        try:
+            command_recommender = CommandRecommender()
+            command_recommender.initialize()
+            
+            # 更新RAG引擎状态到推荐系统
+            rag_available = rag_engine.query_engine is not None
+            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
+            command_recommender.update_rag_status(rag_available, rag_empty)
+            
+            console.print("[dim]💡 智能命令推荐系统已启用[/dim]", style="dim")
+        except Exception as e:
+            console.print(f"[dim]⚠️  命令推荐系统初始化失败: {e}[/dim]", style="dim")
+            command_recommender = None
+    else:
+        command_recommender = None
 
     # 将 RAG 引擎注入 Agent 工具
     set_rag_engine(rag_engine)
@@ -925,20 +990,30 @@ def main():
         # ---- 帮助与教程 ----
         elif parsed.cmd_type == "help":
             print_help()
+            record_command_execution("help")
+            show_command_recommendations()
             continue
         elif parsed.cmd_type == "tutorial":
             show_tutorial()
+            record_command_execution("tutorial")
+            show_command_recommendations()
             continue
         elif parsed.cmd_type == "tools":
             print_tools()
+            record_command_execution("tools")
+            show_command_recommendations()
             continue
 
         # ---- 知识库命令 ----
         elif parsed.cmd_type == "stats":
             print_knowledge_stats()
+            record_command_execution("stats")
+            show_command_recommendations()
             continue
         elif parsed.cmd_type == "sources":
             print_rag_sources(last_rag_sources)
+            record_command_execution("sources")
+            show_command_recommendations()
             continue
         elif parsed.cmd_type == "add":
             path = parsed.arg
@@ -948,10 +1023,14 @@ def main():
                     rag_engine.add_documents(docs, [path])
                     console.print("✅ 文档已添加到知识库", style="green")
                     console.print("💡 提示: 可以使用 /generate-skills 将知识库转化为Skills", style="dim")
+                    record_command_execution("add", path, "success")
+                    show_command_recommendations()
                 else:
                     console.print("⚠️  未找到可加载的文档", style="yellow")
+                    record_command_execution("add", path, "no documents")
             except Exception as e:
                 console.print(f"❌ 添加失败: {e}", style="red")
+                record_command_execution("add", path, "failed", str(e))
             continue
         
         # ---- 知识库管理命令 ----

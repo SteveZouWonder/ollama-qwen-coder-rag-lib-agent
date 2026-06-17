@@ -26,6 +26,13 @@ try:
 except ImportError:
     DESKTOP_AVAILABLE = False
 
+# 导入命令推荐系统
+try:
+    from command_recommender import CommandRecommender
+    RECOMMENDER_AVAILABLE = True
+except ImportError:
+    RECOMMENDER_AVAILABLE = False
+
 # ==================== 配置 ====================
 CONFIG_FILE = Path("../config/app_config.json")
 LOG_FILE = Path("../logs/app.log")
@@ -426,6 +433,16 @@ class TrayApp(BaseApp):
         
         # 图标恢复定时器
         self.icon_restore_timer = None
+        
+        # 初始化命令推荐系统
+        self.command_recommender = None
+        if RECOMMENDER_AVAILABLE:
+            try:
+                self.command_recommender = CommandRecommender()
+                self.command_recommender.initialize()
+                self.logger.info("命令推荐系统初始化成功")
+            except Exception as e:
+                self.logger.warning(f"命令推荐系统初始化失败: {e}")
         
     def update_icon(self, status: str = "normal"):
         """更新托盘图标"""
@@ -890,6 +907,30 @@ class TrayApp(BaseApp):
         
         return closed_count
 
+    def show_smart_recommendations(self):
+        """显示智能命令推荐"""
+        if not self.command_recommender:
+            self.show_notification("推荐系统", "⚠️ 推荐系统不可用")
+            return
+        
+        try:
+            recommendations = self.command_recommender.get_recommendations()
+            if not recommendations:
+                self.show_notification("智能建议", "当前没有推荐命令")
+                return
+            
+            # 格式化推荐内容
+            rec_text = "💡 智能建议:\n\n"
+            for i, rec in enumerate(recommendations[:3], 1):  # 显示前3个推荐
+                rec_text += f"{i}. {rec.command}\n   {rec.description}\n"
+            
+            self.show_notification("智能建议", rec_text[:200] + "...")  # 限制长度
+            self.logger.info(f"生成了 {len(recommendations)} 个智能推荐")
+            
+        except Exception as e:
+            self.logger.error(f"生成智能推荐失败: {e}")
+            self.show_notification("智能建议", f"⚠️ 生成推荐失败: {e}")
+
     def quit_app(self):
         """退出应用"""
         self.logger.info("退出应用")
@@ -916,6 +957,7 @@ class TrayApp(BaseApp):
         menu = pystray.Menu(
             pystray.MenuItem("打开CLI界面", self.open_cli_interface),
             pystray.MenuItem("检查状态", self.show_status),
+            pystray.MenuItem("智能建议", self.show_smart_recommendations),
             pystray.MenuItem("模型预热", self.warm_up_models_from_menu),
             pystray.MenuItem("重启服务", self.restart_services),
             pystray.MenuItem("退出", self.quit_app)
