@@ -19,19 +19,12 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message="builtin 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="function")
 def prevent_popups():
     """
     全局fixture：防止所有测试中触发实际弹窗
     
-    这个fixture会自动应用到所有测试，mock掉subprocess.run和subprocess.Popen调用，
-    防止在测试过程中触发实际的系统弹窗、通知或其他GUI操作。
-    
-    这样可以确保：
-    1. 测试运行时不会弹出实际的对话框或通知
-    2. 测试环境保持干净，不干扰用户
-    3. 测试速度更快，不需要等待系统响应
-    4. 测试更加稳定和可重复
+    scope="function" 确保每个测试都有独立的mock状态
     """
     with patch('subprocess.run') as mock_run:
         with patch('subprocess.Popen') as mock_popen:
@@ -44,19 +37,20 @@ def prevent_popups():
             mock_popen.return_value = Mock()
             
             yield
-            
-            # 测试结束后自动清理（with语句自动处理）
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="function")
 def setup_settings_mock():
     """
     全局fixture：自动 mock Settings 以避免 LlamaIndex 类型检查问题
+    
+    scope="function" 确保每个测试都有独立的Settings mock状态
     """
     with patch('rag_engine.Settings') as mock_settings_class:
         mock_settings = MagicMock()
         mock_settings.llm = MagicMock()
         mock_settings.embed_model = MagicMock()
+        mock_settings.node_parser = MagicMock()  # 添加node_parser mock
         mock_settings_class.return_value = mock_settings
         
         yield
@@ -65,7 +59,7 @@ def setup_settings_mock():
 @pytest.fixture
 def clean_env():
     """
-    清理测试环境的fixture
+    清理测试环境的fixture（function scope）
     
     为每个测试提供一个干净的环境：
     1. 临时环境变量清理
@@ -92,10 +86,10 @@ def clean_env():
         shutil.rmtree(temp_dir)
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def temp_dir():
     """
-    创建临时目录的fixture（返回 Path 对象）
+    创建临时目录的fixture（function scope）
     """
     temp_dir = Path(tempfile.mkdtemp())
     yield temp_dir
@@ -104,7 +98,7 @@ def temp_dir():
         shutil.rmtree(temp_dir)
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")  
 def mock_rag_engine():
     """
     Mock RAG engine fixture for agent tools tests
@@ -114,3 +108,23 @@ def mock_rag_engine():
     engine.add_document_tool.return_value = "[Mock] 文档已添加"
     engine.get_stats_tool.return_value = "[Mock] 统计信息"
     return engine
+
+
+@pytest.fixture(autouse=True, scope="function")
+def reset_module_state():
+    """
+    自动清理模块级别的全局状态
+    
+    某些模块可能存在全局变量或单例，这个fixture在每个测试后重置它们
+    """
+    yield
+    
+    # 重置query_interface模块的进度状态
+    if 'query_interface' in sys.modules:
+        module = sys.modules['query_interface']
+        if hasattr(module, '_progress_state'):
+            module._progress_state = {
+                'last_line_length': 0,
+                'important_phases': {"executing", "observed", "blocked", "rejected", "final"},
+                'current_thinking_dots': 0
+            }
