@@ -25,6 +25,14 @@ pymupdf>=1.25.0  # PDF图像提取（兼容新版本，使用 import pymupdf as 
 requests
 urllib3
 
+# 网络搜索功能（Python 3.13 兼容的最新稳定版本）
+duckduckgo-search>=5.3.0  # DuckDuckGo 搜索引擎
+beautifulsoup4>=4.12.0    # 网页内容提取（备选方案）
+trafilatura>=1.6.0        # 网页内容提取（主要方案）
+
+# Git 集成功能
+gitpython>=3.1.0          # Git 操作（可选，系统有 git 命令时不需要）
+
 # 环境配置
 python-dotenv
 

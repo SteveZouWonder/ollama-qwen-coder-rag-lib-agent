@@ -159,6 +159,24 @@ TUTORIAL_TEXT = """
   /session-search <query>     搜索会话
   /session-current            显示当前会话信息
   /session-compress           压缩当前会话历史
+
+网络搜索命令：
+  /web-search <query>         网络搜索（支持 DuckDuckGo）
+  /web-cache status           查看搜索缓存状态
+  /web-cache clear            清空搜索缓存
+  /web-extract <url>          提取网页内容
+
+代码分析命令：
+  /code-ast <pattern>         AST 搜索（函数、类、变量）
+  /code-quality <path>        代码质量检查
+
+Git 命令：
+  /git-analyze <type>         Git 分析（history/status/authors）
+  /git-commit-gen             AI 生成提交信息
+
+知识图谱命令：
+  /graph-query <query>        图谱查询
+  /graph-build                构建知识图谱
 """
 
 def show_tutorial():
@@ -369,6 +387,18 @@ def print_help():
   /snapshot-restore <id>  恢复指定快照的知识库
   /knowledge-summary  查看知识库文档摘要
 
+知识图谱管理命令（新功能）：
+  /graph-query <query>      查询知识图谱
+  /graph-build              构建知识图谱
+
+数据库管理命令（新功能）：
+  /db-connect <type> <database>  连接数据库
+  /db-query <sql>               执行SQL查询
+  /db-execute <sql>             执行SQL语句（INSERT/UPDATE/DELETE）
+  /db-create-table <table>      创建数据库表
+  /db-insert <table> <data>     插入数据
+  /db-schema <table>            查看表结构
+
 文件管理命令（新功能）：
   /file-list           列出知识库中的所有文件
   /file-info <path>    查看文件详细信息
@@ -573,6 +603,26 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("snapshot_restore", user_input, arg)
     if cmd == "/knowledge-summary":
         return ParsedCommand("knowledge_summary", user_input, arg)
+    
+    # 知识图谱管理命令
+    if cmd == "/graph-query":
+        return ParsedCommand("graph_query", user_input, arg)
+    if cmd == "/graph-build":
+        return ParsedCommand("graph_build", user_input, arg)
+    
+    # 数据库管理命令
+    if cmd == "/db-connect":
+        return ParsedCommand("db_connect", user_input, arg)
+    if cmd == "/db-query":
+        return ParsedCommand("db_query", user_input, arg)
+    if cmd == "/db-execute":
+        return ParsedCommand("db_execute", user_input, arg)
+    if cmd == "/db-create-table":
+        return ParsedCommand("db_create_table", user_input, arg)
+    if cmd == "/db-insert":
+        return ParsedCommand("db_insert", user_input, arg)
+    if cmd == "/db-schema":
+        return ParsedCommand("db_schema", user_input, arg)
 
     # 文件管理命令
     if cmd == "/file-list":
@@ -606,6 +656,46 @@ def parse_command(user_input: str) -> ParsedCommand:
     if cmd == "/session-compress":
         return ParsedCommand("session_compress", user_input, arg)
 
+    # 网络搜索命令
+    if cmd == "/web-search":
+        return ParsedCommand("web_search", user_input, arg)
+    if cmd == "/web-cache":
+        return ParsedCommand("web_cache", user_input, arg)
+    if cmd == "/web-extract":
+        return ParsedCommand("web_extract", user_input, arg)
+
+    # 代码分析命令
+    if cmd == "/code-ast":
+        return ParsedCommand("code_ast", user_input, arg)
+    if cmd == "/code-quality":
+        return ParsedCommand("code_quality", user_input, arg)
+
+    # Git 命令
+    if cmd == "/git-analyze":
+        return ParsedCommand("git_analyze", user_input, arg)
+    if cmd == "/git-commit-gen":
+        return ParsedCommand("git_commit_gen", user_input, arg)
+
+    # 知识图谱命令
+    if cmd == "/graph-query":
+        return ParsedCommand("graph_query", user_input, arg)
+    if cmd == "/graph-build":
+        return ParsedCommand("graph_build", user_input, arg)
+    
+    # 数据库命令
+    if cmd == "/db-connect":
+        return ParsedCommand("db_connect", user_input, arg)
+    if cmd == "/db-query":
+        return ParsedCommand("db_query", user_input, arg)
+    if cmd == "/db-execute":
+        return ParsedCommand("db_execute", user_input, arg)
+    if cmd == "/db-create-table":
+        return ParsedCommand("db_create_table", user_input, arg)
+    if cmd == "/db-insert":
+        return ParsedCommand("db_insert", user_input, arg)
+    if cmd == "/db-schema":
+        return ParsedCommand("db_schema", user_input, arg)
+
     if cmd == "/write":
         return ParsedCommand("write", user_input, arg)
     if cmd == "/exec":
@@ -632,10 +722,15 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
                      "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
                      "snapshot_restore", "knowledge_summary",
+                     "graph_query", "graph_build",
+                     "db_connect", "db_query", "db_execute",
+                     "db_create_table", "db_insert", "db_schema",
                      "file_list", "file_info", "file_cleanup", "file_deduplicate", "file_stats",
                      "session_new", "session_list", "session_switch", "session_archive",
                      "session_delete", "session_info", "session_search", "session_current",
-                     "session_compress"):
+                     "session_compress", "web_search", "web_cache", "web_extract",
+                     "code_ast", "code_quality", "git_analyze", "git_commit_gen",
+                     "graph_query", "graph_build"):
         return "cmd"
 
     # 明确指定 RAG
@@ -1326,6 +1421,251 @@ def main():
                     console.print(f"❌ 会话不存在: {session_id}", style="yellow")
             except Exception as e:
                 console.print(f"❌ 归档会话失败: {e}", style="red")
+            continue
+
+        # ---- 网络搜索命令 ----
+        elif parsed.cmd_type == "web_search":
+            query = parsed.arg.strip()
+            if not query:
+                console.print("❌ 请提供搜索查询: /web-search <query>", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔍 正在搜索: {query}", style="cyan")
+                result = registry.execute("web_search", {"query": query})
+                
+                if result.startswith("[错误]") or result.startswith("[提示]"):
+                    console.print(result, style="yellow")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 搜索失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "web_cache":
+            arg = parsed.arg.strip()
+            if not arg or arg == "status":
+                # 显示缓存状态
+                try:
+                    result = registry.execute("web_cache_status", {})
+                    console.print(result, style="cyan")
+                except Exception as e:
+                    console.print(f"❌ 获取缓存状态失败: {e}", style="red")
+            elif arg == "clear":
+                # 清空缓存
+                try:
+                    result = registry.execute("web_cache_clear", {})
+                    console.print(result, style="green")
+                except Exception as e:
+                    console.print(f"❌ 清空缓存失败: {e}", style="red")
+            else:
+                console.print("❌ 未知命令，使用: /web-cache [status|clear]", style="yellow")
+            continue
+
+        elif parsed.cmd_type == "web_extract":
+            url = parsed.arg.strip()
+            if not url:
+                console.print("❌ 请提供URL: /web-extract <url>", style="yellow")
+                continue
+
+            try:
+                console.print(f"📄 正在提取内容: {url}", style="cyan")
+                result = registry.execute("web_content_extract", {"url": url})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 内容提取失败: {e}", style="red")
+            continue
+
+        # ---- 代码分析命令 ----
+        elif parsed.cmd_type == "code_ast":
+            pattern = parsed.arg.strip()
+            if not pattern:
+                console.print("❌ 请提供搜索模式: /code-ast <pattern>", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔍 正在搜索 AST: {pattern}", style="cyan")
+                result = registry.execute("ast_search", {"pattern": pattern, "path": "."})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ AST 搜索失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "code_quality":
+            path = parsed.arg.strip() if parsed.arg.strip() else "."
+            try:
+                console.print(f"🔍 正在分析代码质量: {path}", style="cyan")
+                result = registry.execute("code_quality_check", {"path": path})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 代码质量检查失败: {e}", style="red")
+            continue
+
+        # ---- 知识图谱命令 ----
+        elif parsed.cmd_type == "graph_query":
+            query = parsed.arg.strip()
+            if not query:
+                console.print("❌ 请提供查询内容: /graph-query <query>", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔍 正在查询知识图谱: {query}", style="cyan")
+                result = registry.execute("knowledge_graph_query", {"query": query})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 知识图谱查询失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "graph_build":
+            # 图谱构建需要文本内容，这里简化处理
+            console.print("📝 知识图谱构建需要文本内容", style="cyan")
+            console.print("请使用 Agent 模式调用 knowledge_graph_build 工具", style="yellow")
+            continue
+
+        # 数据库管理命令
+        elif parsed.cmd_type == "db_connect":
+            args = parsed.arg.strip().split() if parsed.arg.strip() else []
+            if len(args) < 2:
+                console.print("❌ 请提供数据库类型和路径: /db-connect <type> <database>", style="yellow")
+                continue
+            
+            db_type, database = args[0], args[1]
+            try:
+                console.print(f"🔗 正在连接数据库: {db_type} @ {database}", style="cyan")
+                result = registry.execute("database_connect", {"db_type": db_type, "database": database})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 数据库连接失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "db_query":
+            sql = parsed.arg.strip()
+            if not sql:
+                console.print("❌ 请提供SQL查询语句: /db-query <sql>", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔍 正在执行SQL查询", style="cyan")
+                result = registry.execute("database_query", {"sql": sql})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ SQL查询失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "db_execute":
+            sql = parsed.arg.strip()
+            if not sql:
+                console.print("❌ 请提供SQL语句: /db-execute <sql>", style="yellow")
+                continue
+
+            try:
+                console.print(f"⚡ 正在执行SQL语句", style="cyan")
+                result = registry.execute("database_execute", {"sql": sql})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ SQL执行失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "db_create_table":
+            args = parsed.arg.strip().split() if parsed.arg.strip() else []
+            if len(args) < 1:
+                console.print("❌ 请提供表名: /db-create-table <table> <columns_json>", style="yellow")
+                continue
+            
+            table = args[0]
+            columns_json = " ".join(args[1:]) if len(args) > 1 else "{}"
+            
+            try:
+                import json
+                columns = json.loads(columns_json)
+            except json.JSONDecodeError:
+                console.print("❌ 列定义必须是有效的JSON格式", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔨 正在创建表: {table}", style="cyan")
+                result = registry.execute("database_create_table", {"table": table, "columns": columns})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 创建表失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "db_insert":
+            args = parsed.arg.strip().split() if parsed.arg.strip() else []
+            if len(args) < 1:
+                console.print("❌ 请提供表名和数据: /db-insert <table> <data_json>", style="yellow")
+                continue
+            
+            table = args[0]
+            data_json = " ".join(args[1:]) if len(args) > 1 else "{}"
+            
+            try:
+                import json
+                data = json.loads(data_json)
+            except json.JSONDecodeError:
+                console.print("❌ 数据必须是有效的JSON格式", style="yellow")
+                continue
+
+            try:
+                console.print(f"➕ 正在插入数据到表: {table}", style="cyan")
+                result = registry.execute("database_insert", {"table": table, "data": data})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 插入数据失败: {e}", style="red")
+            continue
+
+        elif parsed.cmd_type == "db_schema":
+            table = parsed.arg.strip()
+            if not table:
+                console.print("❌ 请提供表名: /db-schema <table>", style="yellow")
+                continue
+
+            try:
+                console.print(f"🔍 正在获取表结构: {table}", style="cyan")
+                result = registry.execute("database_get_schema", {"table": table})
+                
+                if result.startswith("[错误]"):
+                    console.print(result, style="red")
+                else:
+                    console.print(result, style="green")
+            except Exception as e:
+                console.print(f"❌ 获取表结构失败: {e}", style="red")
             continue
 
         # ---- Agent 历史与上下文 ----
