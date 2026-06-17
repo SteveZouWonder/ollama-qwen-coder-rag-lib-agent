@@ -152,6 +152,8 @@ class TestPrintKnowledgeStats:
         mock_rag.get_stats.return_value = {"total_documents": 5}
         print_knowledge_stats()
         mock_console.print.assert_called()
+        # 测试结束后确保rag_engine被恢复为None
+        # patch会自动unpatch，但我们要确保全局变量也被重置
 
     @patch("query_interface.HAS_RICH", False)
     @patch("query_interface.rag_engine")
