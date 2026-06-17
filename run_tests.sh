@@ -60,6 +60,7 @@ elif [ "$MODE" = "batch" ]; then
     pytest tests/test_rag_engine.py \
            tests/test_react_engine.py \
            tests/test_session_manager.py \
+           tests/test_system_prompt.py \
            tests/test_web_search.py \
            --tb=short --no-cov -q
     
