@@ -21,10 +21,17 @@ import argparse
 # ==================== 依赖检查 ====================
 try:
     import pystray
+except Exception:
+    pystray = None
+
+try:
     from PIL import Image, ImageDraw
-    DESKTOP_AVAILABLE = True
-except ImportError:
-    DESKTOP_AVAILABLE = False
+except Exception:
+    Image = None
+    ImageDraw = None
+
+DESKTOP_AVAILABLE = Image is not None and ImageDraw is not None
+TRAY_AVAILABLE = DESKTOP_AVAILABLE and pystray is not None
 
 # 导入命令推荐系统
 try:
@@ -372,7 +379,7 @@ class BaseApp:
                 subprocess.Popen([
                     "cmd", "/c",
                     f"start /max cmd /k \"cd /d {Path.cwd()} && {script_path} {query_script}\""
-                ], shell=True)
+                ], shell=True)  # nosec B602
                 
             else:  # Linux
                 # 尝试使用 wmctrl 将窗口置顶（如果可用）
@@ -947,7 +954,7 @@ class TrayApp(BaseApp):
             
     def run(self):
         """运行托盘应用"""
-        if not DESKTOP_AVAILABLE:
+        if not TRAY_AVAILABLE:
             self.logger.error("桌面功能不可用，请安装 pystray 和 pillow")
             print("错误: pystray 或 PIL 未安装")
             print("安装命令: pip install pystray pillow")

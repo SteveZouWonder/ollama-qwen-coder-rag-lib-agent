@@ -239,12 +239,12 @@ class KnowledgeSnapshotManager:
     def _generate_snapshot_id(self) -> str:
         """生成快照ID"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        random_hash = hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:8]
+        random_hash = hashlib.md5(str(datetime.now().timestamp()).encode(), usedforsecurity=False).hexdigest()[:8]
         return f"{timestamp}_{random_hash}"
     
     def _calculate_hash(self, content: str) -> str:
         """计算内容哈希"""
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+        return hashlib.md5(content.encode('utf-8'), usedforsecurity=False).hexdigest()
     
     def _get_model_config(self) -> Dict[str, str]:
         """获取模型配置"""

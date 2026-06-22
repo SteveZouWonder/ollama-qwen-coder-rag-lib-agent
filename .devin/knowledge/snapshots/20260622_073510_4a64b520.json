@@ -1,0 +1,15 @@
+{
+  "snapshot_id": "20260622_073510_4a64b520",
+  "timestamp": "2026-06-22T07:35:10.686038",
+  "version": "1.0",
+  "documents": [],
+  "storage_paths": {
+    "chroma_db": "/home/runner/work/ollama-qwen-coder-rag-lib-agent/ollama-qwen-coder-rag-lib-agent/index_storage/chroma_db",
+    "llama_index": "/home/runner/work/ollama-qwen-coder-rag-lib-agent/ollama-qwen-coder-rag-lib-agent/index_storage/llama_index"
+  },
+  "model_config": {
+    "llm_model": "qwen2.5-coder:7b",
+    "embed_model": "nomic-embed-text:latest",
+    "ollama_base_url": "http://localhost:11434"
+  },
+  "total_chunks": 
