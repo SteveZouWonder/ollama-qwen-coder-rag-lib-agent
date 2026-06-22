@@ -195,9 +195,9 @@ if ($env:VIRTUAL_ENV) {
 }
 Write-Host ""
 Write-Host "快速开始命令："
-Write-Host "  python query_interface.py --data .\data"
-Write-Host "  python desktop_app.py --status"
-Write-Host "  python desktop_app.py --warm-up"
+Write-Host "  python src/query_interface.py --data .\data"
+Write-Host "  python src/desktop_app.py --status"
+Write-Host "  python src/desktop_app.py --warm-up"
 Write-Host ""
 Write-Host "如果验证失败，请尝试以下替代方案："
 Write-Host "1. 使用 --no-cache-dir: pip install -r requirements.txt --no-cache-dir"

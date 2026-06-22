@@ -58,11 +58,14 @@ check_command() {
 
 # 检查Python版本
 check_python() {
+    # 从环境变量或配置文件读取推荐的Python版本（如果有）
+    RECOMMENDED_PYTHON_VERSION="3.13"
+    
     if check_command python3.13; then
         python3.13 --version &> /dev/null
         if [ $? -eq 0 ]; then
             version=$(python3.13 --version 2>&1 | awk '{print $2}')
-            print_result 0 "Python 版本: $version (推荐 3.13.13)"
+            print_result 0 "Python 版本: $version (推荐 $RECOMMENDED_PYTHON_VERSION+)"
             return 0
         else
             print_result 1 "Python3.13 不可用"
@@ -80,7 +83,7 @@ check_python() {
             minor=$(echo $version | cut -d. -f2)
             
             if [ $major -gt 3 ] || ([ $major -eq 3 ] && [ $minor -ge 13 ]); then
-                print_result 0 "Python 版本: $version (推荐 3.13+)"
+                print_result 0 "Python 版本: $version (推荐 $RECOMMENDED_PYTHON_VERSION+)"
                 
                 # 检查是否为 Homebrew Python (macOS 用户推荐)
                 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -95,9 +98,9 @@ check_python() {
                 fi
                 return 0
             else
-                print_result 1 "Python 版本过低: $version (需要 3.13+)"
+                print_result 1 "Python 版本过低: $version (需要 $RECOMMENDED_PYTHON_VERSION+)"
                 PYTHON_ISSUES=$((PYTHON_ISSUES + 1))
-                echo "  建议: brew install python@3.13 或使用 pyenv 安装 Python 3.13.13"
+                echo "  建议: brew install python@$RECOMMENDED_PYTHON_VERSION 或使用 pyenv 安装 Python $RECOMMENDED_PYTHON_VERSION"
                 return 1
             fi
         else
@@ -148,22 +151,25 @@ check_ollama() {
             OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
         fi
         
-        # 检查模型
+        # 检查模型（从配置文件读取默认模型，如果没有配置则使用默认值）
+        DEFAULT_LLM_MODEL="qwen2.5-coder"
+        DEFAULT_EMBED_MODEL="nomic-embed-text"
+        
         echo "  已安装的模型:"
         models=$(ollama list 2>&1)
-        if echo "$models" | grep -q "qwen2.5-coder"; then
-            print_result 0 "qwen2.5-coder 模型已安装"
+        if echo "$models" | grep -q "$DEFAULT_LLM_MODEL"; then
+            print_result 0 "$DEFAULT_LLM_MODEL 模型已安装"
         else
-            print_result 1 "qwen2.5-coder 模型未安装"
-            echo "  请运行: ollama pull qwen2.5-coder:7b"
+            print_result 1 "$DEFAULT_LLM_MODEL 模型未安装"
+            echo "  请运行: ollama pull $DEFAULT_LLM_MODEL:7b"
             OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
         fi
         
-        if echo "$models" | grep -q "nomic-embed-text"; then
-            print_result 0 "nomic-embed-text 模型已安装"
+        if echo "$models" | grep -q "$DEFAULT_EMBED_MODEL"; then
+            print_result 0 "$DEFAULT_EMBED_MODEL 模型已安装"
         else
-            print_result 1 "nomic-embed-text 模型未安装"
-            echo "  请运行: ollama pull nomic-embed-text:latest"
+            print_result 1 "$DEFAULT_EMBED_MODEL 模型未安装"
+            echo "  请运行: ollama pull $DEFAULT_EMBED_MODEL:latest"
             OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
         fi
         
@@ -255,7 +261,7 @@ check_dependencies() {
         print_result 2 "未检测到虚拟环境 (推荐使用)"
         PYTHON_CMD="python3"
         echo "  提示: 使用虚拟环境可以避免依赖冲突"
-        echo "  创建方法: python3.13 -m venv venv && source venv/bin/activate"
+        echo "  创建方法: python3 -m venv venv && source venv/bin/activate"
         echo "  macOS 用户推荐: brew install python@3.13 && python3.13 -m venv venv && source venv/bin/activate"
     fi
     
@@ -302,15 +308,51 @@ check_dependencies() {
         fi
     }
     
-    # 检查关键依赖
+    # 检查关键依赖（从 requirements.txt 动态读取）
     local dep_failures=0
-    check_module "llama_index" "llama-index" || dep_failures=$((dep_failures + 1))
-    check_module "chromadb" "chromadb" || dep_failures=$((dep_failures + 1))
-    check_module "rich" "rich" || dep_failures=$((dep_failures + 1))
-    check_module "prompt_toolkit" "prompt-toolkit" || dep_failures=$((dep_failures + 1))
-    check_module "pypdf" "pypdf" || dep_failures=$((dep_failures + 1))
-    check_module "requests" "requests" || dep_failures=$((dep_failures + 1))
-    check_module "dotenv" "python-dotenv" || dep_failures=$((dep_failures + 1))
+    
+    # 从 requirements.txt 提取包名并检查
+    while IFS= read -r line; do
+        # 跳过注释和空行
+        if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "$line" ]]; then
+            continue
+        fi
+        
+        # 提取包名（去除版本要求和注释）
+        package_name=$(echo "$line" | sed 's/>=.*//' | sed 's/<.*//' | sed 's/==.*//' | sed 's/~=.*//' | awk '{print $1}')
+        
+        if [ -n "$package_name" ]; then
+            # 转换包名为导入名（例如：python-dotenv -> dotenv）
+            import_name=$(echo "$package_name" | sed 's/-/_/g')
+            
+            # 特殊处理一些包名映射
+            case "$package_name" in
+                "python-dotenv") import_name="dotenv" ;;
+                "prompt-toolkit") import_name="prompt_toolkit" ;;
+                "duckduckgo-search") import_name="duckduckgo_search" ;;
+                "pytest-cov") import_name="pytest_cov" ;;
+                "pytest-xdist") import_name="xdist" ;;
+                "beautifulsoup4") import_name="bs4" ;;
+                "pillow") import_name="PIL" ;;
+                "opencv-python") continue ;; # 跳过opencv-python，导入名复杂
+                "gitpython") continue ;; # 跳过gitpython，使用系统git命令
+                "llama-index-"*) continue ;; # 跳过llama-index插件包，无法直接导入
+                "setuptools"|"wheel") import_name="$package_name" ;; # 保持原名
+            esac
+            
+            check_module "$import_name" "$package_name" || dep_failures=$((dep_failures + 1))
+        fi
+    done < requirements.txt
+    
+    # 特别检查网络搜索功能
+    echo ""
+    if $PYTHON_CMD -c "import sys; sys.path.insert(0, 'src'); from web_search import get_search_engine_manager" 2>/dev/null; then
+        print_result 0 "网络搜索管理器可用"
+    else
+        print_result 1 "网络搜索管理器不可用"
+        echo "  提示: 需要安装 duckduckgo-search 库"
+        dep_failures=$((dep_failures + 1))
+    fi
     
     # 检查测试工具
     check_module "pytest" "pytest" || dep_failures=$((dep_failures + 1))
@@ -465,20 +507,126 @@ check_ocr_dependencies() {
     fi
 }
 
+# 检查命令推荐系统功能（v4.2.0新增）
+check_recommender_system() {
+    if [ ! -f "requirements.txt" ]; then
+        print_result 1 "requirements.txt 文件不存在"
+        return 1
+    fi
+    
+    # 检查虚拟环境
+    if [[ "$VIRTUAL_ENV" != "" ]]; then
+        PYTHON_CMD="python"
+    else
+        PYTHON_CMD="python3"
+    fi
+    
+    # 检查pip命令
+    if command -v pip &> /dev/null; then
+        PIP_CMD="pip"
+    elif command -v pip3 &> /dev/null; then
+        PIP_CMD="pip3"
+    else
+        print_result 1 "pip未安装"
+        return 1
+    fi
+    
+    echo "  命令推荐系统是 v4.2.0 新增功能，提供智能命令推荐"
+    echo "  该功能基于用户工作流程、系统状态和历史使用模式提供推荐"
+    
+    recommender_failures=0
+    
+    # 检查推荐系统核心目录
+    if [ -d "src/command_recommender" ]; then
+        print_result 0 "推荐系统模块目录存在"
+        
+        # 检查推荐系统关键组件文件
+        recommender_files=(
+            "src/command_recommender/__init__.py"
+            "src/command_recommender/config.py"
+            "src/command_recommender/types.py"
+            "src/command_recommender/engine.py"
+            "src/command_recommender/workflow.py"
+            "src/command_recommender/state.py"
+            "src/command_recommender/history.py"
+            "src/command_recommender/learning.py"
+            "src/command_recommender/display.py"
+            "src/command_recommender/context.py"
+        )
+        
+        missing_recommender_files=0
+        for file in "${recommender_files[@]}"; do
+            if [ -f "$file" ]; then
+                : # 文件存在
+            else
+                echo -e "${RED}✗${NC} 缺少推荐系统组件: $file"
+                missing_recommender_files=$((missing_recommender_files + 1))
+            fi
+        done
+        
+        if [ $missing_recommender_files -eq 0 ]; then
+            print_result 0 "所有推荐系统组件文件存在"
+        else
+            print_result 1 "缺少 $missing_recommender_files 个推荐系统组件"
+            recommender_failures=$((recommender_failures + missing_recommender_files))
+        fi
+    else
+        print_result 2 "推荐系统模块目录不存在（功能未安装或版本过低）"
+        recommender_failures=$((recommender_failures + 1))
+    fi
+    
+    # 检查推荐系统依赖（已包含在基本依赖中）
+    check_module "rich" "rich (推荐系统CLI格式化)" || recommender_failures=$((recommender_failures + 1))
+    
+    # 检查推荐系统集成状态
+    if [ -f "src/query_interface.py" ]; then
+        if grep -q "command_recommender" "src/query_interface.py"; then
+            print_result 0 "推荐系统CLI集成存在"
+        else
+            print_result 2 "推荐系统CLI集成未完成"
+        fi
+    else
+        print_result 2 "query_interface.py 文件不存在"
+        recommender_failures=$((recommender_failures + 1))
+    fi
+    
+    if [ -f "src/desktop_app.py" ]; then
+        if grep -q "command_recommender" "src/desktop_app.py"; then
+            print_result 0 "推荐系统桌面应用集成存在"
+        else
+            print_result 2 "推荐系统桌面应用集成未完成"
+        fi
+    else
+        print_result 2 "desktop_app.py 文件不存在"
+        recommender_failures=$((recommender_failures + 1))
+    fi
+    
+    # 检查推荐系统测试文件
+    if [ -d "tests/test_command_recommender" ]; then
+        print_result 0 "推荐系统测试目录存在"
+    else
+        print_result 2 "推荐系统测试目录不存在"
+    fi
+    
+    if [ $recommender_failures -gt 0 ]; then
+        DEPENDENCY_ISSUES=$((DEPENDENCY_ISSUES + recommender_failures))
+    fi
+}
+
 # 检查项目文件
 check_project_files() {
     required_files=(
-        "config.py"
-        "query_interface.py"
-        "rag_engine.py"
-        "react_engine.py"
-        "agent_tools.py"
-        "document_loader.py"
-        "desktop_app.py"
-        "knowledge_snapshot.py"
-        "knowledge_to_skills.py"
-        "content_security.py"
-        "chat_history.py"
+        "src/config.py"
+        "src/query_interface.py"
+        "src/rag_engine.py"
+        "src/react_engine.py"
+        "src/agent_tools.py"
+        "src/document_loader.py"
+        "src/desktop_app.py"
+        "src/knowledge_snapshot.py"
+        "src/knowledge_to_skills.py"
+        "src/content_security.py"
+        "src/chat_history.py"
     )
     
     missing_files=0
@@ -551,6 +699,10 @@ main() {
     print_header "OCR 功能检查（可选）"
     check_ocr_dependencies
     
+    # 推荐系统功能检查（v4.2.0新增）
+    print_header "命令推荐系统检查（v4.2.0新增）"
+    check_recommender_system
+    
     # 项目文件检查
     print_header "项目文件检查"
     check_project_files
@@ -572,9 +724,9 @@ main() {
         echo ""
         echo "快速开始命令："
         echo "  python desktop_app.py              # 启动桌面应用（推荐）"
-        echo "  python desktop_app.py --status     # 检查服务状态"
-        echo "  python desktop_app.py --warm-up    # 预热模型"
-        echo "  python query_interface.py --data ./data  # 命令行模式"
+        echo "  python src/desktop_app.py --status     # 检查服务状态"
+        echo "  python src/desktop_app.py --warm-up    # 预热模型"
+        echo "  python src/query_interface.py --data ./data  # 命令行模式"
         return 0
     else
         echo ""

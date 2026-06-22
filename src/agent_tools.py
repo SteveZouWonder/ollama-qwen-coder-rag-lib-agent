@@ -439,16 +439,17 @@ def read_system_prompt():
 
 # ========== 网络搜索工具 ==========
 
-def web_search(query: str, source: str = 'default', max_results: int = 10, use_cache: bool = True) -> str:
-    """网络搜索工具 - 支持 DuckDuckGo 搜索"""
+def web_search(query: str, source: str = 'default', max_results: int = 10, use_cache: bool = True, enable_fallback: bool = True) -> str:
+    """网络搜索工具 - 支持 DuckDuckGo 搜索，自动降级到Wikipedia"""
     try:
         import asyncio
         from web_search import get_search_engine_manager, get_search_cache, get_result_processor
         
         # 检查缓存
+        cache_key = f"{query}_{source}"
         if use_cache:
             cache = get_search_cache()
-            cached_results = cache.get(query, source)
+            cached_results = cache.get(cache_key, source)
             if cached_results:
                 processor = get_result_processor()
                 return processor.format_results(cached_results, format='text')
@@ -459,9 +460,18 @@ def web_search(query: str, source: str = 'default', max_results: int = 10, use_c
         asyncio.set_event_loop(loop)
         
         try:
-            results = loop.run_until_complete(
-                manager.search(query, source=source, max_results=max_results)
-            )
+            if enable_fallback and source == 'default':
+                # 使用自动降级功能
+                results = loop.run_until_complete(
+                    manager.search_with_fallback(query, primary_source='default', 
+                                                fallback_sources=['wikipedia'], 
+                                                max_results=max_results)
+                )
+            else:
+                # 使用指定搜索引擎
+                results = loop.run_until_complete(
+                    manager.search(query, source=source, max_results=max_results)
+                )
         finally:
             loop.close()
         
@@ -475,7 +485,7 @@ def web_search(query: str, source: str = 'default', max_results: int = 10, use_c
         
         # 缓存结果
         if use_cache:
-            cache.set(query, source, processed_results)
+            cache.set(cache_key, source, processed_results)
         
         return processor.format_results(processed_results, format='text')
         
@@ -604,8 +614,8 @@ registry.register("get_knowledge_stats", get_knowledge_stats, "获取知识库�
 registry.register("check_knowledge_status", check_knowledge_status, "检查知识库状态（持久化、数据量、OCR功能）", {}, safe=True)
 
 # 网络搜索工具
-registry.register("web_search", web_search, "网络搜索（支持 DuckDuckGo）",
-                  {"query": "搜索查询(必填)", "source": "搜索来源，默认default", "max_results": "最大结果数，默认10", "use_cache": "是否使用缓存，默认true"}, safe=True)
+registry.register("web_search", web_search, "网络搜索（支持 DuckDuckGo + Wikipedia 自动降级）",
+                  {"query": "搜索查询(必填)", "source": "搜索来源，默认default", "max_results": "最大结果数，默认10", "use_cache": "是否使用缓存，默认true", "enable_fallback": "是否启用自动降级到Wikipedia，默认true"}, safe=True)
 registry.register("web_content_extract", web_content_extract, "提取网页内容并清理格式",
                   {"url": "网页URL(必填)", "timeout": "超时秒数，默认30"}, safe=True)
 registry.register("web_cache_status", web_cache_status, "查看搜索缓存状态", {}, safe=True)

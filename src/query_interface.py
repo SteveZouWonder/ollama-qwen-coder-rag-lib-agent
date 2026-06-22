@@ -1907,6 +1907,100 @@ def main():
                 except Exception as e:
                     console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
             
+            # 检测是否需要网络搜索（最新信息、实时数据等）
+            web_search_keywords = ["最新", "当前", "版本", "今天", "现在", "实时", "发布", "发布时间", "latest", "current", "version", "release"]
+            needs_web_search = any(keyword in question.lower() for keyword in web_search_keywords)
+            
+            web_search_result = ""
+            if needs_web_search:
+                try:
+                    console.print("🌐 检测到需要最新信息，正在网络搜索...", style="cyan")
+                    from agent_tools import web_search
+                    
+                    # 改进搜索查询：从用户问题中提取关键搜索词
+                    search_query = question
+                    
+                    # 移除中文常见查询前缀
+                    prefixes_to_remove = ["帮我", "请帮我", "能否帮我", "可以帮我", "帮我查询", "请帮我查询", 
+                                         "从网络上查询", "从网络查询", "网上查", "网络查", "查询一下", "查一下",
+                                         "告诉我", "请问", "我想知道", "什么是", "什么是"]
+                    for prefix in prefixes_to_remove:
+                        if search_query.startswith(prefix):
+                            search_query = search_query[len(prefix):].strip()
+                    
+                    # 移除常见的查询后缀
+                    suffixes_to_remove = ["是多少", "是什么", "吗", "呢", "？", "?", "。", ".", "！", "!"]
+                    for suffix in suffixes_to_remove:
+                        if search_query.endswith(suffix):
+                            search_query = search_query[:-len(suffix)].strip()
+                    
+                    # 如果清理后的查询太短，使用原标题
+                    if len(search_query) < 3:
+                        search_query = question
+                    
+                    # 尝试中英文查询转换
+                    search_queries = [search_query]
+                    
+                    # 如果查询主要是中文，尝试添加英文翻译
+                    if any('\u4e00' <= char <= '\u9fff' for char in search_query):
+                        # 更智能的关键词翻译和提取
+                        translations = {
+                            "最新": "latest",
+                            "版本": "version",
+                            "当前": "current",
+                            "发布": "release",
+                            "下载": "download",
+                            "安装": "install"
+                        }
+                        
+                        # 提取英文技术术语
+                        tech_terms = []
+                        for term in ["JDK", "Java", "Python", "React", "Node", "JavaScript", "TypeScript", "Vue", "Angular"]:
+                            if term in search_query:
+                                tech_terms.append(term)
+                        
+                        # 构建英文查询
+                        if tech_terms:
+                            # 优先使用技术术语
+                            english_query = " ".join(tech_terms)
+                            for chinese, english in translations.items():
+                                if chinese in search_query:
+                                    english_query += f" {english}"
+                            search_queries.insert(0, english_query)  # 优先尝试英文
+                        else:
+                            # 没有技术术语，尝试简单翻译
+                            english_query = search_query
+                            for chinese, english in translations.items():
+                                english_query = english_query.replace(chinese, english)
+                            
+                            if english_query != search_query and any('\u4e00' <= char <= '\u9fff' for char in english_query):
+                                # 如果翻译后仍有中文，直接使用技术术语搜索
+                                if any(term in search_query for term in ["JDK", "Java"]):
+                                    search_queries.insert(0, "JDK version")
+                                elif any(term in search_query for term in ["Python"]):
+                                    search_queries.insert(0, "Python version")
+                                else:
+                                    search_queries.insert(0, english_query)
+                    
+                    console.print(f"🔍 搜索查询: {search_queries[0]}", style="dim")
+                    
+                    # 尝试多个查询，直到有一个成功
+                    for query in search_queries:
+                        web_search_result = web_search(query, max_results=5)
+                        if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
+                            console.print("✅ 网络搜索完成", style="green")
+                            break
+                        else:
+                            console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
+                    
+                    if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
+                        # 将网络搜索结果添加到问题中，让RAG引擎能够参考
+                        question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
+                    else:
+                        console.print("⚠️ 所有搜索查询均未返回有效结果，继续使用知识库", style="yellow")
+                except Exception as e:
+                    console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
+            
             if Config.SHOW_PROGRESS:
                 result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
             else:

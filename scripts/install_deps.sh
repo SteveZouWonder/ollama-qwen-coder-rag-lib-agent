@@ -161,16 +161,23 @@ if [ "$install_ocr" = "y" ]; then
     fi
     
     # 安装 OCR 核心依赖（Python 3.13 兼容）
-    if $PIP_CMD install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0; then
-        echo -e "${GREEN}✓ OCR 依赖安装完成（Tesseract OCR）${NC}"
+    # 从 requirements.txt 读取 OCR 相关依赖（跳过注释行）
+    OCR_PACKAGES=$(grep -E "^[^#]*pytesseract|^[^#]*pymupdf|^[^#]*opencv-python" requirements.txt 2>/dev/null | grep -v "^#" || echo "")
+    if [ -n "$OCR_PACKAGES" ]; then
+        if $PIP_CMD install $OCR_PACKAGES; then
+            echo -e "${GREEN}✓ OCR 依赖安装完成（从 requirements.txt）${NC}"
+        else
+            echo -e "${RED}✗ OCR 依赖安装失败${NC}"
+            echo -e "${YELLOW}跳过 OCR 依赖安装，可以稍后手动安装${NC}"
+            echo "手动安装命令: pip install $OCR_PACKAGES"
+        fi
     else
-        echo -e "${RED}✗ OCR 依赖安装失败${NC}"
-        echo -e "${YELLOW}跳过 OCR 依赖安装，可以稍后手动安装${NC}"
-        echo "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0"
+        echo -e "${YELLOW}⚠ requirements.txt 中未找到 OCR 依赖配置${NC}"
+        echo "  提示: 可以在 requirements.txt 中添加 OCR 相关依赖"
     fi
 else
     echo -e "${YELLOW}⚠ 跳过 OCR 依赖安装${NC}"
-    echo "  提示: 如需使用 OCR 功能，可以运行: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    echo "  提示: 如需使用 OCR 功能，可以在 requirements.txt 中添加相关依赖后重新运行安装脚本"
     echo "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
 fi
 
@@ -181,10 +188,10 @@ echo -e "${BLUE}步骤 3/4: 检查安装状态${NC}"
 if [ "$INSTALL_STATUS" -ne 0 ]; then
     echo -e "${RED}✗ 核心依赖安装失败，跳过验证步骤${NC}"
     echo -e "${YELLOW}请查看上述错误信息，并尝试以下解决方案：${NC}"
-    echo "1. 清理 pip 缓存: pip cache purge"
-    echo "2. 重新安装: pip install -r requirements.txt --no-cache-dir"
+    echo "1. 清理 pip 缓存: $PIP_CMD cache purge"
+    echo "2. 重新安装: $PIP_CMD install -r requirements.txt --no-cache-dir"
     echo "3. 手动安装失败的包"
-    echo "4. 使用预编译包: pip install -r requirements.txt --prefer-binary"
+    echo "4. 使用预编译包: $PIP_CMD install -r requirements.txt --prefer-binary"
     echo ""
     echo -e "${RED}安装未完成，请解决上述问题后重新运行安装脚本${NC}"
     exit 1
@@ -194,15 +201,58 @@ echo -e "${GREEN}✓ 依赖安装成功，开始验证...${NC}"
 echo ""
 echo -e "${BLUE}步骤 4/4: 验证安装${NC}"
 
-echo "验证核心依赖..."
-$PYTHON_CMD -c "import llama_index" 2>/dev/null && echo -e "${GREEN}✓ llama-index${NC}" || echo -e "${RED}✗ llama-index${NC}"
-$PYTHON_CMD -c "import chromadb" 2>/dev/null && echo -e "${GREEN}✓ chromadb${NC}" || echo -e "${RED}✗ chromadb${NC}"
-$PYTHON_CMD -c "import pypdf" 2>/dev/null && echo -e "${GREEN}✓ pypdf${NC}" || echo -e "${RED}✗ pypdf${NC}"
-$PYTHON_CMD -c "import rich" 2>/dev/null && echo -e "${GREEN}✓ rich${NC}" || echo -e "${RED}✗ rich${NC}"
-$PYTHON_CMD -c "import prompt_toolkit" 2>/dev/null && echo -e "${GREEN}✓ prompt-toolkit${NC}" || echo -e "${RED}✗ prompt-toolkit${NC}"
-$PYTHON_CMD -c "import requests" 2>/dev/null && echo -e "${GREEN}✓ requests${NC}" || echo -e "${RED}✗ requests${NC}"
-$PYTHON_CMD -c "import dotenv" 2>/dev/null && echo -e "${GREEN}✓ python-dotenv${NC}" || echo -e "${RED}✗ python-dotenv${NC}"
-$PYTHON_CMD -c "import urllib3" 2>/dev/null && echo -e "${GREEN}✓ urllib3${NC}" || echo -e "${RED}✗ urllib3${NC}"
+echo "验证核心依赖（从 requirements.txt 读取）..."
+# 从 requirements.txt 提取包名并验证
+while IFS= read -r line; do
+    # 跳过注释和空行
+    if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "$line" ]]; then
+        continue
+    fi
+    
+    # 提取包名（去除版本要求和注释）
+    package_name=$(echo "$line" | sed 's/>=.*//' | sed 's/<.*//' | sed 's/==.*//' | sed 's/~=.*//' | awk '{print $1}')
+    
+    if [ -n "$package_name" ]; then
+        # 跳过llama-index插件包（它们是llama-index的一部分，无法直接导入）
+        if [[ "$package_name" == llama-index-* ]]; then
+            continue
+        fi
+        
+        # 转换包名为导入名（例如：python-dotenv -> dotenv）
+        import_name=$(echo "$package_name" | sed 's/-/_/g')
+        
+        # 特殊处理一些包名映射
+        case "$package_name" in
+            "python-dotenv") import_name="dotenv" ;;
+            "prompt-toolkit") import_name="prompt_toolkit" ;;
+            "duckduckgo-search") import_name="duckduckgo_search" ;;
+            "pytest-cov") import_name="pytest_cov" ;;
+            "pytest-xdist") import_name="xdist" ;;
+            "beautifulsoup4") import_name="bs4" ;;
+            "pillow") import_name="PIL" ;;
+            "opencv-python") continue ;; # 跳过opencv-python，导入名复杂
+            "gitpython") continue ;; # 跳过gitpython，使用系统git命令
+            "setuptools"|"wheel") import_name="$package_name" ;; # 保持原名
+        esac
+        
+        # 尝试导入
+        if $PYTHON_CMD -c "import $import_name" 2>/dev/null; then
+            echo -e "${GREEN}✓ $package_name${NC}"
+        else
+            echo -e "${RED}✗ $package_name${NC}"
+        fi
+    fi
+done < requirements.txt
+
+# 特别验证网络搜索功能
+echo ""
+echo "验证网络搜索功能..."
+if $PYTHON_CMD -c "import sys; sys.path.insert(0, 'src'); from web_search import get_search_engine_manager" 2>/dev/null; then
+    echo -e "${GREEN}✓ 网络搜索模块正常${NC}"
+else
+    echo -e "${YELLOW}⚠ 网络搜索模块导入异常（可能缺少 duckduckgo-search）${NC}"
+    echo "  网络搜索功能需要 duckduckgo-search 库"
+fi
 
 # 检查urllib3 SSL兼容性
 echo "检查urllib3 SSL兼容性..."
@@ -231,9 +281,9 @@ else
 fi
 echo ""
 echo "快速开始命令："
-echo "  python query_interface.py --data ./data"
-echo "  python desktop_app.py --status"
-echo "  python desktop_app.py --warm-up"
+echo "  python src/query_interface.py --data ./data"
+echo "  python src/desktop_app.py --status"
+echo "  python src/desktop_app.py --warm-up"
 echo ""
 echo "如果验证失败，请尝试以下替代方案："
 echo "1. 使用 --no-cache-dir: pip install -r requirements.txt --no-cache-dir"

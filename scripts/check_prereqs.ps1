@@ -430,17 +430,17 @@ function Test-OCRDependencies {
 # 检查项目文件
 function Test-ProjectFiles {
     $requiredFiles = @(
-        "config.py",
-        "query_interface.py",
-        "rag_engine.py",
-        "react_engine.py",
-        "agent_tools.py",
-        "document_loader.py",
-        "desktop_app.py",
-        "knowledge_snapshot.py",
-        "knowledge_to_skills.py",
-        "content_security.py",
-        "chat_history.py"
+        "src/config.py",
+        "src/query_interface.py",
+        "src/rag_engine.py",
+        "src/react_engine.py",
+        "src/agent_tools.py",
+        "src/document_loader.py",
+        "src/desktop_app.py",
+        "src/knowledge_snapshot.py",
+        "src/knowledge_to_skills.py",
+        "src/content_security.py",
+        "src/chat_history.py"
     )
     
     $missingFiles = 0
@@ -535,10 +535,10 @@ function Main {
         Write-Host "✓ 所有必要条件已满足，可以开始使用！" -ForegroundColor Green
         Write-Host ""
         Write-Host "快速开始命令："
-        Write-Host "  python desktop_app.py              # 启动桌面应用（推荐）"
-        Write-Host "  python desktop_app.py --status     # 检查服务状态"
-        Write-Host "  python desktop_app.py --warm-up    # 预热模型"
-        Write-Host "  python query_interface.py --data .\data  # 命令行模式"
+        Write-Host "  python src/desktop_app.py              # 启动桌面应用（推荐）"
+        Write-Host "  python src/desktop_app.py --status     # 检查服务状态"
+        Write-Host "  python src/desktop_app.py --warm-up    # 预热模型"
+        Write-Host "  python src/query_interface.py --data .\data  # 命令行模式"
         return 0
     } else {
         Write-Host ""

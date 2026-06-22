@@ -56,6 +56,7 @@
 - [OCR提取功能实现](implemented-features/f1-ocr-extrace/) ✅ v4.0.0
 - [多Agent系统实现](implemented-features/f2-multiple-agent/) ✅ v4.0.0
 - [文件管理和会话管理实现](implemented-features/f3-file-session-management/) ⭐ v4.1.0
+- [智能命令推荐系统实现](implemented-features/f4-command-recommender/) ⭐ v4.2.0
 
 ##  相关链接
 

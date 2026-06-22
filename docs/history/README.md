@@ -25,6 +25,9 @@
 - [警告问题修复](WARNING_FIX.md) - 警告信息问题修复
 - [综合修复报告](COMPREHENSIVE_FIX_REPORT.md) - 系统综合修复总结
 
+### 新功能实施
+- [命令推荐系统实施总结](COMMAND_RECOMMENDER_IMPLEMENTATION_SUMMARY.md) - 智能命令推荐系统实现
+
 ---
 
 **文档版本**: 1.0
