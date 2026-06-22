@@ -86,6 +86,8 @@ dmypy.json
 
 # Devin
 .devin/
+!.devin/
+!.devin/SYSTEM_PROMPT.md
 
 # CI/CD Reports
 bandit-report.json
