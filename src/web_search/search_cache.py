@@ -54,7 +54,7 @@ class SearchCache:
     def _get_cache_key(self, query: str, source: str) -> str:
         """生成缓存键"""
         key_string = f"{source}:{query}"
-        return hashlib.md5(key_string.encode()).hexdigest()
+        return hashlib.md5(key_string.encode(), usedforsecurity=False).hexdigest()
     
     def _load_index(self):
         """加载缓存索引"""

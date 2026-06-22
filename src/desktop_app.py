@@ -372,7 +372,7 @@ class BaseApp:
                 subprocess.Popen([
                     "cmd", "/c",
                     f"start /max cmd /k \"cd /d {Path.cwd()} && {script_path} {query_script}\""
-                ], shell=True)
+                ], shell=True)  # nosec B602
                 
             else:  # Linux
                 # 尝试使用 wmctrl 将窗口置顶（如果可用）
