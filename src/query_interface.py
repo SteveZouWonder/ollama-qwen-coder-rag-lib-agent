@@ -1961,12 +1961,28 @@ def main():
                         
                         # 构建英文查询
                         if tech_terms:
-                            # 优先使用技术术语
-                            english_query = " ".join(tech_terms)
-                            for chinese, english in translations.items():
-                                if chinese in search_query:
-                                    english_query += f" {english}"
-                            search_queries.insert(0, english_query)  # 优先尝试英文
+                            # 对于版本查询，使用更精确的搜索词
+                            if "版本" in search_query or "version" in search_query.lower():
+                                if "JDK" in tech_terms or "Java" in tech_terms:
+                                    search_queries.insert(0, "Java SE latest version")  # 更精确的查询
+                                    search_queries.insert(1, "Java downloads Oracle")  # 备用查询
+                                elif "Python" in tech_terms:
+                                    search_queries.insert(0, "Python latest version download")
+                                    search_queries.insert(1, "Python.org downloads")
+                                else:
+                                    # 其他技术术语
+                                    english_query = " ".join(tech_terms)
+                                    for chinese, english in translations.items():
+                                        if chinese in search_query:
+                                            english_query += f" {english}"
+                                    search_queries.insert(0, english_query)
+                            else:
+                                # 非版本查询
+                                english_query = " ".join(tech_terms)
+                                for chinese, english in translations.items():
+                                    if chinese in search_query:
+                                        english_query += f" {english}"
+                                search_queries.insert(0, english_query)
                         else:
                             # 没有技术术语，尝试简单翻译
                             english_query = search_query
@@ -1976,24 +1992,52 @@ def main():
                             if english_query != search_query and any('\u4e00' <= char <= '\u9fff' for char in english_query):
                                 # 如果翻译后仍有中文，直接使用技术术语搜索
                                 if any(term in search_query for term in ["JDK", "Java"]):
-                                    search_queries.insert(0, "JDK version")
+                                    search_queries.insert(0, "Java SE latest version")
                                 elif any(term in search_query for term in ["Python"]):
-                                    search_queries.insert(0, "Python version")
+                                    search_queries.insert(0, "Python latest version")
                                 else:
                                     search_queries.insert(0, english_query)
                     
                     console.print(f"🔍 搜索查询: {search_queries[0]}", style="dim")
                     
                     # 尝试多个查询，直到有一个成功
+                    successful_query = None
                     for query in search_queries:
                         web_search_result = web_search(query, max_results=5)
                         if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
                             console.print("✅ 网络搜索完成", style="green")
+                            successful_query = query
                             break
                         else:
                             console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
                     
                     if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
+                        # 对于版本查询，尝试提取官方下载页面的具体版本信息
+                        if "版本" in search_query or "version" in search_query.lower():
+                            try:
+                                from agent_tools import web_content_extract
+                                # 尝试从搜索结果中提取官方下载页面的内容
+                                import re
+                                # 查找Oracle或Python.org的下载页面
+                                official_urls = []
+                                for line in web_search_result.split('\n'):
+                                    if 'oracle.com/java/technologies/downloads' in line.lower() or \
+                                       'python.org/downloads' in line.lower() or \
+                                       'openjdk.org' in line.lower():
+                                        url_match = re.search(r'https?://[^\s]+', line)
+                                        if url_match:
+                                            official_urls.append(url_match.group())
+                                
+                                if official_urls:
+                                    console.print("📄 正在提取官方页面内容...", style="dim")
+                                    page_content = web_content_extract(official_urls[0], timeout=10)
+                                    if page_content and not page_content.startswith("[错误]"):
+                                        console.print("✅ 官方页面内容提取成功", style="green")
+                                        # 将官方页面内容添加到搜索结果中
+                                        web_search_result += f"\n\n=== 官方页面详细信息 ===\n{page_content[:1000]}"
+                            except Exception as e:
+                                console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
+                        
                         # 将网络搜索结果添加到问题中，让RAG引擎能够参考
                         question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
                     else:

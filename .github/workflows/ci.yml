@@ -76,7 +76,6 @@ jobs:
     - name: Check test coverage
       run: |
         coverage report --fail-under=80
-      continue-on-error: true
     
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4
@@ -142,15 +141,7 @@ jobs:
         safety check --output json > safety-check.json || true
         echo "Checking for critical and high severity vulnerabilities..."
         if [ -f safety-check.json ]; then
-          critical_count=$(python -c "
-import json, sys
-try:
-    data = json.load(open('safety-check.json'))
-    vulns = data.get('vulnerabilities', data) if isinstance(data, dict) else data
-    print(sum(1 for v in vulns if isinstance(v, dict) and v.get('severity', '').lower() in ('critical', 'high')))
-except Exception:
-    print(0)
-")
+          critical_count=$(python3 -c "import json, sys; data = json.load(open('safety-check.json')); vulns = data.get('vulnerabilities', data) if isinstance(data, dict) else data; print(sum(1 for v in vulns if isinstance(v, dict) and v.get('severity', '').lower() in ('critical', 'high'))) if hasattr(vulns, '__iter__') else 0")
           if [ "$critical_count" -gt 0 ]; then
             echo "❌ Found $critical_count critical/high severity vulnerabilities"
             echo "Please review safety-check.json for details"
