@@ -23,7 +23,7 @@ try:
     import pystray
     from PIL import Image, ImageDraw
     DESKTOP_AVAILABLE = True
-except ImportError:
+except Exception:
     DESKTOP_AVAILABLE = False
 
 # 导入命令推荐系统
