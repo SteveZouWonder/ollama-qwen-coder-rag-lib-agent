@@ -430,7 +430,7 @@ class BaseApp:
                     "cmd", "/c",
                     f'start "{window_title}" /max cmd /k '
                     f'"set {session_tag}&& cd /d {workdir} && {cli_invocation_win}"'
-                ], shell=True)
+                ])
                 
             else:  # Linux
                 # 通过环境变量注入唯一标记，退出时用 pkill -f 按标记精确匹配，
