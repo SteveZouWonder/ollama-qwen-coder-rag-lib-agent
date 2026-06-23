@@ -1,4 +1,4 @@
-# 智能文档+代码助手 - 详细使用教程
+# Cerebro 🧠 — 你的第二大脑 + 代码助手 · 详细使用教程
 
 > 基于 Ollama qwen2.5-coder:7b 的融合型 AI 助手，同时支持 RAG 知识库检索和 ReAct Agent 代码操作。
 

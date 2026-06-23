@@ -83,7 +83,7 @@ class TestPrintBanner:
     def test_banner_no_rich(self, capsys):
         print_banner()
         captured = capsys.readouterr()
-        assert "智能文档+代码助手" in captured.out
+        assert "Cerebro" in captured.out
 
 
 class TestPrintHelp:

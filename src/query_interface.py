@@ -287,7 +287,7 @@ console = get_console()
 # ==================== 教程 ====================
 
 TUTORIAL_TEXT = """
-欢迎使用 智能文档+代码助手！
+欢迎使用 Cerebro 🧠 — 你的第二大脑 + 代码助手！
 
 本工具融合了两套核心能力：
 
@@ -542,14 +542,14 @@ def ask_progress_callback(data: dict):
 def print_banner():
     if HAS_RICH:
         console.print(Panel(
-            "[bold cyan]智能文档+代码助手[/bold cyan]   [dim]v3.0[/dim]\n"
+            "[bold cyan]Cerebro[/bold cyan] [white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
             "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
             f"[green]模型: {LLM_MODEL}[/green] | [green]Ollama: {OLLAMA_BASE_URL}[/green]",
             border_style="cyan", box=box.ROUNDED
         ))
     else:
         print("=" * 60)
-        print("       智能文档+代码助手  v3.0")
+        print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
         print("=" * 60)
         print(f"模型: {LLM_MODEL} | Ollama: {OLLAMA_BASE_URL}")
         print("=" * 60)
@@ -1034,7 +1034,7 @@ def main():
     global rag_engine, react_engine, last_rag_sources, command_recommender
 
     parser = argparse.ArgumentParser(
-        description="智能文档+代码助手 - RAG + Agent",
+        description="Cerebro 🧠 你的第二大脑 + 代码助手 - RAG + Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 示例:

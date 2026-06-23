@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!--
-    智能文档+代码助手 (Ollama qwen2.5-coder RAG + ReAct Agent + Multi-Agent)
+    Cerebro 🧠 你的第二大脑 + 代码助手 (Ollama qwen2.5-coder RAG + ReAct Agent + Multi-Agent)
     设计含义:
       - 深色科技圆角底盘  : 沉稳的本地推理底座 (Ollama 本地大模型)
       - 中央发光核心 </>   : 统一 LLM 内核 (qwen2.5-coder, 文档理解+代码生成+推理)
