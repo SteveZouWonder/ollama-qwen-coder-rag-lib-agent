@@ -38,8 +38,10 @@ VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")
 # ==================== RAG 分块与检索配置 ====================
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1024"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
-TOP_K = int(os.getenv("TOP_K", "5"))
-SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.7"))
+TOP_K = int(os.getenv("TOP_K", "10"))
+# nomic-embed-text 使用余弦相似度，相关结果分数通常在 0.4~0.75 之间，
+# 0.7 阈值过高会过滤掉大量有效结果，推荐使用 0.4 作为更合理的下限
+SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.4"))
 
 # ==================== Agent 配置 ====================
 HISTORY_FILE = os.path.expanduser("~/.code_agent_history.json")
