@@ -56,6 +56,26 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller packaging/cerebro.spec --noconfirm
 
+      - name: Ensure Inno Setup Simplified Chinese language file
+        shell: pwsh
+        run: |
+          # Inno Setup 默认不含简体中文语言文件，尝试下载到 Languages 目录。
+          # 下载失败不致命：installer.iss 会条件检测该文件，缺失时降级为纯英文。
+          $isDir = "C:\Program Files (x86)\Inno Setup 6"
+          $langDir = Join-Path $isDir "Languages"
+          $target = Join-Path $langDir "ChineseSimplified.isl"
+          if (-not (Test-Path $target)) {
+            New-Item -ItemType Directory -Force -Path $langDir | Out-Null
+            $url = "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/main/ChineseSimplified.isl"
+            try {
+              Write-Host "Downloading ChineseSimplified.isl ..."
+              Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing
+              Write-Host "Downloaded: $target"
+            } catch {
+              Write-Host "::warning::下载中文语言包失败，安装器将仅提供英文界面。$_"
+            }
+          }
+
       - name: Build installer with Inno Setup
         run: |
           iscc /DAppVersion=${{ needs.prepare.outputs.version }} packaging\installer.iss

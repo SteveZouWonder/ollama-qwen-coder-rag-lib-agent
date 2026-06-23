@@ -1,6 +1,6 @@
 ; Inno Setup 脚本 —— Cerebro Windows 安装器
 ; 由 GitHub Actions 调用：
-;   iscc /DAppVersion=1.0.0 build\installer.iss
+;   iscc /DAppVersion=1.0.0 packaging\installer.iss
 ; 期望 PyInstaller 已在 dist\Cerebro\ 生成 onedir 产物。
 
 #ifndef AppVersion
@@ -32,7 +32,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+; 简体中文语言文件在 CI 中按需下载到 Inno Setup 的 Languages 目录；
+; 若不存在则跳过中文，避免编译失败（降级为纯英文）。
+#if FileExists(AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl")
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
