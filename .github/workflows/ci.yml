@@ -141,7 +141,7 @@ jobs:
         safety check --output json > safety-check.json || true
         echo "Checking for critical and high severity vulnerabilities..."
         if [ -f safety-check.json ]; then
-          critical_count=$(python3 -c "import json, sys; data = json.load(open('safety-check.json')); vulns = data.get('vulnerabilities', data) if isinstance(data, dict) else data; print(sum(1 for v in vulns if isinstance(v, dict) and v.get('severity', '').lower() in ('critical', 'high'))) if hasattr(vulns, '__iter__') else 0")
+          critical_count=$(python3 -c "import json, pathlib; text = pathlib.Path('safety-check.json').read_text(encoding='utf-8', errors='ignore'); start = text.find('{'); end = text.rfind('}'); data = json.loads(text[start:end+1]) if start != -1 and end != -1 and end >= start else {}; vulns = data.get('vulnerabilities', data) if isinstance(data, dict) else data; print(sum(1 for v in (vulns if isinstance(vulns, list) else []) if isinstance(v, dict) and str(v.get('severity', '')).lower() in ('critical', 'high')))")
           if [ "$critical_count" -gt 0 ]; then
             echo "❌ Found $critical_count critical/high severity vulnerabilities"
             echo "Please review safety-check.json for details"

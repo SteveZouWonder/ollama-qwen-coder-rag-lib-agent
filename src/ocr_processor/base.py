@@ -134,7 +134,7 @@ class BaseOCREngine(ABC):
         """
         import hashlib
         with open(image_path, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
+            return hashlib.md5(f.read(), usedforsecurity=False).hexdigest()
     
     def validate_image(self, image_path: Path) -> bool:
         """

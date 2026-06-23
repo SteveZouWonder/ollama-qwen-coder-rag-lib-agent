@@ -90,7 +90,7 @@ class HistoryCompressor:
         deduplicated = []
 
         for message in messages:
-            content_hash = hashlib.md5(message["content"].encode()).hexdigest()
+            content_hash = hashlib.md5(message["content"].encode(), usedforsecurity=False).hexdigest()
             if content_hash not in seen_hashes:
                 seen_hashes.add(content_hash)
                 deduplicated.append(message)

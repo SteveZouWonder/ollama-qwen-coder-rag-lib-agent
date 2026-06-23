@@ -16,8 +16,19 @@ import warnings
 # 忽略 pymupdf 的 Swig 类型警告（库的问题）
 warnings.filterwarnings("ignore", category=DeprecationWarning, message="builtin type.*Swig.*")
 
-# 添加src目录到Python路径，支持模块导入
+# 添加项目根目录和src目录到Python路径，支持模块导入
+# 项目根目录使 `from src.X import ...` 形式的导入可用
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# src目录使 `from X import ...` 形式的直接导入可用
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+
+def pytest_configure(config):
+    """注册自定义 pytest markers，确保 --strict-markers 时不报错。"""
+    config.addinivalue_line("markers", "integration: marks tests as integration tests")
+    config.addinivalue_line("markers", "slow: marks tests as slow")
+    config.addinivalue_line("markers", "unit: marks tests as unit tests")
+    config.addinivalue_line("markers", "ocr: marks tests as OCR-related tests")
 
 
 @pytest.fixture(autouse=True, scope="function")

@@ -22,10 +22,17 @@ import argparse
 # ==================== 依赖检查 ====================
 try:
     import pystray
+except Exception:
+    pystray = None
+
+try:
     from PIL import Image, ImageDraw
-    DESKTOP_AVAILABLE = True
-except ImportError:
-    DESKTOP_AVAILABLE = False
+except Exception:
+    Image = None
+    ImageDraw = None
+
+DESKTOP_AVAILABLE = Image is not None and ImageDraw is not None
+TRAY_AVAILABLE = DESKTOP_AVAILABLE and pystray is not None
 
 
 
@@ -452,7 +459,7 @@ class TrayApp(BaseApp):
         
         # 图标恢复定时器
         self.icon_restore_timer = None
-        
+
     def update_icon(self, status: str = "normal"):
         """更新托盘图标"""
         if not self.icon:
@@ -858,7 +865,7 @@ class TrayApp(BaseApp):
             self.logger.warning("macOS: pgrep命令不可用")
 
         return closed_count
-    
+
     def _close_cli_windows(self):
         """关闭Windows上的CLI窗口（整个cmd窗口）
 
@@ -1138,7 +1145,7 @@ class DesktopApp(BaseApp):
             except (ValueError, OSError):
                 # 非主线程或平台不支持时忽略
                 pass
-            
+
     def show_status(self):
         """显示当前状态"""
         monitor = StatusMonitor(

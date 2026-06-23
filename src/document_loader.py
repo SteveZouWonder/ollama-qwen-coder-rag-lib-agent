@@ -311,7 +311,7 @@ class DocumentLoader:
             import json
 
             # 计算图片哈希
-            file_hash = hashlib.md5(image_path.read_bytes()).hexdigest()
+            file_hash = hashlib.md5(image_path.read_bytes(), usedforsecurity=False).hexdigest()
             cache_file = OCR_CACHE_DIR / f"ocr_cache_{file_hash}.json"
 
             if cache_file.exists():
@@ -342,7 +342,7 @@ class DocumentLoader:
             from datetime import datetime
 
             # 计算图片哈希
-            file_hash = hashlib.md5(image_path.read_bytes()).hexdigest()
+            file_hash = hashlib.md5(image_path.read_bytes(), usedforsecurity=False).hexdigest()
             cache_file = OCR_CACHE_DIR / f"ocr_cache_{file_hash}.json"
 
             if len(documents) > 0:
