@@ -8,6 +8,8 @@ from .types import (
     CommandContext,
     Recommendation,
     RecommendationReason,
+    RecommendationSource,
+    RecommendationStrength,
     UserPreference,
     CommandHistory
 )
@@ -25,6 +27,8 @@ __all__ = [
     'CommandContext',
     'Recommendation',
     'RecommendationReason',
+    'RecommendationSource',
+    'RecommendationStrength',
     'UserPreference',
     'CommandHistory',
     'WorkflowAnalyzer',

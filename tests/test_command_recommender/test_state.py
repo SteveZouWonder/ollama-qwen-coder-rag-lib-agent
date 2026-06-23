@@ -88,7 +88,7 @@ class TestStateAnalyzer(unittest.TestCase):
         
         # 有错误应该推荐清理和配置检查
         self.assertIn("/clear", scores)
-        self.assertIn("/config", scores)
+        self.assertIn("/model", scores)
     
     def test_analyze_new_session(self):
         """测试分析新会话"""
@@ -101,7 +101,7 @@ class TestStateAnalyzer(unittest.TestCase):
     
     def test_analyze_active_development(self):
         """测试分析活跃开发状态"""
-        context = CommandContext(last_command="/agent-file")
+        context = CommandContext(last_command="/agent")
         scores = self.analyzer.analyze(context)
         
         # 活跃开发应该推荐相关操作

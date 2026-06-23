@@ -138,7 +138,11 @@ class CommandRecommender:
             )
             
             # 过滤和排序
-            final_recs = self._filter_and_sort(merged_recs, threshold)
+            # 注意：merged_recs 的分数已乘以各分析器权重（≤0.4），
+            # 不能再用原始打分阈值(threshold)过滤，否则几乎全部被滤掉。
+            # 这里使用独立的、加权后的展示阈值 display_min_score。
+            display_threshold = min_score if min_score is not None else self.config.display_min_score
+            final_recs = self._filter_and_sort(merged_recs, display_threshold)
             
             logger.debug(f"生成 {len(final_recs)} 个推荐")
             return final_recs
@@ -162,50 +166,29 @@ class CommandRecommender:
         state_weight = weights.get("state", 0.3)
         history_weight = weights.get("history", 0.3)
         
+        def _merge_source(recs, weight, source):
+            for rec in recs:
+                weighted = rec.score * weight
+                if rec.command not in merged:
+                    # 首次加入：直接使用该对象，其自带的 reasons 已存在，
+                    # 不要再次迭代 rec.reasons 往自身追加（会造成无限循环）。
+                    merged[rec.command] = rec
+                    rec.score = weighted
+                else:
+                    target = merged[rec.command]
+                    target.score = max(target.score, weighted)
+                    # 合并到已有的不同对象上，仅补充该来源的理由
+                    if target is not rec:
+                        for reason in rec.reasons:
+                            if reason.source == source:
+                                target.add_reason(reason)
+
         # 合并工作流推荐
-        for rec in workflow_recs:
-            if rec.command not in merged:
-                merged[rec.command] = rec
-                merged[rec.command].score = rec.score * workflow_weight
-            else:
-                merged[rec.command].score = max(
-                    merged[rec.command].score,
-                    rec.score * workflow_weight
-                )
-            # 添加理由
-            for reason in rec.reasons:
-                if reason.source == RecommendationSource.WORKFLOW:
-                    merged[rec.command].add_reason(reason)
-        
+        _merge_source(workflow_recs, workflow_weight, RecommendationSource.WORKFLOW)
         # 合并状态推荐
-        for rec in state_recs:
-            if rec.command not in merged:
-                merged[rec.command] = rec
-                merged[rec.command].score = rec.score * state_weight
-            else:
-                merged[rec.command].score = max(
-                    merged[rec.command].score,
-                    rec.score * state_weight
-                )
-            # 添加理由
-            for reason in rec.reasons:
-                if reason.source == RecommendationSource.STATE:
-                    merged[rec.command].add_reason(reason)
-        
+        _merge_source(state_recs, state_weight, RecommendationSource.STATE)
         # 合并历史推荐
-        for rec in history_recs:
-            if rec.command not in merged:
-                merged[rec.command] = rec
-                merged[rec.command].score = rec.score * history_weight
-            else:
-                merged[rec.command].score = max(
-                    merged[rec.command].score,
-                    rec.score * history_weight
-                )
-            # 添加理由
-            for reason in rec.reasons:
-                if reason.source == RecommendationSource.HISTORY:
-                    merged[rec.command].add_reason(reason)
+        _merge_source(history_recs, history_weight, RecommendationSource.HISTORY)
         
         return list(merged.values())
     
@@ -231,7 +214,8 @@ class CommandRecommender:
     def format_recommendations(
         self,
         recommendations: List[Recommendation],
-        use_rich: bool = True
+        use_rich: bool = True,
+        compact: bool = False
     ) -> str:
         """格式化推荐供显示"""
         if not recommendations:
@@ -240,7 +224,8 @@ class CommandRecommender:
         try:
             return self.display_formatter.format_recommendations(
                 recommendations,
-                use_rich=use_rich
+                use_rich=use_rich,
+                compact=compact
             )
         except Exception as e:
             logger.error(f"格式化推荐时出错: {e}")

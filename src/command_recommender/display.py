@@ -19,9 +19,17 @@ class DisplayFormatter:
         self,
         recommendations: List[Recommendation],
         use_rich: bool = True,
-        show_hidden: bool = False
+        show_hidden: bool = False,
+        compact: bool = False
     ) -> str:
-        """格式化推荐列表"""
+        """格式化推荐列表
+
+        Args:
+            recommendations: 推荐列表
+            use_rich: 是否使用 Rich 富文本
+            show_hidden: 是否显示已隐藏的推荐
+            compact: 紧凑模式，仅输出单行精简提示，减少视觉噪音
+        """
         if not recommendations:
             return ""
         
@@ -35,10 +43,25 @@ class DisplayFormatter:
         if not recommendations:
             return ""
         
+        if compact:
+            return self._format_compact(recommendations, use_rich=use_rich)
         if use_rich:
             return self._format_rich(recommendations)
         else:
             return self._format_plain(recommendations)
+    
+    def _format_compact(self, recommendations: List[Recommendation], use_rich: bool = True) -> str:
+        """紧凑单行格式：💡 推荐: /cmd1  /cmd2  /cmd3"""
+        max_n = min(3, self.preference.max_recommendations)
+        cmds = [rec.command for rec in recommendations[:max_n]]
+        if not cmds:
+            return ""
+        if use_rich:
+            cmd_str = "  ".join(f"[bold yellow]{c}[/bold yellow]" for c in cmds)
+            return f"[dim]💡 推荐:[/dim] {cmd_str}  [dim](直接输入命令执行)[/dim]"
+        else:
+            cmd_str = "  ".join(cmds)
+            return f"💡 推荐: {cmd_str}  (直接输入命令执行)"
     
     def _format_rich(self, recommendations: List[Recommendation]) -> str:
         """使用Rich库格式化"""

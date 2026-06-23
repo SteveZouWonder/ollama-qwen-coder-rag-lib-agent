@@ -19,6 +19,10 @@ class RecommendationConfig:
     enabled: bool = True
     max_recommendations: int = 5
     min_strength_threshold: float = 0.3
+    # 加权合并后用于过滤/展示的阈值（独立于原始打分阈值）。
+    # 由于各分析器分数会乘以权重（≤0.4），若仍用 min_strength_threshold(0.3)
+    # 过滤会导致几乎所有推荐被滤掉，故单独提供一个更低的展示阈值。
+    display_min_score: float = 0.15
     learning_enabled: bool = True
     show_explanations: bool = True
     show_paths: bool = True
@@ -88,6 +92,7 @@ class RecommendationConfig:
         self.enabled = os.getenv("RECOMMENDER_ENABLED", "true").lower() == "true"
         self.max_recommendations = int(os.getenv("RECOMMENDER_MAX", "5"))
         self.min_strength_threshold = float(os.getenv("RECOMMENDER_MIN_STRENGTH", "0.3"))
+        self.display_min_score = float(os.getenv("RECOMMENDER_DISPLAY_MIN_SCORE", "0.15"))
         self.learning_enabled = os.getenv("RECOMMENDER_LEARNING", "true").lower() == "true"
         self.auto_hide_after = int(os.getenv("RECOMMENDER_AUTO_HIDE", "30")) if os.getenv("RECOMMENDER_AUTO_HIDE") else None
 

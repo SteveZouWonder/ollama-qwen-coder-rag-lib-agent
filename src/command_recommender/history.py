@@ -148,9 +148,9 @@ class HistoryAnalyzer:
             "/help": "显示帮助信息",
             "/tools": "查看可用工具",
             "/file-list": "列出知识库中的文件",
-            "/agent-file": "使用Agent进行文件操作",
-            "/agent-rag": "使用Agent进行RAG查询",
-            "/agent-web": "使用Agent进行网络搜索"
+            "/agent": "进入 Agent 模式，自动调用工具完成复杂任务",
+            "/code-ast": "AST 搜索（函数、类、变量）",
+            "/code-quality": "代码质量检查"
         }
         
         for command, score in scores.items():

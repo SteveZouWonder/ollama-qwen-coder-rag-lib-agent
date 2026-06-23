@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import time
+import atexit
 import signal
 import logging
 import threading
@@ -26,12 +27,7 @@ try:
 except ImportError:
     DESKTOP_AVAILABLE = False
 
-# 导入命令推荐系统
-try:
-    from command_recommender import CommandRecommender
-    RECOMMENDER_AVAILABLE = True
-except ImportError:
-    RECOMMENDER_AVAILABLE = False
+
 
 # ==================== 配置 ====================
 CONFIG_FILE = Path("../config/app_config.json")
@@ -255,12 +251,15 @@ class StatusMonitor:
 class BaseApp:
     """应用基类，提供公共功能"""
     
+    # 用于精确标识本程序启动的 CLI 进程/窗口的标记前缀
+    CLI_SESSION_TAG_PREFIX = "RAG_CLI_SESSION"
+
     def __init__(self, config: AppConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
         self.status_file = STATUS_FILE
-        # 跟踪打开的CLI会话（存储启动时间，用于识别）
-        self.cli_sessions = []  # 存储启动时间戳的字典列表
+        # 跟踪打开的CLI会话（存储会话标记/标题，用于精确关闭）
+        self.cli_sessions = []  # 每项: {"id", "start_time", "script", "tag", "title"}
     
     def show_notification(self, title: str, message: str):
         """显示系统通知"""
@@ -346,20 +345,36 @@ class BaseApp:
             script_path = sys.executable
             query_script = Path(__file__).parent / "query_interface.py"
             
-            # 记录启动时间戳
-            session_id = int(time.time())
+            # 生成本次会话的唯一标记：用于在退出时精确定位并关闭对应的进程/窗口，
+            # 同时避免误杀用户手动启动的同名 CLI。
+            session_id = int(time.time() * 1000)
+            session_tag = f"{self.CLI_SESSION_TAG_PREFIX}={session_id}"
+            window_title = f"RAG CLI [{session_id}]"
             self.cli_sessions.append({
                 "id": session_id,
                 "start_time": time.time(),
-                "script": str(query_script)
+                "script": str(query_script),
+                "tag": session_tag,
+                "title": window_title,
             })
             self.logger.info(f"CLI会话已记录，ID: {session_id}, 当前会话数: {len(self.cli_sessions)}")
             
             if platform.system() == "Darwin":  # macOS
-                # 使用 AppleScript 打开并激活 Terminal 窗口，置顶显示
+                # 通过环境变量注入唯一标记（pgrep 无法匹配 env，但 ps -E 可以；
+                # 这里主要靠窗口自定义标题来精确定位并关闭整个 Terminal 窗口）。
+                # do script 内：导出标记 -> 设置窗口标题 -> 运行 CLI -> 结束后自动关闭窗口
+                inner_cmd = (
+                    f"export {session_tag}; "
+                    f"cd '{Path.cwd()}' && "
+                    f"'{script_path}' '{query_script}'; "
+                    f"exit"
+                )
+                # 转义双引号，供 AppleScript 字符串使用
+                inner_cmd_escaped = inner_cmd.replace('\\', '\\\\').replace('"', '\\"')
                 applescript = f'''
                 tell application "Terminal"
-                    do script "cd {Path.cwd()} && {script_path} {query_script}"
+                    set newTab to do script "{inner_cmd_escaped}"
+                    set custom title of newTab to "{window_title}"
                     activate
                 end tell
                 '''
@@ -368,20 +383,25 @@ class BaseApp:
                 ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
             elif platform.system() == "Windows":
-                # 在 Windows 上启动 cmd 并置顶
+                # 在 Windows 上启动 cmd，用 start 的第一个参数设置窗口标题（唯一标记），
+                # 退出时按窗口标题精确 taskkill 整个 cmd 窗口。
                 subprocess.Popen([
                     "cmd", "/c",
-                    f"start /max cmd /k \"cd /d {Path.cwd()} && {script_path} {query_script}\""
+                    f'start "{window_title}" /max cmd /k '
+                    f'"set {session_tag}&& cd /d {Path.cwd()} && {script_path} {query_script}"'
                 ], shell=True)
                 
             else:  # Linux
-                # 尝试使用 wmctrl 将窗口置顶（如果可用）
+                # 通过环境变量注入唯一标记，退出时用 pkill -f 按标记精确匹配，
+                # 关闭整个 bash（连带 gnome-terminal 子窗口随之关闭）。
+                bash_cmd = (
+                    f"export {session_tag}; "
+                    f"cd {Path.cwd()} && {script_path} {query_script}; exec bash"
+                )
                 try:
-                    # 先启动终端
                     subprocess.Popen([
-                        "gnome-terminal", "--", 
-                        "bash", "-c",
-                        f"cd {Path.cwd()} && {script_path} {query_script}; exec bash"
+                        "gnome-terminal", "--",
+                        "bash", "-c", bash_cmd
                     ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
                     # 尝试置顶（需要 wmctrl）
@@ -391,9 +411,8 @@ class BaseApp:
                 except FileNotFoundError:
                     # wmctrl 不可用，正常启动
                     subprocess.Popen([
-                        "gnome-terminal", "--", 
-                        "bash", "-c",
-                        f"cd {Path.cwd()} && {script_path} {query_script}; exec bash"
+                        "gnome-terminal", "--",
+                        "bash", "-c", bash_cmd
                     ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
             self.logger.info("CLI界面已启动")
@@ -433,16 +452,6 @@ class TrayApp(BaseApp):
         
         # 图标恢复定时器
         self.icon_restore_timer = None
-        
-        # 初始化命令推荐系统
-        self.command_recommender = None
-        if RECOMMENDER_AVAILABLE:
-            try:
-                self.command_recommender = CommandRecommender()
-                self.command_recommender.initialize()
-                self.logger.info("命令推荐系统初始化成功")
-            except Exception as e:
-                self.logger.warning(f"命令推荐系统初始化失败: {e}")
         
     def update_icon(self, status: str = "normal"):
         """更新托盘图标"""
@@ -783,153 +792,138 @@ class TrayApp(BaseApp):
         return closed_count
     
     def _close_cli_macos(self):
-        """关闭macOS上的CLI进程"""
+        """关闭macOS上的CLI进程及其Terminal窗口
+
+        关键修复：仅杀死 query_interface.py 的 Python 进程并不会关闭 Terminal 窗口，
+        因为窗口属于 Terminal.app 而非本程序的子进程。这里改为：
+        1) 通过窗口自定义标题精确关闭对应的整个 Terminal 窗口；
+        2) 再杀死残留的 Python 进程作为兜底。
+        """
         import signal
         import os
         closed_count = 0
-        
+
+        # 1) 按窗口标题关闭整个 Terminal 窗口
+        for session in self.cli_sessions:
+            title = session.get("title")
+            if not title:
+                continue
+            try:
+                applescript = f'''
+                tell application "Terminal"
+                    repeat with w in windows
+                        try
+                            if custom title of w is "{title}" then
+                                close w saving no
+                            end if
+                        end try
+                    end repeat
+                end tell
+                '''
+                subprocess.run(
+                    ["osascript", "-e", applescript],
+                    stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL
+                )
+                self.logger.info(f"macOS: 已请求关闭Terminal窗口 '{title}'")
+                closed_count += 1
+            except FileNotFoundError:
+                self.logger.warning("macOS: osascript命令不可用")
+                break
+            except Exception as e:
+                self.logger.warning(f"macOS: 关闭窗口 '{title}' 失败: {e}")
+
+        # 2) 兜底：杀死仍在运行的 query_interface.py 进程
         try:
-            # 使用pgrep查找运行query_interface.py的进程
             result = subprocess.run(
                 ["pgrep", "-f", "query_interface.py"],
                 capture_output=True,
                 text=True
             )
-            
             if result.returncode == 0 and result.stdout:
                 pids = result.stdout.strip().split('\n')
                 for pid_str in pids:
                     try:
                         pid = int(pid_str)
-                        # 先尝试优雅关闭
                         os.kill(pid, signal.SIGTERM)
-                        time.sleep(0.5)
-                        # 检查进程是否还在运行
+                        time.sleep(0.3)
                         try:
-                            os.kill(pid, 0)  # 检查进程是否存在
-                            # 进程仍在运行，强制关闭
+                            os.kill(pid, 0)
                             os.kill(pid, signal.SIGKILL)
                             self.logger.info(f"macOS: 进程 {pid} 强制终止")
                         except ProcessLookupError:
                             self.logger.info(f"macOS: 进程 {pid} 已终止")
-                        closed_count += 1
                     except (ValueError, ProcessLookupError) as e:
                         self.logger.warning(f"macOS: 处理进程失败: {e}")
         except FileNotFoundError:
             self.logger.warning("macOS: pgrep命令不可用")
-            # 尝试使用AppleScript关闭Terminal窗口
-            self._close_cli_macos_fallback()
-            
+
         return closed_count
     
-    def _close_cli_macos_fallback(self):
-        """macOS备用方案：关闭Terminal窗口"""
-        try:
-            applescript = '''
-            tell application "System Events"
-                tell process "Terminal"
-                    set window_list to every window
-                    repeat with current_window in window_list
-                        if name of current_window contains "query_interface" then
-                            try
-                                click button 1 of current_window
-                            end try
-                        end if
-                    end repeat
-                end tell
-            end tell
-            '''
-            subprocess.run(["osascript", "-e", applescript],
-                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            self.logger.info("macOS: 尝试关闭Terminal窗口")
-        except Exception as e:
-            self.logger.warning(f"macOS备用方案失败: {e}")
-    
     def _close_cli_windows(self):
-        """关闭Windows上的CLI进程"""
+        """关闭Windows上的CLI窗口（整个cmd窗口）
+
+        关键修复：按启动时设置的唯一窗口标题精确关闭整个 cmd 窗口（连带其中的
+        python 子进程），而非仅杀 python.exe 进程，避免留下空的 cmd 窗口，也
+        避免误杀用户手动启动的同名 CLI。
+        """
         closed_count = 0
-        
-        try:
-            # 使用taskkill查找并关闭运行query_interface.py的进程
-            result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV"],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if "query_interface.py" in line:
-                        # 提取PID
-                        parts = line.split(',')
-                        if len(parts) >= 2:
-                            pid_str = parts[1].strip()
-                            try:
-                                subprocess.run(
-                                    ["taskkill", "/F", "/PID", pid_str],
-                                    stderr=subprocess.DEVNULL,
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL
-                                )
-                                self.logger.info(f"Windows: 进程 {pid_str} 已终止")
-                                closed_count += 1
-                            except ValueError:
-                                self.logger.warning(f"Windows: 无效的PID: {pid_str}")
-                                
-        except FileNotFoundError:
-            self.logger.warning("Windows: tasklist命令不可用")
-            
+
+        for session in self.cli_sessions:
+            title = session.get("title")
+            if not title:
+                continue
+            try:
+                # 按窗口标题强制关闭整个进程树
+                result = subprocess.run(
+                    ["taskkill", "/F", "/T", "/FI", f"WINDOWTITLE eq {title}"],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.logger.info(f"Windows: 已关闭窗口 '{title}'")
+                    closed_count += 1
+                else:
+                    self.logger.info(f"Windows: 未找到窗口 '{title}'")
+            except FileNotFoundError:
+                self.logger.warning("Windows: taskkill命令不可用")
+                break
+            except Exception as e:
+                self.logger.warning(f"Windows: 关闭窗口 '{title}' 失败: {e}")
+
         return closed_count
     
     def _close_cli_linux(self):
-        """关闭Linux上的CLI进程"""
-        closed_count = 0
-        
-        try:
-            # 使用pkill关闭运行query_interface.py的进程
-            result = subprocess.run(
-                ["pkill", "-f", "query_interface.py"],
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL
-            )
-            
-            if result.returncode == 0:
-                # pkill成功，至少有一个进程被终止
-                self.logger.info("Linux: query_interface进程已终止")
-                closed_count = 1
-            else:
-                self.logger.info("Linux: 没有找到query_interface进程")
-                
-        except FileNotFoundError:
-            self.logger.warning("Linux: pkill命令不可用")
-        
-        return closed_count
+        """关闭Linux上的CLI进程及其终端窗口
 
-    def show_smart_recommendations(self):
-        """显示智能命令推荐"""
-        if not self.command_recommender:
-            self.show_notification("推荐系统", "⚠️ 推荐系统不可用")
-            return
-        
-        try:
-            recommendations = self.command_recommender.get_recommendations()
-            if not recommendations:
-                self.show_notification("智能建议", "当前没有推荐命令")
-                return
-            
-            # 格式化推荐内容
-            rec_text = "💡 智能建议:\n\n"
-            for i, rec in enumerate(recommendations[:3], 1):  # 显示前3个推荐
-                rec_text += f"{i}. {rec.command}\n   {rec.description}\n"
-            
-            self.show_notification("智能建议", rec_text[:200] + "...")  # 限制长度
-            self.logger.info(f"生成了 {len(recommendations)} 个智能推荐")
-            
-        except Exception as e:
-            self.logger.error(f"生成智能推荐失败: {e}")
-            self.show_notification("智能建议", f"⚠️ 生成推荐失败: {e}")
+        关键修复：按启动时注入的唯一会话标记（环境变量名出现在进程环境中，
+        pkill -f 会匹配命令行；这里在 bash 命令里 export 了标记，bash 的命令行
+        含该标记）精确终止对应的整个 bash 进程，gnome-terminal 子窗口随之关闭，
+        避免误杀其它同名 CLI。若无记录的会话，则回退到按脚本名匹配。
+        """
+        closed_count = 0
+
+        targets = [s.get("tag") for s in self.cli_sessions if s.get("tag")]
+        if not targets:
+            targets = ["query_interface.py"]
+
+        for pattern in targets:
+            try:
+                result = subprocess.run(
+                    ["pkill", "-f", pattern],
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL
+                )
+                if result.returncode == 0:
+                    self.logger.info(f"Linux: 已终止匹配 '{pattern}' 的进程")
+                    closed_count += 1
+                else:
+                    self.logger.info(f"Linux: 没有找到匹配 '{pattern}' 的进程")
+            except FileNotFoundError:
+                self.logger.warning("Linux: pkill命令不可用")
+                break
+
+        return closed_count
 
     def quit_app(self):
         """退出应用"""
@@ -957,7 +951,6 @@ class TrayApp(BaseApp):
         menu = pystray.Menu(
             pystray.MenuItem("打开CLI界面", self.open_cli_interface),
             pystray.MenuItem("检查状态", self.show_status),
-            pystray.MenuItem("智能建议", self.show_smart_recommendations),
             pystray.MenuItem("模型预热", self.warm_up_models_from_menu),
             pystray.MenuItem("重启服务", self.restart_services),
             pystray.MenuItem("退出", self.quit_app)
@@ -1099,11 +1092,52 @@ class DesktopApp(BaseApp):
         
         # 启动托盘应用
         tray = TrayApp(self.config, self.logger)
-        
+        # 共享 CLI 会话记录：CLI 由 DesktopApp 启动并记录在 self.cli_sessions，
+        # 而退出清理在 TrayApp.quit_app 中执行，必须让两者引用同一份记录，
+        # 否则退出时遍历到空列表导致 macOS/Windows 无法定位并关闭窗口。
+        tray.cli_sessions = self.cli_sessions
+
+        # 退出兜底：即使没有走托盘“退出”菜单（如进程被 SIGTERM/SIGINT、
+        # 或异常退出），也尽量关闭已打开的 CLI 进程/窗口。
+        self._register_exit_handlers(tray)
+
         try:
             tray.run()
         except KeyboardInterrupt:
             self.logger.info("应用退出")
+        finally:
+            # 正常退出路径的兜底清理（重复调用是安全的：sessions 已清空则直接返回）
+            try:
+                tray.close_all_cli_processes()
+            except Exception as e:
+                self.logger.warning(f"退出清理CLI进程时出错: {e}")
+
+    def _register_exit_handlers(self, tray: "TrayApp"):
+        """注册 atexit 与信号处理器，确保各种退出路径都能清理CLI进程。"""
+        def _cleanup(*_args):
+            try:
+                tray.close_all_cli_processes()
+            except Exception as e:
+                self.logger.warning(f"兜底清理CLI进程失败: {e}")
+
+        atexit.register(_cleanup)
+
+        def _signal_handler(signum, frame):
+            self.logger.info(f"收到信号 {signum}，开始清理并退出")
+            _cleanup()
+            try:
+                tray.running = False
+                if tray.icon:
+                    tray.icon.stop()
+            except Exception:
+                pass
+
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(_sig, _signal_handler)
+            except (ValueError, OSError):
+                # 非主线程或平台不支持时忽略
+                pass
             
     def show_status(self):
         """显示当前状态"""

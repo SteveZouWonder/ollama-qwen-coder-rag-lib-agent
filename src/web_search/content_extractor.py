@@ -88,7 +88,7 @@ class ContentExtractor:
             
             downloaded = await loop.run_in_executor(
                 None,
-                lambda: trafilatura.fetch_url(url, timeout=timeout)
+                lambda: trafilatura.fetch_url(url)
             )
             
             if downloaded:

@@ -84,9 +84,6 @@ tmp/
 .dmypy.json
 dmypy.json
 
-# Devin
-.devin/
-
 # CI/CD Reports
 bandit-report.json
 safety-report.json
@@ -95,3 +92,5 @@ safety-check.json
 /.pylintrc
 /pytest.ini
 /coverage.xml
+/.devin/knowledge/snapshots/
+*/.devin/knowledge/snapshots/

@@ -161,8 +161,8 @@ if [ "$install_ocr" = "y" ]; then
     fi
     
     # 安装 OCR 核心依赖（Python 3.13 兼容）
-    # 从 requirements.txt 读取 OCR 相关依赖（跳过注释行）
-    OCR_PACKAGES=$(grep -E "^[^#]*pytesseract|^[^#]*pymupdf|^[^#]*opencv-python" requirements.txt 2>/dev/null | grep -v "^#" || echo "")
+    # 从 requirements.txt 读取 OCR 相关依赖（跳过注释行和行内注释）
+    OCR_PACKAGES=$(grep -E "^[^#]*pytesseract|^[^#]*pymupdf|^[^#]*opencv-python" requirements.txt 2>/dev/null | grep -v "^#" | sed 's/#.*//' | tr -d ' ' || echo "")
     if [ -n "$OCR_PACKAGES" ]; then
         if $PIP_CMD install $OCR_PACKAGES; then
             echo -e "${GREEN}✓ OCR 依赖安装完成（从 requirements.txt）${NC}"

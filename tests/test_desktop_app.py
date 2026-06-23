@@ -1160,6 +1160,59 @@ class TestDesktopAppFlow(unittest.TestCase):
         # 只验证初始化，不真正运行
         self.assertIsNotNone(app.config)
         self.assertIsNotNone(app.logger)
+
+    @patch('desktop_app.OllamaWarmer')
+    @patch('desktop_app.StatusMonitor')
+    @patch('threading.Thread')
+    def test_run_desktop_shares_sessions_and_registers_handlers(
+        self, mock_thread, mock_monitor_class, mock_warmer_class
+    ):
+        """回归测试：run_desktop 必须把 cli_sessions 共享给 TrayApp，并注册退出兜底。
+
+        修复要点：CLI 由 DesktopApp.open_cli_interface 记录会话，退出清理在
+        TrayApp.quit_app 执行；若二者不共享同一份 cli_sessions，退出时将遍历到
+        空列表，导致无法关闭已打开的 CLI 窗口。
+        """
+        mock_warmer = Mock()
+        mock_warmer.check_service.return_value = False
+        mock_warmer_class.return_value = mock_warmer
+        mock_monitor_class.return_value = Mock()
+
+        app = DesktopApp(self.test_config_file)
+
+        # 让 open_cli_interface 往 DesktopApp 记录一个会话（不真正起进程）
+        def fake_open():
+            app.cli_sessions.append({
+                "id": 1, "start_time": 0.0, "script": "q.py",
+                "tag": "RAG_CLI_SESSION=1", "title": "RAG CLI [1]",
+            })
+            return True
+
+        captured = {}
+
+        with patch.object(app, 'open_cli_interface', side_effect=fake_open), \
+             patch.object(app, 'start_monitoring'), \
+             patch('desktop_app.atexit.register') as mock_atexit, \
+             patch('desktop_app.signal.signal') as mock_signal, \
+             patch('desktop_app.TrayApp') as mock_tray_class:
+
+            tray_instance = TrayApp(app.config, app.logger)
+            # 拦截 run 避免真正进入托盘循环
+            tray_instance.run = Mock()
+            tray_instance.close_all_cli_processes = Mock()
+            mock_tray_class.return_value = tray_instance
+
+            app.run_desktop()
+
+            captured['tray'] = tray_instance
+
+        # 1) sessions 必须是同一个对象（共享引用）
+        self.assertIs(captured['tray'].cli_sessions, app.cli_sessions)
+        self.assertEqual(len(captured['tray'].cli_sessions), 1)
+        # 2) 注册了 atexit 兜底
+        mock_atexit.assert_called_once()
+        # 3) 注册了 SIGTERM/SIGINT 信号处理器
+        self.assertGreaterEqual(mock_signal.call_count, 1)
         
     def test_config_with_missing_optional_fields(self):
         """测试缺少可选字段的配置"""
@@ -1589,6 +1642,12 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         self.assertIn("id", tray_app.cli_sessions[0])
         self.assertIn("start_time", tray_app.cli_sessions[0])
         self.assertIn("script", tray_app.cli_sessions[0])
+        # 新增：会话需带唯一标记与窗口标题，用于退出时精确关闭整个窗口
+        self.assertIn("tag", tray_app.cli_sessions[0])
+        self.assertIn("title", tray_app.cli_sessions[0])
+        self.assertTrue(
+            tray_app.cli_sessions[0]["tag"].startswith(TrayApp.CLI_SESSION_TAG_PREFIX)
+        )
         
     @patch('desktop_app.subprocess.Popen')
     @patch('platform.system', return_value='Darwin')
@@ -1624,8 +1683,11 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
     def test_close_cli_macos_with_processes(self, mock_run, mock_system):
         """测试macOS关闭CLI进程（有进程）"""
         tray_app = TrayApp(self.config, self.logger)
-        # 添加一个测试会话
-        tray_app.cli_sessions.append({"id": 123456, "start_time": time.time(), "script": "test.py"})
+        # 添加一个测试会话（含窗口标题，用于关闭整个Terminal窗口）
+        tray_app.cli_sessions.append({
+            "id": 123456, "start_time": time.time(), "script": "test.py",
+            "tag": "RAG_CLI_SESSION=123456", "title": "RAG CLI [123456]"
+        })
         
         # Mock pgrep找到进程
         mock_result = Mock()
@@ -1641,6 +1703,15 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         
         # 验证会话被清空
         self.assertEqual(len(tray_app.cli_sessions), 0)
+        # 新增：验证通过 osascript 按窗口标题关闭了整个 Terminal 窗口
+        osascript_calls = [
+            c for c in mock_run.call_args_list
+            if c.args and c.args[0] and c.args[0][0] == "osascript"
+        ]
+        self.assertTrue(osascript_calls, "应调用 osascript 关闭 Terminal 窗口")
+        joined = " ".join(str(c) for c in osascript_calls)
+        self.assertIn("RAG CLI [123456]", joined)
+        self.assertIn("close", joined)
         
     @patch('platform.system', return_value='Darwin')
     @patch('desktop_app.subprocess.run')
@@ -1662,25 +1733,35 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
     def test_close_cli_windows(self, mock_run, mock_system):
         """测试Windows关闭CLI进程"""
         tray_app = TrayApp(self.config, self.logger)
-        tray_app.cli_sessions.append({"id": 123456, "start_time": time.time(), "script": "test.py"})
+        tray_app.cli_sessions.append({
+            "id": 123456, "start_time": time.time(), "script": "test.py",
+            "tag": "RAG_CLI_SESSION=123456", "title": "RAG CLI [123456]"
+        })
         
-        # Mock tasklist找到进程
+        # Mock taskkill成功
         mock_result = Mock()
         mock_result.returncode = 0
-        mock_result.stdout = '"python.exe","1234","query_interface.py","Console"\n'
+        mock_result.stdout = ""
         mock_run.return_value = mock_result
         
         result = tray_app.close_all_cli_processes()
         
         # 验证会话被清空
         self.assertEqual(len(tray_app.cli_sessions), 0)
+        # 新增：验证使用 taskkill 按窗口标题关闭整个 cmd 窗口（含进程树 /T）
+        joined = " ".join(str(c) for c in mock_run.call_args_list)
+        self.assertIn("taskkill", joined)
+        self.assertIn("WINDOWTITLE eq RAG CLI [123456]", joined)
         
     @patch('platform.system', return_value='Linux')
     @patch('desktop_app.subprocess.run')
     def test_close_cli_linux(self, mock_run, mock_system):
         """测试Linux关闭CLI进程"""
         tray_app = TrayApp(self.config, self.logger)
-        tray_app.cli_sessions.append({"id": 123456, "start_time": time.time(), "script": "test.py"})
+        tray_app.cli_sessions.append({
+            "id": 123456, "start_time": time.time(), "script": "test.py",
+            "tag": "RAG_CLI_SESSION=123456", "title": "RAG CLI [123456]"
+        })
         
         # Mock pkill成功
         mock_result = Mock()
@@ -1693,6 +1774,10 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         self.assertGreaterEqual(result, 0)
         # 验证会话被清空
         self.assertEqual(len(tray_app.cli_sessions), 0)
+        # 新增：验证 pkill 按唯一会话标记精确匹配（避免误杀其它同名CLI）
+        joined = " ".join(str(c) for c in mock_run.call_args_list)
+        self.assertIn("pkill", joined)
+        self.assertIn("RAG_CLI_SESSION=123456", joined)
         
     @patch('platform.system', return_value='Linux')
     @patch('desktop_app.subprocess.run')

@@ -43,14 +43,14 @@ class StateAnalyzer:
                 "description": "有可用快照，可以恢复或查看"
             },
             "recent_search": {
-                "check": lambda ctx: ctx.last_command in ["/ask", "/agent-rag", "/graph-query"],
+                "check": lambda ctx: ctx.last_command in ["/ask", "/agent", "/graph-query"],
                 "commands": ["/sources", "/history", "/ask"],
                 "weight": 0.65,
                 "description": "最近进行了查询，可以查看来源或继续查询"
             },
             "recent_errors": {
                 "check": lambda ctx: len(ctx.recent_errors) > 0,
-                "commands": ["/clear", "/history", "/config"],
+                "commands": ["/clear", "/history", "/model"],
                 "weight": 0.75,
                 "description": "最近有错误，建议清理或检查配置"
             },
@@ -61,14 +61,14 @@ class StateAnalyzer:
                 "description": "新会话开始，建议查看系统状态"
             },
             "active_development": {
-                "check": lambda ctx: ctx.last_command in ["/agent-file", "/agent-rag", "/agent-web"],
-                "commands": ["/ask", "/history", "/agent-file"],
+                "check": lambda ctx: ctx.last_command in ["/agent", "/code-ast", "/code-quality"],
+                "commands": ["/ask", "/history", "/agent"],
                 "weight": 0.6,
                 "description": "正在进行开发，可以查询知识库或继续文件操作"
             },
             "management_mode": {
                 "check": lambda ctx: ctx.last_command in ["/file-list", "/file-info", "/snapshot-list"],
-                "commands": ["/add", "/snapshot-create", "/file-delete"],
+                "commands": ["/add", "/snapshot-create", "/file-cleanup"],
                 "weight": 0.65,
                 "description": "管理模式，可以进行文件和快照操作"
             },
@@ -118,7 +118,7 @@ class StateAnalyzer:
             "/sources": "查看查询结果的来源",
             "/history": "查看命令历史",
             "/clear": "清空会话历史",
-            "/config": "查看或修改配置",
+            "/model": "查看当前模型信息",
             "/tutorial": "显示使用教程",
             "/help": "显示帮助信息",
             "/tools": "查看可用工具",
@@ -128,10 +128,10 @@ class StateAnalyzer:
             "/generate-skills": "将知识库转换为Skills",
             "/file-list": "列出知识库中的文件",
             "/file-info": "查看文件详细信息",
-            "/file-delete": "删除文件",
-            "/agent-file": "使用Agent进行文件操作",
-            "/agent-rag": "使用Agent进行RAG查询",
-            "/agent-web": "使用Agent进行网络搜索"
+            "/file-cleanup": "清理临时/重复文件",
+            "/code-ast": "AST 搜索（函数、类、变量）",
+            "/code-quality": "代码质量检查",
+            "/agent": "进入 Agent 模式，自动调用工具完成复杂任务"
         }
         
         for command, score in scores.items():

@@ -91,12 +91,6 @@ tests/test_command_recommender/
 - ✅ 推荐显示格式正确
 - ✅ 不影响原有功能
 
-### 桌面应用集成测试
-- ✅ 系统托盘菜单推荐
-- ✅ 状态面板推荐显示
-- ✅ 推荐功能可配置
-- ✅ 用户反馈收集
-
 ### 配置集成测试
 - ✅ 全局配置生效
 - ✅ 用户配置生效
@@ -190,9 +184,6 @@ python -m pytest tests/test_command_recommender/ --cov=src/command_recommender -
 ```bash
 # 测试CLI集成
 python query_interface.py --test-recommendations
-
-# 测试桌面应用集成
-python desktop_app.py --test-recommendations
 ```
 
 ## 测试报告

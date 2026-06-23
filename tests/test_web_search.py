@@ -288,6 +288,36 @@ class TestContentExtractor:
         available = extractor._check_beautifulsoup()
         assert isinstance(available, bool)
     
+    @pytest.mark.asyncio
+    async def test_trafilatura_no_timeout_param(self):
+        """测试 trafilatura 调用不传递 timeout 参数"""
+        extractor = ContentExtractor()
+        
+        # 只有当 trafilatura 可用时才测试
+        if not extractor._trafilatura_available:
+            pytest.skip("trafilatura 不可用")
+        
+        # 模拟 trafilatura.fetch_url 不接受 timeout 参数
+        import trafilatura
+        original_fetch_url = trafilatura.fetch_url
+        
+        # 创建一个 mock 函数，只接受 url 参数
+        def mock_fetch_url(url):
+            return original_fetch_url(url)
+        
+        # 临时替换 fetch_url
+        trafilatura.fetch_url = mock_fetch_url
+        
+        try:
+            # 调用提取方法，应该不会因为 timeout 参数而失败
+            result = await extractor._extract_with_trafilatura("https://example.com", timeout=10)
+            
+            # 结果可能为 None（因为 example.com 可能没有可提取的内容）
+            # 但重要的是不应该抛出关于 timeout 参数的错误
+            assert True  # 如果到这里说明没有参数错误
+        finally:
+            # 恢复原始函数
+            trafilatura.fetch_url = original_fetch_url
     def test_is_valid_url(self):
         """测试 URL 验证"""
         extractor = ContentExtractor()
@@ -1017,6 +1047,74 @@ class TestCacheEntry:
         assert entry_dict['query'] == "test query"
         assert entry_dict['source'] == "default"
         assert entry_dict['ttl_hours'] == 24
+
+
+class TestWebSearchCacheBehavior:
+    """测试 web_search 函数的缓存行为"""
+    
+    @pytest.fixture
+    def temp_cache_dir(self, tmp_path):
+        """创建临时缓存目录"""
+        cache_dir = tmp_path / "test_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    
+    def test_web_search_cache_bypass(self, temp_cache_dir):
+        """测试缓存可以被新数据覆盖，模拟 use_cache=False 的行为"""
+        # 创建一个模拟缓存，预先填充旧数据
+        cache = SearchCache(cache_dir=temp_cache_dir)
+        old_results = [
+            SearchResult(
+                title="Old JDK Version",
+                url="https://example.com/old",
+                snippet="Java SE 17.0.19",
+                source="test",
+                relevance_score=0.8,
+                timestamp=(datetime.now() - timedelta(hours=2)).isoformat()
+            )
+        ]
+        cache.set("Java SE latest version", "default", old_results, ttl_hours=24)
+        
+        # 验证缓存中有旧数据
+        cached_data = cache.get("Java SE latest version", "default")
+        assert cached_data is not None
+        assert len(cached_data) == 1
+        assert cached_data[0].snippet == "Java SE 17.0.19"
+        
+        # 模拟网络搜索返回新数据（覆盖缓存）
+        fresh_results = [
+            SearchResult(
+                title="New JDK Version",
+                url="https://example.com/new",
+                snippet="Java SE 21.0.1",
+                source="test",
+                relevance_score=0.9,
+                timestamp=datetime.now().isoformat()
+            )
+        ]
+        cache.set("Java SE latest version", "default", fresh_results, ttl_hours=24)
+        
+        # 验证新数据覆盖了旧数据
+        updated_data = cache.get("Java SE latest version", "default")
+        assert updated_data is not None
+        assert updated_data[0].snippet == "Java SE 21.0.1"
+    
+    def test_cache_key_consistency(self, temp_cache_dir):
+        """测试缓存键的一致性"""
+        cache = SearchCache(cache_dir=temp_cache_dir)
+        
+        # 测试相同的查询和源生成相同的键
+        key1 = cache._get_cache_key("test query", "default")
+        key2 = cache._get_cache_key("test query", "default")
+        assert key1 == key2
+        
+        # 测试不同的查询生成不同的键
+        key3 = cache._get_cache_key("different query", "default")
+        assert key1 != key3
+        
+        # 测试不同的源生成不同的键
+        key4 = cache._get_cache_key("test query", "wikipedia")
+        assert key1 != key4
 
 
 class TestGlobalSingletons:

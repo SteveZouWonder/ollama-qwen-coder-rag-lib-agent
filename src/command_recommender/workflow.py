@@ -71,9 +71,9 @@ class WorkflowAnalyzer:
             WorkflowDefinition(
                 name="code_development",
                 description="代码开发工作流",
-                steps=["/agent-file", "/ask", "/agent-rag", "/agent-web"],
-                entry_conditions=["/agent-file", "/ask"],
-                completion_commands=["/agent-web"]
+                steps=["/code-ast", "/code-quality", "/agent", "/git-commit-gen"],
+                entry_conditions=["/code-ast", "/agent"],
+                completion_commands=["/git-commit-gen"]
             ),
             WorkflowDefinition(
                 name="data_analysis",
@@ -175,9 +175,10 @@ class WorkflowAnalyzer:
             "/snapshot-restore": "恢复快照",
             "/generate-skills": "将知识库转换为Skills",
             "/knowledge-summary": "生成知识库摘要",
-            "/agent-file": "使用Agent进行文件操作",
-            "/agent-rag": "使用Agent进行RAG查询",
-            "/agent-web": "使用Agent进行网络搜索",
+            "/agent": "进入 Agent 模式，自动调用工具完成复杂任务",
+            "/code-ast": "AST 搜索（函数、类、变量）",
+            "/code-quality": "代码质量检查",
+            "/git-commit-gen": "AI 生成提交信息",
             "/graph-build": "构建知识图谱",
             "/graph-query": "查询知识图谱",
             "check_prereqs.sh": "检查前置条件",
