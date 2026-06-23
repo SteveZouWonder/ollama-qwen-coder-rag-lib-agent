@@ -1305,11 +1305,17 @@ class TestTrayAppIconStates(unittest.TestCase):
         icon_error = tray_app.create_icon("error")
         self.assertIsNotNone(icon_error)
         
-        # 验证不同状态的图标颜色不同（通过像素抽样）
-        # 中心点应该有不同颜色
-        normal_pixel = icon_normal.getpixel((16, 16))
-        progress_pixel = icon_progress.getpixel((16, 16))
+        # 验证不同状态的图标不同（通过像素抽样）
+        # 新设计: 中央核心保持品牌一致, 状态以右下角指示点区分,
+        # 因此对右下角状态点区域抽样判断差异。
+        sample_pt = (26, 26)
+        normal_pixel = icon_normal.getpixel(sample_pt)
+        progress_pixel = icon_progress.getpixel(sample_pt)
+        success_pixel = icon_success.getpixel(sample_pt)
+        error_pixel = icon_error.getpixel(sample_pt)
         self.assertNotEqual(normal_pixel, progress_pixel)
+        self.assertNotEqual(progress_pixel, success_pixel)
+        self.assertNotEqual(success_pixel, error_pixel)
         
     @patch('desktop_app.DESKTOP_AVAILABLE', True)
     @patch('desktop_app.pystray')

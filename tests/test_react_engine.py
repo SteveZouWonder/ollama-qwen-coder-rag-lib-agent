@@ -4,8 +4,78 @@ test_react_engine.py — ReAct 引擎单元测试（Mock requests.post）
 """
 from unittest.mock import MagicMock, patch
 
-from react_engine import ReActEngine
+from react_engine import (
+    ReActEngine,
+    _extract_json_object,
+    _parse_action_input,
+)
 from config import Config
+
+
+class TestExtractJsonObject:
+    """测试从 Action Input 文本中提取完整 JSON 对象"""
+
+    def test_simple_object(self):
+        assert _extract_json_object('{"path": "test.py"}') == '{"path": "test.py"}'
+
+    def test_empty_object(self):
+        assert _extract_json_object("{}") == "{}"
+
+    def test_ignores_trailing_text(self):
+        """提取后应忽略 JSON 之后的多余文字"""
+        text = '{"path": "a.py"}\nObservation: 不该被包含'
+        assert _extract_json_object(text) == '{"path": "a.py"}'
+
+    def test_nested_object(self):
+        """嵌套对象不应在第一个 } 处截断"""
+        text = '{"config": {"a": 1, "b": 2}, "name": "x"}'
+        assert _extract_json_object(text) == text
+
+    def test_code_with_braces_in_string(self):
+        """字符串值内含 } 的多行代码不应被截断（核心回归）"""
+        text = '{"path": "x.py", "content": "def f():\\n    return {1: 2}\\n"}'
+        assert _extract_json_object(text) == text
+
+    def test_brace_inside_string_not_counted(self):
+        text = '{"msg": "use } carefully"}'
+        assert _extract_json_object(text) == text
+
+    def test_no_object_returns_none(self):
+        assert _extract_json_object("no json here") is None
+
+    def test_leading_text_before_object(self):
+        text = '  some prefix {"k": "v"}'
+        assert _extract_json_object(text) == '{"k": "v"}'
+
+
+class TestParseActionInput:
+    """测试安全解析 Action Input（不使用 eval）"""
+
+    def test_valid_json(self):
+        assert _parse_action_input('{"path": "test.py"}') == {"path": "test.py"}
+
+    def test_empty_object(self):
+        assert _parse_action_input("{}") == {}
+
+    def test_single_quotes_fallback(self):
+        """单引号（非法 JSON）应通过 ast.literal_eval 容错解析"""
+        assert _parse_action_input("{'path': 'test.py'}") == {"path": "test.py"}
+
+    def test_non_dict_json_returns_empty(self):
+        """JSON 数组/标量不是 dict，返回空 dict"""
+        assert _parse_action_input('["a", "b"]') == {}
+        assert _parse_action_input('"just a string"') == {}
+
+    def test_garbage_returns_empty(self):
+        assert _parse_action_input("not parseable {{{") == {}
+
+    def test_empty_string_returns_empty(self):
+        assert _parse_action_input("") == {}
+
+    def test_does_not_execute_code(self):
+        """确保不会执行任意代码（eval 风险回归测试）"""
+        # 若使用 eval，下面会抛 NameError 或执行调用；安全解析应返回 {}
+        assert _parse_action_input("{'x': __import__('os').getcwd()}") == {}
 
 
 class TestReActEngineInit:
@@ -290,6 +360,42 @@ class TestChatWithAction:
         engine = ReActEngine()
         result = engine.chat("测试")
         assert "done" in result
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
+    @patch("react_engine.registry")
+    def test_chat_write_file_with_braces_not_truncated(self, mock_registry, mock_post, mock_history_cls):
+        """回归：含 } 的多行代码应完整传入 write_file，不被正则截断"""
+        mock_history = MagicMock()
+        messages = []
+        mock_history.get_messages.return_value = messages
+        mock_history.add = lambda role, content: messages.append({"role": role, "content": content})
+        mock_history_cls.return_value = mock_history
+
+        code = "def f():\\n    return {1: 2}\\n"
+        action_content = (
+            'Thought: 写入代码\n'
+            'Action: write_file\n'
+            'Action Input: {"path": "src/x.py", "content": "' + code + '"}'
+        )
+        mock_resp1 = MagicMock()
+        mock_resp1.json.return_value = {"message": {"content": action_content}}
+        mock_resp2 = MagicMock()
+        mock_resp2.json.return_value = {"message": {"content": "Final Answer: 完成"}}
+        mock_post.side_effect = [mock_resp1, mock_resp2]
+
+        mock_registry.execute.return_value = "文件写入成功"
+        mock_registry.tools = {"write_file": {"safe": False}}
+        mock_registry.get_descriptions.return_value = "Mock tool descriptions"
+
+        engine = ReActEngine()
+        engine.chat("写代码")
+
+        # 验证传给 write_file 的 content 完整保留了 return {1: 2}
+        call_args = mock_registry.execute.call_args
+        tool_input = call_args[0][1]
+        assert tool_input["path"] == "src/x.py"
+        assert "return {1: 2}" in tool_input["content"]
 
     @patch("react_engine.ChatHistory")
     @patch("react_engine.requests.post")

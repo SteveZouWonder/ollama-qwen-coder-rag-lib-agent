@@ -143,7 +143,8 @@ class TestSystemPromptContent:
             "GIF",
             "BMP",
             "TIFF",
-            "PaddleOCR"
+            # 默认后端应为 Tesseract（兼容 Python 3.13）；PaddleOCR 为可选后端
+            "Tesseract"
         ]
         
         for keyword in ocr_format_keywords:
@@ -185,15 +186,37 @@ class TestSystemPromptContent:
         for keyword in snapshot_keywords:
             assert keyword in content, f"系统提示必须包含快照和会话管理: {keyword}"
 
+    def test_system_prompt_has_tool_descriptions_placeholder(self):
+        """测试系统提示包含工具描述占位符（防止工具清单丢失回归）"""
+        prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # react_engine 会用 registry 工具描述替换该占位符
+        # 缺少占位符会导致工具清单无法注入系统提示
+        assert "{tool_descriptions}" in content, \
+            "系统提示必须包含 {tool_descriptions} 占位符以注入工具清单"
+
+    def test_system_prompt_injects_tool_descriptions(self):
+        """测试占位符在注入后被实际工具描述替换"""
+        from agent_tools import registry
+        content = read_system_prompt_from_file()
+        assert content is not None
+        injected = content.replace("{tool_descriptions}", registry.get_descriptions())
+        # 替换后不应再残留占位符
+        assert "{tool_descriptions}" not in injected
+        # 注入后应包含核心工具名
+        assert "read_system_prompt" in injected
+
     def test_system_prompt_version_update(self):
         """测试系统提示版本是否更新"""
         prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
         with open(prompt_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 检查版本号
-        assert "3.0" in content, "系统提示版本应该更新为3.0"
-        assert "2026-06-15" in content, "系统提示应该包含更新日期"
+        # 检查版本号（应与项目 CHANGELOG 当前版本保持同步）
+        assert "4.2.1" in content, "系统提示版本应该更新为4.2.1"
+        assert "2026-06-23" in content, "系统提示应该包含更新日期"
 
 
 class TestSystemPromptIntegration:

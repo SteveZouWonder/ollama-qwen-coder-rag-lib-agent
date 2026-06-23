@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    智能文档+代码助手 (Ollama qwen2.5-coder RAG + ReAct Agent + Multi-Agent)
+    设计含义:
+      - 深色科技圆角底盘  : 沉稳的本地推理底座 (Ollama 本地大模型)
+      - 中央发光核心 </>   : 统一 LLM 内核 (qwen2.5-coder, 文档理解+代码生成+推理)
+      - 围绕核心的 5 个节点 : Code / RAG / Test / Doc / Audit 多 Agent 协作
+      - 节点之间的连线      : MessageBus 消息总线 / RAG 检索连接
+      - 青->蓝->品红渐变    : 明亮的科技感与智能流动
+  -->
+  <defs>
+    <!-- 底盘渐变: 深空蓝到近黑, 凸显前景明亮元素 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E1B3A"/>
+      <stop offset="0.55" stop-color="#0A1330"/>
+      <stop offset="1" stop-color="#060B1F"/>
+    </linearGradient>
+    <!-- 核心渐变: 青 -> 蓝 -> 品红 -->
+    <linearGradient id="core" x1="320" y1="320" x2="704" y2="704" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22E1FF"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+    <radialGradient id="coreGlow" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#7FF3FF" stop-opacity="0.95"/>
+      <stop offset="0.6" stop-color="#3B82F6" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#3B82F6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="160" y1="160" x2="864" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22E1FF"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+
+  <!-- 圆角底盘 -->
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="url(#bg)"/>
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="none" stroke="url(#ring)" stroke-opacity="0.35" stroke-width="6"/>
+
+  <!-- 协作连线 (核心到各节点) -->
+  <g stroke="url(#ring)" stroke-width="10" stroke-opacity="0.55" stroke-linecap="round">
+    <line x1="512" y1="512" x2="512" y2="218"/>
+    <line x1="512" y1="512" x2="792" y2="408"/>
+    <line x1="512" y1="512" x2="700" y2="760"/>
+    <line x1="512" y1="512" x2="324" y2="760"/>
+    <line x1="512" y1="512" x2="232" y2="408"/>
+  </g>
+  <!-- 节点间环形连线 -->
+  <g stroke="url(#ring)" stroke-width="6" stroke-opacity="0.30" stroke-linecap="round" fill="none">
+    <path d="M512 218 L792 408 L700 760 L324 760 L232 408 Z"/>
+  </g>
+
+  <!-- 中央核心光晕 -->
+  <circle cx="512" cy="512" r="210" fill="url(#coreGlow)" filter="url(#soft)"/>
+  <!-- 中央核心 -->
+  <circle cx="512" cy="512" r="150" fill="url(#core)"/>
+  <circle cx="512" cy="512" r="150" fill="none" stroke="#EAF6FF" stroke-opacity="0.85" stroke-width="6"/>
+
+  <!-- 核心内代码符号 </> -->
+  <g stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="470,470 422,512 470,554"/>
+    <polyline points="554,470 602,512 554,554"/>
+    <line x1="538" y1="452" x2="486" y2="572"/>
+  </g>
+
+  <!-- 5 个 Agent 节点 -->
+  <g>
+    <!-- 顶: Code -->
+    <circle cx="512" cy="218" r="62" fill="#22E1FF"/>
+    <circle cx="512" cy="218" r="62" fill="none" stroke="#EAF6FF" stroke-opacity="0.9" stroke-width="5"/>
+    <!-- 右上: RAG -->
+    <circle cx="792" cy="408" r="62" fill="#4F8DFF"/>
+    <circle cx="792" cy="408" r="62" fill="none" stroke="#EAF6FF" stroke-opacity="0.9" stroke-width="5"/>
+    <!-- 右下: Test -->
+    <circle cx="700" cy="760" r="62" fill="#7C5CFF"/>
+    <circle cx="700" cy="760" r="62" fill="none" stroke="#EAF6FF" stroke-opacity="0.9" stroke-width="5"/>
+    <!-- 左下: Doc -->
+    <circle cx="324" cy="760" r="62" fill="#A855F7"/>
+    <circle cx="324" cy="760" r="62" fill="none" stroke="#EAF6FF" stroke-opacity="0.9" stroke-width="5"/>
+    <!-- 左上: Audit -->
+    <circle cx="232" cy="408" r="62" fill="#27C6E6"/>
+    <circle cx="232" cy="408" r="62" fill="none" stroke="#EAF6FF" stroke-opacity="0.9" stroke-width="5"/>
+  </g>
+</svg>

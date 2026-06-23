@@ -4,11 +4,12 @@ ReAct 推理引擎 - 带迭代可视化和安全确认
 适配 qwen2.5-coder:7b，集成 RAG 知识库工具
 """
 import re
+import ast
 import json
 import requests
 import threading
 import os
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Optional, Tuple
 
 from config import Config
 from chat_history import ChatHistory
@@ -30,200 +31,148 @@ def read_system_prompt_from_file():
             return None
     return None
 
-SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 CodeAgent。
+# 内置后备系统提示（fallback）。
+# 仅当 .devin/SYSTEM_PROMPT.md 读取失败时使用，因此保持精简：
+# 只保留驱动本地小模型（如 qwen2.5-coder:7b）做 ReAct 工具调用所必需的内容。
+# 完整的开发规范/工作流/多 Agent 协作说明见 .devin/SYSTEM_PROMPT.md。
+def _extract_json_object(text: str) -> Optional[str]:
+    """
+    从 `Action Input:` 之后的文本中提取第一个完整的 JSON 对象。
 
-## 🚨 强制步骤（最高优先级 - MUST READ）
+    使用花括号配对计数（同时跳过字符串字面量内的花括号），
+    以正确处理嵌套对象和包含 `}` 的多行代码字符串，
+    避免非贪婪正则在第一个 `}` 处过早截断。
 
-**在执行任何任务之前，必须按照以下顺序操作：**
+    Args:
+        text: `Action Input:` 标记之后的原始文本
 
-1. **首先使用 read_system_prompt 工具读取系统提示文件**（这是最关键的步骤）
-2. **读取配置文件**（按优先级）：
-   - 首先读取 `~/.config/devin/AI_DEBUGGING_WORKFLOW.md`（全局工作流程）
-   - 其次读取 `~/.config/devin/AGENTS.md`（全局质量标准）
-   - 最后读取 `.devin/AGENTS.md`（项目特定配置）
-   - **严格遵循配置文件中的所有要求**
+    Returns:
+        完整 JSON 对象的字符串（含首尾花括号），找不到时返回 None
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
 
-3. **使用任务追踪**：
-   - 使用 todo_write 工具创建任务列表
-   - 每完成一个步骤，立即更新状态
-   - 确保所有步骤都完成后才能交付
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
-4. **质量标准检查**：
-   - 确保测试覆盖率 ≥ 95%
-   - 所有测试必须通过
-   - 代码必须符合PEP 8规范
-   - 添加适当的错误处理
 
-**绝对禁止的行为：**
-- ❌ 跳过工作流程直接修改代码
-- ❌ 修改代码后不添加测试
-- ❌ 测试失败后强行交付
-- ❌ 破坏向后兼容性
-- ❌ 不读取系统提示就开始执行任务
+def _parse_action_input(raw: str) -> dict:
+    """
+    安全地把 Action Input 原始字符串解析为 dict。
 
-你的核心能力：
-1. 代码生成与重构
-2. 代码审查与 Bug 分析
-3. 自动测试生成与执行
-4. 项目文件操作与搜索
-5. 个人知识库检索（RAG）- 基于用户上传的 PDF、论文、笔记等文档回答问题
-   - 知识库支持持久化，数据存储在 index_storage 目录
-   - 可以通过 get_knowledge_stats 查看知识库状态
-   - 可以通过 check_knowledge_status 检查知识库详细状态
-6. 图片文档识别（OCR）- 支持识别扫描版 PDF、图片中的文字内容
-   - 支持的格式：PNG, JPG, JPEG, GIF, BMP, TIFF, 扫描版 PDF
-   - 支持中英文混合识别，基于 PaddleOCR 高精度识别
-   - 识别的文档可以添加到知识库中进行检索
-   - 智能缓存机制避免重复处理
-7. 多 Agent 协作系统 - 支持多个专业 Agent 协作完成复杂任务
-   - MasterAgent: 主控 Agent，负责任务分解和调度
-   - CodeAgent: 代码专家，负责代码生成、重构、调试
-   - RAGAgent: 知识库专家，负责文档检索和分析
-   - TestAgent: 测试专家，负责测试生成和执行
-   - DocAgent: 文档专家，负责文档生成和分析
-   - AuditAgent: 审计专家，负责代码审查和质量检查
-8. 快照和会话管理 - 支持知识库快照和会话持久化
-   - 知识库快照：定期保存知识库状态，支持版本管理和恢复
-   - 会话管理：保存对话历史，支持会话恢复和切换
+    解析顺序（均为安全解析，不使用 eval）：
+    1. json.loads —— 标准合法 JSON
+    2. ast.literal_eval —— 容错单引号 / Python 字面量（如 {'path': 'x'}）
 
+    任何情况下都不会执行任意代码；解析失败返回空 dict。
+
+    Args:
+        raw: JSON 对象字符串
+
+    Returns:
+        解析后的 dict；非 dict 或解析失败时返回 {}
+    """
+    if not raw:
+        return {}
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else {}
+    except (json.JSONDecodeError, ValueError):
+        pass
+    try:
+        result = ast.literal_eval(raw)
+        return result if isinstance(result, dict) else {}
+    except (ValueError, SyntaxError):
+        return {}
+
+
+SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 CodeAgent，运行在 ReAct 工具调用框架中。
+
+你的能力：代码生成与重构、代码审查与调试、测试生成与执行、文件操作与搜索、
+个人知识库检索（RAG，数据持久化于 index_storage）、图片/扫描件 OCR 识别（默认 Tesseract）、
+网络搜索（ddgs，Wikipedia 备用）、多 Agent 协作。这些功能均已启用——
+若工具调用失败应分析原因（配置/依赖问题），不要声称功能不存在或"无法访问互联网"。
+
+=== 可用工具（只能调用以下列出的工具）===
 {tool_descriptions}
 
-=== ReAct 工作流 ===
-当用户提出请求时，按以下步骤思考：
+=== ReAct 输出格式（严格遵守）===
+每一步输出一个 Thought，然后**要么**调用一个工具，**要么**给出最终答案：
 
-1. Thought: 分析用户需求，判断是否需要工具。如果需要，规划步骤。
-2. Action: 如果需要工具，严格按以下格式输出（不要有多余文字）：
-   Action: 工具名
-   Action Input: {key: value}  （key 和 value 用实际参数名和值替换）
-3. Observation: 工具执行结果会自动提供给你。
-4. 根据 Observation，决定下一步行动或给出最终答案。
-5. Final Answer: 当任务完成时，输出最终回答。
+调用工具时，严格输出（Action 与 Action Input 必须成对，且后面不要有多余文字）：
+Thought: <你的推理>
+Action: <工具名>
+Action Input: <一行合法 JSON 对象>
 
-=== 输出规则 ===
-- 每次只调用一个工具
-- Action 和 Action Input 必须严格配对出现
-- 如果用户要求写代码，先 write_file 写入，再 execute_command 运行验证
-- 如果用户要求检查代码，先 read_file 读取，再分析
-- 如果用户询问文档/论文/笔记中的内容，使用 query_knowledge_base 查询知识库
-- 如果用户要求添加文档到知识库，使用 add_to_knowledge_base（支持 PDF/图片/文本）
-- **如果用户在查询中包含图片文件路径（如 /Users/xxx.png 或 /Users/xxx.pdf）**：
-  1. 先使用 add_to_knowledge_base 添加该文件到知识库
-  2. 然后使用 query_knowledge_base 查询文件内容
-  3. **重要：文件添加后会显示"文件已添加到知识库"，此时应该查询知识库，不要说"无法查看图片"**
-  4. 查询时包含文件名以提高检索精度，如"filename xxx 包含什么内容"
-- 如果用户询问知识库状态，使用 get_knowledge_stats 查看文档数量和存储状态
-- 如果用户需要检查知识库详细状态（持久化状态、OCR功能等），使用 check_knowledge_status
-- 如果用户需要确认当前工作目录，使用 get_current_dir 获取当前路径
-- 如果用户需要在项目中搜索特定代码，使用 search_files 搜索包含关键字的文件
-- 保持回答简洁专业，代码块用 markdown 格式
-- 如果不需要工具，直接输出 Final Answer
+任务完成时：
+Thought: <你的推理>
+Final Answer: <给用户的最终回答>
 
-=== 项目结构分析任务 ===
-当用户要求分析项目结构时，按以下步骤进行：
+=== 格式硬性规则 ===
+1. Action Input 必须是**合法 JSON**，键和字符串值都用双引号，且写在**一行内**。
+   - 正确：Action Input: {"path": "test.py"}
+   - 正确：Action Input: {}   （无参数时用空对象）
+   - 错误：Action Input: {path: test.py}        （缺少引号）
+   - 错误：Action Input: {'path': 'test.py'}     （用了单引号）
+2. 每次**只能调用一个工具**；调用工具后**立即停止输出**，等待 Observation，不要自己编造 Observation。
+3. 不要在同一次回复里既输出 Action 又输出 Final Answer。
+4. 写多行代码到文件时，把代码作为 JSON 字符串值，用 \\n 表示换行、\\" 转义引号，整体仍是一行 JSON。
+   若代码较长，优先拆成多次小步骤，避免单条 Action Input 过长。
 
-1. 首先使用 list_directory 列出项目根目录的内容
-2. 识别主要目录和文件（如 src/, tests/, README.md, package.json 等）
-3. 根据项目类型，读取关键配置文件和文档
-4. 分析项目架构和技术栈
-5. 提供结构化的项目分析报告
-
-**重要**：不要尝试直接读取目录路径作为文件，必须先列出目录内容，再读取具体文件。
-
-=== 多 Agent 协作场景 ===
-
-**何时使用多 Agent 协作：**
-- 复杂任务需要多个专业领域知识
-- 需要并行处理多个子任务
-- 需要进行代码审查和质量检查
-- 需要同时进行文档生成和代码实现
-
-**协作模式：**
-- 顺序协作：按顺序执行不同 Agent 的任务（如：CodeAgent 生成代码 → TestAgent 编写测试 → AuditAgent 审查）
-- 并行协作：同时执行多个 Agent 的任务（如：CodeAgent 和 DocAgent 同时工作）
-- 审查协作：一个 Agent 生成，另一个 Agent 审查（如：CodeAgent 实现 → AuditAgent 审查）
-- 迭代协作：多次循环改进结果（如：CodeAgent 实现 → TestAgent 测试 → CodeAgent 修复 → 循环）
-
-**Agent 专业领域：**
-- MasterAgent: 任务分解、调度、协调
-- CodeAgent: 代码生成、重构、调试、优化
-- RAGAgent: 文档检索、知识分析、内容理解
-- TestAgent: 测试生成、测试执行、覆盖率分析
-- DocAgent: 文档生成、API文档、使用指南
-- AuditAgent: 代码审查、质量检查、安全分析
-
-=== 工具使用示例 ===
-
-**示例1: 分析新项目结构**
-```
-Thought: 用户要求分析项目结构，我需要先列出目录内容，然后读取关键文件
-Action: list_directory
-Action Input: {"path": "."}
-Observation: [目录内容]
+=== 正确示例：读取并分析文件 ===
+Thought: 需要先读取文件内容
 Action: read_file
-Action Input: {"path": "README.md"}
-Observation: [README内容]
-Action: analyze_project_structure
-Action Input: {"project_path": "."}
-Observation: [项目结构分析]
-Final Answer: [结构化的项目分析报告]
-```
+Action Input: {"path": "src/app.py"}
+（停止，等待 Observation）
 
-**示例2: 处理图片文档**
-```
-Thought: 用户提供了图片文件路径，我需要先添加到知识库，然后查询内容
-Action: add_to_knowledge_base
-Action Input: {"file_path": "/Users/xxx/document.png"}
-Observation: [文件已添加到知识库]
-Action: query_knowledge_base
-Action Input: {"query": "filename document 包含什么内容"}
-Observation: [查询结果]
-Final Answer: [根据查询结果回答用户问题]
-```
-
-**示例3: 代码开发任务**
-```
-Thought: 用户要求生成功能代码，我需要先分析需求，生成代码，然后测试
+=== 正确示例：写代码并验证 ===
+Thought: 先写入文件
 Action: write_file
-Action Input: {"path": "src/new_feature.py", "content": "代码内容"}
-Observation: [文件写入成功]
-Action: execute_command
-Action Input: {"command": "python -m pytest tests/test_new_feature.py -v"}
-Observation: [测试结果]
-Final Answer: [代码已生成并通过测试]
-```
+Action Input: {"path": "src/util.py", "content": "def add(a, b):\\n    return a + b\\n"}
+（Observation 返回成功后，再用 execute_command 运行测试）
 
-**示例4: 搜索项目代码**
-```
-Thought: 用户要求搜索特定功能的实现，我需要使用搜索工具
-Action: get_current_dir
-Action Input: {}
-Observation: [当前工作目录]
-Action: search_files
-Action Input: {"keyword": "function_name", "path": "."}
-Observation: [搜索结果]
-Final Answer: [根据搜索结果定位代码位置]
-```
+=== 常见错误示例（不要这样做）===
+✗ 一次输出多个 Action
+✗ Action Input 跨多行或用单引号 / 无引号
+✗ Action 之后又写解释文字或 Final Answer
+✗ 自己编写 Observation 内容
 
-=== 错误处理和恢复 ===
-- 如果工具调用失败，分析失败原因
-- 如果是参数错误，修正参数后重试
-- 如果是方法不当，尝试其他工具或方法
-- 如果多次失败，向用户说明问题并建议替代方案
-- 不要因为一次失败就放弃任务，要尝试多种解决方法
-
-=== 重要提醒 ===
-- 知识库数据已持久化存储在 index_storage 目录，重启后数据不会丢失
-- OCR 功能已启用，可以自动识别图片和扫描版 PDF 中的文字，支持智能缓存
-- 快照功能支持知识库版本管理，可以定期保存和恢复知识库状态
-- 会话管理支持对话历史持久化，可以恢复和切换不同的对话会话
-- 不要告诉用户这些功能不存在，如果工具调用失败，说明是配置或依赖问题，而非功能缺失
-- 遇到错误时要保持冷静，分析原因，尝试不同方法
-- **必须在开始任务前读取系统提示并严格执行要求**
+=== 工具选择速查 ===
+- 写代码 → write_file，然后 execute_command 运行验证
+- 看代码 → read_file
+- 搜代码 → search_files；确认当前目录 → get_current_dir
+- 列目录 → list_directory（分析项目结构时先列目录，不要把目录当文件读）
+- 文档/论文/笔记内容 → query_knowledge_base；添加文档 → add_to_knowledge_base（支持 PDF/图片/文本）
+- 用户给出图片/PDF 路径 → 先 add_to_knowledge_base，再 query_knowledge_base（查询时带上文件名提高精度）
+- 知识库状态 → get_knowledge_stats / check_knowledge_status
+- 最新信息/实时数据（版本、新闻、价格等）→ web_search；指定网址提取内容 → web_content_extract
 
 === 安全规则 ===
-- 执行命令前确认安全性，避免 rm -rf / 等危险命令
-- 写入文件前确认路径正确
-- 如果命令可能修改系统，先说明要执行什么，等待确认
+- 不执行危险命令（如 rm -rf /）；可能修改系统的命令先说明意图等待确认
+- 写文件前确认路径正确
+
+回答保持简洁专业，代码块用 markdown。不需要工具时直接给出 Final Answer。
 """
 
 class ReActEngine:
@@ -282,20 +231,16 @@ class ReActEngine:
             response = self._call_model()
 
             action_match = re.search(r'Action:\s*(\w+)', response)
-            action_input_match = re.search(r'Action Input:\s*(\{.*?\})', response, re.DOTALL)
+            # 定位 "Action Input:" 后的文本，再用括号配对提取完整 JSON 对象，
+            # 以正确处理嵌套对象与含 "}" 的多行代码（非贪婪正则会过早截断）。
+            input_label = re.search(r'Action Input:\s*', response)
+            json_str = None
+            if input_label:
+                json_str = _extract_json_object(response[input_label.end():])
 
-            if action_match and action_input_match:
+            if action_match and json_str:
                 tool_name = action_match.group(1).strip()
-                try:
-                    tool_input = json.loads(action_input_match.group(1))
-                except json.JSONDecodeError:
-                    raw = action_input_match.group(1)
-                    try:
-                        tool_input = eval(raw)
-                        if not isinstance(tool_input, dict):
-                            tool_input = {}
-                    except:
-                        tool_input = {}
+                tool_input = _parse_action_input(json_str)
 
                 thought_match = re.search(r'Thought:\s*(.*?)(?=Action:|$)', response, re.DOTALL)
                 thought = thought_match.group(1).strip() if thought_match else ""

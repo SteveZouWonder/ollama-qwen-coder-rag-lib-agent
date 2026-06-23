@@ -92,3 +92,6 @@ safety-check.json
 /.pylintrc
 /pytest.ini
 /coverage.xml
+
+/**/.devin/knowledge/snapshots/
+/.devin/knowledge/snapshots/

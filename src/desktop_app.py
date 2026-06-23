@@ -492,11 +492,58 @@ class TrayApp(BaseApp):
         """设置为错误状态"""
         self.update_icon("error")
         
-    def create_icon(self, status: str = "normal"):
-        """创建托盘图标"""
+    # 项目图标资源目录 (assets/icon_*.png 由 scripts/generate_icons.py 生成)
+    ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+    def _load_asset_icon(self, status: str = "normal"):
+        """优先加载高清项目图标资源, 按状态叠加角标。
+
+        资源不存在时返回 None, 调用方会回退到代码绘制。
+        """
         if not DESKTOP_AVAILABLE:
             return None
-            
+        # 选取最接近 64px 的资源以保证清晰
+        candidates = [
+            self.ASSETS_DIR / "icon_64.png",
+            self.ASSETS_DIR / "icon_128.png",
+            self.ASSETS_DIR / "icon_256.png",
+            self.ASSETS_DIR / "icon.png",
+        ]
+        src = next((p for p in candidates if p.exists()), None)
+        if src is None:
+            return None
+        try:
+            base = Image.open(src).convert("RGBA").resize((64, 64), Image.LANCZOS)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"加载图标资源失败, 回退到绘制: {e}")
+            return None
+
+        # 非正常状态: 右下角叠加状态指示点
+        if status != "normal":
+            status_colors = {
+                "progress": self.COLOR_PROGRESS,
+                "success": self.COLOR_SUCCESS,
+                "error": self.COLOR_ERROR,
+            }
+            dot = status_colors.get(status)
+            if dot:
+                d = ImageDraw.Draw(base)
+                r = 11
+                cx, cy = 64 - r - 3, 64 - r - 3
+                d.ellipse([cx - r, cy - r, cx + r, cy + r],
+                          fill=dot + (255,), outline=(255, 255, 255, 255), width=3)
+        return base.resize((32, 32), Image.LANCZOS)
+
+    def create_icon(self, status: str = "normal"):
+        """创建托盘图标 (优先使用 assets 高清资源, 失败则代码绘制)"""
+        if not DESKTOP_AVAILABLE:
+            return None
+
+        asset_icon = self._load_asset_icon(status)
+        if asset_icon is not None:
+            return asset_icon
+
+        # ----- 回退方案: 运行时代码绘制 -----
         # 创建 48x48 的图标（更高分辨率）
         image = Image.new('RGBA', (48, 48), (0, 0, 0, 0))  # 透明背景
         draw = ImageDraw.Draw(image)

@@ -25,6 +25,7 @@ from llama_index.core import (
     load_index_from_storage,
 )
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import Document
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
@@ -40,6 +41,7 @@ from config import (
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     TOP_K,
+    SIMILARITY_CUTOFF,
 )
 from document_loader import load_documents
 
@@ -181,7 +183,9 @@ class RAGEngine:
         self.query_engine = self.index.as_query_engine(
             similarity_top_k=TOP_K,
             response_mode="compact",
-            node_postprocessors=[],
+            node_postprocessors=[
+                SimilarityPostprocessor(similarity_cutoff=SIMILARITY_CUTOFF),
+            ],
         )
 
     def add_documents(self, documents: List[Document], file_paths: List[str] = None):
@@ -277,7 +281,7 @@ class RAGEngine:
                     })
                 
                 sources.append({
-                    "content": node.node.get_content()[:300],
+                    "content": node.node.get_content()[:500],
                     "score": float(node.score) if hasattr(node, "score") else None,
                     "file": node.node.metadata.get("file_name", "未知"),
                     "path": node.node.metadata.get("file_path", ""),
