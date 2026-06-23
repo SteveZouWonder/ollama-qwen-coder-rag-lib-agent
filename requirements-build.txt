@@ -1,0 +1,41 @@
+# 打包专用运行时依赖（剔除测试/静态检查/OCR 等重依赖）
+# 由 .github/workflows/release.yml 使用。
+
+setuptools>=60.0.0
+wheel
+
+numpy
+pandas
+
+llama-index
+llama-index-embeddings-ollama
+llama-index-llms-ollama
+llama-index-readers-file
+llama-index-vector-stores-chroma
+
+chromadb
+posthog>=3.0.0,<4.0.0
+
+pypdf>=6.13.3,<7
+pymupdf>=1.25.0
+
+requests
+urllib3
+
+ddgs>=5.3.0
+beautifulsoup4>=4.12.0
+trafilatura>=1.6.0
+
+gitpython>=3.1.0
+
+networkx>=3.6.0
+
+python-dotenv
+rich
+prompt-toolkit
+
+pystray
+pillow
+
+# 打包器
+pyinstaller>=6.0.0

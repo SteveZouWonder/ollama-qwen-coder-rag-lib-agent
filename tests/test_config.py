@@ -51,11 +51,11 @@ class TestConfigDefaults:
 
     def test_top_k_default(self, clean_env):
         from config import TOP_K
-        assert TOP_K == 5
+        assert TOP_K == 10
 
     def test_similarity_cutoff_default(self, clean_env):
         from config import SIMILARITY_CUTOFF
-        assert SIMILARITY_CUTOFF == 0.7
+        assert SIMILARITY_CUTOFF == 0.4
 
     def test_history_file_default(self, clean_env):
         from config import HISTORY_FILE

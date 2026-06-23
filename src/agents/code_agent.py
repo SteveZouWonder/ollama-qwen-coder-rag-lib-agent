@@ -3,8 +3,8 @@ CodeAgent - 代码专家Agent
 """
 from typing import Dict, Any
 import time
-from agents.base_agent import BaseAgent
-from agents.agent_types import AgentTask, AgentResult, AgentType
+from .base_agent import BaseAgent
+from .agent_types import AgentTask, AgentResult, AgentType
 
 
 class CodeAgent(BaseAgent):

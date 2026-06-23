@@ -99,7 +99,41 @@
 
 ---
 
-## 快速开始
+## 下载安装包（普通用户推荐）
+
+无需搭建 Python 环境，前往 [Releases](../../releases) 页面下载对应平台安装包：
+
+| 平台 | 文件 | 安装方式 |
+|------|------|---------|
+| Windows | `Cerebro-Setup-x.x.x.exe` | 双击运行安装向导，按提示下一步即可 |
+| macOS | `Cerebro-x.x.x.dmg` | 打开后将 Cerebro 拖入「应用程序」 |
+| Linux | `Cerebro-x.x.x-x86_64.AppImage` | `chmod +x Cerebro-*.AppImage` 后双击运行 |
+
+**运行前提**：应用依赖本地 [Ollama](https://ollama.com) 服务。首次启动会自动检测，
+若未安装会引导你安装 Ollama 并拉取所需模型（`qwen2.5-coder:7b`、`nomic-embed-text:latest`）。
+
+**使用方式**：
+- 直接运行 = 系统托盘桌面应用（GUI）
+- 命令行交互模式 = 启动时加 `--cli` 参数（Windows 安装包已附「命令行模式」快捷方式）
+
+### ⚠️ macOS 用户须知（首次打开）
+
+本应用为**免费开源项目，未购买 Apple 开发者证书**，因此未做苹果公证。
+macOS 首次打开可能提示「无法验证开发者」或「已损坏」，属于正常现象。请按以下步骤打开：
+
+1. 将 `Cerebro.app` 拖入「应用程序」文件夹。
+2. 在「应用程序」中**右键点击 Cerebro → 选择「打开」**。
+3. 在弹窗中再次点击「打开」。之后即可正常双击启动。
+
+若提示「已损坏，无法打开」（Apple Silicon 常见），在「终端」执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Cerebro.app
+```
+
+---
+
+## 快速开始（开发者 / 源码运行）
 
 ### 前置条件检查（推荐）
 

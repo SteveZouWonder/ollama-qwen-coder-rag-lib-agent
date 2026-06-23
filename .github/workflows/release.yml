@@ -1,0 +1,198 @@
+name: Release Build
+
+# 触发方式：
+#   1) 推送 v* tag（如 v1.0.0）自动构建并发布到 GitHub Release
+#   2) Actions 页面手动触发（workflow_dispatch），可输入版本号
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v 前缀，例如 1.0.0）'
+        required: true
+        default: '0.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 解析版本号（tag 或手动输入）
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Windows: PyInstaller -> Inno Setup .exe
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/cerebro.spec --noconfirm
+
+      - name: Build installer with Inno Setup
+        run: |
+          iscc /DAppVersion=${{ needs.prepare.outputs.version }} packaging\installer.iss
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/*.exe
+
+  # ---------------------------------------------------------------------------
+  # macOS: PyInstaller -> .app -> ad-hoc 签名 -> .dmg
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/cerebro.spec --noconfirm
+
+      - name: Package (ad-hoc sign + dmg)
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          chmod +x packaging/macos_package.sh
+          packaging/macos_package.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+
+  # ---------------------------------------------------------------------------
+  # Linux: PyInstaller -> AppImage
+  # ---------------------------------------------------------------------------
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system deps for AppImage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget libfuse2
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/cerebro.spec --noconfirm
+
+      - name: Package AppImage
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          chmod +x packaging/linux_package.sh
+          packaging/linux_package.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/*.AppImage
+
+  # ---------------------------------------------------------------------------
+  # 汇总三平台产物并创建 GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [prepare, build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create / Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', needs.prepare.outputs.version) || github.ref_name }}
+          name: Cerebro v${{ needs.prepare.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/windows-installer/*.exe
+            artifacts/macos-dmg/*.dmg
+            artifacts/linux-appimage/*.AppImage
+          body: |
+            ## Cerebro v${{ needs.prepare.outputs.version }}
+
+            本地 RAG + 代码助手（基于 Ollama qwen2.5-coder）。三平台安装包：
+
+            | 平台 | 文件 | 安装方式 |
+            |------|------|---------|
+            | Windows | `Cerebro-Setup-${{ needs.prepare.outputs.version }}.exe` | 双击运行安装向导 |
+            | macOS | `Cerebro-${{ needs.prepare.outputs.version }}.dmg` | 打开后拖入「应用程序」 |
+            | Linux | `Cerebro-${{ needs.prepare.outputs.version }}-x86_64.AppImage` | `chmod +x` 后双击运行 |
+
+            ### 运行前提
+            应用依赖本地 **Ollama** 服务。首次启动会自动检测，
+            若未安装会引导你安装 Ollama 并拉取所需模型
+            （`qwen2.5-coder:7b`、`nomic-embed-text:latest`）。
+
+            ### macOS 用户须知（重要）
+            本应用为免费开源项目，**未购买 Apple 开发者证书**，故未做苹果公证。
+            首次打开请：**右键点击 Cerebro.app → 选择「打开」→ 在弹窗中再点「打开」**。
+            若提示「已损坏，无法打开」，请在终端执行：
+            ```
+            xattr -dr com.apple.quarantine /Applications/Cerebro.app
+            ```
+
+            ### 使用方式
+            - 直接运行 = 系统托盘桌面应用（GUI）
+            - 命令行模式 = 运行时加 `--cli` 参数

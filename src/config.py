@@ -18,13 +18,24 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 # ==================== 路径配置 ====================
-BASE_DIR = Path(__file__).parent.parent.resolve()
+# 打包运行（PyInstaller）时，源码位于只读目录，需要把数据/索引写到用户数据目录。
+import sys as _sys
+
+if getattr(_sys, "frozen", False) and hasattr(_sys, "_MEIPASS"):
+    try:
+        from runtime_paths import user_data_dir as _user_data_dir
+    except ImportError:
+        from src.runtime_paths import user_data_dir as _user_data_dir  # type: ignore
+    BASE_DIR = _user_data_dir()
+else:
+    BASE_DIR = Path(__file__).parent.parent.resolve()
+
 DATA_DIR = BASE_DIR / "data"
 INDEX_DIR = BASE_DIR / "index_storage"
 
 # 确保目录存在
-DATA_DIR.mkdir(exist_ok=True)
-INDEX_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==================== Ollama 模型配置 ====================
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

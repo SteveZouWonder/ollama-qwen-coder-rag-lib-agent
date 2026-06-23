@@ -19,6 +19,22 @@ from pathlib import Path
 from typing import Optional
 import argparse
 
+# 运行时路径解析（兼容源码运行与 PyInstaller 打包运行）
+try:
+    from runtime_paths import (  # 顶层名（src 在 sys.path 中）
+        is_frozen,
+        assets_dir,
+        config_dir,
+        logs_dir,
+    )
+except ImportError:
+    from src.runtime_paths import (  # type: ignore
+        is_frozen,
+        assets_dir,
+        config_dir,
+        logs_dir,
+    )
+
 # ==================== 依赖检查 ====================
 try:
     import pystray
@@ -37,9 +53,15 @@ TRAY_AVAILABLE = DESKTOP_AVAILABLE and pystray is not None
 
 
 # ==================== 配置 ====================
-CONFIG_FILE = Path("../config/app_config.json")
-LOG_FILE = Path("../logs/app.log")
-STATUS_FILE = Path("logs/status.log")
+# 路径在打包运行时指向用户数据目录（可写），源码运行时保持项目内相对位置。
+if is_frozen():
+    CONFIG_FILE = config_dir() / "app_config.json"
+    LOG_FILE = logs_dir() / "app.log"
+    STATUS_FILE = logs_dir() / "status.log"
+else:
+    CONFIG_FILE = Path("../config/app_config.json")
+    LOG_FILE = Path("../logs/app.log")
+    STATUS_FILE = Path("logs/status.log")
 
 DEFAULT_CONFIG = {
     "autostart": False,
@@ -351,7 +373,19 @@ class BaseApp:
         try:
             script_path = sys.executable
             query_script = Path(__file__).parent / "query_interface.py"
-            
+
+            # CLI 调用方式：
+            # - 打包运行：当前可执行体即 launcher，使用 `<exe> --cli`（无独立 .py 脚本）。
+            # - 源码运行：使用 `<python> query_interface.py`。
+            if is_frozen():
+                cli_invocation = f"'{script_path}' --cli"
+                cli_invocation_win = f'"{script_path}" --cli'
+                workdir = Path(script_path).parent
+            else:
+                cli_invocation = f"'{script_path}' '{query_script}'"
+                cli_invocation_win = f"{script_path} {query_script}"
+                workdir = Path.cwd()
+
             # 生成本次会话的唯一标记：用于在退出时精确定位并关闭对应的进程/窗口，
             # 同时避免误杀用户手动启动的同名 CLI。
             session_id = int(time.time() * 1000)
@@ -372,8 +406,8 @@ class BaseApp:
                 # do script 内：导出标记 -> 设置窗口标题 -> 运行 CLI -> 结束后自动关闭窗口
                 inner_cmd = (
                     f"export {session_tag}; "
-                    f"cd '{Path.cwd()}' && "
-                    f"'{script_path}' '{query_script}'; "
+                    f"cd '{workdir}' && "
+                    f"{cli_invocation}; "
                     f"exit"
                 )
                 # 转义双引号，供 AppleScript 字符串使用
@@ -395,7 +429,7 @@ class BaseApp:
                 subprocess.Popen([
                     "cmd", "/c",
                     f'start "{window_title}" /max cmd /k '
-                    f'"set {session_tag}&& cd /d {Path.cwd()} && {script_path} {query_script}"'
+                    f'"set {session_tag}&& cd /d {workdir} && {cli_invocation_win}"'
                 ], shell=True)
                 
             else:  # Linux
@@ -403,7 +437,7 @@ class BaseApp:
                 # 关闭整个 bash（连带 gnome-terminal 子窗口随之关闭）。
                 bash_cmd = (
                     f"export {session_tag}; "
-                    f"cd {Path.cwd()} && {script_path} {query_script}; exec bash"
+                    f"cd {workdir} && {cli_invocation}; exec bash"
                 )
                 try:
                     subprocess.Popen([
@@ -493,7 +527,8 @@ class TrayApp(BaseApp):
         self.update_icon("error")
         
     # 项目图标资源目录 (assets/icon_*.png 由 scripts/generate_icons.py 生成)
-    ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+    # 打包运行时位于 sys._MEIPASS/assets，源码运行时位于 <root>/assets
+    ASSETS_DIR = assets_dir()
 
     def _load_asset_icon(self, status: str = "normal"):
         """优先加载高清项目图标资源, 按状态叠加角标。
