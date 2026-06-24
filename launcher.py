@@ -41,19 +41,38 @@ def main() -> int:
     argv = [a for a in argv if a != "--skip-bootstrap"]
 
     want_cli = "--cli" in argv or "chat" in argv
+    # --status / --warm-up 等也走 GUI 入口（desktop_app），但属于"短命令"，
+    # 需要同步等待结果，不应被后台引导干扰。
+    short_cmd = "--status" in argv or "--warm-up" in argv
     argv = [a for a in argv if a not in ("--cli", "--gui", "chat")]
 
-    # Ollama 环境检测与引导
-    if not skip_bootstrap:
+    def _run_bootstrap(interactive: bool) -> None:
         try:
             from bootstrap import ensure_ollama_ready  # 顶层名（打包/源码 src 在 path）
         except ImportError:
             from src.bootstrap import ensure_ollama_ready
         try:
-            ensure_ollama_ready(interactive=True)
+            ensure_ollama_ready(interactive=interactive)
         except Exception as exc:  # noqa: BLE001
             # 引导失败不应阻断启动，仅提示
             print(f"[Cerebro] Ollama 环境检测出现问题：{exc}", file=sys.stderr)
+
+    # 是否有可交互终端（windowed/打包 GUI 下通常没有 stdin）
+    has_tty = bool(sys.stdin) and sys.stdin.isatty()
+
+    # Ollama 环境检测与引导
+    if not skip_bootstrap and not short_cmd:
+        if want_cli and has_tty:
+            # CLI 且有终端：同步、交互式引导（可提示用户确认安装/拉模型）
+            _run_bootstrap(interactive=True)
+        else:
+            # GUI 模式：放到后台线程，避免阻塞托盘启动导致系统判定"无响应"。
+            # 无终端，使用非交互模式（不调用 input）。
+            import threading
+
+            threading.Thread(
+                target=_run_bootstrap, args=(False,), daemon=True
+            ).start()
 
     # 透传剩余参数给目标入口
     sys.argv = [sys.argv[0]] + argv
