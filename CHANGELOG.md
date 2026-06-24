@@ -9,6 +9,10 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 发布流程
+- Release Notes 改为从 CHANGELOG 提取当前版本正文（关闭 GitHub 自动 PR 汇总），使发布说明与 CHANGELOG 内容一致；未归档时回退提取 `[Unreleased]`
+- Release 正文末尾保留「完整对比」链接（自动计算上一个版本 tag）
+
 ## [v0.0.4] - 2026-06-24
 
 ### 发布流程
@@ -64,8 +68,11 @@
 
 1. 解析标签得到版本号（并校验语义化版本格式）
 2. 并行构建 Windows / macOS / Linux 三平台安装包
-3. 汇总产物并创建 GitHub Release（自动生成 commit/PR 列表 + 安装说明 + SHA256 校验和）
+3. 汇总产物并创建 GitHub Release（从 CHANGELOG 提取本版本正文作为 Release Notes + 安装说明 + SHA256 校验和 + 完整对比链接）
 4. 自动归档 CHANGELOG：把 `[Unreleased]` 归档为该版本号，提交到新分支并创建 PR
+
+> Release Notes 的「本次变更」来自 CHANGELOG 当前版本区段（若发布时尚未归档则取 `[Unreleased]`），
+> 因此请在发布前把变更写清楚，确保 Release 页面展示与 CHANGELOG 一致。
 
 平时把变更写入 `[Unreleased]` 区段即可；发布时归档由 CI 自动完成，
 生成的 PR 需人工审核后合并到 `master`。也可在本地手动归档预览：
