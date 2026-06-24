@@ -39,3 +39,5 @@ pillow
 
 # 打包器
 pyinstaller>=6.0.0
+# Windows exe 版本信息嵌入所需（PyInstaller win32 versioninfo 依赖）
+pefile; sys_platform == "win32"

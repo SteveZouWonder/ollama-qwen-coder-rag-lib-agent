@@ -43,6 +43,7 @@ Exec=Cerebro
 Icon=cerebro
 Categories=Utility;Development;
 Terminal=false
+X-AppImage-Version=${APP_VERSION}
 EOF
 cp "${APPDIR}/cerebro.desktop" "${APPDIR}/usr/share/applications/cerebro.desktop"
 

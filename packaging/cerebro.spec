@@ -166,6 +166,64 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+
+# ---------------------------------------------------------------------------
+# Windows: 为 exe 嵌入版本信息（文件属性 -> 详细信息 显示产品/文件版本）
+# ---------------------------------------------------------------------------
+def _build_win_version_info(version_str):
+    from PyInstaller.utils.win32.versioninfo import (
+        VSVersionInfo,
+        FixedFileInfo,
+        StringFileInfo,
+        StringTable,
+        StringStruct,
+        VarFileInfo,
+        VarStruct,
+    )
+
+    # 把 "1.0.1" 规整为 4 段整数元组 (1, 0, 1, 0)
+    parts = []
+    for token in version_str.split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 4:
+        parts.append(0)
+    vtuple = tuple(parts[:4])
+
+    return VSVersionInfo(
+        ffi=FixedFileInfo(
+            filevers=vtuple,
+            prodvers=vtuple,
+            mask=0x3F,
+            flags=0x0,
+            OS=0x40004,
+            fileType=0x1,
+            subtype=0x0,
+            date=(0, 0),
+        ),
+        kids=[
+            StringFileInfo([
+                StringTable("040904B0", [
+                    StringStruct("CompanyName", "Cerebro Open Source"),
+                    StringStruct("FileDescription", "Cerebro - 本地 RAG + 代码助手"),
+                    StringStruct("FileVersion", version_str),
+                    StringStruct("ProductName", "Cerebro"),
+                    StringStruct("ProductVersion", version_str),
+                    StringStruct("OriginalFilename", "Cerebro.exe"),
+                ]),
+            ]),
+            VarFileInfo([VarStruct("Translation", [0x0409, 0x04B0])]),
+        ],
+    )
+
+
+exe_version = None
+if sys.platform == "win32":
+    try:
+        exe_version = _build_win_version_info(APP_VERSION)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[spec] 生成 Windows 版本信息失败，跳过: {exc}")
+
 # 注：onedir 模式（非单文件），启动更快、对原生库兼容性更好。
 exe = EXE(
     pyz,
@@ -183,6 +241,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=app_icon,
+    version=exe_version,
 )
 
 coll = COLLECT(
