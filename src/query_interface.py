@@ -1032,6 +1032,69 @@ def record_command_execution(cmd_type: str, args: str = "", result: str = "", er
         logger.error(f"记录命令失败: {e}")
 
 
+def record_conversation(user_content: str, assistant_content: str):
+    """
+    将一轮对话写入“当前会话”（session），作为对话历史的单一来源。
+
+    若当前没有会话，则自动创建一个，使 /ask、/agent 的对话始终被持久化，
+    随后可通过 /history、/session-current 查看。
+
+    Args:
+        user_content: 用户输入内容
+        assistant_content: 助手回答内容
+    """
+    try:
+        from session_manager import get_session_manager
+        manager = get_session_manager()
+        session = manager.get_current_session()
+        if session is None:
+            session = manager.create_session()
+            logger.info(f"自动创建会话用于记录对话: {session.session_id}")
+        if user_content:
+            session.add_message("user", user_content)
+        if assistant_content:
+            session.add_message("assistant", assistant_content)
+        manager.save_session(session)
+    except Exception as e:
+        logger.error(f"记录对话到会话失败: {e}")
+
+
+def _simple_web_search(query: str) -> str:
+    """
+    对给定查询执行一次网络搜索，返回有效结果文本；失败或无结果返回空串。
+
+    用于 RAG 检索为空时的回退，逻辑保持简单：直接用原始问题搜索。
+    """
+    try:
+        from agent_tools import web_search
+        result = web_search(query, max_results=5, use_cache=False)
+        if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
+            return result
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"回退网络搜索失败: {e}")
+    return ""
+
+
+def _llm_direct_answer(prompt: str) -> str:
+    """用 LLM 直接回答（不经过知识库检索）。失败时返回错误说明。"""
+    try:
+        from llama_index.core import Settings
+        resp = Settings.llm.complete(prompt)
+        return str(resp)
+    except Exception as e:  # noqa: BLE001
+        return f"回答失败：{e}"
+
+
+def _is_empty_rag_result(result: dict) -> bool:
+    """判断 RAG 查询结果是否为“空命中”（无来源或返回 LlamaIndex 的占位文本）。"""
+    if not result:
+        return True
+    sources = result.get("sources") or []
+    answer = (result.get("answer") or "").strip()
+    # LlamaIndex 在没有任何命中节点时返回固定占位字符串 "Empty Response"
+    return len(sources) == 0 or answer == "" or answer == "Empty Response"
+
+
 # ==================== 主程序 ====================
 
 def main():
@@ -1537,10 +1600,10 @@ def main():
         # ---- 会话管理命令 ----
         elif parsed.cmd_type == "session_new":
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 title = parsed.arg if parsed.arg else None
                 session = manager.create_session(title=title)
 
@@ -1554,10 +1617,10 @@ def main():
 
         elif parsed.cmd_type == "session_list":
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 sessions = manager.list_sessions()
 
                 if not sessions:
@@ -1584,10 +1647,10 @@ def main():
                 should_show_recommendations = False
             else:
                 try:
-                    from session_manager import SessionManager
+                    from session_manager import get_session_manager
                     from config import SESSION_STORAGE_PATH
 
-                    manager = SessionManager(str(SESSION_STORAGE_PATH))
+                    manager = get_session_manager(str(SESSION_STORAGE_PATH))
                     success = manager.switch_session(session_id)
 
                     if success:
@@ -1604,10 +1667,10 @@ def main():
 
         elif parsed.cmd_type == "session_current":
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 current = manager.get_current_session()
 
                 if not current:
@@ -1635,10 +1698,10 @@ def main():
                 should_show_recommendations = False
 
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 sessions = manager.list_sessions()
 
                 # 查找匹配的会话
@@ -1672,10 +1735,10 @@ def main():
                 should_show_recommendations = False
 
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 results = manager.search_sessions(query)
 
                 if not results:
@@ -1693,11 +1756,11 @@ def main():
 
         elif parsed.cmd_type == "session_compress":
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
                 from history_compressor import HistoryCompressor
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 current = manager.get_current_session()
 
                 if not current:
@@ -1727,10 +1790,10 @@ def main():
                 should_show_recommendations = False
 
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 current = manager.get_current_session()
 
                 # 防止删除当前会话
@@ -1757,10 +1820,10 @@ def main():
                 should_show_recommendations = False
 
             try:
-                from session_manager import SessionManager
+                from session_manager import get_session_manager
                 from config import SESSION_STORAGE_PATH
 
-                manager = SessionManager(str(SESSION_STORAGE_PATH))
+                manager = get_session_manager(str(SESSION_STORAGE_PATH))
                 success = manager.archive_session(session_id)
 
                 if success:
@@ -2051,18 +2114,25 @@ def main():
             record_command_execution("clear")
             
         elif parsed.cmd_type == "history":
-            msgs = react_engine.history.get_messages()
-            if len(msgs) <= 1:
+            # 以当前会话（session）作为对话历史的单一来源
+            from session_manager import get_session_manager
+            manager = get_session_manager()
+            current = manager.get_current_session()
+            msgs = current.messages if current else []
+            # 仅统计真正的对话消息（user/assistant），忽略 system 提示
+            dialog_msgs = [m for m in msgs if m.get("role") in ("user", "assistant")]
+            if not dialog_msgs:
                 console.print("[dim]暂无对话历史[/dim]")
                 should_show_recommendations = False
             else:
                 lines = []
-                for i, m in enumerate(msgs):
+                for i, m in enumerate(dialog_msgs):
                     role = m.get("role", "?")
                     content = m.get("content", "")[:80].replace("\n", " ")
                     lines.append(f"{i}. [{role}] {content}...")
+                title = f"历史记录 - {current.title}" if current else "历史记录"
                 if HAS_RICH:
-                    console.print(Panel("\n".join(lines), title="历史记录", border_style="dim"))
+                    console.print(Panel("\n".join(lines), title=title, border_style="dim"))
                 else:
                     print("\n".join(lines))
                 record_command_execution("history")
@@ -2366,21 +2436,34 @@ def main():
                 else:
                     with console.status("[bold green]检索知识库..."):
                         result = rag_engine.query_with_sources(question)
+
+                # 回退：知识库已初始化但本次检索未命中任何相关文档（0 个来源 /
+                # LlamaIndex 返回占位 "Empty Response"）时，不应把占位文本抛给用户。
+                # 先尝试网络搜索补充信息，再用 LLM 直接回答。
+                if _is_empty_rag_result(result):
+                    console.print("📭 知识库中未找到相关内容，正在回退到模型回答...", style="yellow")
+                    fallback_prompt = original_question
+                    # 若之前还没做过网络搜索，这里补一次
+                    if not web_search_result:
+                        console.print("🌐 正在网络搜索补充信息...", style="cyan")
+                        web_search_result = _simple_web_search(original_question)
+                        if web_search_result:
+                            console.print("✅ 网络搜索完成", style="green")
+                    if web_search_result:
+                        fallback_prompt = (
+                            f"{original_question}\n\n网络搜索参考信息：\n{web_search_result}"
+                        )
+                    else:
+                        console.print("💡 未获取到网络信息，直接使用模型自身知识回答", style="dim")
+                    with console.status("[bold green]模型思考中..."):
+                        result = {"answer": _llm_direct_answer(fallback_prompt), "sources": []}
             else:
                 # 知识库未初始化：直接用 LLM 回答（基于网络搜索结果或模型自身知识），
                 # 避免查询空索引抛出 RuntimeError 导致程序崩溃。
-                if web_search_result:
-                    prompt = question  # 已拼接网络搜索参考信息
-                else:
+                if not web_search_result:
                     console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
-                    prompt = question
-                try:
-                    from llama_index.core import Settings
-                    with console.status("[bold green]模型思考中..."):
-                        llm_resp = Settings.llm.complete(prompt)
-                    result = {"answer": str(llm_resp), "sources": []}
-                except Exception as e:  # noqa: BLE001
-                    result = {"answer": f"回答失败：{e}", "sources": []}
+                with console.status("[bold green]模型思考中..."):
+                    result = {"answer": _llm_direct_answer(question), "sources": []}
 
             console.print("\n🤖 回答:", style="bold blue")
             if HAS_RICH:
@@ -2392,11 +2475,16 @@ def main():
                 console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
             # 只记录用户原始问题，不记录拼接的网络搜索结果正文
             record_command_execution("ask", original_question)
+            # 将本轮对话写入当前会话（对话历史的单一来源）
+            record_conversation(original_question, result.get("answer", ""))
 
         elif parsed.cmd_type == "agent":
             task = parsed.arg
+            answer = ""
+            agent_ok = False
             try:
                 answer = react_engine.chat(task)
+                agent_ok = True
             except KeyboardInterrupt:
                 console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
                 react_engine.stop()
@@ -2405,18 +2493,21 @@ def main():
                 console.print(f"[red]错误: {e}[/red]")
                 should_show_recommendations = False
 
-            if HAS_RICH:
-                if "```" in answer or "**" in answer or "#" in answer:
-                    console.print(Markdown(answer))
+            if agent_ok:
+                if HAS_RICH:
+                    if "```" in answer or "**" in answer or "#" in answer:
+                        console.print(Markdown(answer))
+                    else:
+                        console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
                 else:
-                    console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
-            else:
-                print("\n" + "=" * 50)
-                print(answer)
-                print("=" * 50 + "\n")
+                    print("\n" + "=" * 50)
+                    print(answer)
+                    print("=" * 50 + "\n")
 
-            if len(react_engine.step_log) > 1:
-                console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+                if len(react_engine.step_log) > 1:
+                    console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+                # 将本轮对话写入当前会话（对话历史的单一来源）
+                record_conversation(task, answer)
             record_command_execution("agent", task)
 
         # ---- 默认：智能路由 ----
