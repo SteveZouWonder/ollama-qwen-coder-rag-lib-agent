@@ -64,6 +64,32 @@ def config_dir() -> Path:
     return d
 
 
+def home_file(name: str) -> Path:
+    """家目录级配置/数据文件的路径。
+
+    - 源码运行：保持原有行为，落在用户家目录 ``~/<name>``。
+    - 打包运行：收纳到用户数据目录 ``<user_data>/<name>``，避免污染家目录根。
+
+    参数 ``name`` 形如 ``.code_agent_history.json`` 或 ``.code_agent_sessions``。
+    """
+    if is_frozen():
+        return user_data_dir() / name
+    return Path.home() / name
+
+
+def cwd_data_dir(relative: str) -> Path:
+    """默认落在当前工作目录的产物路径（如 ``.devin/...``）。
+
+    - 源码运行：保持原有行为，相对当前工作目录解析。
+    - 打包运行：收纳到用户数据目录下，避免写入 Finder 启动时不可控/只读的 cwd。
+
+    参数 ``relative`` 形如 ``.devin/knowledge/snapshots``。
+    """
+    if is_frozen():
+        return user_data_dir() / relative
+    return Path(relative)
+
+
 def logs_dir() -> Path:
     """日志目录（可写）。"""
     d = user_data_dir() / "logs"

@@ -85,8 +85,16 @@ class FileMetadata:
 class FileMetadataManager:
     """文件元数据管理器"""
 
-    def __init__(self, storage_path: str = "./.devin/file_metadata"):
-        self.storage_path = Path(storage_path)
+    def __init__(self, storage_path: str = None):
+        # 默认路径：打包运行时收纳到用户数据目录，源码运行时相对 cwd（保持原行为）。
+        if storage_path is None:
+            try:
+                from runtime_paths import cwd_data_dir
+            except ImportError:
+                from src.runtime_paths import cwd_data_dir  # type: ignore
+            self.storage_path = cwd_data_dir(".devin/file_metadata")
+        else:
+            self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.metadata_file = self.storage_path / "metadata.json"
         self.metadata: Dict[str, FileMetadata] = {}

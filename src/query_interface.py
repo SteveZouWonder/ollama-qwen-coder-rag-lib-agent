@@ -714,7 +714,11 @@ def print_knowledge_stats():
 
 def setup_readline():
     if HAS_READLINE:
-        histfile = os.path.expanduser("~/.code_agent_cli_history")
+        try:
+            from runtime_paths import home_file
+        except ImportError:
+            from src.runtime_paths import home_file  # type: ignore
+        histfile = str(home_file(".code_agent_cli_history"))
         try:
             readline.read_history_file(histfile)
         except (FileNotFoundError, PermissionError, OSError):
