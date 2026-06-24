@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -250,3 +251,54 @@ jobs:
 
             ---
             ### 本次变更
+
+  # ---------------------------------------------------------------------------
+  # 自动归档 CHANGELOG：把 [Unreleased] 归档为本次发布的版本号，
+  # 提交到新分支并创建 PR（不直接写 master，遵循仓库分支保护规则）。
+  # 仅在「推送 v* tag」时运行；手动触发（workflow_dispatch）不归档。
+  # ---------------------------------------------------------------------------
+  changelog:
+    needs: [prepare, release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Archive [Unreleased] into version section
+        id: archive
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          # 若 master 上该版本已归档（例如重复触发），跳过后续步骤。
+          if grep -q "## \[v${version}\]" CHANGELOG.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CHANGELOG 已包含 v${version}，跳过归档"
+            exit 0
+          fi
+          python scripts/bump_changelog.py bump --version "$version"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create Pull Request
+        if: steps.archive.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          base: master
+          branch: chore/changelog-v${{ needs.prepare.outputs.version }}
+          commit-message: "docs: archive CHANGELOG [Unreleased] into v${{ needs.prepare.outputs.version }}"
+          title: "docs: 归档 CHANGELOG 到 v${{ needs.prepare.outputs.version }}"
+          body: |
+            自动归档：发布 `v${{ needs.prepare.outputs.version }}` 时，
+            将 CHANGELOG 的 `[Unreleased]` 区段归档为
+            `## [v${{ needs.prepare.outputs.version }}]`，并补回空的 `[Unreleased]`。
+
+            请审核后合并到 `master`。
+          delete-branch: true
+          add-paths: |
+            CHANGELOG.md
