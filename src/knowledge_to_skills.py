@@ -422,9 +422,17 @@ class KnowledgeToSkillsEngine:
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
     
-    def convert(self, output_dir: str = "./.devin/skills") -> Dict[str, any]:
+    def convert(self, output_dir: str = None) -> Dict[str, any]:
         """执行转化"""
-        output_path = Path(output_dir)
+        # 默认输出：打包运行时收纳到用户数据目录，源码运行时相对 cwd（保持原行为）。
+        if output_dir is None:
+            try:
+                from runtime_paths import cwd_data_dir
+            except ImportError:
+                from src.runtime_paths import cwd_data_dir  # type: ignore
+            output_path = cwd_data_dir(".devin/skills")
+        else:
+            output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
         self.logger.info("开始分析知识库文档...")

@@ -42,7 +42,13 @@ class SearchCache:
     """搜索缓存管理器"""
     
     def __init__(self, cache_dir: Optional[Path] = None, max_cache_size: int = 1000):
-        self.cache_dir = cache_dir or Path.home() / ".code_agent_search_cache"
+        if cache_dir is None:
+            try:
+                from runtime_paths import home_file
+            except ImportError:
+                from src.runtime_paths import home_file  # type: ignore
+            cache_dir = home_file(".code_agent_search_cache")
+        self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_cache_size = max_cache_size
         self.logger = logger

@@ -21,11 +21,15 @@ from dataclasses import dataclass, field
 # 打包运行（PyInstaller）时，源码位于只读目录，需要把数据/索引写到用户数据目录。
 import sys as _sys
 
+try:
+    from runtime_paths import user_data_dir as _user_data_dir, home_file as _home_file
+except ImportError:
+    from src.runtime_paths import (  # type: ignore
+        user_data_dir as _user_data_dir,
+        home_file as _home_file,
+    )
+
 if getattr(_sys, "frozen", False) and hasattr(_sys, "_MEIPASS"):
-    try:
-        from runtime_paths import user_data_dir as _user_data_dir
-    except ImportError:
-        from src.runtime_paths import user_data_dir as _user_data_dir  # type: ignore
     BASE_DIR = _user_data_dir()
 else:
     BASE_DIR = Path(__file__).parent.parent.resolve()
@@ -55,7 +59,8 @@ TOP_K = int(os.getenv("TOP_K", "10"))
 SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.4"))
 
 # ==================== Agent 配置 ====================
-HISTORY_FILE = os.path.expanduser("~/.code_agent_history.json")
+# 打包运行时收纳到用户数据目录，源码运行时仍为 ~/.code_agent_history.json
+HISTORY_FILE = str(_home_file(".code_agent_history.json"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "100"))
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
 TIMEOUT = int(os.getenv("TIMEOUT", "300"))
@@ -81,8 +86,12 @@ OCR_QUALITY_THRESHOLD = float(os.getenv("OCR_QUALITY_THRESHOLD", "0.3"))
 OCR_MAX_IMAGE_SIZE = int(os.getenv("OCR_MAX_IMAGE_SIZE", "5242880"))  # 5MB
 
 # ==================== 会话管理配置 ====================
-SESSION_STORAGE_PATH = Path(os.getenv("SESSION_STORAGE_PATH", "~/.code_agent_sessions"))
-SESSION_STORAGE_PATH = SESSION_STORAGE_PATH.expanduser()
+# 环境变量优先；未设置时，打包运行收纳到用户数据目录，源码运行用 ~/.code_agent_sessions
+_session_env = os.getenv("SESSION_STORAGE_PATH")
+if _session_env:
+    SESSION_STORAGE_PATH = Path(_session_env).expanduser()
+else:
+    SESSION_STORAGE_PATH = _home_file(".code_agent_sessions")
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))
 MAX_MESSAGES_PER_SESSION = int(os.getenv("MAX_MESSAGES_PER_SESSION", "100"))
 AUTO_ARCHIVE_DAYS = int(os.getenv("AUTO_ARCHIVE_DAYS", "30"))
@@ -106,7 +115,7 @@ DANGEROUS_PATTERNS = (
     r"del /f /s /q", r"format ", r":\(\)\{ :\|:& };:",
 )
 
-FIRST_RUN_MARKER = os.path.expanduser("~/.code_agent_first_run")
+FIRST_RUN_MARKER = str(_home_file(".code_agent_first_run"))
 
 
 # ==================== OCR 配置 ====================

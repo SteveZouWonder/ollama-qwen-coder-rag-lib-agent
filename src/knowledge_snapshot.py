@@ -58,11 +58,23 @@ class KnowledgeSnapshotManager:
     """知识库快照管理器"""
     
     def __init__(self, 
-                 index_dir: str = "./index_storage",
-                 snapshot_dir: str = "./.devin/knowledge/snapshots",
+                 index_dir: str = None,
+                 snapshot_dir: str = None,
                  max_snapshots: int = 10):
-        self.index_dir = Path(index_dir)
-        self.snapshot_dir = Path(snapshot_dir)
+        # 默认路径：打包运行时收纳到用户数据目录，源码运行时保持相对 cwd 的原有行为。
+        try:
+            from runtime_paths import cwd_data_dir
+        except ImportError:
+            from src.runtime_paths import cwd_data_dir  # type: ignore
+
+        if index_dir is None:
+            self.index_dir = cwd_data_dir("index_storage")
+        else:
+            self.index_dir = Path(index_dir)
+        if snapshot_dir is None:
+            self.snapshot_dir = cwd_data_dir(".devin/knowledge/snapshots")
+        else:
+            self.snapshot_dir = Path(snapshot_dir)
         self.max_snapshots = max_snapshots
         
         self.chroma_path = str(self.index_dir / "chroma_db")
