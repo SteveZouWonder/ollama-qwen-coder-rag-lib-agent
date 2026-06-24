@@ -13,6 +13,8 @@
 - 重写 CHANGELOG 对齐真实发布标签（v0.0.1 ~ v0.0.3）
 - Release Notes 改为由 GitHub 自动汇总 commit/PR，并附固定安装说明
 - Release 流程新增版本号一致性校验（tag 与手动输入对齐）
+- 新增 `scripts/bump_changelog.py`，支持归档 `[Unreleased]` 与提取版本正文
+- 发布时（推送 `v*` tag）自动归档 CHANGELOG 并创建 PR，由人工审核合并到 `master`
 
 ## [v0.0.3] - 2026-06-24
 
@@ -58,8 +60,17 @@
 
 每次发布由推送 `v<MAJOR>.<MINOR>.<PATCH>` 标签触发，GitHub Actions 会自动：
 
-1. 解析标签得到版本号
+1. 解析标签得到版本号（并校验语义化版本格式）
 2. 并行构建 Windows / macOS / Linux 三平台安装包
-3. 汇总产物并创建 GitHub Release（自动生成 commit/PR 列表 + 安装说明）
+3. 汇总产物并创建 GitHub Release（自动生成 commit/PR 列表 + 安装说明 + SHA256 校验和）
+4. 自动归档 CHANGELOG：把 `[Unreleased]` 归档为该版本号，提交到新分支并创建 PR
 
-发布前请将 `[Unreleased]` 区段的内容整理到新版本号标题下。
+平时把变更写入 `[Unreleased]` 区段即可；发布时归档由 CI 自动完成，
+生成的 PR 需人工审核后合并到 `master`。也可在本地手动归档预览：
+
+```bash
+# 预览归档结果（不写文件）
+python scripts/bump_changelog.py bump --version 1.0.0 --dry-run
+# 实际归档
+python scripts/bump_changelog.py bump --version 1.0.0
+```
