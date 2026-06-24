@@ -26,14 +26,22 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - name: Resolve version
+      - name: Resolve and validate version
         id: ver
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            version="${{ github.event.inputs.version }}"
           else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF_NAME#v}"
           fi
+          # 去除可能误带的 v 前缀，并校验语义化版本格式 X.Y.Z[-suffix]
+          version="${version#v}"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$'; then
+            echo "::error::版本号「$version」不符合语义化版本规范（期望 X.Y.Z，例如 1.0.0）"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "✅ 解析到版本号: $version"
 
   # ---------------------------------------------------------------------------
   # Windows: PyInstaller -> Inno Setup .exe
@@ -183,6 +191,17 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
+      - name: Generate SHA-256 checksums
+        run: |
+          mkdir -p artifacts/checksums
+          (
+            cd artifacts
+            find . -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) \
+              -exec sha256sum {} \; > checksums/SHA256SUMS.txt
+          )
+          echo "==> SHA256SUMS.txt"
+          cat artifacts/checksums/SHA256SUMS.txt
+
       - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -190,15 +209,19 @@ jobs:
           name: Cerebro v${{ needs.prepare.outputs.version }}
           draft: false
           prerelease: false
+          # body 会被「前置」到 GitHub 自动生成的 commit/PR 列表之上：
+          #   上半部分 = 下面的固定安装说明
+          #   下半部分 = GitHub 自动汇总的本次变更（What's Changed / 贡献者 / 完整对比链接）
           generate_release_notes: true
           files: |
             artifacts/windows-installer/*.exe
             artifacts/macos-dmg/*.dmg
             artifacts/linux-appimage/*.AppImage
+            artifacts/checksums/SHA256SUMS.txt
           body: |
-            ## Cerebro v${{ needs.prepare.outputs.version }}
+            本地 RAG + 代码助手（基于 Ollama `qwen2.5-coder`）。
 
-            本地 RAG + 代码助手（基于 Ollama qwen2.5-coder）。三平台安装包：
+            ## 📦 下载与安装
 
             | 平台 | 文件 | 安装方式 |
             |------|------|---------|
@@ -206,12 +229,14 @@ jobs:
             | macOS | `Cerebro-${{ needs.prepare.outputs.version }}.dmg` | 打开后拖入「应用程序」 |
             | Linux | `Cerebro-${{ needs.prepare.outputs.version }}-x86_64.AppImage` | `chmod +x` 后双击运行 |
 
-            ### 运行前提
+            > 文件完整性校验见附件 `SHA256SUMS.txt`。
+
+            ## ⚙️ 运行前提
             应用依赖本地 **Ollama** 服务。首次启动会自动检测，
             若未安装会引导你安装 Ollama 并拉取所需模型
             （`qwen2.5-coder:7b`、`nomic-embed-text:latest`）。
 
-            ### macOS 用户须知（重要）
+            ## 🍎 macOS 用户须知（重要）
             本应用为免费开源项目，**未购买 Apple 开发者证书**，故未做苹果公证。
             首次打开请：**右键点击 Cerebro.app → 选择「打开」→ 在弹窗中再点「打开」**。
             若提示「已损坏，无法打开」，请在终端执行：
@@ -219,6 +244,9 @@ jobs:
             xattr -dr com.apple.quarantine /Applications/Cerebro.app
             ```
 
-            ### 使用方式
+            ## 🚀 使用方式
             - 直接运行 = 系统托盘桌面应用（GUI）
             - 命令行模式 = 运行时加 `--cli` 参数
+
+            ---
+            ### 本次变更
