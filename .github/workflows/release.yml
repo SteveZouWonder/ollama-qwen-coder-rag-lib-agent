@@ -183,6 +183,15 @@ jobs:
     needs: [prepare, build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (for CHANGELOG + scripts)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整 tag 历史以计算「完整对比」链接的前序版本
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -202,6 +211,70 @@ jobs:
           echo "==> SHA256SUMS.txt"
           cat artifacts/checksums/SHA256SUMS.txt
 
+      - name: Build release notes from CHANGELOG
+        id: notes
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          # 计算上一个版本 tag（用于「完整对比」链接）。
+          # 按语义化版本排序，取排在 v${version} 之前的那个 tag；
+          # 若没有前序 tag，则回退用首个提交。
+          prev="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | awk -v cur="v${version}" '$0==cur{found=1; next} found{print; exit}')"
+          if [ -z "$prev" ]; then
+            prev="$(git rev-list --max-parents=0 HEAD | tail -1)"
+          fi
+          echo "prev=$prev"
+          # 发布时 CHANGELOG 可能尚未归档（changelog job 在 release 之后才跑），
+          # 因此优先提取 [vX.Y.Z] 区段，缺失时回退到 [Unreleased] 区段。
+          changes="$(python scripts/bump_changelog.py extract --version "$version" 2>/dev/null || true)"
+          if [ -z "$changes" ]; then
+            changes="$(python scripts/bump_changelog.py extract --version unreleased 2>/dev/null || true)"
+          fi
+          if [ -z "$changes" ]; then
+            changes="_本次发布未在 CHANGELOG 中记录具体变更。_"
+          fi
+
+          # 组装最终 release notes：固定安装说明 + CHANGELOG 正文。
+          {
+            echo "本地 RAG + 代码助手（基于 Ollama \`qwen2.5-coder\`）。"
+            echo
+            echo "## 📦 下载与安装"
+            echo
+            echo "| 平台 | 文件 | 安装方式 |"
+            echo "|------|------|---------|"
+            echo "| Windows | \`Cerebro-Setup-${version}.exe\` | 双击运行安装向导 |"
+            echo "| macOS | \`Cerebro-${version}.dmg\` | 打开后拖入「应用程序」 |"
+            echo "| Linux | \`Cerebro-${version}-x86_64.AppImage\` | \`chmod +x\` 后双击运行 |"
+            echo
+            echo "> 文件完整性校验见附件 \`SHA256SUMS.txt\`。"
+            echo
+            echo "## ⚙️ 运行前提"
+            echo "应用依赖本地 **Ollama** 服务。首次启动会自动检测，"
+            echo "若未安装会引导你安装 Ollama 并拉取所需模型"
+            echo "（\`qwen2.5-coder:7b\`、\`nomic-embed-text:latest\`）。"
+            echo
+            echo "## 🍎 macOS 用户须知（重要）"
+            echo "本应用为免费开源项目，**未购买 Apple 开发者证书**，故未做苹果公证。"
+            echo "首次打开请：**右键点击 Cerebro.app → 选择「打开」→ 在弹窗中再点「打开」**。"
+            echo "若提示「已损坏，无法打开」，请在终端执行："
+            echo '```'
+            echo "xattr -dr com.apple.quarantine /Applications/Cerebro.app"
+            echo '```'
+            echo
+            echo "## 🚀 使用方式"
+            echo "- 直接运行 = 系统托盘桌面应用（GUI）"
+            echo "- 命令行模式 = 运行时加 \`--cli\` 参数"
+            echo
+            echo "---"
+            echo "## 本次变更"
+            echo
+            echo "$changes"
+            echo
+            echo "**完整对比**：https://github.com/${{ github.repository }}/compare/$prev...v${version}"
+          } > release_notes.md
+
+          echo "==> release_notes.md"
+          cat release_notes.md
+
       - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -209,47 +282,14 @@ jobs:
           name: Cerebro v${{ needs.prepare.outputs.version }}
           draft: false
           prerelease: false
-          # body 会被「前置」到 GitHub 自动生成的 commit/PR 列表之上：
-          #   上半部分 = 下面的固定安装说明
-          #   下半部分 = GitHub 自动汇总的本次变更（What's Changed / 贡献者 / 完整对比链接）
-          generate_release_notes: true
+          # Release Notes 正文来自上一步从 CHANGELOG 提取并组装的 release_notes.md，
+          # 与 CHANGELOG 内容保持一致；不再使用 GitHub 自动生成的 PR 列表。
+          body_path: release_notes.md
           files: |
             artifacts/windows-installer/*.exe
             artifacts/macos-dmg/*.dmg
             artifacts/linux-appimage/*.AppImage
             artifacts/checksums/SHA256SUMS.txt
-          body: |
-            本地 RAG + 代码助手（基于 Ollama `qwen2.5-coder`）。
-
-            ## 📦 下载与安装
-
-            | 平台 | 文件 | 安装方式 |
-            |------|------|---------|
-            | Windows | `Cerebro-Setup-${{ needs.prepare.outputs.version }}.exe` | 双击运行安装向导 |
-            | macOS | `Cerebro-${{ needs.prepare.outputs.version }}.dmg` | 打开后拖入「应用程序」 |
-            | Linux | `Cerebro-${{ needs.prepare.outputs.version }}-x86_64.AppImage` | `chmod +x` 后双击运行 |
-
-            > 文件完整性校验见附件 `SHA256SUMS.txt`。
-
-            ## ⚙️ 运行前提
-            应用依赖本地 **Ollama** 服务。首次启动会自动检测，
-            若未安装会引导你安装 Ollama 并拉取所需模型
-            （`qwen2.5-coder:7b`、`nomic-embed-text:latest`）。
-
-            ## 🍎 macOS 用户须知（重要）
-            本应用为免费开源项目，**未购买 Apple 开发者证书**，故未做苹果公证。
-            首次打开请：**右键点击 Cerebro.app → 选择「打开」→ 在弹窗中再点「打开」**。
-            若提示「已损坏，无法打开」，请在终端执行：
-            ```
-            xattr -dr com.apple.quarantine /Applications/Cerebro.app
-            ```
-
-            ## 🚀 使用方式
-            - 直接运行 = 系统托盘桌面应用（GUI）
-            - 命令行模式 = 运行时加 `--cli` 参数
-
-            ---
-            ### 本次变更
 
   # ---------------------------------------------------------------------------
   # 自动归档 CHANGELOG：把 [Unreleased] 归档为本次发布的版本号，
