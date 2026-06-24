@@ -25,6 +25,12 @@ from PyInstaller.utils.hooks import (
 # spec 文件被 PyInstaller 以 exec 方式加载，无 __file__；用 CWD 作为项目根。
 PROJECT_ROOT = Path.cwd()
 
+# 应用版本：从环境变量 APP_VERSION 读取（CI 中由 release.yml 注入，与 tag 同步），
+# 本地构建未设置时回退为 0.0.0。
+import os as _os
+
+APP_VERSION = _os.environ.get("APP_VERSION", "0.0.0")
+
 # 让 spec 内的 collect_submodules 能按顶层名找到 src 内的子包
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -202,7 +208,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Cerebro",
             "CFBundleDisplayName": "Cerebro",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
             "NSHighResolutionCapable": True,
             # 托盘应用：作为后台代理运行，不在 Dock 显示主窗口
             "LSUIElement": True,
