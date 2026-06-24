@@ -96,9 +96,37 @@ class SessionManager:
     def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+        # 持久化“当前会话”指针的文件，跨进程/跨实例共享
+        self.current_file = self.storage_path / "current.txt"
         self.current_session_id: Optional[str] = None
         self.sessions: Dict[str, ChatSession] = {}
         self.load_sessions()
+        self._load_current()
+
+    def _save_current(self):
+        """将当前会话指针持久化到磁盘"""
+        try:
+            if self.current_session_id:
+                self.current_file.write_text(self.current_session_id, encoding="utf-8")
+            elif self.current_file.exists():
+                self.current_file.unlink()
+        except Exception as e:
+            logger.error(f"保存当前会话指针失败: {e}")
+
+    def _load_current(self):
+        """从磁盘恢复当前会话指针"""
+        try:
+            if self.current_file.exists():
+                sid = self.current_file.read_text(encoding="utf-8").strip()
+                # 指针指向的会话仍存在且未删除时才采用
+                if sid and sid in self.sessions:
+                    self.current_session_id = sid
+                else:
+                    self.current_session_id = None
+                    if self.current_file.exists():
+                        self.current_file.unlink()
+        except Exception as e:
+            logger.error(f"加载当前会话指针失败: {e}")
 
     def create_session(self, title: str = None, tags: List[str] = None) -> ChatSession:
         """
@@ -127,6 +155,7 @@ class SessionManager:
         self.sessions[session_id] = session
         self.current_session_id = session_id
         self.save_session(session)
+        self._save_current()
 
         logger.info(f"新会话已创建: {session_id} - {title}")
         return session
@@ -151,6 +180,7 @@ class SessionManager:
         self.sessions[session_id].status = SessionStatus.ACTIVE
         self.sessions[session_id].updated_at = datetime.now()
         self.save_session(self.sessions[session_id])
+        self._save_current()
 
         logger.info(f"会话已切换: {session_id}")
         return True
@@ -198,6 +228,7 @@ class SessionManager:
 
         if self.current_session_id == session_id:
             self.current_session_id = None
+            self._save_current()
 
         logger.info(f"会话已删除: {session_id}")
         return True
@@ -380,3 +411,29 @@ class SmartSessionManager(SessionManager):
             return related_sessions[0].session_id
 
         return None
+
+
+# ==================== 模块级单例 ====================
+_session_manager_singleton: Optional[SessionManager] = None
+
+
+def get_session_manager(storage_path: str = None) -> SessionManager:
+    """
+    获取进程内共享的 SessionManager 单例。
+
+    所有会话命令（/session-new、/session-current 等）以及 /ask、/agent 都应通过
+    本函数获取同一个实例，避免每次新建实例导致内存中的“当前会话”指针丢失。
+
+    Args:
+        storage_path: 会话存储路径，仅在首次创建单例时生效；为空时使用配置默认值。
+
+    Returns:
+        共享的 SessionManager 实例
+    """
+    global _session_manager_singleton
+    if _session_manager_singleton is None:
+        if storage_path is None:
+            from config import SESSION_STORAGE_PATH
+            storage_path = str(SESSION_STORAGE_PATH)
+        _session_manager_singleton = SessionManager(storage_path)
+    return _session_manager_singleton
