@@ -41,9 +41,38 @@ DEFAULT_REQUIRED_MODELS = [
 # ---------------------------------------------------------------------------
 # 基础检测
 # ---------------------------------------------------------------------------
+# 常见安装路径。Finder/`open` 启动的 GUI 应用 PATH 极简（通常只有
+# /usr/bin:/bin:/usr/sbin:/sbin），shutil.which 找不到这些目录中的 ollama，
+# 因此需要显式补充搜索。
+_COMMON_OLLAMA_PATHS = [
+    "/usr/local/bin/ollama",
+    "/opt/homebrew/bin/ollama",
+    "/usr/bin/ollama",
+    "/Applications/Ollama.app/Contents/Resources/ollama",
+    os.path.expanduser("~/.ollama/bin/ollama"),
+    os.path.expanduser("~/AppData/Local/Programs/Ollama/ollama.exe"),
+    "C:\\Program Files\\Ollama\\ollama.exe",
+]
+
+
+def find_ollama_executable() -> Optional[str]:
+    """返回 ollama 可执行文件的完整路径，找不到返回 None。
+
+    先查 PATH（shutil.which），再回退到常见安装路径，
+    以兼容 GUI 启动时 PATH 不完整的情况。
+    """
+    found = shutil.which("ollama")
+    if found:
+        return found
+    for p in _COMMON_OLLAMA_PATHS:
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
 def ollama_installed() -> bool:
-    """``ollama`` 命令是否可用。"""
-    return shutil.which("ollama") is not None
+    """``ollama`` 是否已安装（PATH 或常见安装路径）。"""
+    return find_ollama_executable() is not None
 
 
 def ollama_running(timeout: float = 2.0) -> bool:
@@ -203,14 +232,15 @@ def install_ollama(interactive: bool = True) -> bool:
 
 def start_ollama_service() -> bool:
     """尝试在后台启动 Ollama 服务，并等待其就绪。"""
-    if not ollama_installed():
+    exe = find_ollama_executable()
+    if not exe:
         return False
     try:
         creationflags = 0
         if platform.system() == "Windows":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.Popen(
-            ["ollama", "serve"],
+            [exe, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -244,11 +274,12 @@ def pull_models(models: List[str], interactive: bool = True) -> bool:
             print(f"    ollama pull {m}")
         return False
 
+    exe = find_ollama_executable() or "ollama"
     all_ok = True
     for m in models:
         print(f"正在拉取 {m} ……")
         try:
-            ret = subprocess.run(["ollama", "pull", m], check=False)
+            ret = subprocess.run([exe, "pull", m], check=False)
             if ret.returncode != 0:
                 all_ok = False
                 print(f"拉取 {m} 失败，可稍后手动执行：ollama pull {m}")
@@ -265,32 +296,68 @@ def ensure_ollama_ready(
     interactive: bool = True,
     required_models: Optional[List[str]] = None,
     auto_pull_models: bool = True,
+    notify=None,
 ) -> bool:
     """确保 Ollama 已安装、服务在运行、所需模型已就绪。
+
+    参数:
+        interactive: 是否交互式（可调用 input、可自动安装第三方软件）。
+            GUI/无终端场景应传 False —— 此时**不会**静默安装第三方软件或
+            拉取大模型，只做检测并通过 ``notify`` 提示用户。
+        notify: 可选回调 ``notify(title, message)``，用于在 GUI 下弹通知。
 
     返回 True 表示环境就绪；False 表示仍有缺失（不会抛异常阻断启动）。
     """
     required_models = required_models or DEFAULT_REQUIRED_MODELS
 
-    # 1) 安装
-    if not ollama_installed():
-        installed = install_ollama(interactive=interactive)
-        if not installed:
-            print("[Cerebro] Ollama 尚未就绪，部分功能将不可用。")
-            return False
+    def _notify(title: str, message: str) -> None:
+        if callable(notify):
+            try:
+                notify(title, message)
+            except Exception:  # noqa: BLE001
+                pass
+        print(f"[Cerebro] {title}: {message}")
 
-    # 2) 服务
-    if not ollama_running():
+    # 0) 服务已在运行 —— 最强信号：Ollama 必然已安装且就绪，直接进入模型检查。
+    #    （优先于"命令是否存在"的判断，避免 GUI 下 PATH 不全导致误判未安装）
+    if ollama_running():
+        pass
+    else:
+        # 1) 安装检测（PATH + 常见安装路径）
+        if not ollama_installed():
+            if not interactive:
+                # 非交互（GUI）：不静默安装第三方软件，仅提示用户手动安装。
+                _notify(
+                    "需要安装 Ollama",
+                    "未检测到 Ollama。请访问 https://ollama.com/download 安装后重启 Cerebro。",
+                )
+                return False
+            installed = install_ollama(interactive=interactive)
+            if not installed:
+                print("[Cerebro] Ollama 尚未就绪，部分功能将不可用。")
+                return False
+
+        # 2) 服务（已安装但未运行）：尝试启动，风险低，交互与否都可执行
         print("[Cerebro] Ollama 服务未运行，尝试启动……")
         if not start_ollama_service():
-            print("[Cerebro] 无法自动启动 Ollama 服务，请手动运行：ollama serve")
+            _notify(
+                "Ollama 服务未运行",
+                "无法自动启动 Ollama 服务，请手动运行：ollama serve",
+            )
             return False
 
     # 3) 模型
     if auto_pull_models:
         missing = missing_models(required_models)
         if missing:
-            pull_models(missing, interactive=interactive)
+            if not interactive:
+                # 非交互：不自动拉取（可能很大），仅提示。
+                _notify(
+                    "缺少所需模型",
+                    "请执行：" + "；".join(f"ollama pull {m}" for m in missing),
+                )
+            else:
+                pull_models(missing, interactive=interactive)
 
     return True
 
