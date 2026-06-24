@@ -253,8 +253,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 自动归档 CHANGELOG：把 [Unreleased] 归档为本次发布的版本号，
-  # 直接提交到 master 分支。
+  # 提交到新分支并创建 PR（不直接写 master，遵循仓库分支保护规则）。
   # 仅在「推送 v* tag」时运行；手动触发（workflow_dispatch）不归档。
+  #
+  # 前置要求（二选一，否则「创建 PR」会因权限失败）：
+  #   1) 仓库 Settings → Actions → General → Workflow permissions
+  #      勾选 "Allow GitHub Actions to create and approve pull requests"；或
+  #   2) 配置具有 repo + PR 写权限的 PAT 到 secrets.CHANGELOG_PAT，
+  #      并取消下方 token 行的注释。
   # ---------------------------------------------------------------------------
   changelog:
     needs: [prepare, release]
@@ -284,11 +290,23 @@ jobs:
           python scripts/bump_changelog.py bump --version "$version"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push CHANGELOG directly to master
+      - name: Create Pull Request
         if: steps.archive.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git commit -m "docs: archive CHANGELOG [Unreleased] into v${{ needs.prepare.outputs.version }}"
-          git push origin master
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # 默认使用 GITHUB_TOKEN（需仓库勾选「允许 Actions 创建 PR」）。
+          # 若改用 PAT，取消下一行注释并在仓库配置 CHANGELOG_PAT secret：
+          # token: ${{ secrets.CHANGELOG_PAT }}
+          base: master
+          branch: chore/changelog-v${{ needs.prepare.outputs.version }}
+          commit-message: "docs: archive CHANGELOG [Unreleased] into v${{ needs.prepare.outputs.version }}"
+          title: "docs: 归档 CHANGELOG 到 v${{ needs.prepare.outputs.version }}"
+          body: |
+            自动归档：发布 `v${{ needs.prepare.outputs.version }}` 时，
+            将 CHANGELOG 的 `[Unreleased]` 区段归档为
+            `## [v${{ needs.prepare.outputs.version }}]`，并补回空的 `[Unreleased]`。
+
+            请审核后合并到 `master`。
+          delete-branch: true
+          add-paths: |
+            CHANGELOG.md
