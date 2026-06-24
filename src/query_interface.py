@@ -2168,9 +2168,9 @@ def main():
             question = parsed.arg
             # 保存用户原始问题，用于命令记录（避免把网络搜索结果正文塞进历史）
             original_question = parsed.arg
-            if rag_engine.query_engine is None:
-                console.print("⚠️  知识库未初始化，请先添加文档", style="yellow")
-                should_show_recommendations = False
+            kb_initialized = rag_engine.query_engine is not None
+            if not kb_initialized:
+                console.print("⚠️  知识库未初始化，将根据网络搜索/模型直接回答", style="yellow")
             
             # 检测用户是否提供了文件路径（支持图片、PDF、MD、TXT等常见文档格式）
             import re
@@ -2353,11 +2353,31 @@ def main():
                 except Exception as e:
                     console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
             
-            if Config.SHOW_PROGRESS:
-                result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
+            # 重新判断知识库状态（用户可能在上面通过文件路径添加了文档并初始化索引）
+            kb_initialized = rag_engine.query_engine is not None
+
+            if kb_initialized:
+                if Config.SHOW_PROGRESS:
+                    result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
+                else:
+                    with console.status("[bold green]检索知识库..."):
+                        result = rag_engine.query_with_sources(question)
             else:
-                with console.status("[bold green]检索知识库..."):
-                    result = rag_engine.query_with_sources(question)
+                # 知识库未初始化：直接用 LLM 回答（基于网络搜索结果或模型自身知识），
+                # 避免查询空索引抛出 RuntimeError 导致程序崩溃。
+                if web_search_result:
+                    prompt = question  # 已拼接网络搜索参考信息
+                else:
+                    console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
+                    prompt = question
+                try:
+                    from llama_index.core import Settings
+                    with console.status("[bold green]模型思考中..."):
+                        llm_resp = Settings.llm.complete(prompt)
+                    result = {"answer": str(llm_resp), "sources": []}
+                except Exception as e:  # noqa: BLE001
+                    result = {"answer": f"回答失败：{e}", "sources": []}
+
             console.print("\n🤖 回答:", style="bold blue")
             if HAS_RICH:
                 console.print(Panel(Markdown(result["answer"]), border_style="green"))
