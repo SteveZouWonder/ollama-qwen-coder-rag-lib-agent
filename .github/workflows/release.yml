@@ -306,6 +306,9 @@ jobs:
     needs: [prepare, release]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout master
         uses: actions/checkout@v4
