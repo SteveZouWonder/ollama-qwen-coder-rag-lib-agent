@@ -372,7 +372,9 @@ Git 命令：
   /git-commit-gen             AI 生成提交信息
 
 知识图谱命令：
-  /graph-query <query>        图谱查询
+  /graph-query <文本>         按实体名模糊查询（默认）
+  /graph-query type:<类型>    列出某类型实体（如 type:tool）
+  /graph-query neighbors:<实体>  查询邻居  | path:<A>-><B> 查路径 | similar:<实体> 查相似
   /graph-build <文本|@文件>   构建知识图谱
 """
 
@@ -594,7 +596,8 @@ def print_help():
   /knowledge-summary  查看知识库文档摘要
 
 知识图谱管理命令（新功能）：
-  /graph-query <query>      查询知识图谱
+  /graph-query <文本>       按实体名模糊查询（默认）
+  /graph-query type:<类型>  列出某类型实体；另支持 neighbors:/path:/similar: 前缀
   /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
 
 数据库管理命令（新功能）：

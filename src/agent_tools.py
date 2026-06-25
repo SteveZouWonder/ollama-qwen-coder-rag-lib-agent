@@ -826,6 +826,15 @@ def knowledge_graph_query(query: str, query_type: str = "entity") -> str:
                 result = query_engine.query_path(query, query)  # 尝试作为单一查询
         elif query_type == "similar":
             result = query_engine.query_similar(query)
+        elif query_type == "type":
+            # 按实体类型列出实体（如 tool/concept/technology...）
+            from knowledge_graph import EntityType
+            try:
+                entity_type = EntityType(query.strip().lower())
+            except (ValueError, TypeError):
+                valid = ", ".join(t.value for t in EntityType)
+                return f"[错误] 无效的实体类型 '{query}'。可用类型: {valid}"
+            result = query_engine.query_by_type(entity_type)
         else:
             result = query_engine.query_entity(query)
         
@@ -881,7 +890,7 @@ def knowledge_graph_build(text: str, doc_id: str = "manual", doc_type: str = "te
 
 
 registry.register("knowledge_graph_query", knowledge_graph_query, "知识图谱查询和推理",
-                  {"query": "图谱查询", "query_type": "查询类型（entity/neighbors/path/similar），默认entity"}, safe=True)
+                  {"query": "图谱查询", "query_type": "查询类型（entity/type/neighbors/path/similar），默认entity"}, safe=True)
 registry.register("knowledge_graph_build", knowledge_graph_build, "构建知识图谱",
                   {"text": "文本内容(必填)", "doc_id": "文档ID，默认manual", "doc_type": "文档类型（text/code），默认text"}, safe=True)
 

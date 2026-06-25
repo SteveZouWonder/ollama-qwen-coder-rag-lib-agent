@@ -83,3 +83,60 @@ class TestGraphBuild:
         ctx, reg = _make_ctx(tool_result="[错误] 知识图谱模块未安装")
         result = h.handle_graph_build(ctx, _parsed("一些文本"))
         assert result is False
+
+
+class TestGraphQueryRouting:
+    """/graph-query 前缀解析与 query_type 路由"""
+
+    def _ctx(self, result="找到 1 个实体和 0 个关系\n\n置信度: 0.80"):
+        reg = MagicMock()
+        reg.execute.return_value = result
+        ctx = h.CLIContext(console=MagicMock(), has_rich=False,
+                           registry=reg, record_command=MagicMock())
+        return ctx, reg
+
+    def _pq(self, arg):
+        return ParsedCommand("graph_query", f"/graph-query {arg}", arg)
+
+    def test_no_arg_shows_usage(self):
+        ctx, reg = self._ctx()
+        assert h.handle_graph_query(ctx, self._pq("")) is False
+        reg.execute.assert_not_called()
+
+    def test_default_is_entity_text_match(self):
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("cloudflare"))
+        name, params = reg.execute.call_args.args
+        assert name == "knowledge_graph_query"
+        assert params == {"query": "cloudflare", "query_type": "entity"}
+
+    def test_type_prefix_routes_to_type(self):
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("type:tool"))
+        _, params = reg.execute.call_args.args
+        assert params == {"query": "tool", "query_type": "type"}
+
+    def test_neighbors_prefix(self):
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("neighbors:DNS"))
+        _, params = reg.execute.call_args.args
+        assert params == {"query": "DNS", "query_type": "neighbors"}
+
+    def test_path_prefix_keeps_arrow(self):
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("path:A->B"))
+        _, params = reg.execute.call_args.args
+        assert params == {"query": "A->B", "query_type": "path"}
+
+    def test_similar_prefix(self):
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("similar:DNS"))
+        _, params = reg.execute.call_args.args
+        assert params == {"query": "DNS", "query_type": "similar"}
+
+    def test_unknown_prefix_treated_as_entity_text(self):
+        # 含冒号但非已知前缀（如 URL）应整体作为实体文本
+        ctx, reg = self._ctx()
+        h.handle_graph_query(ctx, self._pq("http://example.com"))
+        _, params = reg.execute.call_args.args
+        assert params == {"query": "http://example.com", "query_type": "entity"}

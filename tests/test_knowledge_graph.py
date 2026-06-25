@@ -636,7 +636,19 @@ def test_func():
 
 class TestGraphQuery:
     """测试图谱查询器"""
-    
+
+    @pytest.fixture(autouse=True)
+    def _isolate_global_graph(self):
+        """每个测试前后清空全局图谱构建器，避免跨测试状态泄漏。
+
+        GraphQuery() 默认使用全局 get_graph_builder() 单例，多个测试会共享
+        同一个图；不隔离会导致一个测试新增的实体影响另一个测试的计数。
+        """
+        from knowledge_graph.graph_builder import get_graph_builder
+        get_graph_builder().clear()
+        yield
+        get_graph_builder().clear()
+
     def test_initialization(self):
         """测试初始化"""
         query = GraphQuery()
@@ -735,6 +747,30 @@ class TestGraphQuery:
         # 这里直接调用，确保格式化关系时不抛 'str' has no attribute 'value'。
         out = knowledge_graph_query("DNS", "entity")
         assert not out.startswith("[错误]"), out
+
+    def test_agent_tools_query_type_lists_entities(self):
+        """query_type=type 应按实体类型列出实体。"""
+        from agent_tools import knowledge_graph_query
+
+        query = GraphQuery()
+        builder = query.graph_builder
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        builder.add_entity(Entity("Rust", EntityType.LANGUAGE))
+        builder.add_entity(Entity("Django", EntityType.FRAMEWORK))
+
+        out = knowledge_graph_query("language", "type")
+        assert not out.startswith("[错误]"), out
+        assert "Python" in out and "Rust" in out
+        assert "Django" not in out
+
+    def test_agent_tools_query_type_invalid_returns_hint(self):
+        """无效实体类型应返回带可用类型列表的错误提示。"""
+        from agent_tools import knowledge_graph_query
+
+        out = knowledge_graph_query("widget", "type")
+        assert out.startswith("[错误]")
+        assert "可用类型" in out
+        assert "language" in out
 
     def test_query_neighbors(self):
         """测试查询邻居"""

@@ -727,23 +727,79 @@ def handle_code_quality(ctx, parsed):
 
 # ==================== 知识图谱命令 ====================
 
+# /graph-query 支持的前缀 → 底层 query_type
+_GRAPH_QUERY_PREFIXES = {
+    "type": "type",            # type:tool      列出某类型的所有实体
+    "neighbors": "neighbors",  # neighbors:DNS  查询邻居
+    "neighbor": "neighbors",   # 容错别名
+    "path": "path",            # path:A->B      查询两实体间路径
+    "similar": "similar",      # similar:DNS    查询相似实体
+    "entity": "entity",        # entity:DNS     显式按实体文本匹配
+}
+
+
+def _print_graph_query_usage(console):
+    """打印 /graph-query 用法与可用类型，帮助用户选择正确查询方式。"""
+    console.print("📖 /graph-query 用法：", style="cyan")
+    console.print("  /graph-query <文本>            按实体名称模糊匹配（默认）", style="dim")
+    console.print("  /graph-query type:<类型>       列出某类型的所有实体", style="dim")
+    console.print("  /graph-query neighbors:<实体>  查询某实体的邻居", style="dim")
+    console.print("  /graph-query path:<A>-><B>     查询两实体间的路径", style="dim")
+    console.print("  /graph-query similar:<实体>    查询相似实体", style="dim")
+    console.print(
+        "  可用实体类型: person, organization, location, concept, "
+        "technology, tool, language, framework, other",
+        style="dim",
+    )
+    console.print("  示例: /graph-query type:tool   /graph-query neighbors:DNS", style="dim")
+
+
 def handle_graph_query(ctx, parsed):
     console = ctx.console
-    query = parsed.arg.strip()
-    if not query:
-        console.print("❌ 请提供查询内容: /graph-query <query>", style="yellow")
+    raw = parsed.arg.strip()
+    if not raw:
+        console.print("❌ 请提供查询内容。", style="yellow")
+        _print_graph_query_usage(console)
         return False
+
+    # 解析可选前缀（type:/neighbors:/path:/similar:/entity:）
+    query_type = "entity"
+    query = raw
+    if ":" in raw:
+        prefix, rest = raw.split(":", 1)
+        mapped = _GRAPH_QUERY_PREFIXES.get(prefix.strip().lower())
+        if mapped:
+            query_type = mapped
+            query = rest.strip()
+        # 非已知前缀（如 URL、普通含冒号文本）则整体作为实体文本查询
+
+    if not query:
+        console.print("❌ 查询内容为空。", style="yellow")
+        _print_graph_query_usage(console)
+        return False
+
     try:
-        console.print(f"🔍 正在查询知识图谱: {query}", style="cyan")
-        result = ctx.registry.execute("knowledge_graph_query", {"query": query})
+        desc = "" if query_type == "entity" else f"（{query_type}）"
+        console.print(f"🔍 正在查询知识图谱{desc}: {query}", style="cyan")
+        result = ctx.registry.execute(
+            "knowledge_graph_query", {"query": query, "query_type": query_type}
+        )
         if result.startswith("[错误]"):
             console.print(result, style="red")
             return False
         console.print(result, style="green")
-        ctx.record_command("graph_query", query)
+        # 命中为空时给出引导（区分“图谱为空”与“查询方式不对”）
+        if "找到 0 个实体" in result:
+            console.print(
+                "💡 未命中。若想按类型列出实体，请用 /graph-query type:<类型>；"
+                "图谱为空则先 /graph-build 构建。",
+                style="yellow",
+            )
+            _print_graph_query_usage(console)
+        ctx.record_command("graph_query", raw)
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 知识图谱查询失败: {e}", style="red")
-        ctx.record_command("graph_query", query, "failed", str(e))
+        ctx.record_command("graph_query", raw, "failed", str(e))
     return True
 
 
