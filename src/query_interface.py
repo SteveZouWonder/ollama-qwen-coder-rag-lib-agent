@@ -539,16 +539,25 @@ def ask_progress_callback(data: dict):
 
 # ==================== 界面渲染 ====================
 
+CEREBRO_ASCII = r"""   ____                _
+  / ___|___ _ __ ___ | |__  _ __ ___
+ | |   / _ \ '__/ _ \| '_ \| '__/ _ \
+ | |__|  __/ | |  __/| |_) | | | (_) |
+  \____\___|_|  \___||_.__/|_|  \___/"""
+
+
 def print_banner():
     if HAS_RICH:
         console.print(Panel(
-            "[bold cyan]Cerebro[/bold cyan] [white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
+            f"[bold cyan]{CEREBRO_ASCII}[/bold cyan]\n"
+            "[white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
             "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
             f"[green]模型: {LLM_MODEL}[/green] | [green]Ollama: {OLLAMA_BASE_URL}[/green]",
             border_style="cyan", box=box.ROUNDED
         ))
     else:
         print("=" * 60)
+        print(CEREBRO_ASCII)
         print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
         print("=" * 60)
         print(f"模型: {LLM_MODEL} | Ollama: {OLLAMA_BASE_URL}")
