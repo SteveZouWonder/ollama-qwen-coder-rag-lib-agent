@@ -9,6 +9,24 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+## [v0.0.6] - 2026-06-25
+
+### 新增
+- 知识图谱自动持久化，修复跨会话查询丢失
+- `/graph-query` 支持按类型/邻居/路径查询并优化用法说明
+
+### 修复
+- `/web-cache clear` 走交互确认，不再泄露 `[CONFIRM_REQUIRED]` 协议串
+- 补上 `/git-analyze` 与 `/git-commit-gen` 处理器，修复静默无输出
+- `/graph-query` 关系类型转回枚举，修复 `'str' has no attribute 'value'`
+- `/graph-build` 直接可用，不再甩锅给 Agent
+- 文档入库时登记文件元数据，修复 `/file-list` 永远为空
+- 原子化写入快照并自动清理损坏文件
+
+### 改进
+- `query_interface` 命令表驱动调度并拆分模块
+- web search 改为 LLM 驱动的通用查询规划
+
 ## [v0.0.5] - 2026-06-25
 
 ### 新增
