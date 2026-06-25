@@ -1,8 +1,37 @@
-# Cerebro 🧠 — 你的第二大脑 + 代码助手 v4.1
+<div align="center">
 
-> *Cerebro* —— 拉丁语「大脑」。一个完全本地运行的智能体，把你的知识库变成可检索的「第二大脑」，并让 AI 帮你读写代码、执行任务。
+# Cerebro 🧠
 
-基于 **Ollama qwen2.5-coder:7b** 的融合型 AI 助手，同时支持 **RAG 知识库检索**、**ReAct Agent 代码操作** 和 **多Agent 协作系统**。
+### 完全离线运行的「第二大脑」+ AI 代码助手 —— 数据不出本机，零 API 费用
+
+[![License](https://img.shields.io/github/license/SteveZouWonder/ollama-qwen-coder-rag-lib-agent)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/SteveZouWonder/ollama-qwen-coder-rag-lib-agent)](../../releases)
+[![Stars](https://img.shields.io/github/stars/SteveZouWonder/ollama-qwen-coder-rag-lib-agent?style=social)](../../stargazers)
+[![Python](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/)
+[![Ollama](https://img.shields.io/badge/Ollama-qwen2.5--coder-000000)](https://ollama.com)
+
+[下载安装](#下载安装包普通用户推荐) · [快速开始](#快速开始开发者--源码运行) · [使用场景](#使用场景) · [文档](#-文档资源)
+
+</div>
+
+> *Cerebro* —— 拉丁语「大脑」。一个**完全本地运行**的智能体：把你的 PDF、论文、笔记变成可检索的「第二大脑」，并让 AI 帮你读写代码、执行任务——**全程离线，数据不离开你的电脑**。
+
+基于 **Ollama qwen2.5-coder:7b**，三合一融合：**📚 RAG 知识库检索** + **🤖 ReAct Agent 代码操作** + **🤝 多 Agent 协作系统**。
+
+**为什么选 Cerebro？**
+
+- 🔒 **隐私优先** —— 100% 本地推理，敏感文档与代码永不上传云端
+- 💸 **零成本** —— 基于开源 Ollama，无需任何 API Key 或订阅费用
+- 🧩 **三模式合一** —— 知识库问答、自动化代码 Agent、多 Agent 协作，一个工具全覆盖
+- 📦 **开箱即用** —— 提供 Windows / macOS / Linux 桌面安装包，非开发者也能用
+
+<div align="center">
+
+![Cerebro 演示](docs/assets/demo.gif)
+
+<sub>三大模式一镜演示：📚 RAG 知识库问答 · 🤖 ReAct Agent 自动改代码跑测试 · 🤝 多 Agent 协作交付</sub>
+
+</div>
 
 ---
 
@@ -115,6 +144,14 @@
 **使用方式**：
 - 直接运行 = 系统托盘桌面应用（GUI）
 - 命令行交互模式 = 启动时加 `--cli` 参数（Windows 安装包已附「命令行模式」快捷方式）
+
+<div align="center">
+
+![Cerebro 桌面应用演示](docs/assets/demo-gui.gif)
+
+<sub>桌面应用：点击托盘图标 → 「打开 CLI 界面」→ 进入交互</sub>
+
+</div>
 
 ### ⚠️ macOS 用户须知（首次打开）
 
