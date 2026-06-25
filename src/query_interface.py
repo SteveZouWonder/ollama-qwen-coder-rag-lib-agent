@@ -558,7 +558,7 @@ def print_banner():
     else:
         print("=" * 60)
         print(CEREBRO_ASCII)
-        print("    🧠 你的第二大脑 + 代码助手  v4.1")
+        print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
         print("=" * 60)
         print(f"模型: {LLM_MODEL} | Ollama: {OLLAMA_BASE_URL}")
         print("=" * 60)
