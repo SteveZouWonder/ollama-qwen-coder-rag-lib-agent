@@ -574,7 +574,129 @@ class TestKnowledgeSnapshotManager(unittest.TestCase):
         
         self.assertEqual(loaded_data["snapshot_id"], "test_save")
         self.assertEqual(len(loaded_data["documents"]), 1)
-    
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_save_snapshot_is_atomic_no_tmp_left(self, mock_chroma):
+        """保存成功后不应残留 .json.tmp 临时文件。"""
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        snapshot = KnowledgeSnapshot(
+            snapshot_id="test_atomic",
+            timestamp="2024-06-09T12:00:00",
+            version="1.0",
+            documents=[],
+            storage_paths={},
+            model_config={},
+            total_chunks=3,
+            metadata={"trigger": "test"},
+        )
+        manager._save_snapshot(snapshot)
+
+        self.assertTrue((manager.snapshot_dir / "test_atomic.json").exists())
+        # 不应残留临时文件
+        leftovers = list(manager.snapshot_dir.glob("*.tmp"))
+        self.assertEqual(leftovers, [])
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_save_snapshot_does_not_corrupt_on_serialize_error(self, mock_chroma):
+        """序列化失败时不得破坏既有目标文件，也不残留临时文件。"""
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        # 先写入一个有效快照
+        good = KnowledgeSnapshot(
+            snapshot_id="test_keep",
+            timestamp="2024-06-09T12:00:00",
+            version="1.0",
+            documents=[],
+            storage_paths={},
+            model_config={},
+            total_chunks=1,
+            metadata={"trigger": "test"},
+        )
+        manager._save_snapshot(good)
+        target = manager.snapshot_dir / "test_keep.json"
+        original = target.read_text(encoding="utf-8")
+
+        # 构造一个无法 JSON 序列化的 metadata（含 set），触发 json.dumps 失败
+        bad = KnowledgeSnapshot(
+            snapshot_id="test_keep",
+            timestamp="2024-06-09T12:00:00",
+            version="1.0",
+            documents=[],
+            storage_paths={},
+            model_config={},
+            total_chunks=1,
+            metadata={"bad": {1, 2, 3}},  # set 不可 JSON 序列化
+        )
+        with self.assertRaises(TypeError):
+            manager._save_snapshot(bad)
+
+        # 既有文件内容保持不变，且无临时文件残留
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+        self.assertEqual(list(manager.snapshot_dir.glob("*.tmp")), [])
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_save_snapshot_coerces_total_chunks_to_int(self, mock_chroma):
+        """total_chunks 即使传入类 int 对象，也应序列化为合法 JSON 整数。"""
+        class IntLike(int):
+            pass
+
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir
+        )
+        snapshot = KnowledgeSnapshot(
+            snapshot_id="test_int",
+            timestamp="2024-06-09T12:00:00",
+            version="1.0",
+            documents=[],
+            storage_paths={},
+            model_config={},
+            total_chunks=IntLike(7),
+            metadata={"trigger": "test"},
+        )
+        manager._save_snapshot(snapshot)
+        loaded = json.loads((manager.snapshot_dir / "test_int.json").read_text(encoding="utf-8"))
+        self.assertEqual(loaded["total_chunks"], 7)
+        self.assertIsInstance(loaded["total_chunks"], int)
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_auto_cleans_corrupted_by_default(self, mock_chroma):
+        """默认 cleanup_corrupted=True 时，list_snapshots 应删除损坏文件。"""
+        corrupted_file = os.path.join(self.snapshot_dir, "corrupted.json")
+        with open(corrupted_file, 'w') as f:
+            f.write('{"snapshot_id": "corrupted", "total_chunks": ')
+
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir,
+        )
+        snapshots = manager.list_snapshots()
+
+        self.assertEqual(snapshots, [])
+        self.assertFalse(os.path.exists(corrupted_file))
+
+    @patch('knowledge_snapshot.chromadb.PersistentClient')
+    def test_list_snapshots_keeps_corrupted_when_cleanup_disabled(self, mock_chroma):
+        """cleanup_corrupted=False 时保留损坏文件（仅跳过）。"""
+        corrupted_file = os.path.join(self.snapshot_dir, "corrupted.json")
+        with open(corrupted_file, 'w') as f:
+            f.write('{"snapshot_id": "corrupted", "total_chunks": ')
+
+        manager = KnowledgeSnapshotManager(
+            index_dir=self.index_dir,
+            snapshot_dir=self.snapshot_dir,
+            cleanup_corrupted=False,
+        )
+        snapshots = manager.list_snapshots()
+
+        self.assertEqual(snapshots, [])
+        self.assertTrue(os.path.exists(corrupted_file))
+
     @patch('knowledge_snapshot.chromadb.PersistentClient')
     def test_restore_snapshot(self, mock_chroma):
         """测试快照恢复验证"""
