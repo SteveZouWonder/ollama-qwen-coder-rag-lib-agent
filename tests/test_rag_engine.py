@@ -619,3 +619,105 @@ class TestBuildKnowledgeBase:
             mock_load.return_value = []
             engine = build_knowledge_base(str(temp_dir))
             assert engine is not None
+
+
+class TestRAGEngineFileMetadataRegistration:
+    """测试文档入库时登记文件元数据（修复 /file-list 永远为空的问题）"""
+
+    def _make_engine(self, mock_chroma, tmp_storage):
+        from file_metadata import FileMetadataManager
+        mock_collection = MagicMock()
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        engine = RAGEngine()
+        # 注入独立的元数据管理器，避免污染全局/真实数据
+        engine.metadata_manager = FileMetadataManager(storage_path=str(tmp_storage))
+        return engine, mock_collection
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_add_documents_registers_file_metadata(
+        self, mock_chroma, mock_embed, mock_llm, tmp_path
+    ):
+        from llama_index.core.schema import Document
+
+        engine, _ = self._make_engine(mock_chroma, tmp_path / "meta")
+        # 真实存在的源文件，便于计算哈希/大小
+        src = tmp_path / "doc.md"
+        src.write_text("hello world\n" * 50, encoding="utf-8")
+
+        engine.index = MagicMock()  # 已有索引，走 add_documents 分支
+        doc = Document(text="hello world\n" * 50,
+                       metadata={"file_path": str(src), "file_name": "doc.md"})
+
+        engine.add_documents([doc], [str(src)])
+
+        meta = engine.metadata_manager.get_file_metadata(str(src))
+        assert meta is not None
+        assert meta.document_count == 1
+        assert meta.chunk_count >= 1
+        assert meta.file_hash  # 已计算哈希
+        # /file-list 现在能看到该文件
+        assert len(engine.metadata_manager.list_files()) == 1
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_register_falls_back_to_file_paths_without_doc_metadata(
+        self, mock_chroma, mock_embed, mock_llm, tmp_path
+    ):
+        from llama_index.core.schema import Document
+
+        engine, _ = self._make_engine(mock_chroma, tmp_path / "meta")
+        engine.index = MagicMock()
+        # 文档不带 file_path 元数据，应回退到传入的 file_paths
+        doc = Document(text="content")
+        engine.add_documents([doc], ["/tmp/some_file.txt"])
+
+        meta = engine.metadata_manager.get_file_metadata("/tmp/some_file.txt")
+        assert meta is not None
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_backfill_from_vector_store_registers_existing_files(
+        self, mock_chroma, mock_embed, mock_llm, tmp_path
+    ):
+        engine, mock_collection = self._make_engine(mock_chroma, tmp_path / "meta")
+        # 模拟向量库中已有两个文件、共 3 个 chunk
+        mock_collection.get.return_value = {
+            "metadatas": [
+                {"file_path": "/kb/a.md"},
+                {"file_path": "/kb/a.md"},
+                {"file_path": "/kb/b.md"},
+            ]
+        }
+
+        engine._backfill_file_metadata_from_vector_store()
+
+        a = engine.metadata_manager.get_file_metadata("/kb/a.md")
+        b = engine.metadata_manager.get_file_metadata("/kb/b.md")
+        assert a is not None and a.chunk_count == 2
+        assert b is not None and b.chunk_count == 1
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_backfill_does_not_overwrite_existing_metadata(
+        self, mock_chroma, mock_embed, mock_llm, tmp_path
+    ):
+        from file_metadata import FilePersistenceType
+
+        engine, mock_collection = self._make_engine(mock_chroma, tmp_path / "meta")
+        # 预先登记一个文件并设定 chunk_count=99
+        engine.metadata_manager.add_file("/kb/a.md", FilePersistenceType.PERMANENT)
+        engine.metadata_manager.update_file_metadata("/kb/a.md", chunk_count=99)
+
+        mock_collection.get.return_value = {
+            "metadatas": [{"file_path": "/kb/a.md"}, {"file_path": "/kb/a.md"}]
+        }
+        engine._backfill_file_metadata_from_vector_store()
+
+        # 不应覆盖既有计数
+        a = engine.metadata_manager.get_file_metadata("/kb/a.md")
+        assert a.chunk_count == 99

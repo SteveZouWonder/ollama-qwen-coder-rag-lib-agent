@@ -68,6 +68,30 @@ def setup_settings_mock():
         yield
 
 
+@pytest.fixture(autouse=True, scope="function")
+def isolate_file_metadata(tmp_path_factory):
+    """全局fixture：将文件元数据全局单例隔离到临时目录。
+
+    RAGEngine 入库时会通过 get_global_metadata_manager() 登记文件元数据；
+    若不隔离，使用 MagicMock 文档的测试会把伪造路径写入真实的
+    .devin/file_metadata/metadata.json，污染用户数据。本 fixture 在每个
+    测试前后将全局单例重置为临时目录，测试间互不影响、也不触碰真实文件。
+    """
+    try:
+        import file_metadata as fm
+    except ImportError:
+        yield
+        return
+
+    tmp_dir = tmp_path_factory.mktemp("file_metadata")
+    saved = getattr(fm, "_global_metadata_manager", None)
+    fm._global_metadata_manager = fm.FileMetadataManager(storage_path=str(tmp_dir))
+    try:
+        yield
+    finally:
+        fm._global_metadata_manager = saved
+
+
 @pytest.fixture
 def clean_env():
     """

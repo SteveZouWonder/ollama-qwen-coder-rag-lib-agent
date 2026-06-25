@@ -95,3 +95,7 @@ safety-check.json
 
 /**/.devin/knowledge/snapshots/
 /.devin/knowledge/snapshots/
+
+# 文件元数据为本地运行时数据（含用户绝对路径），不纳入版本库
+/**/.devin/file_metadata/
+/.devin/file_metadata/
