@@ -330,7 +330,14 @@ jobs:
             echo "::notice::CHANGELOG 已包含 v${version}，跳过归档"
             exit 0
           fi
-          python scripts/bump_changelog.py bump --version "$version"
+          # 归档 [Unreleased]：
+          #   - 若 [Unreleased] 有人工记录，直接归档；
+          #   - 若为空，则由脚本从 git 提交记录（按 Conventional Commits）自动填充。
+          # --until 指向本次发布的 tag，--since 由脚本自动推断为上一个版本 tag，
+          # 从而把「上一个版本 tag .. 本次 tag」之间的提交收敛为本版本变更。
+          python scripts/bump_changelog.py bump \
+            --version "$version" \
+            --until "v${version}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Create Pull Request
