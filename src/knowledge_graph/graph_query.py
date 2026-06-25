@@ -7,7 +7,22 @@ from typing import List, Dict, Optional, Set, Any
 from dataclasses import dataclass
 
 from .graph_builder import get_graph_builder
-from .entity_extractor import Entity, EntityType, Relation
+from .entity_extractor import Entity, EntityType, Relation, RelationType
+
+
+def _to_relation_type(value) -> RelationType:
+    """将图中存储的关系类型（字符串/枚举）安全转换为 RelationType 枚举。
+
+    图持久化时存的是 ``relation_type.value``（字符串），读回时需转回枚举，
+    否则下游 ``relation.relation_type.value`` 会因 str 无 .value 属性而报错
+    （'str' object has no attribute 'value'）。未知值回退到 OTHER。
+    """
+    if isinstance(value, RelationType):
+        return value
+    try:
+        return RelationType(value)
+    except (ValueError, TypeError):
+        return RelationType.OTHER
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +94,7 @@ class GraphQuery:
                             entity_type=EntityType(target_data['entity_type']),
                             confidence=target_data.get('confidence', 1.0)
                         ),
-                        relation_type=edge_data.get('relation_type', 'related_to'),
+                        relation_type=_to_relation_type(edge_data.get('relation_type', 'related_to')),
                         confidence=edge_data.get('confidence', 1.0),
                         evidence=edge_data.get('evidence', '')
                     )
@@ -158,7 +173,7 @@ class GraphQuery:
                                 entity_type=EntityType(target_data['entity_type']),
                                 confidence=target_data.get('confidence', 1.0)
                             ),
-                            relation_type=edge_data.get('relation_type', 'related_to'),
+                            relation_type=_to_relation_type(edge_data.get('relation_type', 'related_to')),
                             confidence=edge_data.get('confidence', 1.0),
                             evidence=edge_data.get('evidence', '')
                         )

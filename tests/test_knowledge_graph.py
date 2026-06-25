@@ -690,8 +690,52 @@ class TestGraphQuery:
         result = query.query_relations("Python")
         
         assert len(result.relations) == 1
-        assert result.relations[0].relation_type == RelationType.USES.value
-    
+        # relation_type 应为 RelationType 枚举（与 entity_type 一致），
+        # 而非字符串；否则下游 relation.relation_type.value 会报
+        # 'str' object has no attribute 'value'
+        assert result.relations[0].relation_type == RelationType.USES
+        # 枚举具备 .value 属性，可被 agent_tools 安全格式化
+        assert result.relations[0].relation_type.value == "uses"
+
+    def test_query_entity_relations_are_enum(self):
+        """回归：query_entity 返回的关系 relation_type 必须是枚举。
+
+        历史 bug：图中存的是字符串，query_entity 直接把字符串塞进
+        Relation.relation_type，导致 agent_tools 格式化时
+        relation.relation_type.value 抛 'str' object has no attribute 'value'。
+        """
+        query = GraphQuery()
+        builder = query.graph_builder
+        e1 = Entity("DNS", EntityType.CONCEPT)
+        e2 = Entity("Cloudflare", EntityType.TECHNOLOGY)
+        builder.add_entity(e1)
+        builder.add_entity(e2)
+        builder.add_relation(Relation(e1, e2, RelationType.PART_OF))
+
+        result = query.query_entity("DNS")
+        assert len(result.relations) >= 1
+        for rel in result.relations:
+            # 必须是枚举且可取 .value（模拟 agent_tools 的格式化路径）
+            assert isinstance(rel.relation_type, RelationType)
+            _ = rel.relation_type.value  # 不应抛异常
+
+    def test_agent_tools_knowledge_graph_query_no_crash(self):
+        """回归：/graph-query 端到端不再因 .value 报错。"""
+        from agent_tools import knowledge_graph_query
+
+        query = GraphQuery()
+        builder = query.graph_builder
+        e1 = Entity("DNS", EntityType.CONCEPT)
+        e2 = Entity("Cloudflare", EntityType.TECHNOLOGY)
+        builder.add_entity(e1)
+        builder.add_entity(e2)
+        builder.add_relation(Relation(e1, e2, RelationType.PART_OF))
+
+        # knowledge_graph_query 内部会重新获取全局 GraphQuery 单例，
+        # 这里直接调用，确保格式化关系时不抛 'str' has no attribute 'value'。
+        out = knowledge_graph_query("DNS", "entity")
+        assert not out.startswith("[错误]"), out
+
     def test_query_neighbors(self):
         """测试查询邻居"""
         query = GraphQuery()
