@@ -63,6 +63,25 @@ def _is_error(result: str) -> bool:
     return result.startswith("[错误]") or result.startswith("[提示]")
 
 
+def _confirm(console, prompt: str = "确认执行? (y/n): ") -> bool:
+    """交互式 y/n 确认。
+
+    - 若 Config.AUTO_CONFIRM 开启（自动化场景），直接返回 True；
+    - 读取输入失败（EOF/Ctrl-C）按取消处理，返回 False。
+    """
+    try:
+        from config import Config
+        if getattr(Config, "AUTO_CONFIRM", False):
+            return True
+    except Exception:  # noqa: BLE001 - 配置不可用时退化为交互确认
+        pass
+    try:
+        answer = console.input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("y", "yes", "是", "确认")
+
+
 # ==================== 帮助 / 教程 / 工具 ====================
 
 def handle_help(ctx, parsed):
@@ -654,8 +673,17 @@ def handle_web_cache(ctx, parsed):
             ctx.record_command("web_cache", "status", "failed", str(e))
         return True
     if arg == "clear":
+        # web_cache_clear 工具标记为 safe=False（需确认）。这是用户显式发起的
+        # 命令，需走交互确认后再以 auto_confirm=True 执行，避免把内部协议串
+        # [CONFIRM_REQUIRED] ... 直接打印给用户。
+        if not _confirm(console, "确认清空搜索缓存? (y/n): "):
+            console.print("[dim]已取消[/dim]")
+            return False
         try:
-            result = ctx.registry.execute("web_cache_clear", {})
+            result = ctx.registry.execute("web_cache_clear", {}, auto_confirm=True)
+            if _is_error(result):
+                console.print(result, style="red")
+                return False
             console.print(result, style="green")
             ctx.record_command("web_cache", "clear")
         except Exception as e:  # noqa: BLE001

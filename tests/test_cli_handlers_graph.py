@@ -199,3 +199,61 @@ class TestGitAnalyze:
         from cli_handlers import COMMAND_HANDLERS
         assert "git_analyze" in COMMAND_HANDLERS
         assert "git_commit_gen" in COMMAND_HANDLERS
+
+
+class TestWebCacheClearConfirm:
+    """/web-cache clear 需交互确认，不再泄露 [CONFIRM_REQUIRED] 协议串"""
+
+    def _ctx(self, result="[成功] 搜索缓存已清空", input_value="y"):
+        reg = MagicMock()
+        reg.execute.return_value = result
+        console = MagicMock()
+        console.input.return_value = input_value
+        ctx = h.CLIContext(console=console, has_rich=False,
+                           registry=reg, record_command=MagicMock())
+        return ctx, reg, console
+
+    def _pq(self, arg="clear"):
+        return ParsedCommand("web_cache", f"/web-cache {arg}", arg)
+
+    def test_confirm_yes_executes_with_auto_confirm(self):
+        ctx, reg, console = self._ctx(input_value="y")
+        assert h.handle_web_cache(ctx, self._pq("clear")) is True
+        # 以 auto_confirm=True 调用，避免返回协议串
+        assert reg.execute.call_args.kwargs.get("auto_confirm") is True
+        # 输出中不得包含内部协议串
+        outs = [c.args[0] for c in console.print.call_args_list if c.args]
+        assert all("CONFIRM_REQUIRED" not in str(o) for o in outs)
+
+    def test_reject_no_cancels_without_execute(self):
+        ctx, reg, console = self._ctx(input_value="n")
+        assert h.handle_web_cache(ctx, self._pq("clear")) is False
+        reg.execute.assert_not_called()
+
+    def test_eof_cancels(self):
+        ctx, reg, console = self._ctx()
+        console.input.side_effect = EOFError()
+        assert h.handle_web_cache(ctx, self._pq("clear")) is False
+        reg.execute.assert_not_called()
+
+    def test_auto_confirm_config_skips_prompt(self):
+        from config import Config
+        old = getattr(Config, "AUTO_CONFIRM", False)
+        Config.AUTO_CONFIRM = True
+        try:
+            ctx, reg, console = self._ctx()
+            assert h.handle_web_cache(ctx, self._pq("clear")) is True
+            console.input.assert_not_called()
+            assert reg.execute.called
+        finally:
+            Config.AUTO_CONFIRM = old
+
+    def test_status_does_not_require_confirm(self):
+        ctx, reg, console = self._ctx(result="缓存状态: 空")
+        assert h.handle_web_cache(ctx, self._pq("status")) is True
+        console.input.assert_not_called()
+        assert reg.execute.called
+
+    def test_clear_tool_error_surfaced(self):
+        ctx, reg, console = self._ctx(result="[错误] 清空失败", input_value="y")
+        assert h.handle_web_cache(ctx, self._pq("clear")) is False
