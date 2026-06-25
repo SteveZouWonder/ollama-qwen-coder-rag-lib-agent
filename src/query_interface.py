@@ -1094,6 +1094,131 @@ def _llm_direct_answer(prompt: str) -> str:
         return f"回答失败：{e}"
 
 
+# ==================== 网络搜索：LLM 驱动的通用查询规划 ====================
+
+# 仅作为 LLM 不可用时的轻量回退触发词（不再承担主要判定职责）。
+# 保持精简且语言无关，避免针对特定技术栈的硬编码。
+_WEB_SEARCH_FALLBACK_HINTS = (
+    "最新", "当前", "今天", "现在", "实时", "发布", "新闻", "价格", "版本",
+    "latest", "current", "today", "now", "release", "news", "price", "version",
+)
+
+
+def _strip_json_fence(text: str) -> str:
+    """去除 LLM 输出中可能包裹的 ```json ... ``` 代码块围栏。"""
+    text = text.strip()
+    if text.startswith("```"):
+        # 去掉首行围栏（``` 或 ```json）与末行围栏
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def plan_web_search(question: str) -> dict:
+    """用 LLM 判断问题是否需要联网搜索，并生成优化后的搜索查询。
+
+    通过让本地 LLM 充当“搜索规划器”，取代原先针对特定技术栈（JDK/Java/
+    Python 等）的硬编码关键词、前后缀清洗与翻译表，使该逻辑对任意主题
+    （技术、新闻、价格、人物、事件……）都具备普适性。
+
+    Args:
+        question: 用户原始问题。
+
+    Returns:
+        形如 ``{"needs_search": bool, "queries": [str, ...]}`` 的字典。
+        ``queries`` 已去重，通常包含原语言与英文两种表达以提升召回。
+        当 LLM 不可用或解析失败时，回退到基于轻量触发词的启发式判断。
+    """
+    import json
+
+    prompt = (
+        "你是一个搜索规划助手。判断回答下面这个问题是否需要联网搜索"
+        "最新/实时/外部信息（例如：版本号、新闻、价格、近期事件、特定事实）。"
+        "如果问题可以仅凭通用知识回答，或属于代码/写作/推理类任务，则不需要搜索。\n"
+        "若需要搜索，请生成 1-3 条精简、高质量的搜索查询词（去掉‘帮我’‘请问’"
+        "等口语化前后缀，只保留核心检索词）；若原问题为中文，请额外补充一条"
+        "等价的英文查询以提升召回。\n"
+        "严格只输出 JSON，格式：\n"
+        '{"needs_search": true/false, "queries": ["查询1", "query2"]}\n\n'
+        f"问题：{question}"
+    )
+
+    try:
+        from llama_index.core import Settings
+        raw = str(Settings.llm.complete(prompt)).strip()
+        data = json.loads(_strip_json_fence(raw))
+        needs = bool(data.get("needs_search", False))
+        queries = [
+            q.strip()
+            for q in (data.get("queries") or [])
+            if isinstance(q, str) and q.strip()
+        ]
+        # 去重并保序
+        seen = set()
+        deduped = []
+        for q in queries:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                deduped.append(q)
+        if needs and not deduped:
+            deduped = [question]
+        return {"needs_search": needs, "queries": deduped}
+    except Exception as e:  # noqa: BLE001 - LLM/JSON 失败时回退到启发式
+        logger.warning(f"LLM 搜索规划失败，回退到启发式判断: {e}")
+        lowered = question.lower()
+        needs = any(hint in lowered for hint in _WEB_SEARCH_FALLBACK_HINTS)
+        return {"needs_search": needs, "queries": [question] if needs else []}
+
+
+def run_web_search(queries: list) -> str:
+    """依次尝试给定查询，返回首个有效的网络搜索结果文本；都失败返回空串。"""
+    try:
+        from agent_tools import web_search
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"无法导入 web_search: {e}")
+        return ""
+
+    for query in queries:
+        console.print(f"🔍 搜索查询: {query}", style="dim")
+        result = web_search(query, max_results=5, use_cache=False)
+        if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
+            return result
+        console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
+    return ""
+
+
+def _extract_first_url(search_result: str) -> str:
+    """从搜索结果文本中提取首个出现的 URL（已按相关度排序，取最相关）。"""
+    import re
+    match = re.search(r"https?://[^\s)\]]+", search_result)
+    return match.group() if match else ""
+
+
+def enrich_with_page_content(search_result: str) -> str:
+    """对搜索结果做可选增强：提取首个（最相关）结果页正文并追加。
+
+    取代原先仅针对 oracle.com / python.org / openjdk.org 的域名白名单，
+    改为通用地提取排名最高结果的页面内容，适用于任意主题。
+    """
+    url = _extract_first_url(search_result)
+    if not url:
+        return search_result
+    try:
+        from agent_tools import web_content_extract
+        console.print("📄 正在提取相关页面内容...", style="dim")
+        page_content = web_content_extract(url, timeout=10)
+        if page_content and not page_content.startswith("[错误]"):
+            console.print("✅ 页面内容提取成功", style="green")
+            return search_result + f"\n\n=== 相关页面详细信息 ===\n{page_content[:1000]}"
+    except Exception as e:  # noqa: BLE001
+        console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
+    return search_result
+
+
 def _is_empty_rag_result(result: dict) -> bool:
     """判断 RAG 查询结果是否为“空命中”（无来源或返回 LlamaIndex 的占位文本）。"""
     if not result:
@@ -2298,143 +2423,25 @@ def main():
                 except Exception as e:
                     console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
             
-            # 检测是否需要网络搜索（最新信息、实时数据等）
-            web_search_keywords = ["最新", "当前", "版本", "今天", "现在", "实时", "发布", "发布时间", "latest", "current", "version", "release"]
-            needs_web_search = any(keyword in question.lower() for keyword in web_search_keywords)
-            
+            # 检测是否需要网络搜索（最新信息、实时数据等）。
+            # 由 LLM 充当“搜索规划器”，统一完成「是否需要搜索 + 生成优化查询
+            # （含中英文）」的判断，取代原先针对特定技术栈的硬编码逻辑。
             web_search_result = ""
-            if needs_web_search:
-                try:
+            try:
+                plan = plan_web_search(question)
+                if plan.get("needs_search") and plan.get("queries"):
                     console.print("🌐 检测到需要最新信息，正在网络搜索...", style="cyan")
-                    from agent_tools import web_search
-                    
-                    # 改进搜索查询：从用户问题中提取关键搜索词
-                    search_query = question
-                    
-                    # 移除中文常见查询前缀
-                    prefixes_to_remove = ["帮我", "请帮我", "能否帮我", "可以帮我", "帮我查询", "请帮我查询", 
-                                         "从网络上查询", "从网络查询", "网上查", "网络查", "查询一下", "查一下",
-                                         "告诉我", "请问", "我想知道", "什么是", "什么是"]
-                    for prefix in prefixes_to_remove:
-                        if search_query.startswith(prefix):
-                            search_query = search_query[len(prefix):].strip()
-                    
-                    # 移除常见的查询后缀
-                    suffixes_to_remove = ["是多少", "是什么", "吗", "呢", "？", "?", "。", ".", "！", "!"]
-                    for suffix in suffixes_to_remove:
-                        if search_query.endswith(suffix):
-                            search_query = search_query[:-len(suffix)].strip()
-                    
-                    # 如果清理后的查询太短，使用原标题
-                    if len(search_query) < 3:
-                        search_query = question
-                    
-                    # 尝试中英文查询转换
-                    search_queries = [search_query]
-                    
-                    # 如果查询主要是中文，尝试添加英文翻译
-                    if any('\u4e00' <= char <= '\u9fff' for char in search_query):
-                        # 更智能的关键词翻译和提取
-                        translations = {
-                            "最新": "latest",
-                            "版本": "version",
-                            "当前": "current",
-                            "发布": "release",
-                            "下载": "download",
-                            "安装": "install"
-                        }
-                        
-                        # 提取英文技术术语
-                        tech_terms = []
-                        for term in ["JDK", "Java", "Python", "React", "Node", "JavaScript", "TypeScript", "Vue", "Angular"]:
-                            if term in search_query:
-                                tech_terms.append(term)
-                        
-                        # 构建英文查询
-                        if tech_terms:
-                            # 对于版本查询，使用更精确的搜索词
-                            if "版本" in search_query or "version" in search_query.lower():
-                                if "JDK" in tech_terms or "Java" in tech_terms:
-                                    search_queries.insert(0, "Java SE latest version")  # 更精确的查询
-                                    search_queries.insert(1, "Java downloads Oracle")  # 备用查询
-                                elif "Python" in tech_terms:
-                                    search_queries.insert(0, "Python latest version download")
-                                    search_queries.insert(1, "Python.org downloads")
-                                else:
-                                    # 其他技术术语
-                                    english_query = " ".join(tech_terms)
-                                    for chinese, english in translations.items():
-                                        if chinese in search_query:
-                                            english_query += f" {english}"
-                                    search_queries.insert(0, english_query)
-                            else:
-                                # 非版本查询
-                                english_query = " ".join(tech_terms)
-                                for chinese, english in translations.items():
-                                    if chinese in search_query:
-                                        english_query += f" {english}"
-                                search_queries.insert(0, english_query)
-                        else:
-                            # 没有技术术语，尝试简单翻译
-                            english_query = search_query
-                            for chinese, english in translations.items():
-                                english_query = english_query.replace(chinese, english)
-                            
-                            if english_query != search_query and any('\u4e00' <= char <= '\u9fff' for char in english_query):
-                                # 如果翻译后仍有中文，直接使用技术术语搜索
-                                if any(term in search_query for term in ["JDK", "Java"]):
-                                    search_queries.insert(0, "Java SE latest version")
-                                elif any(term in search_query for term in ["Python"]):
-                                    search_queries.insert(0, "Python latest version")
-                                else:
-                                    search_queries.insert(0, english_query)
-                    
-                    console.print(f"🔍 搜索查询: {search_queries[0]}", style="dim")
-                    
-                    # 尝试多个查询，直到有一个成功
-                    successful_query = None
-                    for query in search_queries:
-                        web_search_result = web_search(query, max_results=5, use_cache=False)
-                        if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
-                            console.print("✅ 网络搜索完成", style="green")
-                            successful_query = query
-                            break
-                        else:
-                            console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
-                    
-                    if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
-                        # 对于版本查询，尝试提取官方下载页面的具体版本信息
-                        if "版本" in search_query or "version" in search_query.lower():
-                            try:
-                                from agent_tools import web_content_extract
-                                # 尝试从搜索结果中提取官方下载页面的内容
-                                import re
-                                # 查找Oracle或Python.org的下载页面
-                                official_urls = []
-                                for line in web_search_result.split('\n'):
-                                    if 'oracle.com/java/technologies/downloads' in line.lower() or \
-                                       'python.org/downloads' in line.lower() or \
-                                       'openjdk.org' in line.lower():
-                                        url_match = re.search(r'https?://[^\s]+', line)
-                                        if url_match:
-                                            official_urls.append(url_match.group())
-                                
-                                if official_urls:
-                                    console.print("📄 正在提取官方页面内容...", style="dim")
-                                    page_content = web_content_extract(official_urls[0], timeout=10)
-                                    if page_content and not page_content.startswith("[错误]"):
-                                        console.print("✅ 官方页面内容提取成功", style="green")
-                                        # 将官方页面内容添加到搜索结果中
-                                        web_search_result += f"\n\n=== 官方页面详细信息 ===\n{page_content[:1000]}"
-                            except Exception as e:
-                                console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
-                        
-                        # 将网络搜索结果添加到问题中，让RAG引擎能够参考
+                    web_search_result = run_web_search(plan["queries"])
+                    if web_search_result:
+                        console.print("✅ 网络搜索完成", style="green")
+                        # 通用增强：提取最相关结果页正文（不再绑定特定域名）
+                        web_search_result = enrich_with_page_content(web_search_result)
+                        # 将网络搜索结果附加到问题中，供 RAG 引擎参考
                         question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
                     else:
                         console.print("⚠️ 所有搜索查询均未返回有效结果，继续使用知识库", style="yellow")
-                except Exception as e:
-                    console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
+            except Exception as e:
+                console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
             
             # 重新判断知识库状态（用户可能在上面通过文件路径添加了文档并初始化索引）
             kb_initialized = rag_engine.query_engine is not None
