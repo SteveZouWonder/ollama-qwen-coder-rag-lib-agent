@@ -99,3 +99,7 @@ safety-check.json
 # 文件元数据为本地运行时数据（含用户绝对路径），不纳入版本库
 /**/.devin/file_metadata/
 /.devin/file_metadata/
+
+# 知识图谱持久化文件为本地运行时数据，不纳入版本库
+/**/.devin/knowledge/graph.json
+/.devin/knowledge/graph.json

@@ -302,7 +302,53 @@ class TestKnowledgeGraphBuilder:
         
         assert load_success
         assert builder.graph.number_of_nodes() == 1
-    
+
+    def test_autosave_on_add_document_persists_file(self, tmp_path):
+        """add_document 后应自动持久化到 persist_path。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        builder.add_document("Python is a language. Django uses Python.", "d1", "text")
+        assert pf.exists()
+        # 无 .tmp 残留（原子写入）
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_autoload_on_init_cross_instance(self, tmp_path):
+        """新实例初始化时应自动加载已持久化的图谱（跨会话可用）。"""
+        pf = tmp_path / "graph.json"
+        b1 = KnowledgeGraphBuilder(persist_path=str(pf))
+        b1.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert pf.exists()
+
+        # 模拟“重启”：用同一持久化路径创建新实例
+        b2 = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert b2.graph.number_of_nodes() == 1
+        node_texts = [d["text"] for _, d in b2.graph.nodes(data=True)]
+        assert "Python" in node_texts
+
+    def test_auto_persist_false_does_not_write(self, tmp_path):
+        """auto_persist=False 时不应写入持久化文件。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert not pf.exists()
+
+    def test_save_graph_is_atomic_no_tmp_left(self, tmp_path):
+        """save_graph 成功后不应残留 .tmp 文件。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert builder.save_graph(str(pf)) is True
+        assert pf.exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_init_with_corrupted_persist_file_is_non_fatal(self, tmp_path):
+        """持久化文件损坏时，初始化不应崩溃，回退为空图谱。"""
+        pf = tmp_path / "graph.json"
+        pf.write_text('{"nodes": [ {"id": "x", ', encoding="utf-8")  # 残缺 JSON
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert builder.graph is not None
+        assert builder.graph.number_of_nodes() == 0
+
     def test_clear(self):
         """测试清空图谱"""
         builder = KnowledgeGraphBuilder()
