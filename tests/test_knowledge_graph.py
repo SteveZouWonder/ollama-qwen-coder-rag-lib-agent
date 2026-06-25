@@ -302,7 +302,53 @@ class TestKnowledgeGraphBuilder:
         
         assert load_success
         assert builder.graph.number_of_nodes() == 1
-    
+
+    def test_autosave_on_add_document_persists_file(self, tmp_path):
+        """add_document 后应自动持久化到 persist_path。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        builder.add_document("Python is a language. Django uses Python.", "d1", "text")
+        assert pf.exists()
+        # 无 .tmp 残留（原子写入）
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_autoload_on_init_cross_instance(self, tmp_path):
+        """新实例初始化时应自动加载已持久化的图谱（跨会话可用）。"""
+        pf = tmp_path / "graph.json"
+        b1 = KnowledgeGraphBuilder(persist_path=str(pf))
+        b1.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert pf.exists()
+
+        # 模拟“重启”：用同一持久化路径创建新实例
+        b2 = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert b2.graph.number_of_nodes() == 1
+        node_texts = [d["text"] for _, d in b2.graph.nodes(data=True)]
+        assert "Python" in node_texts
+
+    def test_auto_persist_false_does_not_write(self, tmp_path):
+        """auto_persist=False 时不应写入持久化文件。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert not pf.exists()
+
+    def test_save_graph_is_atomic_no_tmp_left(self, tmp_path):
+        """save_graph 成功后不应残留 .tmp 文件。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert builder.save_graph(str(pf)) is True
+        assert pf.exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_init_with_corrupted_persist_file_is_non_fatal(self, tmp_path):
+        """持久化文件损坏时，初始化不应崩溃，回退为空图谱。"""
+        pf = tmp_path / "graph.json"
+        pf.write_text('{"nodes": [ {"id": "x", ', encoding="utf-8")  # 残缺 JSON
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert builder.graph is not None
+        assert builder.graph.number_of_nodes() == 0
+
     def test_clear(self):
         """测试清空图谱"""
         builder = KnowledgeGraphBuilder()
@@ -636,7 +682,19 @@ def test_func():
 
 class TestGraphQuery:
     """测试图谱查询器"""
-    
+
+    @pytest.fixture(autouse=True)
+    def _isolate_global_graph(self):
+        """每个测试前后清空全局图谱构建器，避免跨测试状态泄漏。
+
+        GraphQuery() 默认使用全局 get_graph_builder() 单例，多个测试会共享
+        同一个图；不隔离会导致一个测试新增的实体影响另一个测试的计数。
+        """
+        from knowledge_graph.graph_builder import get_graph_builder
+        get_graph_builder().clear()
+        yield
+        get_graph_builder().clear()
+
     def test_initialization(self):
         """测试初始化"""
         query = GraphQuery()
@@ -690,8 +748,76 @@ class TestGraphQuery:
         result = query.query_relations("Python")
         
         assert len(result.relations) == 1
-        assert result.relations[0].relation_type == RelationType.USES.value
-    
+        # relation_type 应为 RelationType 枚举（与 entity_type 一致），
+        # 而非字符串；否则下游 relation.relation_type.value 会报
+        # 'str' object has no attribute 'value'
+        assert result.relations[0].relation_type == RelationType.USES
+        # 枚举具备 .value 属性，可被 agent_tools 安全格式化
+        assert result.relations[0].relation_type.value == "uses"
+
+    def test_query_entity_relations_are_enum(self):
+        """回归：query_entity 返回的关系 relation_type 必须是枚举。
+
+        历史 bug：图中存的是字符串，query_entity 直接把字符串塞进
+        Relation.relation_type，导致 agent_tools 格式化时
+        relation.relation_type.value 抛 'str' object has no attribute 'value'。
+        """
+        query = GraphQuery()
+        builder = query.graph_builder
+        e1 = Entity("DNS", EntityType.CONCEPT)
+        e2 = Entity("Cloudflare", EntityType.TECHNOLOGY)
+        builder.add_entity(e1)
+        builder.add_entity(e2)
+        builder.add_relation(Relation(e1, e2, RelationType.PART_OF))
+
+        result = query.query_entity("DNS")
+        assert len(result.relations) >= 1
+        for rel in result.relations:
+            # 必须是枚举且可取 .value（模拟 agent_tools 的格式化路径）
+            assert isinstance(rel.relation_type, RelationType)
+            _ = rel.relation_type.value  # 不应抛异常
+
+    def test_agent_tools_knowledge_graph_query_no_crash(self):
+        """回归：/graph-query 端到端不再因 .value 报错。"""
+        from agent_tools import knowledge_graph_query
+
+        query = GraphQuery()
+        builder = query.graph_builder
+        e1 = Entity("DNS", EntityType.CONCEPT)
+        e2 = Entity("Cloudflare", EntityType.TECHNOLOGY)
+        builder.add_entity(e1)
+        builder.add_entity(e2)
+        builder.add_relation(Relation(e1, e2, RelationType.PART_OF))
+
+        # knowledge_graph_query 内部会重新获取全局 GraphQuery 单例，
+        # 这里直接调用，确保格式化关系时不抛 'str' has no attribute 'value'。
+        out = knowledge_graph_query("DNS", "entity")
+        assert not out.startswith("[错误]"), out
+
+    def test_agent_tools_query_type_lists_entities(self):
+        """query_type=type 应按实体类型列出实体。"""
+        from agent_tools import knowledge_graph_query
+
+        query = GraphQuery()
+        builder = query.graph_builder
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        builder.add_entity(Entity("Rust", EntityType.LANGUAGE))
+        builder.add_entity(Entity("Django", EntityType.FRAMEWORK))
+
+        out = knowledge_graph_query("language", "type")
+        assert not out.startswith("[错误]"), out
+        assert "Python" in out and "Rust" in out
+        assert "Django" not in out
+
+    def test_agent_tools_query_type_invalid_returns_hint(self):
+        """无效实体类型应返回带可用类型列表的错误提示。"""
+        from agent_tools import knowledge_graph_query
+
+        out = knowledge_graph_query("widget", "type")
+        assert out.startswith("[错误]")
+        assert "可用类型" in out
+        assert "language" in out
+
     def test_query_neighbors(self):
         """测试查询邻居"""
         query = GraphQuery()

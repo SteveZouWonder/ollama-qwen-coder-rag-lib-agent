@@ -3,6 +3,7 @@
 知识图谱构建器 - 构建和管理知识图谱
 """
 import logging
+import os
 from typing import List, Dict, Set, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,16 @@ except ImportError:
 from .entity_extractor import Entity, Relation, EntityType, get_entity_extractor
 
 logger = logging.getLogger(__name__)
+
+# 默认持久化路径覆盖钩子：当不为 None 时，未显式传入 persist_path 的
+# KnowledgeGraphBuilder 将使用此路径（主要供测试隔离，避免写入真实数据目录）。
+_DEFAULT_PERSIST_PATH_OVERRIDE: Optional[str] = None
+
+
+def set_default_persist_path(path: Optional[str]):
+    """设置/清除默认持久化路径覆盖（传 None 还原为真实默认路径）。"""
+    global _DEFAULT_PERSIST_PATH_OVERRIDE
+    _DEFAULT_PERSIST_PATH_OVERRIDE = path
 
 
 @dataclass
@@ -48,17 +59,58 @@ class GraphStatistics:
 class KnowledgeGraphBuilder:
     """知识图谱构建器"""
     
-    def __init__(self):
+    def __init__(self, persist_path: str = None, auto_persist: bool = True):
+        """初始化知识图谱构建器。
+
+        Args:
+            persist_path: 图谱持久化文件路径。默认 .devin/knowledge/graph.json
+                （打包运行收纳到用户数据目录）。
+            auto_persist: 是否在图谱变更后自动保存、并在初始化时自动加载。
+                设为 False 可获得纯内存图谱（便于测试）。
+        """
         self.logger = logger
-        
+
         if not NETWORKX_AVAILABLE:
             self.logger.warning("networkx 未安装，知识图谱功能受限")
             self.graph = None
         else:
             self.graph = nx.DiGraph()
-        
+
         self.entity_extractor = get_entity_extractor()
         self._node_id_counter = 0
+
+        # 持久化配置
+        self.auto_persist = auto_persist
+        if persist_path is not None:
+            self.persist_path = Path(persist_path)
+        elif _DEFAULT_PERSIST_PATH_OVERRIDE is not None:
+            # 测试可通过 set_default_persist_path() 重定向默认路径，避免直接
+            # 构造 KnowledgeGraphBuilder() 的代码/测试写入真实数据目录。
+            self.persist_path = Path(_DEFAULT_PERSIST_PATH_OVERRIDE)
+        else:
+            try:
+                from runtime_paths import cwd_data_dir
+            except ImportError:  # pragma: no cover - 包内相对导入回退
+                from src.runtime_paths import cwd_data_dir  # type: ignore
+            self.persist_path = cwd_data_dir(".devin/knowledge") / "graph.json"
+
+        # 启动时自动加载已持久化的图谱（损坏/缺失均不致命）
+        if self.auto_persist and self.graph is not None:
+            try:
+                if self.persist_path.exists():
+                    self.load_graph(str(self.persist_path))
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"加载持久化图谱失败，使用空图谱: {e}")
+
+    def _autosave(self):
+        """图谱变更后自动持久化（仅在 auto_persist 开启时）。"""
+        if not self.auto_persist or self.graph is None:
+            return
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_graph(str(self.persist_path))
+        except Exception as e:  # noqa: BLE001 - 自动保存失败不应中断主流程
+            self.logger.warning(f"自动保存图谱失败: {e}")
     
     def _get_node_id(self, entity: Entity) -> str:
         """生成节点ID"""
@@ -113,6 +165,7 @@ class KnowledgeGraphBuilder:
                             self.graph[source_id][target_id]['documents'].append(doc_id)
             
             self.logger.info(f"文档 {doc_id} 已添加到知识图谱")
+            self._autosave()
             return True
             
         except Exception as e:
@@ -135,6 +188,7 @@ class KnowledgeGraphBuilder:
                 documents=[],
                 metadata=entity.metadata
             )
+            self._autosave()
         
         return True
     
@@ -156,6 +210,7 @@ class KnowledgeGraphBuilder:
                     evidence=relation.evidence,
                     documents=[]
                 )
+                self._autosave()
         
         return True
     
@@ -281,9 +336,25 @@ class KnowledgeGraphBuilder:
                 edge_dict.update(edge_data)
                 graph_data['edges'].append(edge_dict)
             
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(graph_data, f, ensure_ascii=False, indent=2)
-            
+            # 原子写入：先完整序列化到内存，再写临时文件并 os.replace 替换，
+            # 避免写入中途崩溃/中断把目标文件截断成损坏 JSON。
+            payload = json.dumps(graph_data, ensure_ascii=False, indent=2)
+            target = Path(file_path)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            try:
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, target)
+            except Exception:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except OSError:
+                    pass
+                raise
+
             self.logger.info(f"图谱已保存到 {file_path}")
             return True
         except Exception as e:
@@ -324,6 +395,7 @@ class KnowledgeGraphBuilder:
         if self.graph is not None:
             self.graph.clear()
             self.logger.info("知识图谱已清空")
+            self._autosave()
     
     def get_entity_by_type(self, entity_type: EntityType) -> List[Entity]:
         """按类型获取实体"""

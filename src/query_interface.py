@@ -372,8 +372,10 @@ Git 命令：
   /git-commit-gen             AI 生成提交信息
 
 知识图谱命令：
-  /graph-query <query>        图谱查询
-  /graph-build                构建知识图谱
+  /graph-query <文本>         按实体名模糊查询（默认）
+  /graph-query type:<类型>    列出某类型实体（如 type:tool）
+  /graph-query neighbors:<实体>  查询邻居  | path:<A>-><B> 查路径 | similar:<实体> 查相似
+  /graph-build <文本|@文件>   构建知识图谱
 """
 
 def show_tutorial():
@@ -594,8 +596,9 @@ def print_help():
   /knowledge-summary  查看知识库文档摘要
 
 知识图谱管理命令（新功能）：
-  /graph-query <query>      查询知识图谱
-  /graph-build              构建知识图谱
+  /graph-query <文本>       按实体名模糊查询（默认）
+  /graph-query type:<类型>  列出某类型实体；另支持 neighbors:/path:/similar: 前缀
+  /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
 
 数据库管理命令（新功能）：
   /db-connect <type> <database>  连接数据库
@@ -1094,6 +1097,131 @@ def _llm_direct_answer(prompt: str) -> str:
         return f"回答失败：{e}"
 
 
+# ==================== 网络搜索：LLM 驱动的通用查询规划 ====================
+
+# 仅作为 LLM 不可用时的轻量回退触发词（不再承担主要判定职责）。
+# 保持精简且语言无关，避免针对特定技术栈的硬编码。
+_WEB_SEARCH_FALLBACK_HINTS = (
+    "最新", "当前", "今天", "现在", "实时", "发布", "新闻", "价格", "版本",
+    "latest", "current", "today", "now", "release", "news", "price", "version",
+)
+
+
+def _strip_json_fence(text: str) -> str:
+    """去除 LLM 输出中可能包裹的 ```json ... ``` 代码块围栏。"""
+    text = text.strip()
+    if text.startswith("```"):
+        # 去掉首行围栏（``` 或 ```json）与末行围栏
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def plan_web_search(question: str) -> dict:
+    """用 LLM 判断问题是否需要联网搜索，并生成优化后的搜索查询。
+
+    通过让本地 LLM 充当“搜索规划器”，取代原先针对特定技术栈（JDK/Java/
+    Python 等）的硬编码关键词、前后缀清洗与翻译表，使该逻辑对任意主题
+    （技术、新闻、价格、人物、事件……）都具备普适性。
+
+    Args:
+        question: 用户原始问题。
+
+    Returns:
+        形如 ``{"needs_search": bool, "queries": [str, ...]}`` 的字典。
+        ``queries`` 已去重，通常包含原语言与英文两种表达以提升召回。
+        当 LLM 不可用或解析失败时，回退到基于轻量触发词的启发式判断。
+    """
+    import json
+
+    prompt = (
+        "你是一个搜索规划助手。判断回答下面这个问题是否需要联网搜索"
+        "最新/实时/外部信息（例如：版本号、新闻、价格、近期事件、特定事实）。"
+        "如果问题可以仅凭通用知识回答，或属于代码/写作/推理类任务，则不需要搜索。\n"
+        "若需要搜索，请生成 1-3 条精简、高质量的搜索查询词（去掉‘帮我’‘请问’"
+        "等口语化前后缀，只保留核心检索词）；若原问题为中文，请额外补充一条"
+        "等价的英文查询以提升召回。\n"
+        "严格只输出 JSON，格式：\n"
+        '{"needs_search": true/false, "queries": ["查询1", "query2"]}\n\n'
+        f"问题：{question}"
+    )
+
+    try:
+        from llama_index.core import Settings
+        raw = str(Settings.llm.complete(prompt)).strip()
+        data = json.loads(_strip_json_fence(raw))
+        needs = bool(data.get("needs_search", False))
+        queries = [
+            q.strip()
+            for q in (data.get("queries") or [])
+            if isinstance(q, str) and q.strip()
+        ]
+        # 去重并保序
+        seen = set()
+        deduped = []
+        for q in queries:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                deduped.append(q)
+        if needs and not deduped:
+            deduped = [question]
+        return {"needs_search": needs, "queries": deduped}
+    except Exception as e:  # noqa: BLE001 - LLM/JSON 失败时回退到启发式
+        logger.warning(f"LLM 搜索规划失败，回退到启发式判断: {e}")
+        lowered = question.lower()
+        needs = any(hint in lowered for hint in _WEB_SEARCH_FALLBACK_HINTS)
+        return {"needs_search": needs, "queries": [question] if needs else []}
+
+
+def run_web_search(queries: list) -> str:
+    """依次尝试给定查询，返回首个有效的网络搜索结果文本；都失败返回空串。"""
+    try:
+        from agent_tools import web_search
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"无法导入 web_search: {e}")
+        return ""
+
+    for query in queries:
+        console.print(f"🔍 搜索查询: {query}", style="dim")
+        result = web_search(query, max_results=5, use_cache=False)
+        if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
+            return result
+        console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
+    return ""
+
+
+def _extract_first_url(search_result: str) -> str:
+    """从搜索结果文本中提取首个出现的 URL（已按相关度排序，取最相关）。"""
+    import re
+    match = re.search(r"https?://[^\s)\]]+", search_result)
+    return match.group() if match else ""
+
+
+def enrich_with_page_content(search_result: str) -> str:
+    """对搜索结果做可选增强：提取首个（最相关）结果页正文并追加。
+
+    取代原先仅针对 oracle.com / python.org / openjdk.org 的域名白名单，
+    改为通用地提取排名最高结果的页面内容，适用于任意主题。
+    """
+    url = _extract_first_url(search_result)
+    if not url:
+        return search_result
+    try:
+        from agent_tools import web_content_extract
+        console.print("📄 正在提取相关页面内容...", style="dim")
+        page_content = web_content_extract(url, timeout=10)
+        if page_content and not page_content.startswith("[错误]"):
+            console.print("✅ 页面内容提取成功", style="green")
+            return search_result + f"\n\n=== 相关页面详细信息 ===\n{page_content[:1000]}"
+    except Exception as e:  # noqa: BLE001
+        console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
+    return search_result
+
+
 def _is_empty_rag_result(result: dict) -> bool:
     """判断 RAG 查询结果是否为“空命中”（无来源或返回 LlamaIndex 的占位文本）。"""
     if not result:
@@ -1102,6 +1230,396 @@ def _is_empty_rag_result(result: dict) -> bool:
     answer = (result.get("answer") or "").strip()
     # LlamaIndex 在没有任何命中节点时返回固定占位字符串 "Empty Response"
     return len(sources) == 0 or answer == "" or answer == "Empty Response"
+
+
+# ==================== 与引擎/主循环状态强耦合的命令处理 ====================
+# 这些命令需要直接读写 rag_engine / react_engine / last_rag_sources 等运行时
+# 状态，故保留在本模块（而非 cli_handlers），但同样抽成独立函数，使交互主循环
+# 的分发逻辑保持精简。每个函数返回 should_show_recommendations。
+
+def _render_answer(answer: str):
+    """统一渲染回答文本（Markdown / 纯文本）。"""
+    if HAS_RICH:
+        console.print(Panel(Markdown(answer), border_style="green"))
+    else:
+        print(answer)
+
+
+def handle_clear(ctx, parsed):
+    console.clear()
+    print_banner()
+    record_command_execution("clear")
+    return True
+
+
+def handle_history(ctx, parsed):
+    from session_manager import get_session_manager
+    manager = get_session_manager()
+    current = manager.get_current_session()
+    msgs = current.messages if current else []
+    dialog_msgs = [m for m in msgs if m.get("role") in ("user", "assistant")]
+    if not dialog_msgs:
+        console.print("[dim]暂无对话历史[/dim]")
+        return False
+    lines = []
+    for i, m in enumerate(dialog_msgs):
+        role = m.get("role", "?")
+        content = m.get("content", "")[:80].replace("\n", " ")
+        lines.append(f"{i}. [{role}] {content}...")
+    title = f"历史记录 - {current.title}" if current else "历史记录"
+    if HAS_RICH:
+        console.print(Panel("\n".join(lines), title=title, border_style="dim"))
+    else:
+        print("\n".join(lines))
+    record_command_execution("history")
+    return True
+
+
+def handle_summary(ctx, parsed):
+    summary = react_engine.get_step_summary()
+    if HAS_RICH:
+        console.print(Panel(summary, title="执行摘要", border_style="blue"))
+    else:
+        print(summary)
+    record_command_execution("summary")
+    return True
+
+
+def handle_reset(ctx, parsed):
+    react_engine.clear_history()
+    console.print("🔄 Agent 对话上下文已重置", style="green")
+    record_command_execution("reset")
+    return True
+
+
+def handle_file(ctx, parsed):
+    path = parsed.arg
+    result = registry.execute("read_file", {"path": path}, auto_confirm=True)
+    if HAS_RICH:
+        console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
+    else:
+        print(result)
+        record_command_execution("read", path)
+    return True
+
+
+def handle_write(ctx, parsed):
+    path = parsed.arg
+    console.print("[yellow]进入写入模式，输入内容（空行结束）:[/yellow]")
+    lines = []
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if line == "":
+            break
+        lines.append(line)
+    content = "\n".join(lines)
+    result = registry.execute("write_file", {"path": path, "content": content}, auto_confirm=False)
+    console.print(result)
+    record_command_execution("write", path)
+    return True
+
+
+def handle_exec(ctx, parsed):
+    cmd = parsed.arg
+    safety = CommandSafetyChecker.analyze(cmd)
+    if HAS_RICH:
+        color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(safety['risk_level'], "white")
+        console.print(f"[dim]命令: {cmd}[/dim]")
+        console.print(f"风险等级: [{color}]{safety['risk_level']}[/{color}]")
+    else:
+        print(f"命令: {cmd}")
+        print(f"风险等级: {safety['risk_level']}")
+
+    if safety["is_dangerous"]:
+        console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
+        return False
+    if safety["needs_confirm"] and not Config.AUTO_CONFIRM:
+        try:
+            ans = console.input("确认执行? (y/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("已取消")
+            return False
+        if ans not in ("y", "yes", "是"):
+            console.print("[dim]已取消[/dim]")
+            return False
+
+    result = registry.execute("execute_command", {"command": cmd}, auto_confirm=True)
+    if HAS_RICH:
+        console.print(Panel(result, title="命令输出", border_style="magenta"))
+    else:
+        print(result)
+    record_command_execution("exec", cmd)
+    return True
+
+
+def handle_pwd(ctx, parsed):
+    print(os.getcwd())
+    record_command_execution("pwd")
+    return True
+
+
+def handle_cd(ctx, parsed):
+    path = parsed.arg
+    try:
+        os.chdir(path)
+        console.print(f"[green]已切换到: {os.getcwd()}[/green]")
+        record_command_execution("cd", path)
+        return True
+    except FileNotFoundError:
+        console.print(f"[red]目录不存在: {path}[/red]")
+    except PermissionError:
+        console.print(f"[red]权限不足: {path}[/red]")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]切换失败: {e}[/red]")
+    return False
+
+
+def handle_model(ctx, parsed):
+    console.print(f"[green]模型: {react_engine.model}[/green]")
+    console.print(f"[green]Ollama: {react_engine.host}[/green]")
+    console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
+    record_command_execution("model")
+    return True
+
+
+def handle_ask(ctx, parsed):
+    """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。"""
+    global last_rag_sources
+    import re
+
+    question = parsed.arg
+    original_question = parsed.arg  # 用于命令记录，避免把搜索结果正文塞进历史
+    kb_initialized = rag_engine.query_engine is not None
+    if not kb_initialized:
+        console.print("⚠️  知识库未初始化，将根据网络搜索/模型直接回答", style="yellow")
+
+    # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）
+    file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
+    file_path_match = re.search(file_pattern, question)
+    if file_path_match:
+        question = _ingest_inline_file(file_path_match.group(), question)
+
+    # 网络搜索增强（LLM 驱动的通用查询规划）
+    web_search_result = _augment_with_web_search(question)
+    if web_search_result:
+        question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
+
+    # 生成回答（含空命中回退）
+    result = _answer_question(question, original_question, web_search_result)
+
+    console.print("\n🤖 回答:", style="bold blue")
+    _render_answer(result["answer"])
+    last_rag_sources = result["sources"]
+    ctx.last_rag_sources = last_rag_sources
+    if last_rag_sources:
+        console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
+    record_command_execution("ask", original_question)
+    record_conversation(original_question, result.get("answer", ""))
+    return True
+
+
+def _ingest_inline_file(file_path: str, question: str) -> str:
+    """将问题中检测到的文件加入知识库，并清洗/补全查询文本后返回。"""
+    import re
+    console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
+    console.print("🔄 正在添加到知识库...", style="yellow")
+    try:
+        from document_loader import load_documents as _load
+        documents = _load(file_path)
+        if not documents:
+            console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
+            return question
+        rag_engine.add_documents(documents, [file_path])
+        if Config.SHOW_PROGRESS:
+            console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
+            total_chars = sum(len(doc.text) for doc in documents)
+            console.print(f"✅ 总字符数: {total_chars}", style="dim")
+        else:
+            console.print("✅ 文件已添加到知识库", style="green")
+        # 移除路径文本、清理空白与标点
+        question = re.sub(re.escape(file_path), '', question)
+        question = re.sub(r'\s+', ' ', question).strip().rstrip('，。,.')
+        vague = ["请帮我检查", "请帮我分析", "分析", "检查", "看一下", "这张图片里面有什么"]
+        if not question or question == "/ask" or question in vague:
+            question = f"刚刚添加的文件中包含什么内容？文件名是 {Path(file_path).name}"
+            print(f"💡 使用精确查询: {question}")
+        else:
+            filename = Path(file_path).name
+            if filename not in question:
+                question = f"{filename} {question}"
+        console.print(f"❓ 查询: {question}", style="cyan")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
+    return question
+
+
+def _augment_with_web_search(question: str) -> str:
+    """按需执行 LLM 规划的网络搜索，返回搜索结果文本（无则空串）。"""
+    try:
+        plan = plan_web_search(question)
+        if plan.get("needs_search") and plan.get("queries"):
+            console.print("🌐 检测到需要最新信息，正在网络搜索...", style="cyan")
+            result = run_web_search(plan["queries"])
+            if result:
+                console.print("✅ 网络搜索完成", style="green")
+                return enrich_with_page_content(result)
+            console.print("⚠️ 所有搜索查询均未返回有效结果，继续使用知识库", style="yellow")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
+    return ""
+
+
+def _answer_question(question: str, original_question: str, web_search_result: str) -> dict:
+    """根据知识库状态生成回答，处理“空命中回退”与“知识库为空直接回答”。"""
+    kb_initialized = rag_engine.query_engine is not None
+
+    if not kb_initialized:
+        if not web_search_result:
+            console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
+        with console.status("[bold green]模型思考中..."):
+            return {"answer": _llm_direct_answer(question), "sources": []}
+
+    if Config.SHOW_PROGRESS:
+        result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
+    else:
+        with console.status("[bold green]检索知识库..."):
+            result = rag_engine.query_with_sources(question)
+
+    if not _is_empty_rag_result(result):
+        return result
+
+    # 空命中回退：先补网络搜索，再让 LLM 直接回答
+    console.print("📭 知识库中未找到相关内容，正在回退到模型回答...", style="yellow")
+    fallback_prompt = original_question
+    if not web_search_result:
+        console.print("🌐 正在网络搜索补充信息...", style="cyan")
+        web_search_result = _simple_web_search(original_question)
+        if web_search_result:
+            console.print("✅ 网络搜索完成", style="green")
+    if web_search_result:
+        fallback_prompt = f"{original_question}\n\n网络搜索参考信息：\n{web_search_result}"
+    else:
+        console.print("💡 未获取到网络信息，直接使用模型自身知识回答", style="dim")
+    with console.status("[bold green]模型思考中..."):
+        return {"answer": _llm_direct_answer(fallback_prompt), "sources": []}
+
+
+def handle_agent(ctx, parsed):
+    task = parsed.arg
+    answer = ""
+    try:
+        answer = react_engine.chat(task)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
+        react_engine.stop()
+        return False
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]错误: {e}[/red]")
+        return False
+
+    if HAS_RICH:
+        if "```" in answer or "**" in answer or "#" in answer:
+            console.print(Markdown(answer))
+        else:
+            console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
+    else:
+        print("\n" + "=" * 50)
+        print(answer)
+        print("=" * 50 + "\n")
+
+    if len(react_engine.step_log) > 1:
+        console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+    record_conversation(task, answer)
+    record_command_execution("agent", task)
+    return True
+
+
+def handle_natural(ctx, parsed):
+    global last_rag_sources
+    if rag_engine.query_engine is not None:
+        with console.status("[bold green]检索知识库..."):
+            result = rag_engine.query_with_sources(parsed.arg)
+        console.print("\n🤖 回答:", style="bold blue")
+        _render_answer(result["answer"])
+        last_rag_sources = result["sources"]
+        ctx.last_rag_sources = last_rag_sources
+        if last_rag_sources:
+            console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
+            console.print("[dim]输入 /sources 查看详细来源 | /agent 切换 Agent 模式[/dim]")
+        record_command_execution("natural", parsed.arg)
+        return True
+
+    console.print(
+        "[yellow]知识库未初始化。请选择:[/yellow]\n"
+        "  1. 输入 /agent <任务> 使用 Agent 模式（代码操作）\n"
+        "  2. 使用 --data <路径> 启动以构建知识库\n"
+        "  3. 输入 /add <文件> 添加文档到知识库"
+    )
+    return False
+
+
+def handle_unknown_cmd(ctx, parsed):
+    console.print(f"[yellow]未知命令: {parsed.raw}，输入 /help 查看帮助[/yellow]")
+    return False
+
+
+# 引擎/状态耦合命令的分发表（与 cli_handlers.COMMAND_HANDLERS 互补）
+_ENGINE_HANDLERS = {
+    "clear": handle_clear,
+    "history": handle_history,
+    "summary": handle_summary,
+    "reset": handle_reset,
+    "file": handle_file,
+    "write": handle_write,
+    "exec": handle_exec,
+    "pwd": handle_pwd,
+    "cd": handle_cd,
+    "model": handle_model,
+    "ask": handle_ask,
+    "agent": handle_agent,
+    "natural": handle_natural,
+    "unknown_cmd": handle_unknown_cmd,
+}
+
+
+def _build_cli_context():
+    """构造注入了当前运行时状态/协作函数的 CLIContext。"""
+    from cli_handlers import CLIContext
+    return CLIContext(
+        console=console,
+        has_rich=HAS_RICH,
+        rag_engine=rag_engine,
+        react_engine=react_engine,
+        last_rag_sources=last_rag_sources,
+        record_command=record_command_execution,
+        record_conversation=record_conversation,
+        ask_progress_callback=ask_progress_callback,
+        print_help=print_help,
+        print_tools=print_tools,
+        show_tutorial=show_tutorial,
+        print_banner=print_banner,
+        print_knowledge_stats=print_knowledge_stats,
+        print_rag_sources=print_rag_sources,
+        load_documents=load_documents,
+        registry=registry,
+        knowledge_management_available=KNOWLEDGE_MANAGEMENT_AVAILABLE,
+    )
+
+
+def dispatch_command(ctx, parsed) -> bool:
+    """根据 parsed.cmd_type 分发到对应 handler，返回是否显示命令推荐。
+
+    优先使用引擎耦合分发表，其次使用 cli_handlers 的自包含命令表。
+    未匹配的类型（如 empty）默认不显示推荐。
+    """
+    from cli_handlers import COMMAND_HANDLERS
+    handler = _ENGINE_HANDLERS.get(parsed.cmd_type) or COMMAND_HANDLERS.get(parsed.cmd_type)
+    if handler is None:
+        return False
+    return handler(ctx, parsed)
 
 
 # ==================== 主程序 ====================
@@ -1296,1260 +1814,21 @@ def main():
             continue
 
         parsed = parse_command(user_input)
-        mode = classify_mode(rag_engine.query_engine is not None, parsed)
-        
-        # 标志变量：是否显示命令推荐（默认显示，错误情况设为 False）
-        should_show_recommendations = True
 
-        # ---- 退出 ----
+        # 退出单独处理（需要 break 主循环）
         if parsed.cmd_type == "quit":
             console.print("👋 再见！", style="bold green")
             break
 
-        # ---- 帮助与教程 ----
-        elif parsed.cmd_type == "help":
-            print_help()
-            record_command_execution("help")
-        elif parsed.cmd_type == "tutorial":
-            show_tutorial()
-            record_command_execution("tutorial")
-        elif parsed.cmd_type == "tools":
-            print_tools()
-            record_command_execution("tools")
-
-        # ---- 知识库命令 ----
-        elif parsed.cmd_type == "stats":
-            print_knowledge_stats()
-            record_command_execution("stats")
-        elif parsed.cmd_type == "sources":
-            print_rag_sources(last_rag_sources)
-            record_command_execution("sources")
-        elif parsed.cmd_type == "add":
-            path = parsed.arg
-            try:
-                docs = load_documents(path)
-                if docs:
-                    rag_engine.add_documents(docs, [path])
-                    console.print("✅ 文档已添加到知识库", style="green")
-                    console.print("💡 提示: 可以使用 /generate-skills 将知识库转化为Skills", style="dim")
-                    record_command_execution("add", path, "success")
-                else:
-                    console.print("⚠️  未找到可加载的文档", style="yellow")
-                    record_command_execution("add", path, "no documents")
-            except Exception as e:
-                console.print(f"❌ 添加失败: {e}", style="red")
-                record_command_execution("add", path, "failed", str(e))
-        
-        # ---- 知识库管理命令 ----
-        elif parsed.cmd_type == "generate_skills":
-            if not KNOWLEDGE_MANAGEMENT_AVAILABLE:
-                console.print("❌ 知识库管理模块未安装", style="red")
-                should_show_recommendations = False
-            elif not rag_engine:
-                console.print("❌ 知识库未初始化", style="yellow")
-                should_show_recommendations = False
-            else:
-                try:
-                    console.print("🔄 开始生成Skills...", style="cyan")
-                    engine = KnowledgeToSkillsEngine()
-                    results = engine.convert()
-                    console.print(f"✅ 成功生成 {len(results)} 个Skills:", style="green")
-                    for key, path in results.items():
-                        console.print(f"  • {key}: {path}", style="dim")
-                    record_command_execution("generate_skills")
-                except Exception as e:
-                    console.print(f"❌ 生成Skills失败: {e}", style="red")
-                    record_command_execution("generate_skills", "", "failed", str(e))
-        
-        elif parsed.cmd_type == "snapshot_list":
-            if not KNOWLEDGE_MANAGEMENT_AVAILABLE:
-                console.print("❌ 知识库管理模块未安装", style="red")
-                should_show_recommendations = False
-            else:
-                try:
-                    manager = KnowledgeSnapshotManager()
-                    snapshots = manager.list_snapshots()
-                    if not snapshots:
-                        console.print("📭 没有找到快照", style="yellow")
-                    else:
-                        console.print(f"📋 共有 {len(snapshots)} 个快照:", style="cyan")
-                        for snap in snapshots:
-                            console.print(f"\n  🆔 {snap['snapshot_id']}", style="bold")
-                            console.print(f"  📅 {snap['timestamp']}", style="dim")
-                            console.print(f"  📄 文档数: {snap['document_count']}", style="dim")
-                            console.print(f"  🧩 Chunk数: {snap['total_chunks']}", style="dim")
-                            console.print(f"  ⚡ 触发方式: {snap['trigger']}", style="dim")
-                    record_command_execution("snapshot_list")
-                except Exception as e:
-                    console.print(f"❌ 获取快照列表失败: {e}", style="red")
-                    record_command_execution("snapshot_list", "", "failed", str(e))
-        
-        elif parsed.cmd_type == "snapshot_create":
-            if not KNOWLEDGE_MANAGEMENT_AVAILABLE:
-                console.print("❌ 知识库管理模块未安装", style="red")
-                should_show_recommendations = False
-            elif not rag_engine:
-                console.print("❌ 知识库未初始化", style="yellow")
-                should_show_recommendations = False
-            else:
-                try:
-                    manager = KnowledgeSnapshotManager()
-                    snapshot = manager.create_snapshot(trigger="manual")
-                    console.print(f"✅ 快照创建完成: {snapshot.snapshot_id}", style="green")
-                    console.print(f"📅 时间: {snapshot.timestamp}", style="dim")
-                    console.print(f"📄 文档数: {len(snapshot.documents)}", style="dim")
-                    record_command_execution("snapshot_create")
-                except Exception as e:
-                    console.print(f"❌ 创建快照失败: {e}", style="red")
-                    record_command_execution("snapshot_create", "", "failed", str(e))
-        
-        elif parsed.cmd_type == "snapshot_restore":
-            if not KNOWLEDGE_MANAGEMENT_AVAILABLE:
-                console.print("❌ 知识库管理模块未安装", style="red")
-                should_show_recommendations = False
-            else:
-                snapshot_id = parsed.arg
-                if not snapshot_id:
-                    console.print("❌ 请指定快照ID: /snapshot-restore <id>", style="yellow")
-                    should_show_recommendations = False
-                else:
-                    try:
-                        manager = KnowledgeSnapshotManager()
-                        snapshot = manager.load_snapshot(snapshot_id)
-                        if not snapshot:
-                            console.print(f"❌ 快照不存在: {snapshot_id}", style="red")
-                            should_show_recommendations = False
-                        else:
-                            console.print(f"🔄 恢复快照: {snapshot_id}", style="cyan")
-                            console.print(f"📄 文档数: {len(snapshot.documents)}", style="dim")
-                            
-                            # 生成恢复脚本
-                            helper = RestoreHelper(manager)
-                            script_file = helper.generate_restore_script(snapshot_id)
-                            console.print(f"✅ 恢复脚本已生成: {script_file}", style="green")
-                            console.print("💡 请运行该脚本来恢复知识库", style="yellow")
-                            record_command_execution("snapshot_restore", snapshot_id)
-                    except Exception as e:
-                        console.print(f"❌ 恢复快照失败: {e}", style="red")
-                        record_command_execution("snapshot_restore", snapshot_id, "failed", str(e))
-        
-        elif parsed.cmd_type == "knowledge_summary":
-            if not KNOWLEDGE_MANAGEMENT_AVAILABLE:
-                console.print("❌ 知识库管理模块未安装", style="red")
-                should_show_recommendations = False
-            elif not rag_engine:
-                console.print("❌ 知识库未初始化", style="yellow")
-                should_show_recommendations = False
-            else:
-                try:
-                    engine = KnowledgeToSkillsEngine()
-                    summary = engine.get_document_summary()
-                    console.print(f"📊 知识库文档摘要:", style="cyan")
-                    for doc in summary:
-                        type_indicator = "🌐 通用" if doc['is_generic'] else "🏢 项目"
-                        console.print(f"\n  📄 {doc['file_name']}", style="bold")
-                        console.print(f"  📍 {doc['file_path']}", style="dim")
-                        console.print(f"  🏷️ 主题: {', '.join(doc['topics'])}", style="dim")
-                        console.print(f"  {type_indicator} (置信度: {doc['confidence']:.2f})", style="dim")
-                        console.print(f"  🧩 Chunks: {doc['chunk_count']}", style="dim")
-                    record_command_execution("knowledge_summary")
-                except Exception as e:
-                    console.print(f"❌ 获取知识库摘要失败: {e}", style="red")
-                    record_command_execution("knowledge_summary", "", "failed", str(e))
-
-        # ---- 文件管理命令 ----
-        elif parsed.cmd_type == "file_list":
-            try:
-                from file_metadata import get_global_metadata_manager
-                manager = get_global_metadata_manager()
-                files = manager.list_files()
-
-                if not files:
-                    console.print("📭 知识库中没有文件", style="yellow")
-                else:
-                    console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
-                    for file_meta in files:
-                        console.print(f"\n  📄 {file_meta.file_path}", style="bold")
-                        console.print(f"  📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
-                        console.print(f"  🏷️  类型: {file_meta.persistence_type}", style="dim")
-                        console.print(f"  📅 上传: {file_meta.upload_time[:19]}", style="dim")
-                        if file_meta.tags:
-                            console.print(f"  🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
-                record_command_execution("file_list")
-            except Exception as e:
-                console.print(f"❌ 列出文件失败: {e}", style="red")
-                record_command_execution("file_list", "", "failed", str(e))
-
-        elif parsed.cmd_type == "file_info":
-            file_path = parsed.arg
-            if not file_path:
-                console.print("❌ 请指定文件路径: /file-info <path>", style="yellow")
-                should_show_recommendations = False
-            else:
-                try:
-                    from file_metadata import get_global_metadata_manager
-                    manager = get_global_metadata_manager()
-                    file_meta = manager.get_file_metadata(file_path)
-
-                    if not file_meta:
-                        console.print(f"❌ 文件不在知识库中: {file_path}", style="yellow")
-                        should_show_recommendations = False
-                    else:
-                        console.print(f"📄 文件信息: {file_path}", style="cyan")
-                        console.print(f"📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
-                        console.print(f"🏷️  类型: {file_meta.persistence_type}", style="dim")
-                        console.print(f"📅 上传: {file_meta.upload_time}", style="dim")
-                        console.print(f"🔢 访问次数: {file_meta.access_count}", style="dim")
-                        console.print(f"📄 文档数: {file_meta.document_count}", style="dim")
-                        console.print(f"🧩 Chunk数: {file_meta.chunk_count}", style="dim")
-                        if file_meta.last_access:
-                            console.print(f"🕐 最后访问: {file_meta.last_access[:19]}", style="dim")
-                        if file_meta.tags:
-                            console.print(f"🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
-                        record_command_execution("file_info", file_path)
-                except Exception as e:
-                    console.print(f"❌ 获取文件信息失败: {e}", style="red")
-                    record_command_execution("file_info", file_path, "failed", str(e))
-
-        elif parsed.cmd_type == "file_stats":
-            try:
-                from file_metadata import get_global_metadata_manager
-                from file_validator import get_global_validator
-
-                metadata_manager = get_global_metadata_manager()
-                validator = get_global_validator()
-
-                stats = metadata_manager.get_stats()
-                validator_stats = validator.get_stats()
-
-                console.print("📊 文件统计信息:", style="cyan")
-                console.print(f"📁 总文件数: {stats['total_files']}", style="bold")
-                console.print(f"💾 总大小: {stats['total_size_formatted']}", style="dim")
-                console.print(f"📌 永久文件: {stats['permanent_count']}", style="dim")
-                console.print(f"⏰ 临时文件: {stats['temporary_count']}", style="dim")
-                console.print(f"🎯 会话文件: {stats['session_count']}", style="dim")
-                console.print(f"🧹 待清理: {stats['cleanup_count']}", style="dim")
-                console.print(f"🔗 已知文件: {validator_stats['known_file_count']}", style="dim")
-                console.print(f"📈 利用率: {validator_stats['utilization_percent']:.1f}%", style="dim")
-                record_command_execution("file_stats")
-            except Exception as e:
-                console.print(f"❌ 获取统计信息失败: {e}", style="red")
-                record_command_execution("file_stats", "", "failed", str(e))
-
-        elif parsed.cmd_type == "file_cleanup":
-            try:
-                from file_metadata import get_global_metadata_manager
-                manager = get_global_metadata_manager()
-
-                files_to_cleanup = manager.get_files_to_cleanup()
-                if not files_to_cleanup:
-                    console.print("✅ 没有需要清理的文件", style="green")
-                else:
-                    console.print(f"🧹 发现 {len(files_to_cleanup)} 个需要清理的文件", style="yellow")
-                    for file_meta in files_to_cleanup:
-                        console.print(f"  - {file_meta.file_path} ({file_meta.persistence_type})", style="dim")
-
-                    # 执行清理
-                    cleaned = manager.cleanup_files()
-                    console.print(f"✅ 已清理 {len(cleaned)} 个文件", style="green")
-                record_command_execution("file_cleanup")
-            except Exception as e:
-                console.print(f"❌ 清理文件失败: {e}", style="red")
-                record_command_execution("file_cleanup", "", "failed", str(e))
-
-        elif parsed.cmd_type == "file_deduplicate":
-            try:
-                from file_metadata import get_global_metadata_manager
-                from file_validator import get_global_validator
-
-                metadata_manager = get_global_metadata_manager()
-                validator = get_global_validator()
-
-                console.print("🔄 正在检查重复文件...", style="cyan")
-                files = metadata_manager.list_files()
-
-                duplicates = []
-                seen_hashes = {}
-
-                for file_meta in files:
-                    if file_meta.file_hash:
-                        if file_meta.file_hash in seen_hashes:
-                            duplicates.append(file_meta)
-                        else:
-                            seen_hashes[file_meta.file_hash] = file_meta
-
-                if not duplicates:
-                    console.print("✅ 没有发现重复文件", style="green")
-                    record_command_execution("file_deduplicate", "", "no_duplicates")
-                else:
-                    console.print(f"⚠️  发现 {len(duplicates)} 个重复文件:", style="yellow")
-                    for file_meta in duplicates:
-                        console.print(f"  - {file_meta.file_path}", style="dim")
-
-                    # 询问是否删除重复文件
-                    try:
-                        answer = console.input("是否删除重复文件? (y/n): ").strip().lower()
-                        if answer in ("y", "yes", "是", "确认"):
-                            for file_meta in duplicates:
-                                metadata_manager.remove_file(file_meta.file_path)
-                                console.print(f"✅ 已删除: {file_meta.file_path}", style="green")
-                            console.print(f"✅ 共删除 {len(duplicates)} 个重复文件", style="green")
-                            record_command_execution("file_deduplicate", f"删除了{len(duplicates)}个重复文件", "success")
-                        else:
-                            console.print("❌ 取消删除", style="yellow")
-                            record_command_execution("file_deduplicate", "", "cancelled")
-                    except (EOFError, KeyboardInterrupt):
-                        console.print("\n❌ 取消操作", style="yellow")
-                        record_command_execution("file_deduplicate", "", "cancelled")
-
-            except Exception as e:
-                console.print(f"❌ 去重失败: {e}", style="red")
-                record_command_execution("file_deduplicate", "", "failed", str(e))
-
-        # ---- 会话管理命令 ----
-        elif parsed.cmd_type == "session_new":
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                title = parsed.arg if parsed.arg else None
-                session = manager.create_session(title=title)
-
-                console.print(f"✅ 新会话已创建: {session.session_id}", style="green")
-                console.print(f"📋 标题: {session.title}", style="dim")
-                console.print(f"📅 创建时间: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-                record_command_execution("session_new", session.title if session.title else "")
-            except Exception as e:
-                console.print(f"❌ 创建会话失败: {e}", style="red")
-                record_command_execution("session_new", "", "failed", str(e))
-
-        elif parsed.cmd_type == "session_list":
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                sessions = manager.list_sessions()
-
-                if not sessions:
-                    console.print("📭 没有会话", style="yellow")
-                else:
-                    console.print(f"💬 共有 {len(sessions)} 个会话:", style="cyan")
-                    current_session = manager.get_current_session()
-
-                    for session in sessions:
-                        is_current = "🔸" if session.session_id == (current_session.session_id if current_session else None) else " "
-                        status_emoji = "🟢" if session.status.value == "active" else "📦" if session.status.value == "archived" else "🗑️"
-                        console.print(f"{is_current} {status_emoji} {session.session_id[:8]}... - {session.title}", style="bold" if session.session_id == (current_session.session_id if current_session else None) else "dim")
-                        console.print(f"    📅 {session.updated_at.strftime('%Y-%m-%d %H:%M')}", style="dim")
-                        console.print(f"    💬 {len(session.messages)} 条消息", style="dim")
-                record_command_execution("session_list")
-            except Exception as e:
-                console.print(f"❌ 列出会话失败: {e}", style="red")
-                record_command_execution("session_list", "", "failed", str(e))
-
-        elif parsed.cmd_type == "session_switch":
-            session_id = parsed.arg
-            if not session_id:
-                console.print("❌ 请指定会话ID: /session-switch <id>", style="yellow")
-                should_show_recommendations = False
-            else:
-                try:
-                    from session_manager import get_session_manager
-                    from config import SESSION_STORAGE_PATH
-
-                    manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                    success = manager.switch_session(session_id)
-
-                    if success:
-                        session = manager.get_current_session()
-                        console.print(f"✅ 已切换到会话: {session.title}", style="green")
-                        console.print(f"💬 该会话有 {len(session.messages)} 条消息", style="dim")
-                        record_command_execution("session_switch", session_id)
-                    else:
-                        console.print(f"❌ 会话不存在或已删除: {session_id}", style="yellow")
-                        should_show_recommendations = False
-                except Exception as e:
-                    console.print(f"❌ 切换会话失败: {e}", style="red")
-                    record_command_execution("session_switch", session_id, "failed", str(e))
-
-        elif parsed.cmd_type == "session_current":
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                current = manager.get_current_session()
-
-                if not current:
-                    console.print("📭 没有当前会话，请使用 /session-new 创建新会话", style="yellow")
-                    should_show_recommendations = False
-                else:
-                    console.print(f"💬 当前会话信息:", style="cyan")
-                    console.print(f"🆔 ID: {current.session_id}", style="bold")
-                    console.print(f"📋 标题: {current.title}", style="dim")
-                    console.print(f"📊 状态: {current.status.value}", style="dim")
-                    console.print(f"📅 创建: {current.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-                    console.print(f"🕐 更新: {current.updated_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-                    console.print(f"💬 消息数: {len(current.messages)}", style="dim")
-                    if current.tags:
-                        console.print(f"🏷️  标签: {', '.join(current.tags)}", style="dim")
-                    record_command_execution("session_current")
-            except Exception as e:
-                console.print(f"❌ 获取当前会话失败: {e}", style="red")
-                record_command_execution("session_current", "", "failed", str(e))
-
-        elif parsed.cmd_type == "session_info":
-            session_id = parsed.arg
-            if not session_id:
-                console.print("❌ 请指定会话ID: /session-info <id>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                sessions = manager.list_sessions()
-
-                # 查找匹配的会话
-                matching_sessions = [s for s in sessions if session_id in s.session_id]
-
-                if not matching_sessions:
-                    console.print(f"❌ 未找到会话: {session_id}", style="yellow")
-                    should_show_recommendations = False
-                else:
-                    session = matching_sessions[0]
-                    console.print(f"💬 会话详细信息:", style="cyan")
-                    console.print(f"🆔 ID: {session.session_id}", style="bold")
-                    console.print(f"📋 标题: {session.title}", style="dim")
-                    console.print(f"📊 状态: {session.status.value}", style="dim")
-                    console.print(f"📅 创建: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-                    console.print(f"🕐 更新: {session.updated_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-                    console.print(f"💬 消息数: {len(session.messages)}", style="dim")
-                    if session.tags:
-                        console.print(f"🏷️  标签: {', '.join(session.tags)}", style="dim")
-                    if session.metadata:
-                        console.print(f"📝 元数据: {session.metadata}", style="dim")
-                    record_command_execution("session_info", session_id)
-            except Exception as e:
-                console.print(f"❌ 获取会话信息失败: {e}", style="red")
-                record_command_execution("session_info", session_id, "failed", str(e))
-
-        elif parsed.cmd_type == "session_search":
-            query = parsed.arg
-            if not query:
-                console.print("❌ 请指定搜索查询: /session-search <query>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                results = manager.search_sessions(query)
-
-                if not results:
-                    console.print(f"🔍 未找到包含 '{query}' 的会话", style="yellow")
-                    should_show_recommendations = False
-                else:
-                    console.print(f"🔍 找到 {len(results)} 个包含 '{query}' 的会话:", style="cyan")
-                    for session in results:
-                        console.print(f"  • {session.title} ({session.session_id[:8]}...)", style="dim")
-                        console.print(f"    💬 {len(session.messages)} 条消息", style="dim")
-                    record_command_execution("session_search", query)
-            except Exception as e:
-                console.print(f"❌ 搜索会话失败: {e}", style="red")
-                record_command_execution("session_search", query, "failed", str(e))
-
-        elif parsed.cmd_type == "session_compress":
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-                from history_compressor import HistoryCompressor
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                current = manager.get_current_session()
-
-                if not current:
-                    console.print("📭 没有当前会话", style="yellow")
-                    should_show_recommendations = False
-                else:
-                    console.print(f"🔄 正在压缩会话历史...", style="cyan")
-                    compressor = HistoryCompressor()
-                    original_count = len(current.messages)
-                    compressed_messages = compressor.compress_history(current.messages)
-
-                    # 更新会话消息
-                    current.messages = compressed_messages
-                    manager.save_session(current)
-
-                    console.print(f"✅ 压缩完成: {original_count} → {len(compressed_messages)} 条消息", style="green")
-                    console.print(f"📊 压缩率: {(1 - len(compressed_messages)/original_count)*100:.1f}%", style="dim")
-                    record_command_execution("session_compress", f"{original_count}→{len(compressed_messages)}")
-            except Exception as e:
-                console.print(f"❌ 压缩会话失败: {e}", style="red")
-                record_command_execution("session_compress", "", "failed", str(e))
-
-        elif parsed.cmd_type == "session_delete":
-            session_id = parsed.arg
-            if not session_id:
-                console.print("❌ 请指定会话ID: /session-delete <id>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                current = manager.get_current_session()
-
-                # 防止删除当前会话
-                if current and session_id in current.session_id:
-                    console.print("⚠️  不能删除当前会话，请先切换到其他会话", style="yellow")
-                    should_show_recommendations = False
-
-                success = manager.delete_session(session_id)
-
-                if success:
-                    console.print(f"✅ 会话已删除: {session_id}", style="green")
-                    record_command_execution("session_delete", session_id)
-                else:
-                    console.print(f"❌ 会话不存在: {session_id}", style="yellow")
-                    should_show_recommendations = False
-            except Exception as e:
-                console.print(f"❌ 删除会话失败: {e}", style="red")
-                record_command_execution("session_delete", session_id, "failed", str(e))
-
-        elif parsed.cmd_type == "session_archive":
-            session_id = parsed.arg
-            if not session_id:
-                console.print("❌ 请指定会话ID: /session-archive <id>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                from session_manager import get_session_manager
-                from config import SESSION_STORAGE_PATH
-
-                manager = get_session_manager(str(SESSION_STORAGE_PATH))
-                success = manager.archive_session(session_id)
-
-                if success:
-                    console.print(f"📦 会话已归档: {session_id}", style="green")
-                    record_command_execution("session_archive", session_id)
-                else:
-                    console.print(f"❌ 会话不存在: {session_id}", style="yellow")
-                    should_show_recommendations = False
-            except Exception as e:
-                console.print(f"❌ 归档会话失败: {e}", style="red")
-                record_command_execution("session_archive", session_id, "failed", str(e))
-
-        # ---- 网络搜索命令 ----
-        elif parsed.cmd_type == "web_search":
-            query = parsed.arg.strip()
-            if not query:
-                console.print("❌ 请提供搜索查询: /web-search <query>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔍 正在搜索: {query}", style="cyan")
-                result = registry.execute("web_search", {"query": query})
-                
-                if result.startswith("[错误]") or result.startswith("[提示]"):
-                    console.print(result, style="yellow")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("web_search", query)
-            except Exception as e:
-                console.print(f"❌ 搜索失败: {e}", style="red")
-                record_command_execution("web_search", query, "failed", str(e))
-
-        elif parsed.cmd_type == "web_cache":
-            arg = parsed.arg.strip()
-            if not arg or arg == "status":
-                # 显示缓存状态
-                try:
-                    result = registry.execute("web_cache_status", {})
-                    console.print(result, style="cyan")
-                    record_command_execution("web_cache", "status")
-                except Exception as e:
-                    console.print(f"❌ 获取缓存状态失败: {e}", style="red")
-                    record_command_execution("web_cache", "status", "failed", str(e))
-            elif arg == "clear":
-                # 清空缓存
-                try:
-                    result = registry.execute("web_cache_clear", {})
-                    console.print(result, style="green")
-                    record_command_execution("web_cache", "clear")
-                except Exception as e:
-                    console.print(f"❌ 清空缓存失败: {e}", style="red")
-                    record_command_execution("web_cache", "clear", "failed", str(e))
-            else:
-                console.print("❌ 未知命令，使用: /web-cache [status|clear]", style="yellow")
-                should_show_recommendations = False
-
-        elif parsed.cmd_type == "web_extract":
-            url = parsed.arg.strip()
-            if not url:
-                console.print("❌ 请提供URL: /web-extract <url>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"📄 正在提取内容: {url}", style="cyan")
-                result = registry.execute("web_content_extract", {"url": url})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("web_extract", url)
-            except Exception as e:
-                console.print(f"❌ 内容提取失败: {e}", style="red")
-                record_command_execution("web_extract", url, "failed", str(e))
-
-        # ---- 代码分析命令 ----
-        elif parsed.cmd_type == "code_ast":
-            pattern = parsed.arg.strip()
-            if not pattern:
-                console.print("❌ 请提供搜索模式: /code-ast <pattern>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔍 正在搜索 AST: {pattern}", style="cyan")
-                result = registry.execute("ast_search", {"pattern": pattern, "path": "."})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("code_ast", pattern)
-            except Exception as e:
-                console.print(f"❌ AST 搜索失败: {e}", style="red")
-                record_command_execution("code_ast", pattern, "failed", str(e))
-
-        elif parsed.cmd_type == "code_quality":
-            path = parsed.arg.strip() if parsed.arg.strip() else "."
-            try:
-                console.print(f"🔍 正在分析代码质量: {path}", style="cyan")
-                result = registry.execute("code_quality_check", {"path": path})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("code_quality", path)
-            except Exception as e:
-                console.print(f"❌ 代码质量检查失败: {e}", style="red")
-                record_command_execution("code_quality", path, "failed", str(e))
-
-        # ---- 知识图谱命令 ----
-        elif parsed.cmd_type == "graph_query":
-            query = parsed.arg.strip()
-            if not query:
-                console.print("❌ 请提供查询内容: /graph-query <query>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔍 正在查询知识图谱: {query}", style="cyan")
-                result = registry.execute("knowledge_graph_query", {"query": query})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("graph_query", query)
-            except Exception as e:
-                console.print(f"❌ 知识图谱查询失败: {e}", style="red")
-                record_command_execution("graph_query", query, "failed", str(e))
-
-        elif parsed.cmd_type == "graph_build":
-            # 图谱构建需要文本内容，这里简化处理
-            console.print("📝 知识图谱构建需要文本内容", style="cyan")
-            console.print("请使用 Agent 模式调用 knowledge_graph_build 工具", style="yellow")
-            should_show_recommendations = False
-
-        # 数据库管理命令
-        elif parsed.cmd_type == "db_connect":
-            args = parsed.arg.strip().split() if parsed.arg.strip() else []
-            if len(args) < 2:
-                console.print("❌ 请提供数据库类型和路径: /db-connect <type> <database>", style="yellow")
-                should_show_recommendations = False
-            
-            db_type, database = args[0], args[1]
-            try:
-                console.print(f"🔗 正在连接数据库: {db_type} @ {database}", style="cyan")
-                result = registry.execute("database_connect", {"db_type": db_type, "database": database})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_connect", f"{db_type} {database}")
-            except Exception as e:
-                console.print(f"❌ 数据库连接失败: {e}", style="red")
-                record_command_execution("db_connect", f"{db_type} {database}", "failed", str(e))
-
-        elif parsed.cmd_type == "db_query":
-            sql = parsed.arg.strip()
-            if not sql:
-                console.print("❌ 请提供SQL查询语句: /db-query <sql>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔍 正在执行SQL查询", style="cyan")
-                result = registry.execute("database_query", {"sql": sql})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_query", sql[:50])
-            except Exception as e:
-                console.print(f"❌ SQL查询失败: {e}", style="red")
-                record_command_execution("db_query", sql[:50], "failed", str(e))
-
-        elif parsed.cmd_type == "db_execute":
-            sql = parsed.arg.strip()
-            if not sql:
-                console.print("❌ 请提供SQL语句: /db-execute <sql>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"⚡ 正在执行SQL语句", style="cyan")
-                result = registry.execute("database_execute", {"sql": sql})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_execute", sql[:50])
-            except Exception as e:
-                console.print(f"❌ SQL执行失败: {e}", style="red")
-                record_command_execution("db_execute", sql[:50], "failed", str(e))
-
-        elif parsed.cmd_type == "db_create_table":
-            args = parsed.arg.strip().split() if parsed.arg.strip() else []
-            if len(args) < 1:
-                console.print("❌ 请提供表名: /db-create-table <table> <columns_json>", style="yellow")
-                should_show_recommendations = False
-            
-            table = args[0]
-            columns_json = " ".join(args[1:]) if len(args) > 1 else "{}"
-            
-            try:
-                import json
-                columns = json.loads(columns_json)
-            except json.JSONDecodeError:
-                console.print("❌ 列定义必须是有效的JSON格式", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔨 正在创建表: {table}", style="cyan")
-                result = registry.execute("database_create_table", {"table": table, "columns": columns})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_create_table", table)
-            except Exception as e:
-                console.print(f"❌ 创建表失败: {e}", style="red")
-                record_command_execution("db_create_table", table, "failed", str(e))
-
-        elif parsed.cmd_type == "db_insert":
-            args = parsed.arg.strip().split() if parsed.arg.strip() else []
-            if len(args) < 1:
-                console.print("❌ 请提供表名和数据: /db-insert <table> <data_json>", style="yellow")
-                should_show_recommendations = False
-            
-            table = args[0]
-            data_json = " ".join(args[1:]) if len(args) > 1 else "{}"
-            
-            try:
-                import json
-                data = json.loads(data_json)
-            except json.JSONDecodeError:
-                console.print("❌ 数据必须是有效的JSON格式", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"➕ 正在插入数据到表: {table}", style="cyan")
-                result = registry.execute("database_insert", {"table": table, "data": data})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_insert", table)
-            except Exception as e:
-                console.print(f"❌ 插入数据失败: {e}", style="red")
-                record_command_execution("db_insert", table, "failed", str(e))
-
-        elif parsed.cmd_type == "db_schema":
-            table = parsed.arg.strip()
-            if not table:
-                console.print("❌ 请提供表名: /db-schema <table>", style="yellow")
-                should_show_recommendations = False
-
-            try:
-                console.print(f"🔍 正在获取表结构: {table}", style="cyan")
-                result = registry.execute("database_get_schema", {"table": table})
-                
-                if result.startswith("[错误]"):
-                    console.print(result, style="red")
-                    should_show_recommendations = False
-                else:
-                    console.print(result, style="green")
-                    record_command_execution("db_schema", table)
-            except Exception as e:
-                console.print(f"❌ 获取表结构失败: {e}", style="red")
-                record_command_execution("db_schema", table, "failed", str(e))
-
-        # ---- Agent 历史与上下文 ----
-        elif parsed.cmd_type == "clear":
-            console.clear()
-            print_banner()
-            record_command_execution("clear")
-            
-        elif parsed.cmd_type == "history":
-            # 以当前会话（session）作为对话历史的单一来源
-            from session_manager import get_session_manager
-            manager = get_session_manager()
-            current = manager.get_current_session()
-            msgs = current.messages if current else []
-            # 仅统计真正的对话消息（user/assistant），忽略 system 提示
-            dialog_msgs = [m for m in msgs if m.get("role") in ("user", "assistant")]
-            if not dialog_msgs:
-                console.print("[dim]暂无对话历史[/dim]")
-                should_show_recommendations = False
-            else:
-                lines = []
-                for i, m in enumerate(dialog_msgs):
-                    role = m.get("role", "?")
-                    content = m.get("content", "")[:80].replace("\n", " ")
-                    lines.append(f"{i}. [{role}] {content}...")
-                title = f"历史记录 - {current.title}" if current else "历史记录"
-                if HAS_RICH:
-                    console.print(Panel("\n".join(lines), title=title, border_style="dim"))
-                else:
-                    print("\n".join(lines))
-                record_command_execution("history")
-        elif parsed.cmd_type == "summary":
-            summary = react_engine.get_step_summary()
-            if HAS_RICH:
-                console.print(Panel(summary, title="执行摘要", border_style="blue"))
-            else:
-                print(summary)
-            record_command_execution("summary")
-        elif parsed.cmd_type == "reset":
-            react_engine.clear_history()
-            console.print("🔄 Agent 对话上下文已重置", style="green")
-            record_command_execution("reset")
-
-        # ---- 文件操作 ----
-        elif parsed.cmd_type == "file":
-            path = parsed.arg
-            result = registry.execute("read_file", {"path": path}, auto_confirm=True)
-            if HAS_RICH:
-                console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
-            else:
-                print(result)
-                record_command_execution("read", path)
-        elif parsed.cmd_type == "write":
-            path = parsed.arg
-            console.print("[yellow]进入写入模式，输入内容（空行结束）:[/yellow]")
-            lines = []
-            while True:
-                try:
-                    line = input()
-                except (EOFError, KeyboardInterrupt):
-                    break
-                if line == "":
-                    break
-                lines.append(line)
-            content = "\n".join(lines)
-            result = registry.execute("write_file", {"path": path, "content": content}, auto_confirm=False)
-            console.print(result)
-            record_command_execution("write", path)
-        elif parsed.cmd_type == "exec":
-            cmd = parsed.arg
-            safety = CommandSafetyChecker.analyze(cmd)
-            if HAS_RICH:
-                color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(safety['risk_level'], "white")
-                console.print(f"[dim]命令: {cmd}[/dim]")
-                console.print(f"风险等级: [{color}]{safety['risk_level']}[/{color}]")
-            else:
-                print(f"命令: {cmd}")
-                print(f"风险等级: {safety['risk_level']}")
-
-            if safety["is_dangerous"]:
-                console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
-                should_show_recommendations = False
-            elif safety["needs_confirm"] and not Config.AUTO_CONFIRM:
-                try:
-                    ans = console.input("确认执行? (y/n): ").strip().lower()
-                    if ans not in ("y", "yes", "是"):
-                        console.print("[dim]已取消[/dim]")
-                        should_show_recommendations = False
-                    else:
-                        result = registry.execute("execute_command", {"command": cmd}, auto_confirm=True)
-                        if HAS_RICH:
-                            console.print(Panel(result, title="命令输出", border_style="magenta"))
-                        else:
-                            print(result)
-                        record_command_execution("exec", cmd)
-                except (EOFError, KeyboardInterrupt):
-                    print("已取消")
-                    should_show_recommendations = False
-            else:
-                result = registry.execute("execute_command", {"command": cmd}, auto_confirm=True)
-                if HAS_RICH:
-                    console.print(Panel(result, title="命令输出", border_style="magenta"))
-                else:
-                    print(result)
-                record_command_execution("exec", cmd)
-
-        # ---- 目录操作 ----
-        elif parsed.cmd_type == "pwd":
-            print(os.getcwd())
-            record_command_execution("pwd")
-        elif parsed.cmd_type == "cd":
-            path = parsed.arg
-            try:
-                os.chdir(path)
-                new_dir = os.getcwd()
-                console.print(f"[green]已切换到: {new_dir}[/green]")
-                record_command_execution("cd", path)
-            except FileNotFoundError:
-                console.print(f"[red]目录不存在: {path}[/red]")
-                should_show_recommendations = False
-            except PermissionError:
-                console.print(f"[red]权限不足: {path}[/red]")
-                should_show_recommendations = False
-            except Exception as e:
-                console.print(f"[red]切换失败: {e}[/red]")
-                should_show_recommendations = False
-        elif parsed.cmd_type == "model":
-            console.print(f"[green]模型: {react_engine.model}[/green]")
-            console.print(f"[green]Ollama: {react_engine.host}[/green]")
-            console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
-            record_command_execution("model")
-
-        # ---- 模式分发 ----
-        elif parsed.cmd_type == "ask":
-            question = parsed.arg
-            # 保存用户原始问题，用于命令记录（避免把网络搜索结果正文塞进历史）
-            original_question = parsed.arg
-            kb_initialized = rag_engine.query_engine is not None
-            if not kb_initialized:
-                console.print("⚠️  知识库未初始化，将根据网络搜索/模型直接回答", style="yellow")
-            
-            # 检测用户是否提供了文件路径（支持图片、PDF、MD、TXT等常见文档格式）
-            import re
-            file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
-            file_path_match = re.search(file_pattern, question)
-            
-            if file_path_match:
-                # 提取文件路径
-                file_path = file_path_match.group()
-                console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
-                console.print("🔄 正在添加到知识库...", style="yellow")
-                
-                try:
-                    # 先添加文件到知识库
-                    from document_loader import load_documents
-                    documents = load_documents(file_path)
-                    if documents:
-                        rag_engine.add_documents(documents, [file_path])
-                        if Config.SHOW_PROGRESS:
-                            console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
-                            total_chars = sum(len(doc.text) for doc in documents)
-                            console.print(f"✅ 总字符数: {total_chars}", style="dim")
-                        else:
-                            console.print("✅ 文件已添加到知识库", style="green")
-                        # 更新问题，移除文件路径部分，保持语义完整性
-                        question = re.sub(re.escape(file_path), '', question)
-                        # 清理多余空格和标点
-                        question = re.sub(r'\s+', ' ', question).strip()
-                        question = question.rstrip('，。,.')
-                        # 如果问题太模糊，添加更具体的查询指导
-                        if not question or question == "/ask" or question in ["请帮我检查", "请帮我分析", "分析", "检查", "看一下", "这张图片里面有什么"]:
-                            question = f"刚刚添加的文件中包含什么内容？文件名是 {Path(file_path).name}"
-                            print(f"💡 使用精确查询: {question}")
-                        else:
-                            # 添加文件名到查询中以提高检索精度
-                            filename = Path(file_path).name
-                            if filename not in question:
-                                question = f"{filename} {question}"
-                        console.print(f"❓ 查询: {question}", style="cyan")
-                    else:
-                        console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
-                except Exception as e:
-                    console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
-            
-            # 检测是否需要网络搜索（最新信息、实时数据等）
-            web_search_keywords = ["最新", "当前", "版本", "今天", "现在", "实时", "发布", "发布时间", "latest", "current", "version", "release"]
-            needs_web_search = any(keyword in question.lower() for keyword in web_search_keywords)
-            
-            web_search_result = ""
-            if needs_web_search:
-                try:
-                    console.print("🌐 检测到需要最新信息，正在网络搜索...", style="cyan")
-                    from agent_tools import web_search
-                    
-                    # 改进搜索查询：从用户问题中提取关键搜索词
-                    search_query = question
-                    
-                    # 移除中文常见查询前缀
-                    prefixes_to_remove = ["帮我", "请帮我", "能否帮我", "可以帮我", "帮我查询", "请帮我查询", 
-                                         "从网络上查询", "从网络查询", "网上查", "网络查", "查询一下", "查一下",
-                                         "告诉我", "请问", "我想知道", "什么是", "什么是"]
-                    for prefix in prefixes_to_remove:
-                        if search_query.startswith(prefix):
-                            search_query = search_query[len(prefix):].strip()
-                    
-                    # 移除常见的查询后缀
-                    suffixes_to_remove = ["是多少", "是什么", "吗", "呢", "？", "?", "。", ".", "！", "!"]
-                    for suffix in suffixes_to_remove:
-                        if search_query.endswith(suffix):
-                            search_query = search_query[:-len(suffix)].strip()
-                    
-                    # 如果清理后的查询太短，使用原标题
-                    if len(search_query) < 3:
-                        search_query = question
-                    
-                    # 尝试中英文查询转换
-                    search_queries = [search_query]
-                    
-                    # 如果查询主要是中文，尝试添加英文翻译
-                    if any('\u4e00' <= char <= '\u9fff' for char in search_query):
-                        # 更智能的关键词翻译和提取
-                        translations = {
-                            "最新": "latest",
-                            "版本": "version",
-                            "当前": "current",
-                            "发布": "release",
-                            "下载": "download",
-                            "安装": "install"
-                        }
-                        
-                        # 提取英文技术术语
-                        tech_terms = []
-                        for term in ["JDK", "Java", "Python", "React", "Node", "JavaScript", "TypeScript", "Vue", "Angular"]:
-                            if term in search_query:
-                                tech_terms.append(term)
-                        
-                        # 构建英文查询
-                        if tech_terms:
-                            # 对于版本查询，使用更精确的搜索词
-                            if "版本" in search_query or "version" in search_query.lower():
-                                if "JDK" in tech_terms or "Java" in tech_terms:
-                                    search_queries.insert(0, "Java SE latest version")  # 更精确的查询
-                                    search_queries.insert(1, "Java downloads Oracle")  # 备用查询
-                                elif "Python" in tech_terms:
-                                    search_queries.insert(0, "Python latest version download")
-                                    search_queries.insert(1, "Python.org downloads")
-                                else:
-                                    # 其他技术术语
-                                    english_query = " ".join(tech_terms)
-                                    for chinese, english in translations.items():
-                                        if chinese in search_query:
-                                            english_query += f" {english}"
-                                    search_queries.insert(0, english_query)
-                            else:
-                                # 非版本查询
-                                english_query = " ".join(tech_terms)
-                                for chinese, english in translations.items():
-                                    if chinese in search_query:
-                                        english_query += f" {english}"
-                                search_queries.insert(0, english_query)
-                        else:
-                            # 没有技术术语，尝试简单翻译
-                            english_query = search_query
-                            for chinese, english in translations.items():
-                                english_query = english_query.replace(chinese, english)
-                            
-                            if english_query != search_query and any('\u4e00' <= char <= '\u9fff' for char in english_query):
-                                # 如果翻译后仍有中文，直接使用技术术语搜索
-                                if any(term in search_query for term in ["JDK", "Java"]):
-                                    search_queries.insert(0, "Java SE latest version")
-                                elif any(term in search_query for term in ["Python"]):
-                                    search_queries.insert(0, "Python latest version")
-                                else:
-                                    search_queries.insert(0, english_query)
-                    
-                    console.print(f"🔍 搜索查询: {search_queries[0]}", style="dim")
-                    
-                    # 尝试多个查询，直到有一个成功
-                    successful_query = None
-                    for query in search_queries:
-                        web_search_result = web_search(query, max_results=5, use_cache=False)
-                        if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
-                            console.print("✅ 网络搜索完成", style="green")
-                            successful_query = query
-                            break
-                        else:
-                            console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
-                    
-                    if web_search_result and not web_search_result.startswith("[错误]") and not web_search_result.startswith("[提示]"):
-                        # 对于版本查询，尝试提取官方下载页面的具体版本信息
-                        if "版本" in search_query or "version" in search_query.lower():
-                            try:
-                                from agent_tools import web_content_extract
-                                # 尝试从搜索结果中提取官方下载页面的内容
-                                import re
-                                # 查找Oracle或Python.org的下载页面
-                                official_urls = []
-                                for line in web_search_result.split('\n'):
-                                    if 'oracle.com/java/technologies/downloads' in line.lower() or \
-                                       'python.org/downloads' in line.lower() or \
-                                       'openjdk.org' in line.lower():
-                                        url_match = re.search(r'https?://[^\s]+', line)
-                                        if url_match:
-                                            official_urls.append(url_match.group())
-                                
-                                if official_urls:
-                                    console.print("📄 正在提取官方页面内容...", style="dim")
-                                    page_content = web_content_extract(official_urls[0], timeout=10)
-                                    if page_content and not page_content.startswith("[错误]"):
-                                        console.print("✅ 官方页面内容提取成功", style="green")
-                                        # 将官方页面内容添加到搜索结果中
-                                        web_search_result += f"\n\n=== 官方页面详细信息 ===\n{page_content[:1000]}"
-                            except Exception as e:
-                                console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
-                        
-                        # 将网络搜索结果添加到问题中，让RAG引擎能够参考
-                        question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
-                    else:
-                        console.print("⚠️ 所有搜索查询均未返回有效结果，继续使用知识库", style="yellow")
-                except Exception as e:
-                    console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
-            
-            # 重新判断知识库状态（用户可能在上面通过文件路径添加了文档并初始化索引）
-            kb_initialized = rag_engine.query_engine is not None
-
-            if kb_initialized:
-                if Config.SHOW_PROGRESS:
-                    result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
-                else:
-                    with console.status("[bold green]检索知识库..."):
-                        result = rag_engine.query_with_sources(question)
-
-                # 回退：知识库已初始化但本次检索未命中任何相关文档（0 个来源 /
-                # LlamaIndex 返回占位 "Empty Response"）时，不应把占位文本抛给用户。
-                # 先尝试网络搜索补充信息，再用 LLM 直接回答。
-                if _is_empty_rag_result(result):
-                    console.print("📭 知识库中未找到相关内容，正在回退到模型回答...", style="yellow")
-                    fallback_prompt = original_question
-                    # 若之前还没做过网络搜索，这里补一次
-                    if not web_search_result:
-                        console.print("🌐 正在网络搜索补充信息...", style="cyan")
-                        web_search_result = _simple_web_search(original_question)
-                        if web_search_result:
-                            console.print("✅ 网络搜索完成", style="green")
-                    if web_search_result:
-                        fallback_prompt = (
-                            f"{original_question}\n\n网络搜索参考信息：\n{web_search_result}"
-                        )
-                    else:
-                        console.print("💡 未获取到网络信息，直接使用模型自身知识回答", style="dim")
-                    with console.status("[bold green]模型思考中..."):
-                        result = {"answer": _llm_direct_answer(fallback_prompt), "sources": []}
-            else:
-                # 知识库未初始化：直接用 LLM 回答（基于网络搜索结果或模型自身知识），
-                # 避免查询空索引抛出 RuntimeError 导致程序崩溃。
-                if not web_search_result:
-                    console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
-                with console.status("[bold green]模型思考中..."):
-                    result = {"answer": _llm_direct_answer(question), "sources": []}
-
-            console.print("\n🤖 回答:", style="bold blue")
-            if HAS_RICH:
-                console.print(Panel(Markdown(result["answer"]), border_style="green"))
-            else:
-                print(result["answer"])
-            last_rag_sources = result["sources"]
-            if last_rag_sources:
-                console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
-            # 只记录用户原始问题，不记录拼接的网络搜索结果正文
-            record_command_execution("ask", original_question)
-            # 将本轮对话写入当前会话（对话历史的单一来源）
-            record_conversation(original_question, result.get("answer", ""))
-
-        elif parsed.cmd_type == "agent":
-            task = parsed.arg
-            answer = ""
-            agent_ok = False
-            try:
-                answer = react_engine.chat(task)
-                agent_ok = True
-            except KeyboardInterrupt:
-                console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
-                react_engine.stop()
-                should_show_recommendations = False
-            except Exception as e:
-                console.print(f"[red]错误: {e}[/red]")
-                should_show_recommendations = False
-
-            if agent_ok:
-                if HAS_RICH:
-                    if "```" in answer or "**" in answer or "#" in answer:
-                        console.print(Markdown(answer))
-                    else:
-                        console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
-                else:
-                    print("\n" + "=" * 50)
-                    print(answer)
-                    print("=" * 50 + "\n")
-
-                if len(react_engine.step_log) > 1:
-                    console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
-                # 将本轮对话写入当前会话（对话历史的单一来源）
-                record_conversation(task, answer)
-            record_command_execution("agent", task)
-
-        # ---- 默认：智能路由 ----
-        elif parsed.cmd_type == "natural":
-            if rag_engine.query_engine is not None:
-                with console.status("[bold green]检索知识库..."):
-                    result = rag_engine.query_with_sources(parsed.arg)
-                console.print("\n🤖 回答:", style="bold blue")
-                if HAS_RICH:
-                    console.print(Panel(Markdown(result["answer"]), border_style="green"))
-                else:
-                    print(result["answer"])
-                last_rag_sources = result["sources"]
-                if last_rag_sources:
-                    console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
-                    console.print("[dim]输入 /sources 查看详细来源 | /agent 切换 Agent 模式[/dim]")
-                record_command_execution("natural", parsed.arg)
-            else:
-                console.print(
-                    "[yellow]知识库未初始化。请选择:[/yellow]\n"
-                    "  1. 输入 /agent <任务> 使用 Agent 模式（代码操作）\n"
-                    "  2. 使用 --data <路径> 启动以构建知识库\n"
-                    "  3. 输入 /add <文件> 添加文档到知识库"
-                )
-                should_show_recommendations = False
-
-        # ---- 未知命令 ----
-        elif parsed.cmd_type == "unknown_cmd":
-            console.print(f"[yellow]未知命令: {parsed.raw}，输入 /help 查看帮助[/yellow]")
-            should_show_recommendations = False
-        
-        # ---- 统一命令推荐显示 ----
-        # 在所有命令处理完成后统一显示推荐，避免在每个命令分支中重复代码
+        # 构造上下文并通过命令表分发。dispatch_command 返回
+        # should_show_recommendations（未匹配的类型如 empty 返回 False）。
+        ctx = _build_cli_context()
+        should_show_recommendations = dispatch_command(ctx, parsed)
+
+        # 处理期间可能更新了运行时状态，同步回模块全局
+        last_rag_sources = ctx.last_rag_sources
+
+        # 统一在命令处理完成后显示推荐
         if should_show_recommendations:
             show_command_recommendations()
 

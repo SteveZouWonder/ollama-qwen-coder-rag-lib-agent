@@ -60,7 +60,8 @@ class KnowledgeSnapshotManager:
     def __init__(self, 
                  index_dir: str = None,
                  snapshot_dir: str = None,
-                 max_snapshots: int = 10):
+                 max_snapshots: int = 10,
+                 cleanup_corrupted: bool = True):
         # 默认路径：打包运行时收纳到用户数据目录，源码运行时保持相对 cwd 的原有行为。
         try:
             from runtime_paths import cwd_data_dir
@@ -76,6 +77,8 @@ class KnowledgeSnapshotManager:
         else:
             self.snapshot_dir = Path(snapshot_dir)
         self.max_snapshots = max_snapshots
+        # 列举快照时是否自动删除损坏文件（消除每次启动的刷屏告警）。
+        self.cleanup_corrupted = cleanup_corrupted
         
         self.chroma_path = str(self.index_dir / "chroma_db")
         self.llama_index_path = str(self.index_dir / "llama_index")
@@ -201,9 +204,21 @@ class KnowledgeSnapshotManager:
                     "file": str(snapshot_file)
                 })
             except (json.JSONDecodeError, KeyError) as e:
-                self.logger.warning(f"跳过损坏的快照文件 {snapshot_file.name}: {e}")
-                # 可选：删除损坏的文件
-                # snapshot_file.unlink()
+                # 自愈：损坏文件无法恢复，直接清理以避免每次启动重复刷屏告警。
+                # 损坏通常源于历史上的非原子写入（已由 _save_snapshot 修复）。
+                if self.cleanup_corrupted:
+                    try:
+                        snapshot_file.unlink()
+                        self.logger.warning(
+                            f"已删除损坏的快照文件 {snapshot_file.name}: {e}"
+                        )
+                    except OSError as unlink_err:
+                        self.logger.warning(
+                            f"跳过损坏的快照文件 {snapshot_file.name}: {e}"
+                            f"（删除失败: {unlink_err}）"
+                        )
+                else:
+                    self.logger.warning(f"跳过损坏的快照文件 {snapshot_file.name}: {e}")
                 continue
         
         return snapshots
@@ -275,10 +290,18 @@ class KnowledgeSnapshotManager:
             }
     
     def _save_snapshot(self, snapshot: KnowledgeSnapshot):
-        """保存快照到文件"""
+        """原子化保存快照到文件。
+
+        采用「先完整序列化到内存 → 写入同目录临时文件 → os.replace 原子替换」
+        的策略，避免序列化中途失败或进程被中断时把目标文件截断成残缺 JSON
+        （历史上曾导致大量快照停在 ``"total_chunks": `` 处而损坏）。
+        """
         snapshot_file = self.snapshot_dir / f"{snapshot.snapshot_id}.json"
-        
-        # 转换为可序列化的格式
+
+        # 转换为可序列化的格式。
+        # 强制 total_chunks 为内置 int：ChromaDB 的 count() 在某些版本可能返回
+        # 非标准整数类型，直接交给 json.dump 可能在写入该值时抛 TypeError，
+        # 导致文件停在 "total_chunks": 处而损坏。
         data = {
             "snapshot_id": snapshot.snapshot_id,
             "timestamp": snapshot.timestamp,
@@ -286,12 +309,31 @@ class KnowledgeSnapshotManager:
             "documents": [asdict(doc) for doc in snapshot.documents],
             "storage_paths": snapshot.storage_paths,
             "model_config": snapshot.model_config,
-            "total_chunks": snapshot.total_chunks,
+            "total_chunks": int(snapshot.total_chunks),
             "metadata": snapshot.metadata
         }
-        
-        with open(snapshot_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        # 1) 先完整序列化到内存：若序列化失败，此时尚未触碰任何文件。
+        payload = json.dumps(data, indent=2, ensure_ascii=False)
+
+        # 2) 写入同目录临时文件并 flush + fsync，确保数据真正落盘。
+        tmp_file = snapshot_file.with_suffix(".json.tmp")
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            # 3) 原子替换：os.replace 在同一文件系统上是原子操作，
+            #    要么是旧文件、要么是完整新文件，不会出现半截内容。
+            os.replace(tmp_file, snapshot_file)
+        except Exception:
+            # 失败时清理临时文件，绝不破坏既有的目标文件。
+            try:
+                if tmp_file.exists():
+                    tmp_file.unlink()
+            except OSError:
+                pass
+            raise
     
     def _cleanup_old_snapshots(self):
         """清理旧快照，保留最近的max_snapshots个"""

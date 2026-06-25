@@ -59,6 +59,16 @@ try:
 except ImportError:
     SECURITY_AVAILABLE = False
 
+# 导入文件元数据管理（用于登记“知识库中有哪些文件”，供 /file-list 等命令读取）
+try:
+    from file_metadata import (
+        get_global_metadata_manager,
+        FilePersistenceType,
+    )
+    FILE_METADATA_AVAILABLE = True
+except ImportError:
+    FILE_METADATA_AVAILABLE = False
+
 
 class RAGEngine:
     """RAG 知识库引擎 - 支持独立查询和 Agent 工具调用"""
@@ -91,6 +101,15 @@ class RAGEngine:
                 print("🔒 内容安全扫描器已启用")
             except Exception as e:
                 print(f"⚠️ 安全扫描器初始化失败: {e}")
+
+        # 初始化文件元数据管理器（与 /file-list 等命令共享同一全局实例，
+        # 确保文档入库时登记的元数据可被文件管理命令读取）。
+        self.metadata_manager = None
+        if FILE_METADATA_AVAILABLE:
+            try:
+                self.metadata_manager = get_global_metadata_manager()
+            except Exception as e:
+                print(f"⚠️ 文件元数据管理器初始化失败: {e}")
 
     def _setup_llm(self):
         """配置 Ollama LLM"""
@@ -149,6 +168,11 @@ class RAGEngine:
             self._persist_index()
 
         self._setup_query_engine()
+
+        # 登记文件元数据（供 /file-list 等命令读取）。复用上面创建的 node_parser，
+        # 避免重复构造 SentenceSplitter。
+        self._register_file_metadata(documents, file_paths, splitter=node_parser)
+
         print("✅ 索引构建完成！")
         return self.index
 
@@ -158,6 +182,93 @@ class RAGEngine:
         persist_dir.mkdir(exist_ok=True)
         self.index.storage_context.persist(persist_dir=str(persist_dir))
         print(f"💾 索引已保存到: {persist_dir}")
+
+    def _register_file_metadata(
+        self,
+        documents: List[Document],
+        file_paths: Optional[List[str]] = None,
+        splitter: Optional["SentenceSplitter"] = None,
+    ):
+        """将本次入库的文件登记到文件元数据管理器。
+
+        修复历史问题：文档仅写入向量库而从未登记元数据，导致 /file-list、
+        /file-info、/file-stats 等命令永远显示“没有文件”。
+
+        登记策略：
+          - 优先按文档自带的 ``metadata['file_path']`` 分组统计 document_count；
+          - 缺失时回退到传入的 ``file_paths``；
+          - chunk_count 用与索引一致的 SentenceSplitter 切分估算；
+          - file_hash 基于文件内容计算，便于去重命令识别重复。
+        """
+        if not self.metadata_manager:
+            return
+
+        try:
+            # 1) 按来源文件分组：path -> 该文件的 Document 列表
+            grouped: dict[str, List[Document]] = {}
+            for doc in documents:
+                meta = getattr(doc, "metadata", None) or {}
+                fp = meta.get("file_path") or meta.get("source")
+                if fp:
+                    grouped.setdefault(str(fp), []).append(doc)
+
+            # 2) 文档未携带 file_path 时，回退到调用方提供的 file_paths
+            if not grouped and file_paths:
+                for fp in file_paths:
+                    grouped.setdefault(str(fp), [])
+
+            if not grouped:
+                return
+
+            # 复用调用方传入的切分器（如 build_index 已创建的），否则按需新建，
+            # 避免重复构造 SentenceSplitter。
+            if splitter is None:
+                splitter = SentenceSplitter(
+                    chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
+                )
+
+            for fp, docs in grouped.items():
+                document_count = len(docs)
+                # 估算 chunk 数：对该文件的所有文档做与索引一致的切分
+                try:
+                    chunk_count = len(splitter.get_nodes_from_documents(docs)) if docs else 0
+                except Exception:
+                    chunk_count = document_count
+
+                file_hash = self._compute_file_hash(fp)
+
+                # 已登记则更新计数，否则新增
+                existing = self.metadata_manager.get_file_metadata(fp)
+                if existing is None:
+                    self.metadata_manager.add_file(
+                        file_path=fp,
+                        persistence_type=FilePersistenceType.PERMANENT,
+                        file_hash=file_hash,
+                    )
+                self.metadata_manager.update_file_metadata(
+                    fp,
+                    document_count=document_count,
+                    chunk_count=chunk_count,
+                    file_hash=file_hash,
+                )
+        except Exception as e:  # noqa: BLE001 - 登记失败不应影响入库主流程
+            print(f"⚠️ 文件元数据登记失败: {e}")
+
+    @staticmethod
+    def _compute_file_hash(file_path: str) -> Optional[str]:
+        """计算文件内容的 SHA-256 哈希（文件不存在或读取失败返回 None）。"""
+        import hashlib
+        try:
+            path = Path(file_path)
+            if not path.exists() or not path.is_file():
+                return None
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for block in iter(lambda: f.read(65536), b""):
+                    h.update(block)
+            return h.hexdigest()
+        except Exception:
+            return None
 
     def load_index(self) -> Optional[VectorStoreIndex]:
         """从磁盘加载索引"""
@@ -173,8 +284,55 @@ class RAGEngine:
         )
         self.index = load_index_from_storage(storage_context)
         self._setup_query_engine()
+
+        # 存量补全：历史上文档只入向量库而未登记文件元数据，这里从向量库
+        # 反向补登记，使 /file-list 等命令对已有知识库也能正确显示文件。
+        self._backfill_file_metadata_from_vector_store()
+
         print("✅ 索引加载完成！")
         return self.index
+
+    def _backfill_file_metadata_from_vector_store(self):
+        """从 ChromaDB 反向补全缺失的文件元数据。
+
+        仅登记尚未在元数据管理器中的文件，避免覆盖已有计数；按 file_path 聚合
+        chunk 数（向量库中每条记录对应一个 chunk）。
+        """
+        if not self.metadata_manager:
+            return
+        try:
+            data = self.chroma_collection.get(include=["metadatas"])
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️ 读取向量库元数据失败，跳过存量补全: {e}")
+            return
+
+        metadatas = (data or {}).get("metadatas") or []
+        # 统计每个文件的 chunk 数
+        chunk_counts: dict[str, int] = {}
+        for meta in metadatas:
+            if not meta:
+                continue
+            fp = meta.get("file_path") or meta.get("source")
+            if fp:
+                chunk_counts[str(fp)] = chunk_counts.get(str(fp), 0) + 1
+
+        registered = 0
+        for fp, chunk_count in chunk_counts.items():
+            if self.metadata_manager.get_file_metadata(fp) is not None:
+                continue  # 已登记，保留既有计数
+            try:
+                self.metadata_manager.add_file(
+                    file_path=fp,
+                    persistence_type=FilePersistenceType.PERMANENT,
+                    file_hash=self._compute_file_hash(fp),
+                )
+                self.metadata_manager.update_file_metadata(fp, chunk_count=chunk_count)
+                registered += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ 补登记文件元数据失败 {fp}: {e}")
+
+        if registered:
+            print(f"🔄 已为 {registered} 个既有文件补全元数据登记")
 
     def _setup_query_engine(self):
         """配置查询引擎"""
@@ -223,7 +381,10 @@ class RAGEngine:
 
         self._persist_index()
         print("✅ 文档添加完成！")
-        
+
+        # 登记文件元数据（供 /file-list 等命令读取）
+        self._register_file_metadata(documents, file_paths)
+
         # 触发自动快照
         if self.auto_snapshot_trigger and file_paths:
             try:

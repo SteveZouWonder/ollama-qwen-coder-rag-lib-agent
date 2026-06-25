@@ -68,6 +68,66 @@ def setup_settings_mock():
         yield
 
 
+@pytest.fixture(autouse=True, scope="function")
+def isolate_file_metadata(tmp_path_factory):
+    """全局fixture：将文件元数据全局单例隔离到临时目录。
+
+    RAGEngine 入库时会通过 get_global_metadata_manager() 登记文件元数据；
+    若不隔离，使用 MagicMock 文档的测试会把伪造路径写入真实的
+    .devin/file_metadata/metadata.json，污染用户数据。本 fixture 在每个
+    测试前后将全局单例重置为临时目录，测试间互不影响、也不触碰真实文件。
+    """
+    try:
+        import file_metadata as fm
+    except ImportError:
+        yield
+        return
+
+    tmp_dir = tmp_path_factory.mktemp("file_metadata")
+    saved = getattr(fm, "_global_metadata_manager", None)
+    fm._global_metadata_manager = fm.FileMetadataManager(storage_path=str(tmp_dir))
+    try:
+        yield
+    finally:
+        fm._global_metadata_manager = saved
+
+
+@pytest.fixture(autouse=True, scope="function")
+def isolate_knowledge_graph(tmp_path_factory):
+    """全局fixture：将知识图谱全局单例隔离到临时目录。
+
+    KnowledgeGraphBuilder 现在会自动持久化到 .devin/knowledge/graph.json，
+    若不隔离，测试构建/清空图谱会读写真实文件、污染用户数据，且测试间共享
+    持久化状态会相互影响。本 fixture 把全局 builder/query 单例重置为临时
+    路径，并在测试结束后恢复。
+    """
+    try:
+        import knowledge_graph.graph_builder as gb
+        import knowledge_graph.graph_query as gq
+    except ImportError:
+        yield
+        return
+
+    tmp_dir = tmp_path_factory.mktemp("knowledge_graph")
+    saved_builder = getattr(gb, "_graph_builder", None)
+    saved_query = getattr(gq, "_graph_query", None)
+    saved_override = getattr(gb, "_DEFAULT_PERSIST_PATH_OVERRIDE", None)
+
+    # 重定向默认持久化路径：覆盖单例与“直接 KnowledgeGraphBuilder()”两类构造，
+    # 确保任何测试都写入临时目录、不触碰真实 .devin/knowledge/graph.json。
+    gb.set_default_persist_path(str(tmp_dir / "graph.json"))
+    gb._graph_builder = gb.KnowledgeGraphBuilder(
+        persist_path=str(tmp_dir / "graph.json")
+    )
+    gq._graph_query = None  # 下次 get_graph_query() 会基于新 builder 重建
+    try:
+        yield
+    finally:
+        gb.set_default_persist_path(saved_override)
+        gb._graph_builder = saved_builder
+        gq._graph_query = saved_query
+
+
 @pytest.fixture
 def clean_env():
     """
