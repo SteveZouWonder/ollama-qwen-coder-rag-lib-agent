@@ -9,6 +9,17 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+## [v0.0.5] - 2026-06-25
+
+### 新增
+- README 顶部新增 CLI 三模式演示 GIF 与桌面应用演示 GIF
+- 新增演示 GIF 生成脚本 `docs/assets/demo_script.sh`
+
+### 改进
+- 优化 README 首屏：居中布局、项目定位副标题、徽章、四大卖点与快捷导航
+- CLI 启动 banner 改用 Cerebro ASCII 艺术字，与 README/演示 GIF 视觉统一
+- 纯文本（无 Rich）环境的 banner 保留 `Cerebro` 产品名，提升可读性
+
 ### 发布流程
 - Release Notes 改为从 CHANGELOG 提取当前版本正文（关闭 GitHub 自动 PR 汇总），使发布说明与 CHANGELOG 内容一致；未归档时回退提取 `[Unreleased]`
 - Release 正文末尾保留「完整对比」链接（自动计算上一个版本 tag）
