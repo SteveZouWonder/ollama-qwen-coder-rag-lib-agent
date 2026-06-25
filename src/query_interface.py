@@ -373,7 +373,7 @@ Git 命令：
 
 知识图谱命令：
   /graph-query <query>        图谱查询
-  /graph-build                构建知识图谱
+  /graph-build <文本|@文件>   构建知识图谱
 """
 
 def show_tutorial():
@@ -595,7 +595,7 @@ def print_help():
 
 知识图谱管理命令（新功能）：
   /graph-query <query>      查询知识图谱
-  /graph-build              构建知识图谱
+  /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
 
 数据库管理命令（新功能）：
   /db-connect <type> <database>  连接数据库

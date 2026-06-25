@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -747,10 +748,63 @@ def handle_graph_query(ctx, parsed):
 
 
 def handle_graph_build(ctx, parsed):
+    """从文本或文件构建知识图谱。
+
+    用法：
+      /graph-build <文本>        直接用这段文本构建
+      /graph-build @<文件路径>   读取文件内容后构建
+    """
     console = ctx.console
-    console.print("📝 知识图谱构建需要文本内容", style="cyan")
-    console.print("请使用 Agent 模式调用 knowledge_graph_build 工具", style="yellow")
-    return False
+    arg = parsed.arg.strip()
+    if not arg:
+        console.print("📝 知识图谱构建需要文本内容。用法：", style="cyan")
+        console.print("  /graph-build <文本>        直接用这段文本构建", style="dim")
+        console.print("  /graph-build @<文件路径>   读取文件内容后构建", style="dim")
+        return False
+
+    # 解析输入：@路径 → 读文件；否则视为内联文本
+    doc_id = "manual"
+    doc_type = "text"
+    if arg.startswith("@"):
+        file_path = arg[1:].strip()
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            console.print(f"❌ 文件不存在: {file_path}", style="yellow")
+            return False
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"❌ 读取文件失败: {e}", style="red")
+            ctx.record_command("graph_build", file_path, "failed", str(e))
+            return False
+        if not text.strip():
+            console.print(f"⚠️ 文件内容为空: {file_path}", style="yellow")
+            return False
+        doc_id = path.name
+        # 常见代码后缀使用 code 抽取策略，其余按文本
+        code_suffixes = {".py", ".js", ".ts", ".java", ".go", ".rs", ".c",
+                         ".cpp", ".h", ".hpp", ".rb", ".php", ".cs", ".kt", ".swift"}
+        doc_type = "code" if path.suffix.lower() in code_suffixes else "text"
+        record_arg = f"@{file_path}"
+    else:
+        text = arg
+        record_arg = arg[:50]
+
+    try:
+        console.print("🔨 正在构建知识图谱...", style="cyan")
+        result = ctx.registry.execute(
+            "knowledge_graph_build",
+            {"text": text, "doc_id": doc_id, "doc_type": doc_type},
+        )
+        if _is_error(result):
+            console.print(result, style="red")
+            return False
+        console.print(result, style="green")
+        ctx.record_command("graph_build", record_arg)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 知识图谱构建失败: {e}", style="red")
+        ctx.record_command("graph_build", record_arg, "failed", str(e))
+    return True
 
 
 # ==================== 数据库管理命令 ====================
