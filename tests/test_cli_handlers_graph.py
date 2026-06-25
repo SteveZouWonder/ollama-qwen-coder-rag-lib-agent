@@ -140,3 +140,62 @@ class TestGraphQueryRouting:
         h.handle_graph_query(ctx, self._pq("http://example.com"))
         _, params = reg.execute.call_args.args
         assert params == {"query": "http://example.com", "query_type": "entity"}
+
+
+class TestGitAnalyze:
+    """/git-analyze 与 /git-commit-gen handler 测试（修复静默无输出）"""
+
+    def _ctx(self, result="OK"):
+        reg = MagicMock()
+        reg.execute.return_value = result
+        ctx = h.CLIContext(console=MagicMock(), has_rich=False,
+                           registry=reg, record_command=MagicMock())
+        return ctx, reg
+
+    def _pq(self, arg):
+        return ParsedCommand("git_analyze", f"/git-analyze {arg}", arg)
+
+    def test_no_arg_defaults_to_history(self):
+        ctx, reg = self._ctx("最近 1 次提交")
+        assert h.handle_git_analyze(ctx, self._pq("")) is True
+        _, params = reg.execute.call_args.args
+        assert params == {"repo_path": ".", "analysis_type": "history"}
+
+    def test_status_type(self):
+        ctx, reg = self._ctx("当前分支: main")
+        h.handle_git_analyze(ctx, self._pq("status"))
+        _, params = reg.execute.call_args.args
+        assert params["analysis_type"] == "status"
+
+    def test_author_alias_maps_to_authors(self):
+        ctx, reg = self._ctx("作者统计:")
+        h.handle_git_analyze(ctx, self._pq("author"))
+        _, params = reg.execute.call_args.args
+        assert params["analysis_type"] == "authors"
+
+    def test_unknown_type_returns_false_without_tool(self):
+        ctx, reg = self._ctx()
+        assert h.handle_git_analyze(ctx, self._pq("bogus")) is False
+        reg.execute.assert_not_called()
+
+    def test_tool_error_surfaced(self):
+        ctx, reg = self._ctx("[错误] Git 集成模块未安装")
+        assert h.handle_git_analyze(ctx, self._pq("history")) is False
+
+    def test_commit_gen_invokes_tool(self):
+        reg = MagicMock()
+        reg.execute.return_value = "建议的提交信息:\n标题: feat: x"
+        ctx = h.CLIContext(console=MagicMock(), has_rich=False,
+                           registry=reg, record_command=MagicMock())
+        r = h.handle_git_commit_gen(
+            ctx, ParsedCommand("git_commit_gen", "/git-commit-gen", "")
+        )
+        assert r is True
+        name, params = reg.execute.call_args.args
+        assert name == "git_commit_gen"
+        assert params == {"repo_path": ".", "use_ai": True}
+
+    def test_commands_registered_in_table(self):
+        from cli_handlers import COMMAND_HANDLERS
+        assert "git_analyze" in COMMAND_HANDLERS
+        assert "git_commit_gen" in COMMAND_HANDLERS

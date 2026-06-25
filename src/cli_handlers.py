@@ -863,6 +863,65 @@ def handle_graph_build(ctx, parsed):
     return True
 
 
+# ==================== Git 命令 ====================
+
+# /git-analyze 支持的分析类型；含常见单复数别名以提升容错。
+_GIT_ANALYSIS_TYPES = {
+    "history": "history",
+    "status": "status",
+    "authors": "authors",
+    "author": "authors",   # 容错别名
+    "commit": "history",   # 容错别名
+    "commits": "history",
+}
+
+
+def handle_git_analyze(ctx, parsed):
+    """Git 分析：history（提交历史）/ status（工作区状态）/ authors（作者统计）。"""
+    console = ctx.console
+    arg = parsed.arg.strip().lower()
+    analysis_type = "history" if not arg else _GIT_ANALYSIS_TYPES.get(arg)
+    if analysis_type is None:
+        console.print(
+            f"❌ 未知的分析类型 '{parsed.arg.strip()}'，支持: history / status / authors",
+            style="yellow",
+        )
+        return False
+    try:
+        console.print(f"🔍 正在进行 Git 分析: {analysis_type}", style="cyan")
+        result = ctx.registry.execute(
+            "git_analyze", {"repo_path": ".", "analysis_type": analysis_type}
+        )
+        if _is_error(result):
+            console.print(result, style="red")
+            return False
+        console.print(result, style="green")
+        ctx.record_command("git_analyze", analysis_type)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ Git 分析失败: {e}", style="red")
+        ctx.record_command("git_analyze", analysis_type, "failed", str(e))
+    return True
+
+
+def handle_git_commit_gen(ctx, parsed):
+    """基于工作区变更生成（AI）提交信息建议。"""
+    console = ctx.console
+    try:
+        console.print("🔍 正在生成提交信息...", style="cyan")
+        result = ctx.registry.execute(
+            "git_commit_gen", {"repo_path": ".", "use_ai": True}
+        )
+        if _is_error(result):
+            console.print(result, style="red")
+            return False
+        console.print(result, style="green")
+        ctx.record_command("git_commit_gen")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 生成提交信息失败: {e}", style="red")
+        ctx.record_command("git_commit_gen", "", "failed", str(e))
+    return True
+
+
 # ==================== 数据库管理命令 ====================
 
 def handle_db_connect(ctx, parsed):
@@ -1038,6 +1097,8 @@ COMMAND_HANDLERS: dict[str, Callable[[CLIContext, Any], bool]] = {
     "code_quality": handle_code_quality,
     "graph_query": handle_graph_query,
     "graph_build": handle_graph_build,
+    "git_analyze": handle_git_analyze,
+    "git_commit_gen": handle_git_commit_gen,
     "db_connect": handle_db_connect,
     "db_query": handle_db_query,
     "db_execute": handle_db_execute,
