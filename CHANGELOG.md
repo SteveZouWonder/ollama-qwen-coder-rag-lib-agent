@@ -9,6 +9,11 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 发布流程
+- `bump_changelog.py`：`[Unreleased]` 为空时按 Conventional Commits 从上一个版本 tag 到本次 tag 的提交自动生成变更内容，发布不再因空区段中断；新增 `--since/--until/--no-git-fallback` 参数，存在人工记录时仍优先采用
+- 为 changelog job 添加 `pull-requests` 写权限，修复归档 PR 创建失败
+- pip-audit 安全门禁忽略不适用于本项目的 `CVE-2026-12243`（nltk 路径穿越，仅为 llama-index 传递依赖且从不以用户可控输入调用其资源加载 API，上游暂无修复版本），修复 CI/PR 门禁误报失败
+
 ## [v0.0.6] - 2026-06-25
 
 ### 新增
