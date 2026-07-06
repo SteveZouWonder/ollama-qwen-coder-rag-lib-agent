@@ -26,6 +26,71 @@ class ContentExtractor:
         except ImportError:
             self.logger.warning("trafilatura 未安装，将使用备用提取方法")
             return False
+
+    def _build_trafilatura_config(self):
+        """构造健壮的 trafilatura 配置。
+
+        PyInstaller 打包或损坏的用户配置可能导致 trafilatura 的 DEFAULT_CONFIG
+        缺少 settings.cfg 中的选项，运行时会抛出诸如
+        "No option 'download_timeout' in section: 'DEFAULT'" 的错误。
+        这里以内置 DEFAULT_CONFIG 为基础并补齐关键项，保证下载/提取始终可用。
+        返回 ConfigParser；若无法构造则返回 None（回退到默认行为）。
+        """
+        try:
+            from configparser import ConfigParser
+            from pathlib import Path
+            import trafilatura.settings as ts
+
+            config = ConfigParser()
+
+            # 基线优先级：
+            # 1) 直接读取随包发布的 settings.cfg 文件（最可靠）；
+            # 2) 退而使用运行时 DEFAULT_CONFIG（可能已被污染或为空）。
+            loaded = False
+            try:
+                cfg_path = Path(ts.__file__).parent / "settings.cfg"
+                if cfg_path.is_file():
+                    config.read(str(cfg_path))
+                    loaded = config.has_option("DEFAULT", "DOWNLOAD_TIMEOUT")
+            except Exception:  # noqa: BLE001
+                loaded = False
+
+            if not loaded:
+                try:
+                    default_cfg = getattr(ts, "DEFAULT_CONFIG", None)
+                    if default_cfg is not None:
+                        for section in default_cfg.sections():
+                            config[section] = dict(default_cfg[section])
+                        config["DEFAULT"] = dict(default_cfg["DEFAULT"])
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # 补齐 trafilatura 下载/提取所需的关键默认项，防止缺项报错
+            defaults = {
+                "DOWNLOAD_TIMEOUT": "30",
+                "MAX_FILE_SIZE": "20000000",
+                "MIN_FILE_SIZE": "10",
+                "MIN_EXTRACTED_SIZE": "250",
+                "MIN_EXTRACTED_COMM_SIZE": "1",
+                "MIN_OUTPUT_SIZE": "1",
+                "MIN_OUTPUT_COMM_SIZE": "1",
+                "MIN_DUPLCHECK_SIZE": "100",
+                "MAX_REPETITIONS": "2",
+                "SLEEP_TIME": "5.0",
+                "MAX_REDIRECTS": "2",
+                "EXTRACTION_TIMEOUT": "30",
+                "EXTENSIVE_DATE_SEARCH": "on",
+                "EXTERNAL_URLS": "off",
+                "USER_AGENTS": "",
+                "COOKIE": "",
+            }
+            for key, value in defaults.items():
+                if not config.has_option("DEFAULT", key):
+                    config.set("DEFAULT", key, value)
+            return config
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug(f"构造 trafilatura 配置失败，回退默认: {e}")
+            return None
     
     def _check_beautifulsoup(self) -> bool:
         """检查 beautifulsoup4 是否可用"""
@@ -85,11 +150,21 @@ class ContentExtractor:
             # 使用异步方式执行同步操作
             import asyncio
             loop = asyncio.get_event_loop()
-            
-            downloaded = await loop.run_in_executor(
-                None,
-                lambda: trafilatura.fetch_url(url)
-            )
+
+            config = self._build_trafilatura_config()
+
+            def _fetch():
+                # 传入健壮配置，规避打包环境缺失 settings.cfg 导致的
+                # "No option 'download_timeout'" 等错误；旧版本不支持 config
+                # 参数时回退到无参调用。
+                if config is not None:
+                    try:
+                        return trafilatura.fetch_url(url, config=config)
+                    except TypeError:
+                        pass
+                return trafilatura.fetch_url(url)
+
+            downloaded = await loop.run_in_executor(None, _fetch)
             
             if downloaded:
                 content = trafilatura.extract(
