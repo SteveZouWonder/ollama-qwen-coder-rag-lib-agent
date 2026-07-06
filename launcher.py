@@ -94,4 +94,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # PyInstaller/多进程：冻结环境下 multiprocessing 子进程会重新执行本入口。
+    # 必须在最开始调用 freeze_support()，否则子进程会把
+    # "-B -S -I -c from multiprocessing.resource_tracker import main;main(N)"
+    # 当作 CLI 参数解析，报 "unrecognized arguments"。
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     sys.exit(main())

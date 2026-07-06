@@ -9,6 +9,28 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 修复
+- `/ask` 检索为 0 且答非所问：
+  - 相似度阈值 `SIMILARITY_CUTOFF` 由 `0.4` 下调至 `0.3`，避免元/概览类查询
+    因语义分数偏低（实测约 0.39）被全部过滤
+  - "知识库里有什么/列出文件"等元问题直接返回知识库概览（文件列表 + 统计），
+    不再走向量检索、不再联网，从根源杜绝答非所问
+- `launcher.py` 补 `multiprocessing.freeze_support()`：修复打包环境下多进程子进程
+  重执行入口导致的 `unrecognized arguments ... resource_tracker` 报错
+- 打包后网页提取报 `No option 'download_timeout' in section: 'DEFAULT'`：
+  - PyInstaller spec 将 `trafilatura` 改用 `collect_all` 完整收集，随包打入其
+    `settings.cfg` 数据文件
+  - `ContentExtractor` 为 `trafilatura.fetch_url` 显式传入健壮配置并补齐关键
+    默认项，即使 `settings.cfg` 缺失或用户配置损坏也不再崩溃（旧版本无 `config`
+    参数时自动回退）
+  - `requirements*.txt` 将 `trafilatura` 下限提升至 `>=2.0.0`（`<2.0` 存在
+    配置缺项问题）
+
+### 改进
+- `/ask` 回答策略：知识库检索内容与网络搜索结果**分区标注、综合总结**，明确区分
+  来源；知识库 0 命中时不再把网络结果冒充成知识库回答，并显式声明来源
+- 新增网络来源结构化展示（标题 + 链接），`/sources` 同时列出知识库来源与网络来源
+
 ## [v0.0.6] - 2026-06-25
 
 ### 新增
