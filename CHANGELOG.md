@@ -9,6 +9,8 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+## [v0.0.7] - 2026-07-06
+
 ### 发布流程
 - `bump_changelog.py`：`[Unreleased]` 为空时按 Conventional Commits 从上一个版本 tag 到本次 tag 的提交自动生成变更内容，发布不再因空区段中断；新增 `--since/--until/--no-git-fallback` 参数，存在人工记录时仍优先采用
 - 为 changelog job 添加 `pull-requests` 写权限，修复归档 PR 创建失败
