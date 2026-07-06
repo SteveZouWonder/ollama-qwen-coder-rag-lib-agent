@@ -54,9 +54,10 @@ VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1024"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 TOP_K = int(os.getenv("TOP_K", "10"))
-# nomic-embed-text 使用余弦相似度，相关结果分数通常在 0.4~0.75 之间，
-# 0.7 阈值过高会过滤掉大量有效结果，推荐使用 0.4 作为更合理的下限
-SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.4"))
+# nomic-embed-text 使用余弦相似度，相关结果分数通常在 0.3~0.75 之间。
+# 对“知识库里有什么”这类元/概览查询，正文语义分数偏低（实测约 0.39），
+# 0.4 阈值会把有效结果全部过滤，导致检索为 0；下调到 0.3 作为更合理的下限。
+SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.3"))
 
 # ==================== Agent 配置 ====================
 # 打包运行时收纳到用户数据目录，源码运行时仍为 ~/.code_agent_history.json
