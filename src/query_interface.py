@@ -192,6 +192,7 @@ except ImportError:
 rag_engine: RAGEngine = None
 react_engine: ReActEngine = None
 last_rag_sources = []
+last_web_sources = []  # 上次回答引用的网络来源（[{title, url}]），供 /sources 展示
 command_recommender: CommandRecommender = None
 
 
@@ -1232,6 +1233,149 @@ def _is_empty_rag_result(result: dict) -> bool:
     return len(sources) == 0 or answer == "" or answer == "Empty Response"
 
 
+# ==================== 元/概览类问题：直连知识库概览，不检索不联网 ====================
+
+# “知识库里有什么/有哪些文件/列出文档”这类问题是关于知识库本身的元信息，
+# 向量检索按正文语义匹配，天然分数低（实测约 0.39），极易被相似度阈值全部过滤，
+# 导致 0 命中并错误回退到网络搜索。此类问题应直接返回文件列表 + 统计。
+_META_QUERY_PATTERNS = (
+    "知识库里有什么", "知识库有什么", "知识库里面有什么", "知识库中有什么",
+    "知识库里有哪些", "知识库有哪些", "知识库里面有哪些", "知识库中有哪些",
+    "有哪些文件", "有哪些文档", "有什么文件", "有什么文档",
+    "列出文件", "列出文档", "列举文件", "列举文档", "文件列表", "文档列表",
+    "知识库内容", "知识库里面有内容", "知识库有多少",
+    "what is in the knowledge base", "what's in the knowledge base",
+    "list files", "list documents", "what files", "what documents",
+)
+
+
+def _is_meta_query(question: str) -> bool:
+    """判断是否为“关于知识库本身”的元/概览类问题。"""
+    if not question:
+        return False
+    q = question.strip().lower()
+    return any(pat in q for pat in _META_QUERY_PATTERNS)
+
+
+def _answer_meta_query() -> bool:
+    """直接返回知识库概览（文件列表 + 统计），不做向量检索、不联网。
+
+    返回 True 表示已处理（命中元问题），False 表示未能处理（交回常规流程）。
+    """
+    try:
+        from file_metadata import get_global_metadata_manager
+        manager = get_global_metadata_manager()
+        files = manager.list_files()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"读取文件元数据失败: {e}")
+        files = []
+
+    stats = {}
+    try:
+        if rag_engine is not None:
+            stats = rag_engine.get_stats()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"读取知识库统计失败: {e}")
+
+    console.print("\n📚 知识库概览:", style="bold blue")
+    if not files:
+        console.print("📭 知识库中暂无已登记的文件。", style="yellow")
+        if stats.get("total_documents"):
+            console.print(
+                f"[dim]（向量库中存在 {stats['total_documents']} 个文档片段，"
+                f"但未登记文件元数据）[/dim]"
+            )
+    else:
+        console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
+        for fm in files:
+            try:
+                size = manager._format_size(fm.file_size)
+            except Exception:  # noqa: BLE001
+                size = "?"
+            console.print(f"  📄 {fm.file_path}  [dim]({size})[/dim]")
+
+    if stats:
+        console.print(
+            f"\n[dim]文档片段总数: {stats.get('total_documents', '?')} | "
+            f"Embedding: {stats.get('embed_model', '?')}[/dim]"
+        )
+    return True
+
+
+# ==================== 方案 B：知识库/网络来源分区与综合回答 ====================
+
+
+def _parse_web_sources(search_result: str) -> list:
+    """从网络搜索结果文本中解析出结构化来源 [{title, url}]。
+
+    format_results(text) 的格式为：
+        N. 标题
+           URL: https://...
+    """
+    import re
+    sources = []
+    if not search_result:
+        return sources
+    lines = search_result.splitlines()
+    pending_title = ""
+    for line in lines:
+        m_title = re.match(r"^\s*\d+\.\s+(.*)$", line)
+        if m_title:
+            pending_title = m_title.group(1).strip()
+            continue
+        m_url = re.match(r"^\s*URL:\s*(\S+)", line)
+        if m_url:
+            sources.append({"title": pending_title or m_url.group(1), "url": m_url.group(1)})
+            pending_title = ""
+    return sources
+
+
+def print_web_sources(sources: list):
+    """渲染网络来源区块（与知识库来源明确区分）。"""
+    if not sources:
+        return
+    if HAS_RICH:
+        table = Table(title="🌐 网络来源", show_lines=False)
+        table.add_column("#", style="dim", justify="right", no_wrap=True)
+        table.add_column("标题", style="cyan")
+        table.add_column("链接", style="blue")
+        for i, src in enumerate(sources, 1):
+            table.add_row(str(i), src.get("title", ""), src.get("url", ""))
+        console.print(table)
+    else:
+        print("=== 🌐 网络来源 ===")
+        for i, src in enumerate(sources, 1):
+            print(f"  {i}. {src.get('title', '')}")
+            print(f"     {src.get('url', '')}")
+
+
+def _synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
+    """组装“知识库/网络分区标注”的结构化 prompt，要求 LLM 区分来源并综合总结。"""
+    parts = [
+        "你是一个严谨的问答助手。请根据下面两类来源回答问题，并遵守规则：",
+        "1. 【知识库检索内容】来自用户的本地知识库，是权威且优先的依据；",
+        "2. 【网络搜索补充】来自互联网，仅作补充参考，可能不准确；",
+        "3. 回答中必须明确区分：哪些结论来自知识库、哪些来自网络；",
+        "4. 若两类来源冲突，以知识库为准并指出差异；",
+        "5. 若知识库内容不足以回答，明确说明，再用网络信息补充。",
+        "",
+        f"【问题】\n{question}",
+        "",
+    ]
+    if kb_context:
+        parts.append(f"【知识库检索内容】（本地文档，优先依据）\n{kb_context}")
+    else:
+        parts.append("【知识库检索内容】\n（无相关内容）")
+    parts.append("")
+    if web_context:
+        parts.append(f"【网络搜索补充】（互联网，仅供参考）\n{web_context}")
+    else:
+        parts.append("【网络搜索补充】\n（无）")
+    parts.append("")
+    parts.append("请给出综合回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
+    return "\n".join(parts)
+
+
 # ==================== 与引擎/主循环状态强耦合的命令处理 ====================
 # 这些命令需要直接读写 rag_engine / react_engine / last_rag_sources 等运行时
 # 状态，故保留在本模块（而非 cli_handlers），但同样抽成独立函数，使交互主循环
@@ -1387,11 +1531,24 @@ def handle_model(ctx, parsed):
 
 def handle_ask(ctx, parsed):
     """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。"""
-    global last_rag_sources
+    global last_rag_sources, last_web_sources
     import re
 
     question = parsed.arg
     original_question = parsed.arg  # 用于命令记录，避免把搜索结果正文塞进历史
+
+    # 情况 C：元/概览类问题（“知识库里有什么/列出文件”）直接返回概览，
+    # 不走向量检索、不联网，避免被相似度阈值全部过滤导致答非所问。
+    if _is_meta_query(original_question):
+        _answer_meta_query()
+        last_rag_sources = []
+        last_web_sources = []
+        ctx.last_rag_sources = last_rag_sources
+        ctx.last_web_sources = last_web_sources
+        record_command_execution("ask", original_question)
+        record_conversation(original_question, "[知识库概览]")
+        return True
+
     kb_initialized = rag_engine.query_engine is not None
     if not kb_initialized:
         console.print("⚠️  知识库未初始化，将根据网络搜索/模型直接回答", style="yellow")
@@ -1402,20 +1559,30 @@ def handle_ask(ctx, parsed):
     if file_path_match:
         question = _ingest_inline_file(file_path_match.group(), question)
 
-    # 网络搜索增强（LLM 驱动的通用查询规划）
+    # 网络搜索增强（LLM 驱动的通用查询规划）。保留结构化来源用于分区展示。
     web_search_result = _augment_with_web_search(question)
-    if web_search_result:
-        question = f"{question}\n\n网络搜索参考信息：\n{web_search_result}"
+    web_sources = _parse_web_sources(web_search_result) if web_search_result else []
 
-    # 生成回答（含空命中回退）
+    # 生成回答：知识库与网络来源分区标注、综合总结（方案 B）
     result = _answer_question(question, original_question, web_search_result)
 
     console.print("\n🤖 回答:", style="bold blue")
     _render_answer(result["answer"])
+
     last_rag_sources = result["sources"]
+    last_web_sources = web_sources
     ctx.last_rag_sources = last_rag_sources
+    ctx.last_web_sources = last_web_sources
+
+    # 确定性双区块来源展示：明确区分知识库来源与网络来源
     if last_rag_sources:
-        console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
+        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段", style="dim")
+    if last_web_sources:
+        console.print()
+        print_web_sources(last_web_sources)
+    if last_rag_sources or last_web_sources:
+        console.print("[dim]输入 /sources 查看完整来源明细[/dim]")
+
     record_command_execution("ask", original_question)
     record_conversation(original_question, result.get("answer", ""))
     return True
@@ -1473,38 +1640,72 @@ def _augment_with_web_search(question: str) -> str:
 
 
 def _answer_question(question: str, original_question: str, web_search_result: str) -> dict:
-    """根据知识库状态生成回答，处理“空命中回退”与“知识库为空直接回答”。"""
+    """根据知识库状态生成回答。
+
+    方案 B：知识库检索内容与网络搜索结果分区标注，交由 LLM 综合总结并明确区分
+    来源；知识库 0 命中时不再把网络结果冒充成知识库回答，而是明确声明来源为网络。
+    """
     kb_initialized = rag_engine.query_engine is not None
 
+    # 知识库未初始化：只能用网络/模型自身知识，明确声明来源
     if not kb_initialized:
         if not web_search_result:
             console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
+        prompt = _synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
         with console.status("[bold green]模型思考中..."):
-            return {"answer": _llm_direct_answer(question), "sources": []}
+            answer = _llm_direct_answer(prompt)
+        if web_search_result:
+            answer = "⚠️ 以下回答基于网络搜索与模型知识，非你的知识库内容：\n\n" + answer
+        return {"answer": answer, "sources": []}
 
+    # 检索知识库
     if Config.SHOW_PROGRESS:
         result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
     else:
         with console.status("[bold green]检索知识库..."):
             result = rag_engine.query_with_sources(question)
 
-    if not _is_empty_rag_result(result):
-        return result
+    kb_hit = not _is_empty_rag_result(result)
 
-    # 空命中回退：先补网络搜索，再让 LLM 直接回答
-    console.print("📭 知识库中未找到相关内容，正在回退到模型回答...", style="yellow")
-    fallback_prompt = original_question
+    # 知识库命中：以知识库为主，若有网络补充则分区综合
+    if kb_hit:
+        if not web_search_result:
+            return result
+        kb_context = _format_kb_context(result.get("sources") or [])
+        prompt = _synthesize_prompt(original_question, kb_context, web_search_result)
+        with console.status("[bold green]综合知识库与网络信息..."):
+            answer = _llm_direct_answer(prompt)
+        return {"answer": answer, "sources": result.get("sources") or []}
+
+    # 知识库 0 命中：明确告知，再用网络/模型回答，并声明来源
+    console.print("📭 知识库中未检索到相关内容。", style="yellow")
     if not web_search_result:
         console.print("🌐 正在网络搜索补充信息...", style="cyan")
         web_search_result = _simple_web_search(original_question)
         if web_search_result:
             console.print("✅ 网络搜索完成", style="green")
+
+    prompt = _synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
+    with console.status("[bold green]模型思考中..."):
+        answer = _llm_direct_answer(prompt)
     if web_search_result:
-        fallback_prompt = f"{original_question}\n\n网络搜索参考信息：\n{web_search_result}"
+        answer = "⚠️ 知识库中无相关内容，以下回答基于网络搜索，非你的知识库内容：\n\n" + answer
     else:
         console.print("💡 未获取到网络信息，直接使用模型自身知识回答", style="dim")
-    with console.status("[bold green]模型思考中..."):
-        return {"answer": _llm_direct_answer(fallback_prompt), "sources": []}
+        answer = "⚠️ 知识库中无相关内容，以下为模型自身知识回答：\n\n" + answer
+    return {"answer": answer, "sources": []}
+
+
+def _format_kb_context(sources: list) -> str:
+    """把知识库来源拼成带文件标注的上下文文本，供综合 prompt 使用。"""
+    blocks = []
+    for i, src in enumerate(sources, 1):
+        content = (src.get("content") or "").strip()
+        if not content:
+            continue
+        fname = src.get("file", "未知文件")
+        blocks.append(f"[片段{i}｜来自 {fname}]\n{content}")
+    return "\n\n".join(blocks)
 
 
 def handle_agent(ctx, parsed):
@@ -1594,6 +1795,7 @@ def _build_cli_context():
         rag_engine=rag_engine,
         react_engine=react_engine,
         last_rag_sources=last_rag_sources,
+        last_web_sources=last_web_sources,
         record_command=record_command_execution,
         record_conversation=record_conversation,
         ask_progress_callback=ask_progress_callback,
@@ -1603,6 +1805,7 @@ def _build_cli_context():
         print_banner=print_banner,
         print_knowledge_stats=print_knowledge_stats,
         print_rag_sources=print_rag_sources,
+        print_web_sources=print_web_sources,
         load_documents=load_documents,
         registry=registry,
         knowledge_management_available=KNOWLEDGE_MANAGEMENT_AVAILABLE,
@@ -1625,7 +1828,7 @@ def dispatch_command(ctx, parsed) -> bool:
 # ==================== 主程序 ====================
 
 def main():
-    global rag_engine, react_engine, last_rag_sources, command_recommender
+    global rag_engine, react_engine, last_rag_sources, last_web_sources, command_recommender
 
     parser = argparse.ArgumentParser(
         description="Cerebro 🧠 你的第二大脑 + 代码助手 - RAG + Agent",
@@ -1827,6 +2030,7 @@ def main():
 
         # 处理期间可能更新了运行时状态，同步回模块全局
         last_rag_sources = ctx.last_rag_sources
+        last_web_sources = ctx.last_web_sources
 
         # 统一在命令处理完成后显示推荐
         if should_show_recommendations:

@@ -61,6 +61,10 @@ for pkg in (
     "llama_index.llms.ollama",
     "llama_index.readers.file",
     "llama_index.vector_stores.chroma",
+    # trafilatura 自带 settings.cfg 数据文件（含 DOWNLOAD_TIMEOUT 等默认配置），
+    # 若只收子模块会漏掉该 cfg，运行时报
+    # "No option 'download_timeout' in section: 'DEFAULT'"，故用 collect_all 完整收集。
+    "trafilatura",
 ):
     try:
         d, b, h = collect_all(pkg)
@@ -74,7 +78,6 @@ for pkg in (
 for pkg in (
     "pymupdf",
     "fitz",
-    "trafilatura",
     "bs4",
     "ddgs",
     "networkx",

@@ -318,6 +318,48 @@ class TestContentExtractor:
         finally:
             # 恢复原始函数
             trafilatura.fetch_url = original_fetch_url
+
+    def test_build_trafilatura_config_has_required_options(self):
+        """兜底配置必须包含 download_timeout 等关键项。
+
+        复现并回归修复：PyInstaller 打包丢失 settings.cfg 或用户配置损坏时，
+        trafilatura 报 "No option 'download_timeout' in section: 'DEFAULT'"。
+        """
+        extractor = ContentExtractor()
+        if not extractor._trafilatura_available:
+            pytest.skip("trafilatura 不可用")
+
+        config = extractor._build_trafilatura_config()
+        assert config is not None
+        # configparser 选项名大小写不敏感，统一小写校验
+        required = [
+            "download_timeout",
+            "max_file_size",
+            "min_file_size",
+            "min_extracted_size",
+            "max_redirects",
+            "sleep_time",
+        ]
+        for opt in required:
+            assert config.has_option("DEFAULT", opt), f"缺少必需选项: {opt}"
+        assert config.getint("DEFAULT", "download_timeout") > 0
+
+    def test_build_trafilatura_config_survives_broken_default(self, monkeypatch):
+        """即便运行时 DEFAULT_CONFIG 被污染为空，也应补齐关键项。"""
+        extractor = ContentExtractor()
+        if not extractor._trafilatura_available:
+            pytest.skip("trafilatura 不可用")
+
+        from configparser import ConfigParser
+        import trafilatura.settings as ts
+
+        # 模拟打包/损坏场景：DEFAULT_CONFIG 为空
+        monkeypatch.setattr(ts, "DEFAULT_CONFIG", ConfigParser(), raising=False)
+
+        config = extractor._build_trafilatura_config()
+        assert config is not None
+        assert config.getint("DEFAULT", "download_timeout") == 30
+
     def test_is_valid_url(self):
         """测试 URL 验证"""
         extractor = ContentExtractor()

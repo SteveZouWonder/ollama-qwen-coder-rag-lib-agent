@@ -55,7 +55,7 @@ class TestConfigDefaults:
 
     def test_similarity_cutoff_default(self, clean_env):
         from config import SIMILARITY_CUTOFF
-        assert SIMILARITY_CUTOFF == 0.4
+        assert SIMILARITY_CUTOFF == 0.3
 
     def test_history_file_default(self, clean_env):
         from config import HISTORY_FILE

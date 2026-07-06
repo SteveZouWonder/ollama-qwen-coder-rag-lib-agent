@@ -36,6 +36,7 @@ class CLIContext:
     rag_engine: Any = None
     react_engine: Any = None
     last_rag_sources: list = field(default_factory=list)
+    last_web_sources: list = field(default_factory=list)
 
     # 协作回调（由 query_interface 注入，保持单一实现来源）
     record_command: Callable[..., None] = lambda *a, **k: None
@@ -49,6 +50,7 @@ class CLIContext:
     print_banner: Callable[[], None] = lambda: None
     print_knowledge_stats: Callable[[], None] = lambda: None
     print_rag_sources: Callable[[list], None] = lambda s: None
+    print_web_sources: Callable[[list], None] = lambda s: None
     load_documents: Callable[..., Any] = None
     registry: Any = None
 
@@ -111,7 +113,16 @@ def handle_stats(ctx, parsed):
 
 
 def handle_sources(ctx, parsed):
-    ctx.print_rag_sources(ctx.last_rag_sources)
+    rag_sources = getattr(ctx, "last_rag_sources", None) or []
+    web_sources = getattr(ctx, "last_web_sources", None) or []
+    if not rag_sources and not web_sources:
+        ctx.console.print("⚠️  没有来源信息", style="yellow")
+        ctx.record_command("sources")
+        return True
+    if rag_sources:
+        ctx.print_rag_sources(rag_sources)
+    if web_sources:
+        ctx.print_web_sources(web_sources)
     ctx.record_command("sources")
     return True
 
