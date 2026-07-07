@@ -53,15 +53,11 @@ TRAY_AVAILABLE = DESKTOP_AVAILABLE and pystray is not None
 
 
 # ==================== 配置 ====================
-# 路径在打包运行时指向用户数据目录（可写），源码运行时保持项目内相对位置。
-if is_frozen():
-    CONFIG_FILE = config_dir() / "app_config.json"
-    LOG_FILE = logs_dir() / "app.log"
-    STATUS_FILE = logs_dir() / "status.log"
-else:
-    CONFIG_FILE = Path("../config/app_config.json")
-    LOG_FILE = Path("../logs/app.log")
-    STATUS_FILE = Path("logs/status.log")
+# 路径统一以 App 数据目录为基准（打包=用户数据目录，源码=项目根），
+# 与运行时工作目录（cwd）解耦，避免从非项目根启动或 /cd 后写错位置。
+CONFIG_FILE = config_dir() / "app_config.json"
+LOG_FILE = logs_dir() / "app.log"
+STATUS_FILE = logs_dir() / "status.log"
 
 DEFAULT_CONFIG = {
     "autostart": False,

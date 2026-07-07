@@ -394,8 +394,20 @@ triggers:
 class KnowledgeToSkillsEngine:
     """知识库到Skill转化引擎"""
     
-    def __init__(self, index_dir: str = "./index_storage", enable_security: bool = True):
-        self.index_dir = Path(index_dir)
+    def __init__(self, index_dir: str = None, enable_security: bool = True):
+        # 路径必须与 /add 写入端（config.VECTOR_DB_PATH / INDEX_DIR）保持一致。
+        # 历史 bug：这里写死相对路径 "./index_storage"，按运行时 cwd 解析；而写入端
+        # 用的是 config 的绝对路径。当 cwd 不是项目根（打包运行 / 用过 /cd / 从别处
+        # 启动）时，两者指向不同目录，读取端被 chromadb 静默新建为空库，导致误报
+        # “没有找到可分析的文档”。默认改用 config.INDEX_DIR 消除该不一致。
+        if index_dir is None:
+            try:
+                from config import INDEX_DIR as _INDEX_DIR
+            except ImportError:
+                from src.config import INDEX_DIR as _INDEX_DIR  # type: ignore
+            self.index_dir = Path(_INDEX_DIR)
+        else:
+            self.index_dir = Path(index_dir)
         self.chroma_path = str(self.index_dir / "chroma_db")
         self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
         
@@ -424,27 +436,53 @@ class KnowledgeToSkillsEngine:
     
     def convert(self, output_dir: str = None) -> Dict[str, any]:
         """执行转化"""
-        # 默认输出：打包运行时收纳到用户数据目录，源码运行时相对 cwd（保持原行为）。
+        # 默认输出统一以 App 数据目录为基准，与 cwd 解耦（/cd 不影响写入位置）。
+        try:
+            from runtime_paths import user_data_dir
+        except ImportError:
+            from src.runtime_paths import user_data_dir  # type: ignore
+        # data_root 为 App 数据目录基准根（源码=项目根，打包=用户数据目录）。
+        data_root = user_data_dir()
         if output_dir is None:
-            try:
-                from runtime_paths import cwd_data_dir
-            except ImportError:
-                from src.runtime_paths import cwd_data_dir  # type: ignore
-            output_path = cwd_data_dir(".devin/skills")
+            output_path = data_root / ".devin" / "skills"
         else:
             output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
         self.logger.info("开始分析知识库文档...")
-        
-        # 1. 分析所有文档
-        all_data = self.chroma_client.get_or_create_collection(name="rag_knowledge_base").get(include=['metadatas'])
+        self.logger.info(f"读取向量库: {self.chroma_path}")
+
+        # 1. 读取向量库集合。用 get_collection 而非 get_or_create_collection：
+        #    集合不存在时应明确提示“路径错配/尚未入库”，而非静默新建空库，把
+        #    “目录不对”伪装成“没有可分析的文档”。
+        try:
+            collection = self.chroma_client.get_collection(name="rag_knowledge_base")
+        except Exception:  # noqa: BLE001 - chromadb 在集合不存在时抛异常
+            self.logger.warning(
+                f"未找到向量库集合 'rag_knowledge_base'（路径: {self.chroma_path}）。"
+                "请确认已通过 /add 入库，且运行目录与写入路径一致。"
+            )
+            return {}
+
+        all_data = collection.get(include=['metadatas'])
+        metadatas = all_data.get('metadatas') or []
+        if not metadatas:
+            self.logger.warning(
+                f"向量库为空（路径: {self.chroma_path}）。请先用 /add 添加文档。"
+            )
+            return {}
+
         unique_files = set()
-        
-        for metadata in all_data['metadatas']:
-            if 'file_path' in metadata:
+        for metadata in metadatas:
+            if metadata and 'file_path' in metadata:
                 unique_files.add(metadata['file_path'])
-        
+
+        if not unique_files:
+            self.logger.warning(
+                f"向量库中有 {len(metadatas)} 个片段，但均缺少 file_path 元数据，无法分析。"
+            )
+            return {}
+
         documents = []
         for file_path in unique_files:
             try:
@@ -473,17 +511,17 @@ class KnowledgeToSkillsEngine:
                 
                 # 确定输出目录
                 if group.documents[0].is_generic:
-                    # 通用型：全局目录
+                    # 通用型：写入 devin/opencode 的全局技能目录（~/.config/...），
+                    # 这是两个工具约定的全局技能位置，与 App 数据目录无关，保持不变。
                     if platform == 'devin':
                         skill_dir = Path.home() / '.config' / 'devin' / 'skills' / group.skill_name
                     else:
                         skill_dir = Path.home() / '.config' / 'opencode' / 'skills' / group.skill_name
                 else:
-                    # 项目专用型：项目目录
-                    if platform == 'devin':
-                        skill_dir = Path.cwd() / '.devin' / 'skills' / group.skill_name
-                    else:
-                        skill_dir = Path.cwd() / '.opencode' / 'skills' / group.skill_name
+                    # 项目专用型：统一落到 App 数据目录基准（data_root），
+                    # 不再用 Path.cwd()（受工作目录影响，/cd 后会漂移到别处）。
+                    subdir = '.devin' if platform == 'devin' else '.opencode'
+                    skill_dir = data_root / subdir / 'skills' / group.skill_name
                 
                 skill_dir.mkdir(parents=True, exist_ok=True)
                 
@@ -532,8 +570,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='知识库到Skill转化工具')
-    parser.add_argument('--index-dir', default='./index_storage', help='索引目录')
-    parser.add_argument('--output-dir', default='./.devin/skills', help='输出目录')
+    # 默认 None：走引擎内部统一的 App 数据目录基准（与 /add 写入路径一致），
+    # 不再写死相对 cwd 的路径。用户仍可显式覆盖。
+    parser.add_argument('--index-dir', default=None, help='索引目录（默认：App 数据目录/index_storage）')
+    parser.add_argument('--output-dir', default=None, help='输出目录（默认：App 数据目录/.devin/skills）')
     parser.add_argument('--summary', action='store_true', help='只显示文档摘要')
     
     args = parser.parse_args()

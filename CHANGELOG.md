@@ -9,6 +9,25 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 修复
+- `/generate-skills` 报"没有找到可分析的文档"：读取端写死相对路径
+  `./index_storage/chroma_db`（按 cwd 解析），与 `/add` 写入端的绝对路径
+  （`config.VECTOR_DB_PATH`）错配，`/cd` 后或从非项目根运行会读到被静默新建的
+  空库。改用统一的 App 数据目录基准，并在集合缺失/为空时给出明确提示
+
+### 改进
+- 统一项目数据目录基准：所有 App 自身数据（向量库、快照、知识图谱、文件元数据、
+  生成的 skills 等）一律以"已安装 App 数据目录"为默认基准的**绝对路径**写入，
+  与运行时工作目录（cwd）彻底解耦——`/cd` 或从非项目根启动不再导致数据漂移
+  - `runtime_paths.cwd_data_dir` 源码运行时也基于 `user_data_dir()`（项目根），
+    不再返回相对 cwd 的路径
+  - `knowledge_snapshot` 向量库路径改用 `config.INDEX_DIR`，与写入端同一来源
+  - `knowledge_to_skills` 项目专用型 skill 不再写到 `Path.cwd()`，统一落到
+    App 数据目录基准（通用型仍写入 `~/.config/devin|opencode/skills` 的全局约定位置）
+  - `desktop_app` 去掉源码分支的写死相对 `..` 路径，统一用 `config_dir()/logs_dir()`
+  - 相关 CLI 默认参数（`--index-dir`/`--output-dir`/`--snapshot-dir`）改为走内部
+    统一基准
+
 ## [v0.0.8] - 2026-07-06
 
 ### 修复
