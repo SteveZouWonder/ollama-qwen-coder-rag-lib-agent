@@ -78,16 +78,22 @@ def home_file(name: str) -> Path:
 
 
 def cwd_data_dir(relative: str) -> Path:
-    """默认落在当前工作目录的产物路径（如 ``.devin/...``）。
+    """App 可写数据/产物的绝对路径（如 ``.devin/...``、``index_storage``）。
 
-    - 源码运行：保持原有行为，相对当前工作目录解析。
-    - 打包运行：收纳到用户数据目录下，避免写入 Finder 启动时不可控/只读的 cwd。
+    统一以“App 数据目录”为基准，与运行时当前工作目录（cwd）彻底解耦：
+
+    - 源码运行：基准为项目根（``user_data_dir()`` 在源码下即项目根，绝对路径）。
+    - 打包运行：基准为用户数据目录（``<App 数据>/``）。
+
+    这保证了 App 自身数据（向量库、快照、图谱、文件元数据、生成的 skills 等）
+    写入位置始终稳定；即使用户通过 ``/cd`` 切换了工作目录，或从非项目根启动，
+    数据也不会漂移到别处（历史 bug：读取端相对 cwd、写入端绝对路径导致读到空库）。
+
+    注意：函数名保留 ``cwd_data_dir`` 仅为兼容既有调用点，其语义已不再相对 cwd。
 
     参数 ``relative`` 形如 ``.devin/knowledge/snapshots``。
     """
-    if is_frozen():
-        return user_data_dir() / relative
-    return Path(relative)
+    return user_data_dir() / relative
 
 
 def logs_dir() -> Path:
