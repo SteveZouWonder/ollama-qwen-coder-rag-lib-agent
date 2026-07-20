@@ -9,6 +9,8 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+## [v0.0.13] - 2026-07-20
+
 ### 新增
 - 新增基于 Gradio 的 Web 界面设计方案文档
   （`docs/future-feature-design/WEB_UI_GRADIO_DESIGN.md`），规划对话问答、知识库
