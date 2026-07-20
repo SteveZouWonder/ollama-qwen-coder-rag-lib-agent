@@ -48,6 +48,7 @@
 ### 🚀 未来特性设计 (future-feature-design/)
 - [系统能力增强设计](future-feature-design/SYSTEM_CAPABILITY_ENHANCEMENT.md) 📋 需求分析
 - [跨平台桌面应用发布流程设计](future-feature-design/CROSS_PLATFORM_DESKTOP_APP_DESIGN.md) 🚧 设计阶段
+- [Web 界面（Gradio）设计方案](future-feature-design/WEB_UI_GRADIO_DESIGN.md) 📋 设计阶段
 - OCR提取功能设计 ✅ 已完成
 - 多Agent系统设计 ✅ 已完成
 - 文件管理和会话管理优化 ✅ 已完成
