@@ -2079,5 +2079,205 @@ class TestInheritance(unittest.TestCase):
         # 验证继承的方法被调用
         mock_run.assert_called_once()
 
+class TestWebInterface(unittest.TestCase):
+    """打开 Web UI 相关功能的单元测试"""
+
+    def setUp(self):
+        self.config = Mock()
+        self.logger = Mock()
+        self.tray = TrayApp(self.config, self.logger)
+
+    def test_web_url(self):
+        self.assertEqual(self.tray._web_url(), "http://127.0.0.1:7860")
+
+    def test_web_process_alive_none(self):
+        self.tray.web_process = None
+        self.assertFalse(self.tray._web_process_alive())
+
+    def test_web_process_alive_running(self):
+        proc = Mock()
+        proc.poll.return_value = None  # 仍在运行
+        self.tray.web_process = proc
+        self.assertTrue(self.tray._web_process_alive())
+
+    def test_web_process_alive_exited(self):
+        proc = Mock()
+        proc.poll.return_value = 0  # 已退出
+        self.tray.web_process = proc
+        self.assertFalse(self.tray._web_process_alive())
+
+    def test_web_process_alive_poll_raises(self):
+        proc = Mock()
+        proc.poll.side_effect = OSError("boom")
+        self.tray.web_process = proc
+        self.assertFalse(self.tray._web_process_alive())
+
+    def test_build_web_command_source(self):
+        with patch('desktop_app.is_frozen', return_value=False):
+            cmd, workdir = self.tray._build_web_command()
+        self.assertIn("--web", cmd)
+        self.assertTrue(str(cmd[1]).endswith("launcher.py"))
+
+    def test_build_web_command_frozen(self):
+        with patch('desktop_app.is_frozen', return_value=True):
+            cmd, workdir = self.tray._build_web_command()
+        self.assertEqual(cmd[-1], "--web")
+        self.assertEqual(len(cmd), 2)
+
+    @patch('webbrowser.open')
+    @patch('subprocess.Popen')
+    def test_open_web_interface_launch_success(self, mock_popen, mock_browser):
+        proc = Mock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        with patch('desktop_app.is_frozen', return_value=False):
+            result = self.tray.open_web_interface()
+        self.assertTrue(result)
+        self.assertIs(self.tray.web_process, proc)
+        mock_popen.assert_called_once()
+        # 浏览器在后台线程延迟打开，给它一点时间
+        time.sleep(2.4)
+        mock_browser.assert_called_with("http://127.0.0.1:7860")
+
+    @patch('webbrowser.open')
+    @patch('subprocess.Popen')
+    def test_open_web_interface_already_running(self, mock_popen, mock_browser):
+        proc = Mock()
+        proc.poll.return_value = None  # 已在运行
+        self.tray.web_process = proc
+        result = self.tray.open_web_interface()
+        self.assertTrue(result)
+        # 未重复启动新进程
+        mock_popen.assert_not_called()
+        mock_browser.assert_called_once_with("http://127.0.0.1:7860")
+
+    @patch('webbrowser.open', side_effect=RuntimeError("no browser"))
+    def test_open_web_interface_already_running_browser_error(self, mock_browser):
+        proc = Mock()
+        proc.poll.return_value = None
+        self.tray.web_process = proc
+        # 打开浏览器失败不应抛出
+        result = self.tray.open_web_interface()
+        self.assertTrue(result)
+
+    @patch('subprocess.Popen', side_effect=OSError("spawn failed"))
+    def test_open_web_interface_launch_failure(self, mock_popen):
+        with patch('desktop_app.is_frozen', return_value=False):
+            result = self.tray.open_web_interface()
+        self.assertFalse(result)
+        self.assertIsNone(self.tray.web_process)
+
+    def test_close_web_interface_none(self):
+        self.tray.web_process = None
+        # 不应抛出
+        self.tray.close_web_interface()
+
+    def test_close_web_interface_running(self):
+        proc = Mock()
+        proc.poll.return_value = None
+        self.tray.web_process = proc
+        self.tray.close_web_interface()
+        proc.terminate.assert_called_once()
+        proc.wait.assert_called_once()
+        self.assertIsNone(self.tray.web_process)
+
+    def test_close_web_interface_already_exited(self):
+        proc = Mock()
+        proc.poll.return_value = 0  # 已退出
+        self.tray.web_process = proc
+        self.tray.close_web_interface()
+        proc.terminate.assert_not_called()
+        self.assertIsNone(self.tray.web_process)
+
+    def test_close_web_interface_wait_timeout_then_kill(self):
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = Exception("timeout")
+        self.tray.web_process = proc
+        self.tray.close_web_interface()
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        self.assertIsNone(self.tray.web_process)
+
+    def test_close_web_interface_terminate_raises(self):
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.terminate.side_effect = OSError("cannot terminate")
+        self.tray.web_process = proc
+        # 异常应被吞掉，web_process 置空
+        self.tray.close_web_interface()
+        self.assertIsNone(self.tray.web_process)
+
+    def test_close_web_interface_wait_timeout_and_kill_raises(self):
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = Exception("timeout")
+        proc.kill.side_effect = OSError("kill failed")
+        self.tray.web_process = proc
+        # wait 超时且 kill 也抛错，均应被吞掉
+        self.tray.close_web_interface()
+        proc.kill.assert_called_once()
+        self.assertIsNone(self.tray.web_process)
+
+    @patch('webbrowser.open', side_effect=RuntimeError("no browser"))
+    @patch('subprocess.Popen')
+    def test_open_web_interface_launch_browser_error(self, mock_popen, mock_browser):
+        """启动成功但后台线程打开浏览器失败，不应影响启动结果。"""
+        proc = Mock()
+        proc.pid = 999
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        with patch('desktop_app.is_frozen', return_value=False):
+            result = self.tray.open_web_interface()
+        self.assertTrue(result)
+        time.sleep(2.4)  # 等后台线程执行到 webbrowser.open
+        mock_browser.assert_called_with("http://127.0.0.1:7860")
+
+    def test_menu_contains_web_item(self):
+        """托盘菜单应包含“打开 Web UI”项。"""
+        captured = {}
+
+        class FakeMenuItem:
+            def __init__(self, text, action):
+                self.text = text
+                self.action = action
+
+        class FakeMenu:
+            def __init__(self, *items):
+                captured['items'] = items
+
+        class FakeIcon:
+            def __init__(self, *a, **k):
+                pass
+
+            def run(self):
+                pass
+
+        with patch('desktop_app.DESKTOP_AVAILABLE', True), \
+             patch('desktop_app.pystray') as mock_pystray, \
+             patch.object(self.tray, 'create_icon', return_value=Mock()):
+            mock_pystray.Menu.side_effect = FakeMenu
+            mock_pystray.MenuItem.side_effect = FakeMenuItem
+            mock_pystray.Icon.side_effect = FakeIcon
+            self.tray.run()
+
+        texts = [it.text for it in captured['items']]
+        self.assertIn("打开 Web UI", texts)
+        # 且绑定到 open_web_interface
+        web_item = next(it for it in captured['items'] if it.text == "打开 Web UI")
+        self.assertEqual(web_item.action, self.tray.open_web_interface)
+
+    def test_quit_app_closes_web(self):
+        """退出时应终止 Web 子进程。"""
+        proc = Mock()
+        proc.poll.return_value = None
+        self.tray.web_process = proc
+        self.tray.icon = Mock()
+        self.tray.quit_app()
+        proc.terminate.assert_called_once()
+        self.assertIsNone(self.tray.web_process)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

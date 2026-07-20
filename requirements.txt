@@ -45,6 +45,9 @@ rich
 # 命令行工具
 prompt-toolkit
 
+# Web 界面（Gradio，Python 3.13 兼容）
+gradio
+
 # 测试工具
 pytest
 pytest-cov

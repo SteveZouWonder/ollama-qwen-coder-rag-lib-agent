@@ -7,6 +7,7 @@
     Cerebro --gui           # 同上，显式启动托盘
     Cerebro --cli           # 启动命令行交互界面（RAG / ReAct Agent）
     Cerebro chat            # --cli 的别名
+    Cerebro --web           # 启动 Gradio Web 界面（默认 http://127.0.0.1:7860）
     Cerebro --skip-bootstrap  # 跳过 Ollama 检测引导（调试用）
 
 启动时会先运行 Ollama 环境检测与引导（src/bootstrap.py），
@@ -40,11 +41,12 @@ def main() -> int:
     skip_bootstrap = "--skip-bootstrap" in argv
     argv = [a for a in argv if a != "--skip-bootstrap"]
 
+    want_web = "--web" in argv
     want_cli = "--cli" in argv or "chat" in argv
     # --status / --warm-up 等也走 GUI 入口（desktop_app），但属于"短命令"，
     # 需要同步等待结果，不应被后台引导干扰。
     short_cmd = "--status" in argv or "--warm-up" in argv
-    argv = [a for a in argv if a not in ("--cli", "--gui", "chat")]
+    argv = [a for a in argv if a not in ("--cli", "--gui", "chat", "--web")]
 
     def _run_bootstrap(interactive: bool) -> None:
         try:
@@ -65,6 +67,9 @@ def main() -> int:
         if want_cli and has_tty:
             # CLI 且有终端：同步、交互式引导（可提示用户确认安装/拉模型）
             _run_bootstrap(interactive=True)
+        elif want_web:
+            # Web 模式：同步非交互引导，确保界面启动前 Ollama 就绪。
+            _run_bootstrap(interactive=False)
         else:
             # GUI 模式：放到后台线程，避免阻塞托盘启动导致系统判定"无响应"。
             # 无终端，使用非交互模式（不调用 input）。
@@ -77,7 +82,13 @@ def main() -> int:
     # 透传剩余参数给目标入口
     sys.argv = [sys.argv[0]] + argv
 
-    if want_cli:
+    if want_web:
+        try:
+            from web.app import main as web_main
+        except ImportError:
+            from src.web.app import main as web_main
+        web_main()
+    elif want_cli:
         try:
             from query_interface import main as cli_main
         except ImportError:
