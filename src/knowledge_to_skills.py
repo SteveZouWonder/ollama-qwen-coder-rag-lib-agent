@@ -4,7 +4,7 @@
 - 分析文档内容并提取主题
 - 按主题合并多个文档生成Skill
 - 智能分类通用型vs项目型
-- 支持Devin和OpenCode平台
+- 支持 OpenCode 和 Claude 平台
 """
 import os
 import re
@@ -59,7 +59,7 @@ class TopicGroup:
     documents: List[DocumentInfo]
     skill_name: str
     description: str
-    platforms: List[str]  # ['devin', 'opencode']
+    platforms: List[str]  # ['opencode', 'claude']
 
 
 @dataclass
@@ -276,15 +276,15 @@ class TopicClassifier:
         return f"{topic.capitalize()} 相关知识和操作指南 - 基于 {doc_list}"
     
     def _determine_platforms(self, documents: List[DocumentInfo]) -> List[str]:
-        """确定支持的平台"""
-        # 如果有通用型文档，支持所有平台
-        # 如果都是项目专用型，只支持项目内平台
-        has_generic = any(doc.is_generic for doc in documents)
-        
-        if has_generic:
-            return ['devin', 'opencode']
-        else:
-            return ['devin']  # 项目专用型默认支持devin
+        """确定支持的平台。
+
+        无论通用型还是项目专用型文档，都统一生成 opencode + claude 两个平台的
+        skill——生成内容本身与平台无关（见 SkillGenerator._format_skill），
+        两平台仅输出目录不同。此前写死 devin（较小众）且项目型只出单平台，
+        与“将知识库转化为 Skills（多平台）”的定位不符，故改为面向更主流的
+        OpenCode 与 Claude，并始终返回全部平台。
+        """
+        return ['opencode', 'claude']
 
 
 # ==================== Skill生成器 ====================
@@ -292,7 +292,7 @@ class TopicClassifier:
 class SkillGenerator:
     """Skill生成器"""
     
-    def __init__(self, platform: str = 'devin', skill_filter=None):
+    def __init__(self, platform: str = 'opencode', skill_filter=None):
         self.platform = platform
         self.skill_filter = skill_filter
         self.logger = logging.getLogger(__name__)
@@ -415,8 +415,8 @@ class KnowledgeToSkillsEngine:
         self.classifier = TopicClassifier()
         
         # 创建生成器实例（在安全扫描器初始化之后）
-        self.devin_generator = None
         self.opencode_generator = None
+        self.claude_generator = None
         
         # 安全扫描器
         self.enable_security = enable_security
@@ -428,8 +428,8 @@ class KnowledgeToSkillsEngine:
             print("🔒 内容安全扫描器已启用")
         
         # 在安全扫描器初始化后创建生成器实例
-        self.devin_generator = SkillGenerator(platform='devin', skill_filter=self.skill_filter)
         self.opencode_generator = SkillGenerator(platform='opencode', skill_filter=self.skill_filter)
+        self.claude_generator = SkillGenerator(platform='claude', skill_filter=self.skill_filter)
         
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
@@ -444,7 +444,7 @@ class KnowledgeToSkillsEngine:
         # data_root 为 App 数据目录基准根（源码=项目根，打包=用户数据目录）。
         data_root = user_data_dir()
         if output_dir is None:
-            output_path = data_root / ".devin" / "skills"
+            output_path = data_root / ".opencode" / "skills"
         else:
             output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -507,20 +507,21 @@ class KnowledgeToSkillsEngine:
             
             # 为每个平台生成skill
             for platform in group.platforms:
-                generator = self.devin_generator if platform == 'devin' else self.opencode_generator
+                generator = self.claude_generator if platform == 'claude' else self.opencode_generator
                 
                 # 确定输出目录
                 if group.documents[0].is_generic:
-                    # 通用型：写入 devin/opencode 的全局技能目录（~/.config/...），
-                    # 这是两个工具约定的全局技能位置，与 App 数据目录无关，保持不变。
-                    if platform == 'devin':
-                        skill_dir = Path.home() / '.config' / 'devin' / 'skills' / group.skill_name
+                    # 通用型：写入各工具约定的全局技能目录，与 App 数据目录无关。
+                    # - opencode: ~/.config/opencode/skills
+                    # - claude:   ~/.claude/skills（Claude Code 全局技能约定位置）
+                    if platform == 'claude':
+                        skill_dir = Path.home() / '.claude' / 'skills' / group.skill_name
                     else:
                         skill_dir = Path.home() / '.config' / 'opencode' / 'skills' / group.skill_name
                 else:
                     # 项目专用型：统一落到 App 数据目录基准（data_root），
                     # 不再用 Path.cwd()（受工作目录影响，/cd 后会漂移到别处）。
-                    subdir = '.devin' if platform == 'devin' else '.opencode'
+                    subdir = '.claude' if platform == 'claude' else '.opencode'
                     skill_dir = data_root / subdir / 'skills' / group.skill_name
                 
                 skill_dir.mkdir(parents=True, exist_ok=True)
@@ -573,7 +574,7 @@ def main():
     # 默认 None：走引擎内部统一的 App 数据目录基准（与 /add 写入路径一致），
     # 不再写死相对 cwd 的路径。用户仍可显式覆盖。
     parser.add_argument('--index-dir', default=None, help='索引目录（默认：App 数据目录/index_storage）')
-    parser.add_argument('--output-dir', default=None, help='输出目录（默认：App 数据目录/.devin/skills）')
+    parser.add_argument('--output-dir', default=None, help='输出目录（默认：App 数据目录/.opencode/skills）')
     parser.add_argument('--summary', action='store_true', help='只显示文档摘要')
     
     args = parser.parse_args()

@@ -105,7 +105,7 @@ class TestTopicGroup(unittest.TestCase):
             documents=[doc_info],
             skill_name="test-skill",
             description="Test description",
-            platforms=["devin"]
+            platforms=["claude"]
         )
         
         self.assertEqual(group.topic_name, "test")

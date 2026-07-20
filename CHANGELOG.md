@@ -12,12 +12,28 @@
 ## [v0.0.9] - 2026-07-07
 
 ### 修复
+- `/ask` 联网明明搜到答案却回答"无法确定"：`run_web_search` 此前只取首个有效
+  查询的结果，会丢弃其余查询——而搜索规划常同时给出中文与英文查询，二者召回差异
+  很大（如价格类问题中文页摘要已含"2998 元"，英文页却没有）。现改为合并所有查询
+  结果并按 URL 去重，最大化把含答案的摘要送入回答
+- `/ask` 网页正文增强只提取第 1 个结果页且截断到 1000 字，导致排名靠后的含答案
+  页面（价格常出现在第 3/4 名的中文页）被漏掉。现改为提取前 3 个高排名页面、每页
+  保留至 2000 字
+- 打包后网页提取报 `No such file or directory: '.../justext/stoplists'`：
+  PyInstaller spec 将 trafilatura 的传递依赖 `justext` 也纳入 `collect_all`，
+  随包打入其语言停用词表数据文件（此前仅会静默回退到 BeautifulSoup 并污染日志）
 - `/generate-skills` 报"没有找到可分析的文档"：读取端写死相对路径
   `./index_storage/chroma_db`（按 cwd 解析），与 `/add` 写入端的绝对路径
   （`config.VECTOR_DB_PATH`）错配，`/cd` 后或从非项目根运行会读到被静默新建的
   空库。改用统一的 App 数据目录基准，并在集合缺失/为空时给出明确提示
 
 ### 改进
+- `/generate-skills` 改为面向更主流的 **OpenCode 与 Claude** 平台（原为较小众的
+  Devin + OpenCode），且通用型与项目专用型文档**统一都生成全部平台**的 skill
+  （此前项目专用型写死只出单平台）。输出目录：通用型写入
+  `~/.config/opencode/skills` 与 `~/.claude/skills`；项目专用型写入 App 数据目录
+  基准下的 `.opencode/skills` 与 `.claude/skills`。帮助文案由"转化为 Devin Skills"
+  改为通用的"转化为 Skills"
 - 统一项目数据目录基准：所有 App 自身数据（向量库、快照、知识图谱、文件元数据、
   生成的 skills 等）一律以"已安装 App 数据目录"为默认基准的**绝对路径**写入，
   与运行时工作目录（cwd）彻底解耦——`/cd` 或从非项目根启动不再导致数据漂移
@@ -25,7 +41,8 @@
     不再返回相对 cwd 的路径
   - `knowledge_snapshot` 向量库路径改用 `config.INDEX_DIR`，与写入端同一来源
   - `knowledge_to_skills` 项目专用型 skill 不再写到 `Path.cwd()`，统一落到
-    App 数据目录基准（通用型仍写入 `~/.config/devin|opencode/skills` 的全局约定位置）
+    App 数据目录基准（通用型仍写入各工具全局约定位置，如
+    `~/.config/opencode/skills`、`~/.claude/skills`）
   - `desktop_app` 去掉源码分支的写死相对 `..` 路径，统一用 `config_dir()/logs_dir()`
   - 相关 CLI 默认参数（`--index-dir`/`--output-dir`/`--snapshot-dir`）改为走内部
     统一基准

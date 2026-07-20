@@ -1012,7 +1012,7 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 #### 2. 知识库到Skill智能转化
 - **智能分类**: 自动区分通用型vs项目型文档
 - **主题合并**: 按主题合并多个文档生成统一skill
-- **多平台支持**: 同时支持Devin和OpenCode平台
+- **多平台支持**: 同时支持 OpenCode 和 Claude 平台
 - **自动路径管理**: 通用型skill放入全局目录，项目专用型放入项目目录
 
 ```bash

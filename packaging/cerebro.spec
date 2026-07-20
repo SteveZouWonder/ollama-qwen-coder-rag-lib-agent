@@ -65,6 +65,11 @@ for pkg in (
     # 若只收子模块会漏掉该 cfg，运行时报
     # "No option 'download_timeout' in section: 'DEFAULT'"，故用 collect_all 完整收集。
     "trafilatura",
+    # justext 是 trafilatura 的传递依赖，正文抽取时会加载语言停用词表
+    # justext/stoplists/*.txt。若不完整收集，打包后运行时报
+    # "No such file or directory: '.../justext/stoplists'"（虽会回退到 bs4，
+    # 但会污染日志并降低提取质量），故用 collect_all 一并收集其数据文件。
+    "justext",
 ):
     try:
         d, b, h = collect_all(pkg)
