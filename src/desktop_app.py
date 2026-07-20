@@ -279,12 +279,18 @@ class BaseApp:
     # 用于精确标识本程序启动的 CLI 进程/窗口的标记前缀
     CLI_SESSION_TAG_PREFIX = "RAG_CLI_SESSION"
 
+    # Web 界面默认监听地址（与 src/web/app.py launch 默认值保持一致）
+    WEB_HOST = "127.0.0.1"
+    WEB_PORT = 7860
+
     def __init__(self, config: AppConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
         self.status_file = STATUS_FILE
         # 跟踪打开的CLI会话（存储会话标记/标题，用于精确关闭）
         self.cli_sessions = []  # 每项: {"id", "start_time", "script", "tag", "title"}
+        # 跟踪 Web 界面子进程（长驻），用于退出时精确终止，避免残留孤儿进程
+        self.web_process = None
     
     def show_notification(self, title: str, message: str):
         """显示系统通知"""
@@ -471,6 +477,114 @@ class BaseApp:
             self.show_notification("启动失败", f"❌ CLI界面启动失败: {e}")
             self.show_popup("启动失败", f"❌ CLI界面启动失败: {e}", duration=2000)
             return False
+
+    def _web_url(self) -> str:
+        """Web 界面访问地址。"""
+        return f"http://{self.WEB_HOST}:{self.WEB_PORT}"
+
+    def _web_process_alive(self) -> bool:
+        """判断已记录的 Web 子进程是否仍在运行。"""
+        proc = self.web_process
+        if proc is None:
+            return False
+        try:
+            return proc.poll() is None
+        except Exception:
+            return False
+
+    def _build_web_command(self):
+        """构造启动 Web 界面的子进程命令。
+
+        - 打包运行：当前可执行体即 launcher，使用 `<exe> --web`。
+        - 源码运行：使用 `<python> <launcher.py> --web`，确保走统一启动流程
+          （含 Ollama 引导与 --web 分发）。
+        """
+        script_path = sys.executable
+        if is_frozen():
+            return [script_path, "--web"], Path(script_path).parent
+        launcher = Path(__file__).parent.parent / "launcher.py"
+        return [script_path, str(launcher), "--web"], Path.cwd()
+
+    def open_web_interface(self):
+        """启动 Web 界面（独立长驻子进程）并在浏览器中打开。
+
+        Web 界面是长驻进程，必须以独立子进程方式启动，避免阻塞托盘；同时用
+        ``self.web_process`` 跟踪，退出时统一终止，防止残留孤儿进程占用端口。
+        重复点击时若进程仍在运行，则直接打开浏览器而不重复启动。
+        """
+        import webbrowser
+
+        self.logger.info("启动Web界面")
+        if hasattr(self, 'set_progress_state'):
+            self.set_progress_state()
+
+        # 已在运行：直接打开浏览器，避免重复启动导致端口冲突
+        if self._web_process_alive():
+            self.logger.info("Web界面已在运行，直接打开浏览器")
+            try:
+                webbrowser.open(self._web_url())
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"打开浏览器失败: {e}")
+            self.show_notification("Web界面", "Web 界面已在运行，已在浏览器中打开")
+            return True
+
+        try:
+            cmd, workdir = self._build_web_command()
+            self.web_process = subprocess.Popen(
+                cmd,
+                cwd=str(workdir),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.logger.info(f"Web界面子进程已启动 (pid={self.web_process.pid})")
+
+            # 稍等服务器起来再打开浏览器
+            def _open_browser():
+                time.sleep(2.0)
+                try:
+                    webbrowser.open(self._web_url())
+                except Exception as e:  # noqa: BLE001
+                    self.logger.warning(f"打开浏览器失败: {e}")
+
+            t = threading.Thread(target=_open_browser, daemon=True)
+            t.start()
+
+            if hasattr(self, 'set_success_state'):
+                self.set_success_state()
+            self.show_notification("Web界面", f"✅ 已启动，浏览器打开 {self._web_url()}")
+            self.show_popup("Web界面", f"✅ 已启动 {self._web_url()}", duration=1500)
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.logger.error(f"启动Web界面失败: {e}")
+            self.web_process = None
+            if hasattr(self, 'set_error_state'):
+                self.set_error_state()
+            self.show_notification("启动失败", f"❌ Web界面启动失败: {e}")
+            self.show_popup("启动失败", f"❌ Web界面启动失败: {e}", duration=2000)
+            return False
+
+    def close_web_interface(self):
+        """终止 Web 界面子进程（退出清理用）。"""
+        proc = self.web_process
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    # 超时未退出则强制杀死
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                self.logger.info("Web界面子进程已终止")
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"终止Web界面子进程失败: {e}")
+        finally:
+            self.web_process = None
 
 # ==================== 系统托盘应用 ====================
 class TrayApp(BaseApp):
@@ -1019,6 +1133,8 @@ class TrayApp(BaseApp):
         
         # 关闭所有CLI进程
         self.close_all_cli_processes()
+        # 关闭 Web 界面子进程
+        self.close_web_interface()
         
         self.running = False
         if self.icon:
@@ -1035,6 +1151,7 @@ class TrayApp(BaseApp):
         # 创建菜单
         menu = pystray.Menu(
             pystray.MenuItem("打开CLI界面", self.open_cli_interface),
+            pystray.MenuItem("打开 Web UI", self.open_web_interface),
             pystray.MenuItem("检查状态", self.show_status),
             pystray.MenuItem("模型预热", self.warm_up_models_from_menu),
             pystray.MenuItem("重启服务", self.restart_services),
@@ -1194,16 +1311,18 @@ class DesktopApp(BaseApp):
             # 正常退出路径的兜底清理（重复调用是安全的：sessions 已清空则直接返回）
             try:
                 tray.close_all_cli_processes()
+                tray.close_web_interface()
             except Exception as e:
-                self.logger.warning(f"退出清理CLI进程时出错: {e}")
+                self.logger.warning(f"退出清理进程时出错: {e}")
 
     def _register_exit_handlers(self, tray: "TrayApp"):
         """注册 atexit 与信号处理器，确保各种退出路径都能清理CLI进程。"""
         def _cleanup(*_args):
             try:
                 tray.close_all_cli_processes()
+                tray.close_web_interface()
             except Exception as e:
-                self.logger.warning(f"兜底清理CLI进程失败: {e}")
+                self.logger.warning(f"兜底清理进程失败: {e}")
 
         atexit.register(_cleanup)
 
