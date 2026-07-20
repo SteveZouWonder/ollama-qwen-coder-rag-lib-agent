@@ -361,6 +361,195 @@ class TestKnowledgeGraphBuilder:
         builder.clear()
         
         assert builder.graph.number_of_nodes() == 0
+
+    def test_clear_default_does_not_wipe_persist_file(self, tmp_path):
+        """clear() 默认不应把空图写回磁盘，避免持久化数据被误抹除。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert pf.exists()
+
+        builder.clear()  # 默认 persist=False
+        # 内存已清空，但磁盘仍保留旧数据
+        assert builder.graph.number_of_nodes() == 0
+        reloaded = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert reloaded.graph.number_of_nodes() == 1
+
+    def test_clear_persist_true_wipes_persist_file(self, tmp_path):
+        """clear(persist=True) 时应把空图写回磁盘。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        builder.add_entity(Entity("Python", EntityType.LANGUAGE))
+        assert pf.exists()
+
+        builder.clear(persist=True)
+        reloaded = KnowledgeGraphBuilder(persist_path=str(pf))
+        assert reloaded.graph.number_of_nodes() == 0
+
+    def test_clear_without_networkx_is_noop(self):
+        """graph 为 None（networkx 不可用）时 clear 不应崩溃。"""
+        builder = KnowledgeGraphBuilder(auto_persist=False)
+        builder.graph = None
+        builder.clear()  # 不抛异常即通过
+
+    def test_rebuild_from_tuples(self, tmp_path):
+        """rebuild_from_documents 支持 (text, doc_id, doc_type) 三元组。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        docs = [
+            ("Python is a language. Django uses Python.", "d1", "text"),
+            ("React is a framework.", "d2", "text"),
+        ]
+        assert builder.rebuild_from_documents(docs) is True
+        assert builder.graph.number_of_nodes() > 0
+        # 重建后应持久化一次
+        assert pf.exists()
+
+    def test_rebuild_replaces_previous_graph(self, tmp_path):
+        """rebuild 应全量替换（清空旧图后重放），而非累积。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        builder.add_entity(Entity("StaleEntity", EntityType.OTHER))
+        stale_id = builder._get_node_id(Entity("StaleEntity", EntityType.OTHER))
+        assert stale_id in builder.graph
+
+        builder.rebuild_from_documents([("Python is a language.", "d1", "text")])
+        # 旧的孤立实体应被清除
+        assert stale_id not in builder.graph
+
+    def test_rebuild_skips_empty_text(self, tmp_path):
+        """rebuild 应跳过空文本项。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        docs = [("", "d0", "text"), ("   ", "d1", "text")]
+        assert builder.rebuild_from_documents(docs) is True
+        assert builder.graph.number_of_nodes() == 0
+
+    def test_rebuild_from_document_objects(self, tmp_path):
+        """rebuild_from_documents 支持带 text/metadata 的文档对象。"""
+        class FakeDoc:
+            def __init__(self, text, metadata):
+                self.text = text
+                self.metadata = metadata
+
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))
+        docs = [FakeDoc("Python is a language.", {"file_name": "a.txt"})]
+        assert builder.rebuild_from_documents(docs) is True
+        assert builder.graph.number_of_nodes() > 0
+
+    def test_rebuild_without_networkx_returns_false(self):
+        """graph 为 None 时 rebuild 应返回 False。"""
+        builder = KnowledgeGraphBuilder(auto_persist=False)
+        builder.graph = None
+        assert builder.rebuild_from_documents([("x", "d1", "text")]) is False
+
+    def test_coerce_document_tuple_defaults(self):
+        """_coerce_document 对不完整三元组应填充默认 doc_id/doc_type。"""
+        text, doc_id, doc_type = KnowledgeGraphBuilder._coerce_document(("hello",), 3)
+        assert text == "hello"
+        assert doc_id == "doc_3"
+        assert doc_type == "text"
+
+    def test_coerce_document_object_page_content_and_source(self):
+        """_coerce_document 支持 page_content + metadata.source 的对象。"""
+        class LCDoc:
+            page_content = "some text"
+            metadata = {"source": "s.md", "doc_type": "code"}
+
+        text, doc_id, doc_type = KnowledgeGraphBuilder._coerce_document(LCDoc(), 0)
+        assert text == "some text"
+        assert doc_id == "s.md"
+        assert doc_type == "code"
+
+    def test_coerce_document_object_missing_text_defaults(self):
+        """对象无 text/page_content 且无 metadata 时应回退默认值。"""
+        class Bare:
+            pass
+
+        text, doc_id, doc_type = KnowledgeGraphBuilder._coerce_document(Bare(), 7)
+        assert text == ""
+        assert doc_id == "doc_7"
+        assert doc_type == "text"
+
+    def test_autosave_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        """自动保存抛异常时应被吞掉并告警，不影响主流程。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+
+        def boom(_):
+            raise IOError("disk full")
+
+        monkeypatch.setattr(builder, "save_graph", boom)
+        builder.auto_persist = True
+        # add_entity -> _autosave -> save_graph 抛异常，但方法应返回正常
+        assert builder.add_entity(Entity("Python", EntityType.LANGUAGE)) is True
+
+    def test_save_graph_returns_false_without_networkx(self):
+        """graph 为 None 时 save_graph 应返回 False。"""
+        builder = KnowledgeGraphBuilder(auto_persist=False)
+        builder.graph = None
+        assert builder.save_graph("/tmp/whatever.json") is False
+
+    def test_load_graph_returns_false_without_networkx(self, tmp_path):
+        """graph 为 None 时 load_graph 应返回 False。"""
+        builder = KnowledgeGraphBuilder(auto_persist=False)
+        builder.graph = None
+        assert builder.load_graph(str(tmp_path / "x.json")) is False
+
+    def test_save_and_load_roundtrip_with_edges(self, tmp_path):
+        """save/load 应完整还原节点与边。"""
+        pf = tmp_path / "graph.json"
+        builder = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        builder.add_document("Django uses Python.", "d1", "text")
+        edges_before = builder.graph.number_of_edges()
+        assert builder.save_graph(str(pf)) is True
+
+        reloaded = KnowledgeGraphBuilder(persist_path=str(pf), auto_persist=False)
+        assert reloaded.load_graph(str(pf)) is True
+        assert reloaded.graph.number_of_edges() == edges_before
+
+    def test_get_graph_builder_returns_singleton(self):
+        """get_graph_builder 应返回同一全局单例。"""
+        from knowledge_graph.graph_builder import get_graph_builder
+        assert get_graph_builder() is get_graph_builder()
+
+    def test_get_graph_builder_creates_when_none(self, monkeypatch):
+        """单例为 None 时 get_graph_builder 应创建新实例。"""
+        import knowledge_graph.graph_builder as gb
+        monkeypatch.setattr(gb, "_graph_builder", None)
+        created = gb.get_graph_builder()
+        assert created is not None
+        assert gb.get_graph_builder() is created
+
+    def test_default_persist_path_resolution(self, monkeypatch, tmp_path):
+        """未提供 persist_path 且无覆盖时，应解析到默认 .devin/knowledge/graph.json。"""
+        import knowledge_graph.graph_builder as gb
+        # 临时清除测试的默认路径覆盖，走真实默认路径解析分支
+        monkeypatch.setattr(gb, "_DEFAULT_PERSIST_PATH_OVERRIDE", None)
+        monkeypatch.setattr(
+            "runtime_paths.cwd_data_dir", lambda rel: tmp_path / rel
+        )
+        builder = KnowledgeGraphBuilder(auto_persist=False)
+        assert builder.persist_path.name == "graph.json"
+        assert ".devin" in str(builder.persist_path)
+
+    def test_autoload_failure_on_init_is_non_fatal(self, tmp_path, monkeypatch):
+        """初始化自动加载抛异常时应告警并回退空图，不崩溃。"""
+        pf = tmp_path / "graph.json"
+        pf.write_text("{}", encoding="utf-8")
+
+        orig_load = KnowledgeGraphBuilder.load_graph
+
+        def boom(self, path):
+            raise RuntimeError("load failed")
+
+        monkeypatch.setattr(KnowledgeGraphBuilder, "load_graph", boom)
+        builder = KnowledgeGraphBuilder(persist_path=str(pf))  # auto_persist=True
+        assert builder.graph is not None
+        assert builder.graph.number_of_nodes() == 0
+        monkeypatch.setattr(KnowledgeGraphBuilder, "load_graph", orig_load)
+
     
     def test_get_entity_by_type(self):
         """测试按类型获取实体"""

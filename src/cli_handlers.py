@@ -135,6 +135,14 @@ def handle_add(ctx, parsed):
         if docs:
             ctx.rag_engine.add_documents(docs, [path])
             console.print("✅ 文档已添加到知识库", style="green")
+            # 知识图谱作为文档入库的派生索引，已在 add_documents 中同步构建。
+            if getattr(ctx.rag_engine, "last_graph_derived", False):
+                console.print("🕸️  已同步更新知识图谱", style="dim")
+            else:
+                console.print(
+                    "⚠️  知识图谱未自动更新，可用 /graph-build @<文件路径> 手动补建",
+                    style="dim",
+                )
             console.print("💡 提示: 可以使用 /generate-skills 将知识库转化为Skills", style="dim")
             ctx.record_command("add", path, "success")
         else:
@@ -843,7 +851,10 @@ def handle_graph_query(ctx, parsed):
 
 
 def handle_graph_build(ctx, parsed):
-    """从文本或文件构建知识图谱。
+    """手动/补建方式从文本或文件构建知识图谱。
+
+    说明：常规文档入库（/add）已自动派生构建知识图谱，无需手动执行本命令。
+    本命令用于手动喂入任意文本、调试，或在自动派生失败时补建。
 
     用法：
       /graph-build <文本>        直接用这段文本构建
