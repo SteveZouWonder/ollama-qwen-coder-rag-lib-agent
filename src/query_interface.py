@@ -590,7 +590,7 @@ def print_help():
   /exit 或 /quit     退出程序
 
 知识库管理命令（新功能）：
-  /generate-skills   将知识库内容转化为Devin Skills
+  /generate-skills   将知识库内容转化为Skills
   /snapshot-list    查看所有知识库快照
   /snapshot-create  手动创建知识库快照
   /snapshot-restore <id>  恢复指定快照的知识库
@@ -1179,47 +1179,139 @@ def plan_web_search(question: str) -> dict:
 
 
 def run_web_search(queries: list) -> str:
-    """依次尝试给定查询，返回首个有效的网络搜索结果文本；都失败返回空串。"""
+    """执行所有给定查询并合并有效结果文本；都失败返回空串。
+
+    改动原因：此前只返回“首个”有效查询的结果，会丢弃其余查询。实测中
+    plan_web_search 常同时给出中文原查询与英文查询，二者召回的页面/摘要差异很大
+    （例如价格类问题：英文页多为营销页、摘要无具体价格，而中文页摘要里已含
+    “2998 元”等关键信息）。只取第一个查询会把含答案的结果整段丢掉，导致
+    LLM 明明“搜到了”却回答“无法确定”。故改为合并所有查询结果、跨查询去重，
+    最大化把有用摘要送进后续 prompt。
+    """
     try:
         from agent_tools import web_search
     except Exception as e:  # noqa: BLE001
         logger.error(f"无法导入 web_search: {e}")
         return ""
 
+    blocks = []
     for query in queries:
         console.print(f"🔍 搜索查询: {query}", style="dim")
         result = web_search(query, max_results=5, use_cache=False)
         if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
-            return result
-        console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
-    return ""
+            blocks.append((query, result))
+        else:
+            console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
+
+    if not blocks:
+        return ""
+    if len(blocks) == 1:
+        return blocks[0][1]
+    return _merge_search_results(blocks)
 
 
-def _extract_first_url(search_result: str) -> str:
-    """从搜索结果文本中提取首个出现的 URL（已按相关度排序，取最相关）。"""
+def _merge_search_results(blocks: list) -> str:
+    """合并多条查询的搜索结果文本，跨查询按 URL 去重后重新编号。
+
+    Args:
+        blocks: [(query, result_text), ...]，result_text 为 format_results 文本，
+                形如 “N. 标题 / URL: ... / 来源: ... / 摘要: ...”。
+    Returns:
+        合并、去重、重新编号后的结果文本。
+    """
     import re
-    match = re.search(r"https?://[^\s)\]]+", search_result)
-    return match.group() if match else ""
+
+    merged = []  # [{title, url, extra: [其余行]}]
+    seen_urls = set()
+    for _query, text in blocks:
+        current = None
+        for line in text.splitlines():
+            m_title = re.match(r"^\s*\d+\.\s+(.*)$", line)
+            if m_title:
+                # 收尾上一条
+                if current and current["url"] and current["url"] not in seen_urls:
+                    seen_urls.add(current["url"])
+                    merged.append(current)
+                current = {"title": m_title.group(1).strip(), "url": "", "extra": []}
+                continue
+            if current is None:
+                continue
+            m_url = re.match(r"^\s*URL:\s*(\S+)", line)
+            if m_url:
+                current["url"] = m_url.group(1)
+                current["extra"].append(line.rstrip())
+                continue
+            current["extra"].append(line.rstrip())
+        # 收尾最后一条
+        if current and current["url"] and current["url"] not in seen_urls:
+            seen_urls.add(current["url"])
+            merged.append(current)
+
+    if not merged:
+        # 解析失败则直接拼接原文，避免丢信息
+        return "\n\n".join(text for _q, text in blocks)
+
+    out = [f"搜索结果 (合并 {len(merged)} 条):", "=" * 60, ""]
+    for i, item in enumerate(merged, 1):
+        out.append(f"{i}. {item['title']}")
+        out.extend(f"   {ln.strip()}" for ln in item["extra"] if ln.strip())
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _extract_urls(search_result: str, limit: int) -> list:
+    """按出现顺序（即相关度排序）提取前 limit 个去重 URL。"""
+    import re
+    urls = []
+    seen = set()
+    for m in re.finditer(r"https?://[^\s)\]]+", search_result):
+        u = m.group()
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+# 增强参数：提取前 N 个高排名结果页正文，每页保留的字符数。
+# 说明：只提取第 1 个页面、且截断到 1000 字，会漏掉排在后面的含答案页面
+# （例如价格常出现在第 3/4 名的中文页），故适当增大页数与单页长度上限。
+_ENRICH_MAX_PAGES = 3
+_ENRICH_PER_PAGE_CHARS = 2000
 
 
 def enrich_with_page_content(search_result: str) -> str:
-    """对搜索结果做可选增强：提取首个（最相关）结果页正文并追加。
+    """对搜索结果做可选增强：提取前若干个高排名结果页正文并追加。
 
     取代原先仅针对 oracle.com / python.org / openjdk.org 的域名白名单，
-    改为通用地提取排名最高结果的页面内容，适用于任意主题。
+    改为通用地提取排名靠前的多个结果页面内容，适用于任意主题。
     """
-    url = _extract_first_url(search_result)
-    if not url:
+    urls = _extract_urls(search_result, _ENRICH_MAX_PAGES)
+    if not urls:
         return search_result
+
     try:
         from agent_tools import web_content_extract
-        console.print("📄 正在提取相关页面内容...", style="dim")
-        page_content = web_content_extract(url, timeout=10)
-        if page_content and not page_content.startswith("[错误]"):
-            console.print("✅ 页面内容提取成功", style="green")
-            return search_result + f"\n\n=== 相关页面详细信息 ===\n{page_content[:1000]}"
     except Exception as e:  # noqa: BLE001
-        console.print(f"⚠️ 页面内容提取失败: {e}", style="dim")
+        console.print(f"⚠️ 无法导入内容提取工具: {e}", style="dim")
+        return search_result
+
+    console.print("📄 正在提取相关页面内容...", style="dim")
+    blocks = []
+    for idx, url in enumerate(urls, 1):
+        try:
+            page_content = web_content_extract(url, timeout=10)
+            if page_content and not page_content.startswith("[错误]"):
+                blocks.append(
+                    f"--- 页面 {idx}: {url} ---\n{page_content[:_ENRICH_PER_PAGE_CHARS]}"
+                )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"⚠️ 页面 {idx} 内容提取失败: {e}", style="dim")
+
+    if blocks:
+        console.print(f"✅ 页面内容提取成功（{len(blocks)} 个页面）", style="green")
+        return search_result + "\n\n=== 相关页面详细信息 ===\n" + "\n\n".join(blocks)
     return search_result
 
 

@@ -274,8 +274,8 @@ class TestTopicClassifier(unittest.TestCase):
         
         platforms = self.classifier._determine_platforms(docs)
         
-        self.assertIn("devin", platforms)
         self.assertIn("opencode", platforms)
+        self.assertIn("claude", platforms)
     
     def test_determine_platforms_project_specific(self):
         """测试项目专用型文档的平台确定"""
@@ -292,8 +292,9 @@ class TestTopicClassifier(unittest.TestCase):
         
         platforms = self.classifier._determine_platforms(docs)
         
-        self.assertIn("devin", platforms)
-        # 项目专用型默认只支持devin
+        # 现在项目专用型也支持全部平台（opencode + claude）
+        self.assertIn("opencode", platforms)
+        self.assertIn("claude", platforms)
     
     def test_group_by_topic(self):
         """测试按主题分组"""
@@ -347,7 +348,7 @@ class TestSkillGenerator(unittest.TestCase):
     
     def setUp(self):
         """设置测试环境"""
-        self.generator = SkillGenerator(platform='devin')
+        self.generator = SkillGenerator(platform='claude')
         self.temp_dir = tempfile.mkdtemp()
     
     def tearDown(self):
@@ -362,7 +363,7 @@ class TestSkillGenerator(unittest.TestCase):
             documents=[],
             skill_name="test-skill",
             description="Test description",
-            platforms=["devin"]
+            platforms=["claude"]
         )
         
         config = self.generator._generate_config(group)
@@ -432,7 +433,7 @@ class TestSkillGenerator(unittest.TestCase):
         # 不使用patch，直接测试基本功能
         from knowledge_to_skills import SkillGenerator
         from knowledge_to_skills import TopicGroup, DocumentInfo
-        test_generator = SkillGenerator(platform='devin')
+        test_generator = SkillGenerator(platform='claude')
         
         # 创建模拟的chroma client
         mock_client = MagicMock()
@@ -461,7 +462,7 @@ class TestSkillGenerator(unittest.TestCase):
             documents=[doc_info],
             skill_name="test-skill",
             description="Test skill",
-            platforms=["devin"]
+            platforms=["claude"]
         )
         
         content = test_generator._generate_content(group, mock_client)
@@ -475,7 +476,7 @@ class TestSkillGenerator(unittest.TestCase):
         # 不使用patch，直接测试基本功能
         from knowledge_to_skills import SkillGenerator
         from knowledge_to_skills import TopicGroup, DocumentInfo
-        test_generator = SkillGenerator(platform='devin')
+        test_generator = SkillGenerator(platform='claude')
         
         # 创建模拟的chroma client
         mock_client = MagicMock()
@@ -504,7 +505,7 @@ class TestSkillGenerator(unittest.TestCase):
             documents=[doc_info],
             skill_name="test-skill",
             description="Test skill",
-            platforms=["devin"]
+            platforms=["claude"]
         )
         
         skill = test_generator.generate_skill(group, mock_client)
@@ -540,7 +541,7 @@ class TestKnowledgeToSkillsEngine(unittest.TestCase):
         
         self.assertIsNotNone(engine.analyzer)
         self.assertIsNotNone(engine.classifier)
-        self.assertIsNotNone(engine.devin_generator)
+        self.assertIsNotNone(engine.claude_generator)
         self.assertIsNotNone(engine.opencode_generator)
     
     @patch('knowledge_to_skills.chromadb.PersistentClient')
@@ -694,11 +695,11 @@ class TestIntegration(unittest.TestCase):
         self.assertGreaterEqual(len(cloudflare_groups), 1)
         
         # 测试skill生成
-        generator = SkillGenerator(platform='devin')
+        generator = SkillGenerator(platform='claude')
         config = generator._generate_config(groups[0])
         
         self.assertEqual(config.name, "cloudflare")
-        self.assertIn("devin", groups[0].platforms)
+        self.assertIn("claude", groups[0].platforms)
 
 
 if __name__ == '__main__':
