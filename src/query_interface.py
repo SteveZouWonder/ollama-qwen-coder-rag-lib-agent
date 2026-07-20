@@ -907,25 +907,6 @@ def parse_command(user_input: str) -> ParsedCommand:
     if cmd == "/git-commit-gen":
         return ParsedCommand("git_commit_gen", user_input, arg)
 
-    # 知识图谱命令
-    if cmd == "/graph-query":
-        return ParsedCommand("graph_query", user_input, arg)
-    if cmd == "/graph-build":
-        return ParsedCommand("graph_build", user_input, arg)
-    
-    # 数据库命令
-    if cmd == "/db-connect":
-        return ParsedCommand("db_connect", user_input, arg)
-    if cmd == "/db-query":
-        return ParsedCommand("db_query", user_input, arg)
-    if cmd == "/db-execute":
-        return ParsedCommand("db_execute", user_input, arg)
-    if cmd == "/db-create-table":
-        return ParsedCommand("db_create_table", user_input, arg)
-    if cmd == "/db-insert":
-        return ParsedCommand("db_insert", user_input, arg)
-    if cmd == "/db-schema":
-        return ParsedCommand("db_schema", user_input, arg)
 
     if cmd == "/write":
         return ParsedCommand("write", user_input, arg)

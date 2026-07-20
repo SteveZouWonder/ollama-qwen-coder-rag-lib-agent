@@ -721,3 +721,156 @@ class TestRAGEngineFileMetadataRegistration:
         # 不应覆盖既有计数
         a = engine.metadata_manager.get_file_metadata("/kb/a.md")
         assert a.chunk_count == 99
+
+
+class TestRAGEngineDeriveKnowledgeGraph:
+    """测试文档入库时派生构建知识图谱（图谱作为派生索引）。"""
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_empty_documents_returns_false(
+        self, mock_chroma, mock_embed, mock_llm
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        assert engine._derive_knowledge_graph([]) is False
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_builds_graph_from_documents(
+        self, mock_chroma, mock_embed, mock_llm
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+
+        fake_builder = MagicMock()
+        fake_builder.graph = object()  # networkx 可用
+        fake_builder.add_document.return_value = True
+
+        with patch("knowledge_graph.get_graph_builder", return_value=fake_builder):
+            doc = MagicMock()
+            doc.text = "Python is a language."
+            doc.metadata = {"file_name": "a.txt", "doc_type": "text"}
+            assert engine._derive_knowledge_graph([doc]) is True
+            fake_builder.add_document.assert_called_once_with(
+                "Python is a language.", "a.txt", "text"
+            )
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_skips_empty_text(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+
+        fake_builder = MagicMock()
+        fake_builder.graph = object()
+
+        with patch("knowledge_graph.get_graph_builder", return_value=fake_builder):
+            doc = MagicMock()
+            doc.text = "   "
+            doc.metadata = {}
+            assert engine._derive_knowledge_graph([doc]) is False
+            fake_builder.add_document.assert_not_called()
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_uses_get_content_when_no_text_attr(
+        self, mock_chroma, mock_embed, mock_llm
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+
+        fake_builder = MagicMock()
+        fake_builder.graph = object()
+        fake_builder.add_document.return_value = True
+
+        class Doc:
+            metadata = {"source": "s.md"}
+
+            def get_content(self):
+                return "content via get_content"
+
+        with patch("knowledge_graph.get_graph_builder", return_value=fake_builder):
+            assert engine._derive_knowledge_graph([Doc()]) is True
+            fake_builder.add_document.assert_called_once_with(
+                "content via get_content", "s.md", "text"
+            )
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_returns_false_when_networkx_unavailable(
+        self, mock_chroma, mock_embed, mock_llm
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+
+        fake_builder = MagicMock()
+        fake_builder.graph = None  # networkx 不可用
+
+        with patch("knowledge_graph.get_graph_builder", return_value=fake_builder):
+            doc = MagicMock()
+            doc.text = "Python"
+            doc.metadata = {}
+            assert engine._derive_knowledge_graph([doc]) is False
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_derive_exception_is_non_fatal(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+
+        with patch(
+            "knowledge_graph.get_graph_builder", side_effect=RuntimeError("boom")
+        ):
+            doc = MagicMock()
+            doc.text = "Python"
+            doc.metadata = {}
+            assert engine._derive_knowledge_graph([doc]) is False
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_add_documents_sets_last_graph_derived(
+        self, mock_chroma, mock_embed, mock_llm
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        engine.index = MagicMock()
+        engine.query_engine = MagicMock()
+
+        with patch.object(engine, "_persist_index"), patch.object(
+            engine, "_register_file_metadata"
+        ), patch.object(
+            engine, "_derive_knowledge_graph", return_value=True
+        ) as mock_derive:
+            doc = MagicMock()
+            engine.add_documents([doc])
+            mock_derive.assert_called_once()
+            assert engine.last_graph_derived is True
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    @patch("rag_engine.VectorStoreIndex")
+    @patch("rag_engine.SentenceSplitter")
+    @patch("rag_engine.Settings")
+    def test_build_index_sets_last_graph_derived(
+        self, mock_settings, mock_splitter, mock_index_cls, mock_chroma,
+        mock_embed, mock_llm,
+    ):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        mock_index_cls.from_documents.return_value = MagicMock()
+
+        engine = RAGEngine()
+        with patch.object(engine, "_register_file_metadata"), patch.object(
+            engine, "_derive_knowledge_graph", return_value=True
+        ) as mock_derive:
+            engine.build_index([MagicMock()], persist=False)
+            mock_derive.assert_called_once()
+            assert engine.last_graph_derived is True

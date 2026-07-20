@@ -76,6 +76,8 @@ class RAGEngine:
     def __init__(self, enable_auto_snapshot: bool = True, enable_security: bool = True):
         self.index: Optional[VectorStoreIndex] = None
         self.query_engine = None
+        # 最近一次入库时知识图谱是否成功派生构建（供 CLI 调整提示文案）
+        self.last_graph_derived: bool = False
         self.enable_auto_snapshot = enable_auto_snapshot
         self.enable_security = enable_security
         self._setup_llm()
@@ -173,6 +175,9 @@ class RAGEngine:
         # 避免重复构造 SentenceSplitter。
         self._register_file_metadata(documents, file_paths, splitter=node_parser)
 
+        # 派生构建知识图谱（图谱是文档入库的派生索引）
+        self.last_graph_derived = self._derive_knowledge_graph(documents)
+
         print("✅ 索引构建完成！")
         return self.index
 
@@ -253,6 +258,49 @@ class RAGEngine:
                 )
         except Exception as e:  # noqa: BLE001 - 登记失败不应影响入库主流程
             print(f"⚠️ 文件元数据登记失败: {e}")
+
+    def _derive_knowledge_graph(self, documents: List[Document]) -> bool:
+        """入库成功后，将文档派生构建到知识图谱。
+
+        知识图谱是文档入库的派生索引：文档一旦进入向量库，就同步喂给图谱
+        构建器，使二者保持一致，用户无需再手动执行 /graph-build。
+
+        失败不影响入库主流程（向量库已成功持久化），仅返回 False 供调用方
+        决定是否提示用户手动补建（/graph-build）。
+        """
+        if not documents:
+            return False
+        try:
+            try:
+                from knowledge_graph import get_graph_builder
+            except ImportError:  # pragma: no cover - 包内相对导入回退
+                from src.knowledge_graph import get_graph_builder  # type: ignore
+
+            builder = get_graph_builder()
+            if getattr(builder, "graph", None) is None:
+                return False  # networkx 不可用
+
+            ok = False
+            for doc in documents:
+                meta = getattr(doc, "metadata", None) or {}
+                text = getattr(doc, "text", None)
+                if text is None:
+                    text = getattr(doc, "get_content", lambda: "")() or ""
+                if not text or not str(text).strip():
+                    continue
+                doc_id = (
+                    meta.get("file_name")
+                    or meta.get("file_path")
+                    or meta.get("source")
+                    or "manual"
+                )
+                doc_type = meta.get("doc_type", "text")
+                if builder.add_document(str(text), str(doc_id), doc_type):
+                    ok = True
+            return ok
+        except Exception as e:  # noqa: BLE001 - 派生构建失败不应中断入库
+            print(f"⚠️ 知识图谱派生构建失败: {e}")
+            return False
 
     @staticmethod
     def _compute_file_hash(file_path: str) -> Optional[str]:
@@ -384,6 +432,9 @@ class RAGEngine:
 
         # 登记文件元数据（供 /file-list 等命令读取）
         self._register_file_metadata(documents, file_paths)
+
+        # 派生构建知识图谱（图谱是文档入库的派生索引）
+        self.last_graph_derived = self._derive_knowledge_graph(documents)
 
         # 触发自动快照
         if self.auto_snapshot_trigger and file_paths:

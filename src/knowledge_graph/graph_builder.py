@@ -171,7 +171,68 @@ class KnowledgeGraphBuilder:
         except Exception as e:
             self.logger.error(f"添加文档到知识图谱失败: {e}")
             return False
-    
+
+    def rebuild_from_documents(self, documents):
+        """从文档集合全量重建知识图谱（派生索引语义）。
+
+        知识图谱是文档入库的派生产物，任何时候都应能从文档源头重放重建，
+        以消除增量累积导致的漂移，并支持从向量库反向重建。
+
+        Args:
+            documents: 可迭代对象，每项为 ``(text, doc_id, doc_type)`` 三元组，
+                或提供 ``text`` / ``page_content`` 与 ``metadata`` 的文档对象。
+
+        Returns:
+            成功重建返回 True；networkx 不可用返回 False。
+        """
+        if self.graph is None:
+            self.logger.error("Graph 不可用（networkx 未安装）")
+            return False
+
+        # 先在内存中清空重建；成功后统一持久化一次，避免中途多次写盘。
+        self.graph.clear()
+
+        prev_auto = self.auto_persist
+        self.auto_persist = False  # 抑制逐文档 autosave
+        try:
+            count = 0
+            for item in documents:
+                text, doc_id, doc_type = self._coerce_document(item, count)
+                if not text or not str(text).strip():
+                    continue
+                self.add_document(str(text), doc_id, doc_type)
+                count += 1
+            self.logger.info(f"知识图谱已从 {count} 个文档全量重建")
+        finally:
+            self.auto_persist = prev_auto
+
+        self._autosave()
+        return True
+
+    @staticmethod
+    def _coerce_document(item, index):
+        """把多种文档表示归一化为 (text, doc_id, doc_type)。"""
+        if isinstance(item, (tuple, list)):
+            text = item[0] if len(item) > 0 else ""
+            doc_id = item[1] if len(item) > 1 and item[1] else f"doc_{index}"
+            doc_type = item[2] if len(item) > 2 and item[2] else "text"
+            return text, doc_id, doc_type
+
+        # 文档对象：优先 text，其次 page_content
+        text = getattr(item, "text", None)
+        if text is None:
+            text = getattr(item, "page_content", "") or ""
+        meta = getattr(item, "metadata", None) or {}
+        doc_id = (
+            meta.get("doc_id")
+            or meta.get("file_name")
+            or meta.get("file_path")
+            or meta.get("source")
+            or f"doc_{index}"
+        )
+        doc_type = meta.get("doc_type", "text")
+        return text, str(doc_id), doc_type
+
     def add_entity(self, entity: Entity):
         """添加单个实体"""
         if self.graph is None:
@@ -390,12 +451,19 @@ class KnowledgeGraphBuilder:
             self.logger.error(f"加载图谱失败: {e}")
             return False
     
-    def clear(self):
-        """清空图谱"""
+    def clear(self, persist: bool = False):
+        """清空内存中的图谱。
+
+        Args:
+            persist: 是否把清空结果写回磁盘。默认 False，避免误调用（或残留的
+                测试清理逻辑）把持久化的图谱数据永久抹掉。仅在确实需要清空
+                磁盘持久化文件时显式传入 ``persist=True``。
+        """
         if self.graph is not None:
             self.graph.clear()
-            self.logger.info("知识图谱已清空")
-            self._autosave()
+            self.logger.info("知识图谱已清空（persist=%s）", persist)
+            if persist:
+                self._autosave()
     
     def get_entity_by_type(self, entity_type: EntityType) -> List[Entity]:
         """按类型获取实体"""

@@ -85,6 +85,53 @@ class TestGraphBuild:
         assert result is False
 
 
+class TestHandleAddGraphPrompt:
+    """/add 派生构建图谱后的提示文案（不再推荐手动 /graph-build）。"""
+
+    def _ctx(self, last_graph_derived, docs=None):
+        rag = MagicMock()
+        rag.last_graph_derived = last_graph_derived
+        console = MagicMock()
+        ctx = h.CLIContext(
+            console=console,
+            has_rich=False,
+            rag_engine=rag,
+            load_documents=MagicMock(return_value=docs if docs is not None else [MagicMock()]),
+            record_command=MagicMock(),
+        )
+        return ctx, console, rag
+
+    def _parsed_add(self, path="doc.md"):
+        return ParsedCommand("add", f"/add {path}", path)
+
+    def _printed(self, console):
+        return " ".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+
+    def test_success_with_graph_derived_shows_synced_message(self):
+        ctx, console, rag = self._ctx(last_graph_derived=True)
+        assert h.handle_add(ctx, self._parsed_add()) is True
+        rag.add_documents.assert_called_once()
+        out = self._printed(console)
+        assert "已同步更新知识图谱" in out
+        # 不应再推荐手动 /graph-build
+        assert "/graph-build" not in out
+
+    def test_success_without_graph_derived_suggests_manual(self):
+        ctx, console, rag = self._ctx(last_graph_derived=False)
+        assert h.handle_add(ctx, self._parsed_add()) is True
+        out = self._printed(console)
+        assert "/graph-build" in out
+        assert "手动补建" in out
+
+    def test_no_documents_skips_add_and_graph_message(self):
+        ctx, console, rag = self._ctx(last_graph_derived=True, docs=[])
+        assert h.handle_add(ctx, self._parsed_add()) is True
+        rag.add_documents.assert_not_called()
+        out = self._printed(console)
+        assert "未找到可加载的文档" in out
+        assert "知识图谱" not in out
+
+
 class TestGraphQueryRouting:
     """/graph-query 前缀解析与 query_type 路由"""
 
