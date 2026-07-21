@@ -135,24 +135,42 @@ class TestRAGAgent:
         assert "document_search" in agent.capabilities
         assert "knowledge_extraction" in agent.capabilities
         assert "literature_review" in agent.capabilities
-    
+        # general 兜底能力：使多 Agent 模式能承接不含特定关键词的通用问题
+        assert "general" in agent.capabilities
+
     def test_rag_agent_process_knowledge_retrieval(self):
-        """测试RAGAgent处理知识检索任务"""
-        agent = RAGAgent()
-        
-        task = AgentTask(
-            task_id="task_001",
-            task_type="knowledge_retrieval",
-            description="检索知识",
-            required_capabilities=["knowledge_retrieval"],
-            input_data={"request": "查询机器学习算法"}
-        )
-        
-        result = agent.process_task(task)
-        
-        assert result.success is True
-        assert "知识库检索结果" in result.output
-        assert result.metadata["task_type"] == "knowledge_retrieval"
+        """测试RAGAgent处理知识检索任务（复用 rag_pipeline，注入桩引擎）。"""
+        import agent_tools
+
+        class _StubEngine:
+            # 模拟已初始化的引擎，命中一个高相关片段
+            query_engine = object()
+
+            def query_with_sources(self, question, progress_callback=None):
+                return {
+                    "answer": f"针对『{question}』的检索答案",
+                    "sources": [{"content": "c", "file": "ml.md", "score": 0.72}],
+                }
+
+        agent_tools.set_rag_engine(_StubEngine())
+        try:
+            agent = RAGAgent()
+            task = AgentTask(
+                task_id="task_001",
+                task_type="knowledge_retrieval",
+                description="检索知识",
+                required_capabilities=["knowledge_retrieval"],
+                input_data={"request": "查询机器学习算法"}
+            )
+            result = agent.process_task(task)
+
+            assert result.success is True
+            assert "知识库检索结果" in result.output
+            assert "针对" in result.output  # pipeline 沿用高相关片段的原始答案
+            assert "ml.md" in result.output  # 相关来源被带入
+            assert result.metadata["task_type"] == "knowledge_retrieval"
+        finally:
+            agent_tools.set_rag_engine(None)
     
     def test_rag_agent_process_document_search(self):
         """测试RAGAgent处理文档搜索任务"""
@@ -206,6 +224,46 @@ class TestRAGAgent:
         assert result.success is True
         assert result.metadata["task_type"] == "literature_review"
         assert result.metadata["papers_reviewed"] == 10
+
+    def test_rag_agent_general_task_uses_pipeline(self, monkeypatch):
+        """通用任务复用 rag_pipeline：低相关片段被过滤，不当作知识库来源展示。
+
+        复现截图问题：多 Agent 模式问"某产品售价"，此前 RAGAgent 走裸检索，
+        把相似度 0.398 的无关片段当来源展示。改用 pipeline 后应过滤噪音。
+        """
+        import agent_tools
+        import rag_pipeline
+
+        class _NoiseEngine:
+            query_engine = object()
+
+            def query_with_sources(self, question, progress_callback=None):
+                return {
+                    "answer": "无关内容",
+                    "sources": [{"content": "http_status:404", "file": "cloudflare.md", "score": 0.398}],
+                }
+
+        # 避免真实联网/LLM：桩掉网络搜索与直答
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "")
+        monkeypatch.setattr(rag_pipeline, "augment_with_web_search", lambda q, progress=None: "")
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "基于模型的回答")
+
+        agent_tools.set_rag_engine(_NoiseEngine())
+        try:
+            agent = RAGAgent()
+            task = AgentTask(
+                task_id="task_gen",
+                task_type="general",
+                description="通用",
+                required_capabilities=["general"],
+                input_data={"request": "某产品售价"},
+            )
+            result = agent.process_task(task)
+            # 低相关片段被过滤，输出不应包含该无关来源文件
+            assert "cloudflare.md" not in result.output
+            assert "0.398" not in result.output
+        finally:
+            agent_tools.set_rag_engine(None)
 
 
 class TestTestAgent:

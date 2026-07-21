@@ -41,6 +41,32 @@ class TestAgentOrchestrator:
         
         assert result is not None
         assert "success" in result
+
+    def test_general_question_has_suitable_agent(self):
+        """回归：不含特定关键词的通用问题应有 Agent 可接单（此前返回空结果）。
+
+        问题如"某产品售价"会被分解为 required_capabilities=["general"] 的通用
+        任务；修复前无任何 Agent 声明该能力，调度阶段报 "No suitable agent found"
+        导致多 Agent 模式对通用问题整体返回 0 结果。RAGAgent 现声明 general
+        能力兜底，确保此类任务能被调度。
+        """
+        from collaboration.task_decomposer import TaskDecomposer
+
+        config = AgentConfigManager.get_default_config()
+        orchestrator = AgentOrchestrator(config)
+        try:
+            tasks = TaskDecomposer().decompose(
+                "中国国内DJI Action6的售价", orchestrator.specialized_agents
+            )
+            assert len(tasks) == 1
+            assert tasks[0].required_capabilities == ["general"]
+            handlers = [
+                a.agent_id for a in orchestrator.specialized_agents
+                if a.can_handle(tasks[0])
+            ]
+            assert handlers, "通用任务应至少有一个 Agent 可处理"
+        finally:
+            orchestrator.shutdown()
     
     def test_orchestrator_process_request_default_mode(self):
         """测试使用默认模式处理请求"""
