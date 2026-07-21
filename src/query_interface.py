@@ -172,6 +172,7 @@ from rag_engine import RAGEngine, build_knowledge_base
 from react_engine import ReActEngine
 from agent_tools import registry, CommandSafetyChecker, set_rag_engine
 from document_loader import load_documents
+import rag_pipeline
 
 # 导入知识库管理功能
 try:
@@ -1027,329 +1028,73 @@ def record_command_execution(cmd_type: str, args: str = "", result: str = "", er
 
 
 def record_conversation(user_content: str, assistant_content: str):
-    """
-    将一轮对话写入“当前会话”（session），作为对话历史的单一来源。
-
-    若当前没有会话，则自动创建一个，使 /ask、/agent 的对话始终被持久化，
-    随后可通过 /history、/session-current 查看。
-
-    Args:
-        user_content: 用户输入内容
-        assistant_content: 助手回答内容
-    """
-    try:
-        from session_manager import get_session_manager
-        manager = get_session_manager()
-        session = manager.get_current_session()
-        if session is None:
-            session = manager.create_session()
-            logger.info(f"自动创建会话用于记录对话: {session.session_id}")
-        if user_content:
-            session.add_message("user", user_content)
-        if assistant_content:
-            session.add_message("assistant", assistant_content)
-        manager.save_session(session)
-    except Exception as e:
-        logger.error(f"记录对话到会话失败: {e}")
+    """将一轮对话写入"当前会话"，委托共享层 rag_pipeline.record_conversation。"""
+    rag_pipeline.record_conversation(user_content, assistant_content)
 
 
-def _simple_web_search(query: str) -> str:
-    """
-    对给定查询执行一次网络搜索，返回有效结果文本；失败或无结果返回空串。
+# ==================== 共享 RAG 编排层的 CLI 适配 ====================
+# 以下高级 RAG 逻辑（网络搜索规划、多查询合并、页面增强、元查询直答、
+# 双区综合、0 命中回退）已下沉到 ``rag_pipeline``，供 CLI 与 Web 复用。
+# 这里保留同名薄封装以维持向后兼容（测试/其它模块可能仍引用），实际逻辑
+# 全部转调 rag_pipeline。CLI 独有的 Rich 终端渲染由 _cli_ask_progress 承接。
 
-    用于 RAG 检索为空时的回退，逻辑保持简单：直接用原始问题搜索。
-    """
-    try:
-        from agent_tools import web_search
-        result = web_search(query, max_results=5, use_cache=False)
-        if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
-            return result
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"回退网络搜索失败: {e}")
-    return ""
-
-
-def _llm_direct_answer(prompt: str) -> str:
-    """用 LLM 直接回答（不经过知识库检索）。失败时返回错误说明。"""
-    try:
-        from llama_index.core import Settings
-        resp = Settings.llm.complete(prompt)
-        return str(resp)
-    except Exception as e:  # noqa: BLE001
-        return f"回答失败：{e}"
-
-
-# ==================== 网络搜索：LLM 驱动的通用查询规划 ====================
-
-# 仅作为 LLM 不可用时的轻量回退触发词（不再承担主要判定职责）。
-# 保持精简且语言无关，避免针对特定技术栈的硬编码。
-_WEB_SEARCH_FALLBACK_HINTS = (
-    "最新", "当前", "今天", "现在", "实时", "发布", "新闻", "价格", "版本",
-    "latest", "current", "today", "now", "release", "news", "price", "version",
-)
-
-
-def _strip_json_fence(text: str) -> str:
-    """去除 LLM 输出中可能包裹的 ```json ... ``` 代码块围栏。"""
-    text = text.strip()
-    if text.startswith("```"):
-        # 去掉首行围栏（``` 或 ```json）与末行围栏
-        lines = text.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
-def plan_web_search(question: str) -> dict:
-    """用 LLM 判断问题是否需要联网搜索，并生成优化后的搜索查询。
-
-    通过让本地 LLM 充当“搜索规划器”，取代原先针对特定技术栈（JDK/Java/
-    Python 等）的硬编码关键词、前后缀清洗与翻译表，使该逻辑对任意主题
-    （技术、新闻、价格、人物、事件……）都具备普适性。
-
-    Args:
-        question: 用户原始问题。
-
-    Returns:
-        形如 ``{"needs_search": bool, "queries": [str, ...]}`` 的字典。
-        ``queries`` 已去重，通常包含原语言与英文两种表达以提升召回。
-        当 LLM 不可用或解析失败时，回退到基于轻量触发词的启发式判断。
-    """
-    import json
-
-    prompt = (
-        "你是一个搜索规划助手。判断回答下面这个问题是否需要联网搜索"
-        "最新/实时/外部信息（例如：版本号、新闻、价格、近期事件、特定事实）。"
-        "如果问题可以仅凭通用知识回答，或属于代码/写作/推理类任务，则不需要搜索。\n"
-        "若需要搜索，请生成 1-3 条精简、高质量的搜索查询词（去掉‘帮我’‘请问’"
-        "等口语化前后缀，只保留核心检索词）；若原问题为中文，请额外补充一条"
-        "等价的英文查询以提升召回。\n"
-        "严格只输出 JSON，格式：\n"
-        '{"needs_search": true/false, "queries": ["查询1", "query2"]}\n\n'
-        f"问题：{question}"
-    )
-
-    try:
-        from llama_index.core import Settings
-        raw = str(Settings.llm.complete(prompt)).strip()
-        data = json.loads(_strip_json_fence(raw))
-        needs = bool(data.get("needs_search", False))
-        queries = [
-            q.strip()
-            for q in (data.get("queries") or [])
-            if isinstance(q, str) and q.strip()
-        ]
-        # 去重并保序
-        seen = set()
-        deduped = []
-        for q in queries:
-            if q.lower() not in seen:
-                seen.add(q.lower())
-                deduped.append(q)
-        if needs and not deduped:
-            deduped = [question]
-        return {"needs_search": needs, "queries": deduped}
-    except Exception as e:  # noqa: BLE001 - LLM/JSON 失败时回退到启发式
-        logger.warning(f"LLM 搜索规划失败，回退到启发式判断: {e}")
-        lowered = question.lower()
-        needs = any(hint in lowered for hint in _WEB_SEARCH_FALLBACK_HINTS)
-        return {"needs_search": needs, "queries": [question] if needs else []}
+_simple_web_search = rag_pipeline.simple_web_search
+_llm_direct_answer = rag_pipeline.llm_direct_answer
+plan_web_search = rag_pipeline.plan_web_search
+_merge_search_results = rag_pipeline._merge_search_results
+_extract_urls = rag_pipeline._extract_urls
+_is_empty_rag_result = rag_pipeline.is_empty_rag_result
+_is_meta_query = rag_pipeline.is_meta_query
+_parse_web_sources = rag_pipeline.parse_web_sources
+_synthesize_prompt = rag_pipeline.synthesize_prompt
+_format_kb_context = rag_pipeline.format_kb_context
 
 
 def run_web_search(queries: list) -> str:
-    """执行所有给定查询并合并有效结果文本；都失败返回空串。
-
-    改动原因：此前只返回“首个”有效查询的结果，会丢弃其余查询。实测中
-    plan_web_search 常同时给出中文原查询与英文查询，二者召回的页面/摘要差异很大
-    （例如价格类问题：英文页多为营销页、摘要无具体价格，而中文页摘要里已含
-    “2998 元”等关键信息）。只取第一个查询会把含答案的结果整段丢掉，导致
-    LLM 明明“搜到了”却回答“无法确定”。故改为合并所有查询结果、跨查询去重，
-    最大化把有用摘要送进后续 prompt。
-    """
-    try:
-        from agent_tools import web_search
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"无法导入 web_search: {e}")
-        return ""
-
-    blocks = []
-    for query in queries:
-        console.print(f"🔍 搜索查询: {query}", style="dim")
-        result = web_search(query, max_results=5, use_cache=False)
-        if result and not result.startswith("[错误]") and not result.startswith("[提示]"):
-            blocks.append((query, result))
-        else:
-            console.print(f"⚠️ 查询 '{query}' 未返回结果，尝试下一个...", style="dim")
-
-    if not blocks:
-        return ""
-    if len(blocks) == 1:
-        return blocks[0][1]
-    return _merge_search_results(blocks)
-
-
-def _merge_search_results(blocks: list) -> str:
-    """合并多条查询的搜索结果文本，跨查询按 URL 去重后重新编号。
-
-    Args:
-        blocks: [(query, result_text), ...]，result_text 为 format_results 文本，
-                形如 “N. 标题 / URL: ... / 来源: ... / 摘要: ...”。
-    Returns:
-        合并、去重、重新编号后的结果文本。
-    """
-    import re
-
-    merged = []  # [{title, url, extra: [其余行]}]
-    seen_urls = set()
-    for _query, text in blocks:
-        current = None
-        for line in text.splitlines():
-            m_title = re.match(r"^\s*\d+\.\s+(.*)$", line)
-            if m_title:
-                # 收尾上一条
-                if current and current["url"] and current["url"] not in seen_urls:
-                    seen_urls.add(current["url"])
-                    merged.append(current)
-                current = {"title": m_title.group(1).strip(), "url": "", "extra": []}
-                continue
-            if current is None:
-                continue
-            m_url = re.match(r"^\s*URL:\s*(\S+)", line)
-            if m_url:
-                current["url"] = m_url.group(1)
-                current["extra"].append(line.rstrip())
-                continue
-            current["extra"].append(line.rstrip())
-        # 收尾最后一条
-        if current and current["url"] and current["url"] not in seen_urls:
-            seen_urls.add(current["url"])
-            merged.append(current)
-
-    if not merged:
-        # 解析失败则直接拼接原文，避免丢信息
-        return "\n\n".join(text for _q, text in blocks)
-
-    out = [f"搜索结果 (合并 {len(merged)} 条):", "=" * 60, ""]
-    for i, item in enumerate(merged, 1):
-        out.append(f"{i}. {item['title']}")
-        out.extend(f"   {ln.strip()}" for ln in item["extra"] if ln.strip())
-        out.append("")
-    return "\n".join(out).rstrip() + "\n"
-
-
-def _extract_urls(search_result: str, limit: int) -> list:
-    """按出现顺序（即相关度排序）提取前 limit 个去重 URL。"""
-    import re
-    urls = []
-    seen = set()
-    for m in re.finditer(r"https?://[^\s)\]]+", search_result):
-        u = m.group()
-        if u not in seen:
-            seen.add(u)
-            urls.append(u)
-        if len(urls) >= limit:
-            break
-    return urls
-
-
-# 增强参数：提取前 N 个高排名结果页正文，每页保留的字符数。
-# 说明：只提取第 1 个页面、且截断到 1000 字，会漏掉排在后面的含答案页面
-# （例如价格常出现在第 3/4 名的中文页），故适当增大页数与单页长度上限。
-_ENRICH_MAX_PAGES = 3
-_ENRICH_PER_PAGE_CHARS = 2000
+    """兼容封装：执行网络搜索，进度经 CLI 渲染。"""
+    return rag_pipeline.run_web_search(queries, progress=_cli_ask_progress)
 
 
 def enrich_with_page_content(search_result: str) -> str:
-    """对搜索结果做可选增强：提取前若干个高排名结果页正文并追加。
-
-    取代原先仅针对 oracle.com / python.org / openjdk.org 的域名白名单，
-    改为通用地提取排名靠前的多个结果页面内容，适用于任意主题。
-    """
-    urls = _extract_urls(search_result, _ENRICH_MAX_PAGES)
-    if not urls:
-        return search_result
-
-    try:
-        from agent_tools import web_content_extract
-    except Exception as e:  # noqa: BLE001
-        console.print(f"⚠️ 无法导入内容提取工具: {e}", style="dim")
-        return search_result
-
-    console.print("📄 正在提取相关页面内容...", style="dim")
-    blocks = []
-    for idx, url in enumerate(urls, 1):
-        try:
-            page_content = web_content_extract(url, timeout=10)
-            if page_content and not page_content.startswith("[错误]"):
-                blocks.append(
-                    f"--- 页面 {idx}: {url} ---\n{page_content[:_ENRICH_PER_PAGE_CHARS]}"
-                )
-        except Exception as e:  # noqa: BLE001
-            console.print(f"⚠️ 页面 {idx} 内容提取失败: {e}", style="dim")
-
-    if blocks:
-        console.print(f"✅ 页面内容提取成功（{len(blocks)} 个页面）", style="green")
-        return search_result + "\n\n=== 相关页面详细信息 ===\n" + "\n\n".join(blocks)
-    return search_result
+    """兼容封装：页面正文增强，进度经 CLI 渲染。"""
+    return rag_pipeline.enrich_with_page_content(search_result, progress=_cli_ask_progress)
 
 
-def _is_empty_rag_result(result: dict) -> bool:
-    """判断 RAG 查询结果是否为“空命中”（无来源或返回 LlamaIndex 的占位文本）。"""
-    if not result:
-        return True
-    sources = result.get("sources") or []
-    answer = (result.get("answer") or "").strip()
-    # LlamaIndex 在没有任何命中节点时返回固定占位字符串 "Empty Response"
-    return len(sources) == 0 or answer == "" or answer == "Empty Response"
+def _cli_ask_progress(event: dict):
+    """把 rag_pipeline 的结构化进度事件渲染到 Rich 终端（CLI 专属）。"""
+    stage = event.get("stage", "")
+    msg = event.get("message", "")
+
+    if stage == "meta_overview":
+        _render_meta_overview(event)
+        return
+
+    style_map = {
+        "web_search_start": "cyan",
+        "web_query": "dim",
+        "web_query_empty": "dim",
+        "web_search_done": "green",
+        "web_search_empty": "yellow",
+        "web_search_failed": "yellow",
+        "enrich_start": "dim",
+        "enrich_page_failed": "dim",
+        "enrich_done": "green",
+        "kb_empty": "yellow",
+        "kb_fallback_search": "cyan",
+        "kb_uninitialized": "yellow",
+    }
+    style = style_map.get(stage, "dim")
+    if stage in ("kb_retrieving", "synthesizing", "model_thinking"):
+        # 这些"进行中"提示走安静的 dim 行，避免打断 status
+        console.print(f"[dim]{msg}[/dim]")
+    elif msg:
+        console.print(msg, style=style)
 
 
-# ==================== 元/概览类问题：直连知识库概览，不检索不联网 ====================
-
-# “知识库里有什么/有哪些文件/列出文档”这类问题是关于知识库本身的元信息，
-# 向量检索按正文语义匹配，天然分数低（实测约 0.39），极易被相似度阈值全部过滤，
-# 导致 0 命中并错误回退到网络搜索。此类问题应直接返回文件列表 + 统计。
-_META_QUERY_PATTERNS = (
-    "知识库里有什么", "知识库有什么", "知识库里面有什么", "知识库中有什么",
-    "知识库里有哪些", "知识库有哪些", "知识库里面有哪些", "知识库中有哪些",
-    "有哪些文件", "有哪些文档", "有什么文件", "有什么文档",
-    "列出文件", "列出文档", "列举文件", "列举文档", "文件列表", "文档列表",
-    "知识库内容", "知识库里面有内容", "知识库有多少",
-    "what is in the knowledge base", "what's in the knowledge base",
-    "list files", "list documents", "what files", "what documents",
-)
-
-
-def _is_meta_query(question: str) -> bool:
-    """判断是否为“关于知识库本身”的元/概览类问题。"""
-    if not question:
-        return False
-    q = question.strip().lower()
-    return any(pat in q for pat in _META_QUERY_PATTERNS)
-
-
-def _answer_meta_query() -> bool:
-    """直接返回知识库概览（文件列表 + 统计），不做向量检索、不联网。
-
-    返回 True 表示已处理（命中元问题），False 表示未能处理（交回常规流程）。
-    """
-    try:
-        from file_metadata import get_global_metadata_manager
-        manager = get_global_metadata_manager()
-        files = manager.list_files()
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"读取文件元数据失败: {e}")
-        files = []
-
-    stats = {}
-    try:
-        if rag_engine is not None:
-            stats = rag_engine.get_stats()
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"读取知识库统计失败: {e}")
-
+def _render_meta_overview(event: dict):
+    """CLI 渲染知识库概览（文件列表 + 统计）。"""
+    files = event.get("files") or []
+    stats = event.get("stats") or {}
     console.print("\n📚 知识库概览:", style="bold blue")
     if not files:
         console.print("📭 知识库中暂无已登记的文件。", style="yellow")
@@ -1361,46 +1106,20 @@ def _answer_meta_query() -> bool:
     else:
         console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
         for fm in files:
-            try:
-                size = manager._format_size(fm.file_size)
-            except Exception:  # noqa: BLE001
-                size = "?"
-            console.print(f"  📄 {fm.file_path}  [dim]({size})[/dim]")
+            console.print(f"  📄 {fm.get('path')}  [dim]({fm.get('size', '?')})[/dim]")
 
     if stats:
         console.print(
             f"\n[dim]文档片段总数: {stats.get('total_documents', '?')} | "
             f"Embedding: {stats.get('embed_model', '?')}[/dim]"
         )
+
+
+def _answer_meta_query() -> bool:
+    """兼容封装：直接渲染知识库概览。"""
+    overview = rag_pipeline.build_meta_overview(rag_engine)
+    _render_meta_overview({"files": overview["files"], "stats": overview["stats"]})
     return True
-
-
-# ==================== 方案 B：知识库/网络来源分区与综合回答 ====================
-
-
-def _parse_web_sources(search_result: str) -> list:
-    """从网络搜索结果文本中解析出结构化来源 [{title, url}]。
-
-    format_results(text) 的格式为：
-        N. 标题
-           URL: https://...
-    """
-    import re
-    sources = []
-    if not search_result:
-        return sources
-    lines = search_result.splitlines()
-    pending_title = ""
-    for line in lines:
-        m_title = re.match(r"^\s*\d+\.\s+(.*)$", line)
-        if m_title:
-            pending_title = m_title.group(1).strip()
-            continue
-        m_url = re.match(r"^\s*URL:\s*(\S+)", line)
-        if m_url:
-            sources.append({"title": pending_title or m_url.group(1), "url": m_url.group(1)})
-            pending_title = ""
-    return sources
 
 
 def print_web_sources(sources: list):
@@ -1603,17 +1322,38 @@ def handle_model(ctx, parsed):
 
 
 def handle_ask(ctx, parsed):
-    """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。"""
+    """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。
+
+    核心编排逻辑已下沉到共享层 ``rag_pipeline.answer_question``（CLI 与 Web
+    共用）；本函数只负责 CLI 特有的内联文件入库、Rich 进度/来源渲染。
+    """
     global last_rag_sources, last_web_sources
     import re
 
     question = parsed.arg
     original_question = parsed.arg  # 用于命令记录，避免把搜索结果正文塞进历史
 
-    # 情况 C：元/概览类问题（“知识库里有什么/列出文件”）直接返回概览，
-    # 不走向量检索、不联网，避免被相似度阈值全部过滤导致答非所问。
-    if _is_meta_query(original_question):
-        _answer_meta_query()
+    # 元/概览类问题会在 answer_question 内部识别并通过 meta_overview 事件渲染。
+    # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）——CLI 独有。
+    if not _is_meta_query(original_question):
+        file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
+        file_path_match = re.search(file_pattern, question)
+        if file_path_match:
+            question = _ingest_inline_file(file_path_match.group(), question)
+
+    # 调用共享编排层：网络搜索规划、双区综合、0 命中回退、元查询直答一体化。
+    rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
+    result = rag_pipeline.answer_question(
+        rag_engine,
+        question,
+        enable_web_search=True,
+        show_progress=Config.SHOW_PROGRESS,
+        progress=_cli_ask_progress,
+        rag_progress_callback=rag_progress,
+    )
+
+    # 元查询：概览已在 _cli_ask_progress 中渲染，这里只记录并返回。
+    if result.get("kind") == "meta":
         last_rag_sources = []
         last_web_sources = []
         ctx.last_rag_sources = last_rag_sources
@@ -1622,28 +1362,11 @@ def handle_ask(ctx, parsed):
         record_conversation(original_question, "[知识库概览]")
         return True
 
-    kb_initialized = rag_engine.query_engine is not None
-    if not kb_initialized:
-        console.print("⚠️  知识库未初始化，将根据网络搜索/模型直接回答", style="yellow")
-
-    # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）
-    file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
-    file_path_match = re.search(file_pattern, question)
-    if file_path_match:
-        question = _ingest_inline_file(file_path_match.group(), question)
-
-    # 网络搜索增强（LLM 驱动的通用查询规划）。保留结构化来源用于分区展示。
-    web_search_result = _augment_with_web_search(question)
-    web_sources = _parse_web_sources(web_search_result) if web_search_result else []
-
-    # 生成回答：知识库与网络来源分区标注、综合总结（方案 B）
-    result = _answer_question(question, original_question, web_search_result)
-
     console.print("\n🤖 回答:", style="bold blue")
     _render_answer(result["answer"])
 
-    last_rag_sources = result["sources"]
-    last_web_sources = web_sources
+    last_rag_sources = result.get("kb_sources", [])
+    last_web_sources = result.get("web_sources", [])
     ctx.last_rag_sources = last_rag_sources
     ctx.last_web_sources = last_web_sources
 
@@ -1697,88 +1420,22 @@ def _ingest_inline_file(file_path: str, question: str) -> str:
 
 
 def _augment_with_web_search(question: str) -> str:
-    """按需执行 LLM 规划的网络搜索，返回搜索结果文本（无则空串）。"""
-    try:
-        plan = plan_web_search(question)
-        if plan.get("needs_search") and plan.get("queries"):
-            console.print("🌐 检测到需要最新信息，正在网络搜索...", style="cyan")
-            result = run_web_search(plan["queries"])
-            if result:
-                console.print("✅ 网络搜索完成", style="green")
-                return enrich_with_page_content(result)
-            console.print("⚠️ 所有搜索查询均未返回有效结果，继续使用知识库", style="yellow")
-    except Exception as e:  # noqa: BLE001
-        console.print(f"⚠️ 网络搜索失败，继续使用知识库: {e}", style="yellow")
-    return ""
+    """兼容封装：按需执行 LLM 规划的网络搜索（逻辑见 rag_pipeline）。"""
+    return rag_pipeline.augment_with_web_search(question, progress=_cli_ask_progress)
 
 
 def _answer_question(question: str, original_question: str, web_search_result: str) -> dict:
-    """根据知识库状态生成回答。
-
-    方案 B：知识库检索内容与网络搜索结果分区标注，交由 LLM 综合总结并明确区分
-    来源；知识库 0 命中时不再把网络结果冒充成知识库回答，而是明确声明来源为网络。
-    """
-    kb_initialized = rag_engine.query_engine is not None
-
-    # 知识库未初始化：只能用网络/模型自身知识，明确声明来源
-    if not kb_initialized:
-        if not web_search_result:
-            console.print("💡 知识库为空，直接使用模型回答（可能不含最新信息）", style="dim")
-        prompt = _synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
-        with console.status("[bold green]模型思考中..."):
-            answer = _llm_direct_answer(prompt)
-        if web_search_result:
-            answer = "⚠️ 以下回答基于网络搜索与模型知识，非你的知识库内容：\n\n" + answer
-        return {"answer": answer, "sources": []}
-
-    # 检索知识库
-    if Config.SHOW_PROGRESS:
-        result = rag_engine.query_with_sources(question, progress_callback=ask_progress_callback)
-    else:
-        with console.status("[bold green]检索知识库..."):
-            result = rag_engine.query_with_sources(question)
-
-    kb_hit = not _is_empty_rag_result(result)
-
-    # 知识库命中：以知识库为主，若有网络补充则分区综合
-    if kb_hit:
-        if not web_search_result:
-            return result
-        kb_context = _format_kb_context(result.get("sources") or [])
-        prompt = _synthesize_prompt(original_question, kb_context, web_search_result)
-        with console.status("[bold green]综合知识库与网络信息..."):
-            answer = _llm_direct_answer(prompt)
-        return {"answer": answer, "sources": result.get("sources") or []}
-
-    # 知识库 0 命中：明确告知，再用网络/模型回答，并声明来源
-    console.print("📭 知识库中未检索到相关内容。", style="yellow")
-    if not web_search_result:
-        console.print("🌐 正在网络搜索补充信息...", style="cyan")
-        web_search_result = _simple_web_search(original_question)
-        if web_search_result:
-            console.print("✅ 网络搜索完成", style="green")
-
-    prompt = _synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
-    with console.status("[bold green]模型思考中..."):
-        answer = _llm_direct_answer(prompt)
-    if web_search_result:
-        answer = "⚠️ 知识库中无相关内容，以下回答基于网络搜索，非你的知识库内容：\n\n" + answer
-    else:
-        console.print("💡 未获取到网络信息，直接使用模型自身知识回答", style="dim")
-        answer = "⚠️ 知识库中无相关内容，以下为模型自身知识回答：\n\n" + answer
-    return {"answer": answer, "sources": []}
-
-
-def _format_kb_context(sources: list) -> str:
-    """把知识库来源拼成带文件标注的上下文文本，供综合 prompt 使用。"""
-    blocks = []
-    for i, src in enumerate(sources, 1):
-        content = (src.get("content") or "").strip()
-        if not content:
-            continue
-        fname = src.get("file", "未知文件")
-        blocks.append(f"[片段{i}｜来自 {fname}]\n{content}")
-    return "\n\n".join(blocks)
+    """兼容封装：根据知识库状态生成回答（逻辑见 rag_pipeline.generate_answer）。"""
+    rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
+    return rag_pipeline.generate_answer(
+        rag_engine,
+        question,
+        original_question,
+        web_search_result,
+        show_progress=Config.SHOW_PROGRESS,
+        progress=_cli_ask_progress,
+        rag_progress_callback=rag_progress,
+    )
 
 
 def handle_agent(ctx, parsed):
