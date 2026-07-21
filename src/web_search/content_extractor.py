@@ -255,12 +255,21 @@ class ContentExtractor:
             )
             
             if response.status_code == 200:
+                # 中文编码修正：requests 仅根据 HTTP 头猜测编码，很多中文站点
+                # 只在 <meta> 声明编码（如 GBK/GB2312），会被误判为 ISO-8859-1
+                # 导致 response.text 乱码。当响应头未显式指定字符集时，用
+                # apparent_encoding（基于内容探测）纠正。
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "charset=" not in content_type and response.apparent_encoding:
+                    response.encoding = response.apparent_encoding
+                text = response.text
                 return {
                     'title': '',
-                    'content': response.text[:10000],  # 限制长度
+                    'content': text[:10000],  # 限制长度
                     'metadata': {
-                        'content_length': len(response.text),
-                        'status_code': response.status_code
+                        'content_length': len(text),
+                        'status_code': response.status_code,
+                        'encoding': response.encoding,
                     }
                 }
         except Exception as e:

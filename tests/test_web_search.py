@@ -9,10 +9,264 @@ from datetime import datetime, timedelta
 import json
 
 # 导入被测试的模块
-from web_search.search_engine import SearchResult, DuckDuckGoSearchEngine, SearchEngineManager
+from web_search.search_engine import (
+    SearchResult, DuckDuckGoSearchEngine, SearchEngineManager,
+    WikipediaSearchEngine, BaiduSearchEngine, _contains_cjk, _tokenize,
+    _get_search_config, resolve_region,
+)
+
+
+class TestBaiduSearchEngine:
+    """百度搜索引擎（国内主力源）测试。"""
+
+    def _fake_resp(self, text, location=""):
+        class _R:
+            def __init__(self, t, loc):
+                self.text = t
+                self.headers = {"Location": loc} if loc else {}
+        return _R(text, location)
+
+    def test_source_name_and_available(self):
+        e = BaiduSearchEngine()
+        assert e.get_source_name() == "Baidu"
+        assert e.is_available() is True
+
+    def test_parse_general_json(self):
+        import json
+        e = BaiduSearchEngine()
+        data = {"feed": {"entry": [
+            {"title": "大疆 Osmo 360 售价 &amp; 参数", "url": "https://item.jd.com/1.html", "abs": "京东 2999 元"},
+            {"title": "无 URL", "abs": "x"},  # 缺 url 应跳过
+            {"title": "知乎讨论", "url": "https://zhihu.com/q/1", "abs": "评测"},
+        ]}}
+        resp = self._fake_resp(json.dumps(data))
+        results = e._parse(resp, "大疆 Osmo 360 售价")
+        assert len(results) == 2
+        assert results[0].url == "https://item.jd.com/1.html"
+        assert results[0].source == "baidu"
+        # HTML 实体应被反转义
+        assert "&amp;" not in results[0].title and "&" in results[0].title
+
+    def test_parse_antiflag(self):
+        import json
+        e = BaiduSearchEngine()
+        resp = self._fake_resp(json.dumps({"antiFlag": 1, "message": "Forbid"}))
+        assert e._parse(resp, "q") == []
+
+    def test_parse_bad_json(self):
+        e = BaiduSearchEngine()
+        assert e._parse(self._fake_resp("<html>not json</html>"), "q") == []
+
+    @pytest.mark.asyncio
+    async def test_search_captcha_redirect(self, monkeypatch):
+        """百度触发验证码（302 到 wappass）时返回空。"""
+        e = BaiduSearchEngine()
+
+        class _Resp:
+            headers = {"Location": "https://wappass.baidu.com/static/captcha/tuxing.html"}
+            text = ""
+
+        import requests
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+        results = await e.search("敏感词", max_results=5)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_success(self, monkeypatch):
+        """正常返回：解析出国内结果。"""
+        import json
+        e = BaiduSearchEngine()
+        data = {"feed": {"entry": [
+            {"title": "大疆商城", "url": "https://store.dji.com/cn", "abs": "官方"},
+        ]}}
+
+        class _Resp:
+            headers = {}
+            text = json.dumps(data)
+
+        import requests
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+        results = await e.search("大疆 Osmo 360 售价", max_results=5)
+        assert len(results) == 1
+        assert results[0].source == "baidu"
+        assert results[0].url == "https://store.dji.com/cn"
+
+    @pytest.mark.asyncio
+    async def test_search_empty_query(self):
+        e = BaiduSearchEngine()
+        assert await e.search("  ", max_results=5) == []
 from web_search.content_extractor import ContentExtractor
 from web_search.search_cache import SearchCache, CacheEntry
 from web_search.result_processor import ResultProcessor
+
+
+class TestChineseSearchImprovements:
+    """中文/国内信息搜索改进相关测试。"""
+
+    def test_contains_cjk(self):
+        assert _contains_cjk("中文查询")
+        assert _contains_cjk("DJI 售价")
+        assert not _contains_cjk("english only")
+        assert not _contains_cjk("")
+
+    def test_tokenize_mixed(self):
+        tokens = _tokenize("DJI Action6 售价")
+        assert "dji" in tokens
+        assert "action6" in tokens
+        assert "售" in tokens and "价" in tokens
+
+    def test_get_search_config_defaults(self):
+        cfg = _get_search_config()
+        assert "region" in cfg and "backend" in cfg
+        assert "safesearch" in cfg
+
+    def test_resolve_region_explicit_override(self):
+        # 显式固定 region 时忽略语境
+        assert resolve_region("中国 售价", "us-en") == "us-en"
+        assert resolve_region("english", "cn-zh") == "cn-zh"
+
+    def test_resolve_region_auto_domestic(self):
+        # 国内语境词 / 中文 → cn-zh
+        assert resolve_region("中国国内dji OSMO360的最新售价", "auto") == "cn-zh"
+        assert resolve_region("京东 淘宝 价格", "auto") == "cn-zh"
+        assert resolve_region("北京天气", "auto") == "cn-zh"
+
+    def test_resolve_region_auto_global(self):
+        # 全球语境词 / 纯英文 → wt-wt
+        assert resolve_region("DJI Osmo 360 global price", "auto") == "wt-wt"
+        assert resolve_region("latest python release", "auto") == "wt-wt"
+
+    def test_resolve_region_auto_empty_configured(self):
+        # 空配置等价 auto
+        assert resolve_region("中文查询", "") == "cn-zh"
+
+    def test_manager_registers_baidu(self):
+        m = SearchEngineManager()
+        assert "baidu" in m.engines
+        assert m.get_engine("baidu").get_source_name() == "Baidu"
+
+    def test_sources_for_query_domestic_prefers_baidu(self):
+        m = SearchEngineManager()
+        primary, fallbacks = m._sources_for_query("中国国内dji OSMO360的最新售价")
+        assert primary == "baidu"
+        assert "default" in fallbacks  # DDG 兜底
+
+    def test_sources_for_query_global_prefers_ddg(self):
+        m = SearchEngineManager()
+        primary, fallbacks = m._sources_for_query("DJI Osmo 360 global price")
+        assert primary == "default"
+        assert "baidu" in fallbacks  # 百度作为补充源
+
+    def test_relevance_cjk_friendly(self):
+        """中文查询命中的结果应比不相关结果得分更高。"""
+        engine = DuckDuckGoSearchEngine()
+        hit = {"title": "DJI Action6 中国售价 2998 元", "body": "国行价格"}
+        miss = {"title": "Cloudflare Tunnel 配置指南", "body": "http_status 404"}
+        assert engine._calculate_relevance(hit, "DJI Action6 售价") > \
+            engine._calculate_relevance(miss, "DJI Action6 售价")
+
+    def test_wikipedia_zh_for_chinese_query(self):
+        wiki = WikipediaSearchEngine()
+        api, lang = wiki._api_base_for_query("北京")
+        assert "zh.wikipedia.org" in api and lang == "zh"
+
+    def test_wikipedia_en_for_english_query(self):
+        wiki = WikipediaSearchEngine()
+        api, lang = wiki._api_base_for_query("Beijing")
+        assert "en.wikipedia.org" in api and lang == "en"
+
+    @pytest.mark.asyncio
+    async def test_ddg_passes_region_backend(self, monkeypatch):
+        """DuckDuckGo 搜索应把 region/backend 等参数传给 ddgs.text。"""
+        engine = DuckDuckGoSearchEngine()
+        captured = {}
+
+        class _FakeDDGS:
+            def text(self, query, **kwargs):
+                captured.update(kwargs)
+                captured["query"] = query
+                return [{"title": "t", "href": "https://x.com", "body": "b"}]
+
+        engine._ddgs = _FakeDDGS()
+        results = await engine.search("中国国内DJI Action6的售价", max_results=5)
+        assert results and results[0].url == "https://x.com"
+        assert "region" in captured and "backend" in captured
+        # 国内语境查询应解析为中国区
+        assert captured["region"] == "cn-zh"
+        assert captured["max_results"] == 5
+
+    @pytest.mark.asyncio
+    async def test_ddg_per_backend_fallback_on_error(self, monkeypatch):
+        """多后端整体失败时应逐个后端降级重试，命中可用后端。"""
+        import web_search.search_engine as se
+        monkeypatch.setattr(se, "_get_search_config", lambda: {
+            "region": "wt-wt", "backend": "google, bing, duckduckgo",
+            "safesearch": "moderate", "timelimit": None,
+        })
+        engine = DuckDuckGoSearchEngine()
+        attempts = []
+
+        class _FlakyDDGS:
+            def text(self, query, **kwargs):
+                be = kwargs.get("backend")
+                attempts.append(be)
+                # 首次多后端一起用 -> 失败；单独 google 失败；bing 成功
+                if be == "google, bing, duckduckgo" or be == "google":
+                    raise RuntimeError("ConnectError")
+                if be == "bing":
+                    return [{"title": "命中", "href": "https://bing-result.com", "body": "b"}]
+                raise RuntimeError("其它后端也失败")
+
+        engine._ddgs = _FlakyDDGS()
+        results = await engine.search("查询", max_results=3)
+        assert results and results[0].url == "https://bing-result.com"
+        assert "bing" in attempts  # 降级尝试过 bing
+
+    @pytest.mark.asyncio
+    async def test_ddg_falls_back_on_typeerror(self, monkeypatch):
+        """旧版 ddgs 不支持 backend 时应降级重试，不报错。"""
+        engine = DuckDuckGoSearchEngine()
+        calls = {"n": 0}
+
+        class _OldDDGS:
+            def text(self, query, **kwargs):
+                calls["n"] += 1
+                if "backend" in kwargs:
+                    raise TypeError("unexpected keyword 'backend'")
+                return [{"title": "t", "href": "https://y.com", "body": "b"}]
+
+        engine._ddgs = _OldDDGS()
+        results = await engine.search("查询", max_results=3)
+        assert results and results[0].url == "https://y.com"
+        assert calls["n"] >= 2  # 至少重试了一次
+
+    @pytest.mark.asyncio
+    async def test_search_aggregated_merges_and_dedups(self):
+        """聚合搜索应合并多引擎结果并按 URL 去重。"""
+        manager = SearchEngineManager()
+
+        class _E1:
+            async def search(self, q, max_results=10):
+                return [
+                    SearchResult("A", "https://a.com", "s", "e1", 0.9),
+                    SearchResult("B", "https://b.com", "s", "e1", 0.8),
+                ]
+
+        class _E2:
+            async def search(self, q, max_results=10):
+                return [
+                    SearchResult("B2", "https://b.com/", "s", "e2", 0.7),  # 与 b.com 去重
+                    SearchResult("C", "https://c.com", "s", "e2", 0.6),
+                ]
+
+        manager.engines["e1"] = _E1()
+        manager.engines["e2"] = _E2()
+        merged = await manager.search_aggregated("q", sources=["e1", "e2"], max_results=10)
+        urls = {r.url for r in merged}
+        assert "https://a.com" in urls
+        assert "https://c.com" in urls
+        # b.com 只保留一个
+        assert len([r for r in merged if "b.com" in r.url]) == 1
 
 
 class TestSearchResult:

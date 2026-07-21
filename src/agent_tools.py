@@ -459,14 +459,27 @@ def web_search(query: str, source: str = 'default', max_results: int = 10, use_c
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
+        # 是否聚合多引擎结果（合并去重）而非"首个非空即返回"
+        try:
+            from config import WEB_SEARCH_AGGREGATE
+            aggregate = WEB_SEARCH_AGGREGATE
+        except Exception:  # noqa: BLE001
+            aggregate = True
+
         try:
             if enable_fallback and source == 'default':
-                # 使用自动降级功能
-                results = loop.run_until_complete(
-                    manager.search_with_fallback(query, primary_source='default', 
-                                                fallback_sources=['wikipedia'], 
-                                                max_results=max_results)
-                )
+                if aggregate:
+                    # 聚合模式：按查询语境自动选源（国内→百度优先）并合并去重
+                    results = loop.run_until_complete(
+                        manager.search_aggregated(query, sources=None, max_results=max_results)
+                    )
+                else:
+                    # 降级模式：按查询语境自动选主源，失败才用备用
+                    results = loop.run_until_complete(
+                        manager.search_with_fallback(query, primary_source='default',
+                                                    fallback_sources=None,
+                                                    max_results=max_results)
+                    )
             else:
                 # 使用指定搜索引擎
                 results = loop.run_until_complete(
@@ -495,12 +508,19 @@ def web_search(query: str, source: str = 'default', max_results: int = 10, use_c
         return f"[错误] 网络搜索失败: {str(e)}"
 
 
-def web_content_extract(url: str, timeout: int = 30) -> str:
-    """提取网页内容并清理格式"""
+def web_content_extract(url: str, timeout: int = None) -> str:
+    """提取网页内容并清理格式。timeout 为 None 时读取配置 WEB_SEARCH_TIMEOUT。"""
     try:
         import asyncio
         from web_search import get_content_extractor
-        
+
+        if timeout is None:
+            try:
+                from config import WEB_SEARCH_TIMEOUT
+                timeout = WEB_SEARCH_TIMEOUT
+            except Exception:  # noqa: BLE001
+                timeout = 30
+
         extractor = get_content_extractor()
         
         # 验证 URL

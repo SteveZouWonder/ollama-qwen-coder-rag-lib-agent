@@ -59,6 +59,42 @@ TOP_K = int(os.getenv("TOP_K", "10"))
 # 0.4 阈值会把有效结果全部过滤，导致检索为 0；下调到 0.3 作为更合理的下限。
 SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.3"))
 
+# 知识库“命中相关性”阈值（区别于上面的检索召回阈值 SIMILARITY_CUTOFF）。
+# 说明：SIMILARITY_CUTOFF 故意调低到 0.3 以保护元/概览类查询的召回，但这也会
+# 让一些语义几乎无关的片段（实测约 0.39~0.42）被召回。若把它们当作“知识库命中”
+# 塞进综合回答的上下文与引用来源，会产生答非所问的噪音（例如问“某产品售价”却
+# 引用了讲 Cloudflare 配置的片段）。因此在问答编排层用一个更高的“相关性阈值”
+# 判定知识库是否“真正命中”：低于该分数的片段视为噪音，不计入知识库来源、不进
+# 综合 prompt，从而回退到网络/模型回答。仅影响问答判定，不改变底层检索召回。
+KB_RELEVANCE_THRESHOLD = float(os.getenv("KB_RELEVANCE_THRESHOLD", "0.45"))
+
+# ==================== 网络搜索配置 ====================
+# 此前网络搜索完全未设 region/backend，DuckDuckGo 默认 us-en，天然偏英文/海外
+# 结果，导致中国国内信息（中文网页、国行价格、国内新闻等）召回与准确率很差。
+# 这里把关键参数外置为可配置项，并给出对中英文都友好的默认值。
+#
+# WEB_SEARCH_REGION：搜索区域。取值 auto（按查询语境自动判断）或 ddgs 的具体
+#   region（如 wt-wt 全球 / cn-zh 中国区中文 / us-en 美国英文）。默认 auto：
+#   含中文或"国内/售价/淘宝/京东"等语境的查询用 cn-zh（能召回淘宝/京东等国内
+#   电商与价格），英文/全球性查询用 wt-wt。显式设为具体 region 则强制固定。
+WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "auto")
+# WEB_SEARCH_BACKEND：ddgs 后端引擎，逗号分隔可聚合/降级多引擎。
+#   注意：部分 ddgs 版本的 bing 后端已被禁用（运行时会告警并忽略），故默认改用
+#   brave/duckduckgo/google（对中文与国内信息覆盖好）。整体失败会逐个后端降级重试。
+WEB_SEARCH_BACKEND = os.getenv("WEB_SEARCH_BACKEND", "brave, duckduckgo, google")
+# WEB_SEARCH_SAFESEARCH：安全搜索级别（on / moderate / off）。
+WEB_SEARCH_SAFESEARCH = os.getenv("WEB_SEARCH_SAFESEARCH", "moderate")
+# WEB_SEARCH_TIMELIMIT：时间范围（d/w/m/y 或空表示不限）。默认不限。
+WEB_SEARCH_TIMELIMIT = os.getenv("WEB_SEARCH_TIMELIMIT", "") or None
+# WEB_SEARCH_MAX_RESULTS：单次搜索返回结果数上限。
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "10"))
+# WEB_SEARCH_TIMEOUT：网页正文提取超时（秒）。
+WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "30"))
+# WEB_SEARCH_CACHE_TTL_HOURS：搜索结果缓存有效期（小时）。
+WEB_SEARCH_CACHE_TTL_HOURS = int(os.getenv("WEB_SEARCH_CACHE_TTL_HOURS", "24"))
+# WEB_SEARCH_AGGREGATE：是否聚合多个引擎的结果（合并去重）而非"首个非空即返回"。
+WEB_SEARCH_AGGREGATE = os.getenv("WEB_SEARCH_AGGREGATE", "true").lower() == "true"
+
 # ==================== Agent 配置 ====================
 # 打包运行时收纳到用户数据目录，源码运行时仍为 ~/.code_agent_history.json
 HISTORY_FILE = str(_home_file(".code_agent_history.json"))
