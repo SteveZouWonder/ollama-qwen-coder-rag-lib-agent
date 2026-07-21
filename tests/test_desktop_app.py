@@ -2124,6 +2124,81 @@ class TestWebInterface(unittest.TestCase):
         self.assertEqual(cmd[-1], "--web")
         self.assertEqual(len(cmd), 2)
 
+    def test_child_env_strips_pyinstaller_vars_when_frozen(self):
+        fake_env = {
+            "_MEIPASS2": "/tmp/_MEIabc",
+            "_PYI_ARCHIVE_INDEX": "0",
+            "_MEI99999": "junk",
+            "DYLD_LIBRARY_PATH": "/tmp/_MEIabc",
+            "LD_LIBRARY_PATH": "/tmp/_MEIabc",
+            "PATH": "/usr/bin",
+            "NORMAL_VAR": "keep",
+        }
+        with patch.dict('os.environ', fake_env, clear=True), \
+             patch('desktop_app.is_frozen', return_value=True):
+            env = self.tray._child_env()
+        self.assertNotIn("_MEIPASS2", env)
+        self.assertNotIn("_PYI_ARCHIVE_INDEX", env)
+        self.assertNotIn("_MEI99999", env)
+        self.assertNotIn("DYLD_LIBRARY_PATH", env)
+        self.assertNotIn("LD_LIBRARY_PATH", env)
+        self.assertEqual(env["NORMAL_VAR"], "keep")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_child_env_keeps_dyld_when_source(self):
+        fake_env = {
+            "_MEIPASS2": "/tmp/_MEIabc",
+            "DYLD_LIBRARY_PATH": "/opt/lib",
+            "NORMAL_VAR": "keep",
+        }
+        with patch.dict('os.environ', fake_env, clear=True), \
+             patch('desktop_app.is_frozen', return_value=False):
+            env = self.tray._child_env()
+        # 源码模式仍剔除 PyInstaller 私有变量，但保留用户的动态库路径
+        self.assertNotIn("_MEIPASS2", env)
+        self.assertEqual(env["DYLD_LIBRARY_PATH"], "/opt/lib")
+
+    def test_wait_web_ready_success(self):
+        """端口可连接时立即返回 True。"""
+        fake_sock = MagicMock()
+        fake_sock.connect.return_value = None
+        with patch('socket.socket', return_value=fake_sock):
+            result = self.tray._wait_web_ready(timeout=2, interval=0.1)
+        self.assertTrue(result)
+        fake_sock.close.assert_called()
+
+    def test_wait_web_ready_timeout(self):
+        """端口始终不可连接，超时返回 False。"""
+        fake_sock = MagicMock()
+        fake_sock.connect.side_effect = OSError("refused")
+        self.tray.web_process = None
+        with patch('socket.socket', return_value=fake_sock), \
+             patch('time.sleep', return_value=None):
+            result = self.tray._wait_web_ready(timeout=0.3, interval=0.1)
+        self.assertFalse(result)
+
+    def test_wait_web_ready_process_died(self):
+        """子进程中途退出则提前返回 False。"""
+        proc = Mock()
+        proc.poll.return_value = 1  # 已退出
+        self.tray.web_process = proc
+        fake_sock = MagicMock()
+        fake_sock.connect.side_effect = OSError("refused")
+        with patch('socket.socket', return_value=fake_sock):
+            result = self.tray._wait_web_ready(timeout=2, interval=0.1)
+        self.assertFalse(result)
+
+    def test_wait_web_ready_process_poll_raises(self):
+        """poll 抛异常时忽略并继续尝试连接，端口通则成功。"""
+        proc = Mock()
+        proc.poll.side_effect = OSError("boom")
+        self.tray.web_process = proc
+        fake_sock = MagicMock()
+        fake_sock.connect.return_value = None  # 端口可连
+        with patch('socket.socket', return_value=fake_sock):
+            result = self.tray._wait_web_ready(timeout=2, interval=0.1)
+        self.assertTrue(result)
+
     @patch('webbrowser.open')
     @patch('subprocess.Popen')
     def test_open_web_interface_launch_success(self, mock_popen, mock_browser):
@@ -2131,14 +2206,33 @@ class TestWebInterface(unittest.TestCase):
         proc.pid = 12345
         proc.poll.return_value = None
         mock_popen.return_value = proc
-        with patch('desktop_app.is_frozen', return_value=False):
+        # 用干净环境启动子进程（剔除 PyInstaller 变量）
+        with patch('desktop_app.is_frozen', return_value=False), \
+             patch.object(self.tray, '_wait_web_ready', return_value=True):
             result = self.tray.open_web_interface()
         self.assertTrue(result)
         self.assertIs(self.tray.web_process, proc)
         mock_popen.assert_called_once()
-        # 浏览器在后台线程延迟打开，给它一点时间
-        time.sleep(2.4)
+        # Popen 应带上 env 参数（干净环境）
+        self.assertIn('env', mock_popen.call_args.kwargs)
+        # 浏览器在后台线程等待就绪后打开，给它一点时间
+        time.sleep(0.5)
         mock_browser.assert_called_with("http://127.0.0.1:7860")
+
+    @patch('webbrowser.open')
+    @patch('subprocess.Popen')
+    def test_open_web_interface_launch_not_ready(self, mock_popen, mock_browser):
+        """服务未在预期时间内就绪时，不打开浏览器。"""
+        proc = Mock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        with patch('desktop_app.is_frozen', return_value=False), \
+             patch.object(self.tray, '_wait_web_ready', return_value=False):
+            result = self.tray.open_web_interface()
+        self.assertTrue(result)  # 启动动作本身成功
+        time.sleep(0.5)
+        mock_browser.assert_not_called()
 
     @patch('webbrowser.open')
     @patch('subprocess.Popen')
@@ -2228,10 +2322,11 @@ class TestWebInterface(unittest.TestCase):
         proc.pid = 999
         proc.poll.return_value = None
         mock_popen.return_value = proc
-        with patch('desktop_app.is_frozen', return_value=False):
+        with patch('desktop_app.is_frozen', return_value=False), \
+             patch.object(self.tray, '_wait_web_ready', return_value=True):
             result = self.tray.open_web_interface()
         self.assertTrue(result)
-        time.sleep(2.4)  # 等后台线程执行到 webbrowser.open
+        time.sleep(0.5)  # 等后台线程执行到 webbrowser.open
         mock_browser.assert_called_with("http://127.0.0.1:7860")
 
     def test_menu_contains_web_item(self):
