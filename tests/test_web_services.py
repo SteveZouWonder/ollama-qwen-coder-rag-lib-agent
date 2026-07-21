@@ -30,6 +30,9 @@ class FakeRAG:
         self.raise_on_add = False
         self.raise_on_stats = False
         self.raise_on_clear = False
+        # 共享编排层 rag_pipeline.answer_question 会检查 query_engine 判断
+        # 知识库是否已初始化；桩默认设为真值，走"知识库检索"分支。
+        self.query_engine = object()
 
     def load_index(self):
         return None
@@ -162,13 +165,16 @@ class TestRagQuery:
 
     def test_stream_success_progress_then_answer(self):
         svc = make_service()
-        events = list(svc.rag_query_stream("什么是RAG"))
+        events = list(svc.rag_query_stream("什么是RAG", enable_web_search=False))
         kinds = [e.kind for e in events]
         assert "progress" in kinds
         assert kinds[-1] == "answer"
         answer_evt = events[-1]
         assert answer_evt.message == "答案:什么是RAG"
         assert answer_evt.data["sources"][0]["file"] == "f.md"
+        # 新增：答案事件带 kind / web_sources 字段
+        assert answer_evt.data["kind"] == "answer"
+        assert answer_evt.data["web_sources"] == []
 
     def test_stream_error(self):
         rag = FakeRAG()
@@ -180,7 +186,7 @@ class TestRagQuery:
 
     def test_query_nonstream_success(self):
         svc = make_service()
-        result = svc.rag_query("hi")
+        result = svc.rag_query("hi", enable_web_search=False)
         assert result["answer"] == "答案:hi"
         assert len(result["sources"]) == 1
 
@@ -202,10 +208,12 @@ class TestRagQuery:
         svc = make_service()
         monkeypatch.setattr(
             svc, "rag_query_stream",
-            lambda q: iter([StreamEvent("progress", "p")]),
+            lambda q, enable_web_search=True: iter([StreamEvent("progress", "p")]),
         )
         result = svc.rag_query("hi")
-        assert result == {"answer": "", "sources": []}
+        assert result == {
+            "answer": "", "sources": [], "web_sources": [], "kind": "answer", "meta": None,
+        }
 
 
 # ==================== 单 Agent ====================
@@ -614,3 +622,93 @@ class TestDefaultFactories:
 
     def test_default_collaboration_mode_none(self):
         assert services._default_collaboration_mode("") is None
+
+
+# ==================== 阶段三：工具命令面 ====================
+
+class _FakeRegistry:
+    """记录调用的桩注册表。"""
+
+    def __init__(self, result="OK", raise_error=False):
+        self.calls = []
+        self._result = result
+        self._raise = raise_error
+
+    def execute(self, tool, args, auto_confirm=False):
+        self.calls.append((tool, args, auto_confirm))
+        if self._raise:
+            raise RuntimeError("tool-boom")
+        return self._result
+
+
+class TestToolCommands:
+    def _patch_registry(self, monkeypatch, reg):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+
+    def test_run_tool_success(self, monkeypatch):
+        reg = _FakeRegistry("结果")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        assert svc.run_tool("web_search", {"query": "x"}) == "结果"
+        assert reg.calls[0][0] == "web_search"
+
+    def test_run_tool_error(self, monkeypatch):
+        reg = _FakeRegistry(raise_error=True)
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        out = svc.run_tool("web_search", {"query": "x"})
+        assert out.startswith("[错误]")
+
+    def test_web_search_empty(self):
+        svc = make_service()
+        assert svc.web_search("  ").startswith("[提示]")
+
+    def test_web_search_calls_tool(self, monkeypatch):
+        reg = _FakeRegistry("命中")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        assert svc.web_search("python") == "命中"
+        assert reg.calls[0] == ("web_search", {"query": "python"}, False)
+
+    def test_web_cache_clear_auto_confirm(self, monkeypatch):
+        reg = _FakeRegistry("cleared")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.web_cache_clear()
+        assert reg.calls[0][2] is True  # auto_confirm
+
+    def test_code_ast_args(self, monkeypatch):
+        reg = _FakeRegistry("ast")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.code_ast("def foo", "src")
+        assert reg.calls[0] == ("ast_search", {"pattern": "def foo", "path": "src"}, False)
+
+    def test_git_analyze_invalid_type(self):
+        svc = make_service()
+        assert svc.git_analyze("bogus").startswith("[错误]")
+
+    def test_git_analyze_valid(self, monkeypatch):
+        reg = _FakeRegistry("git")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.git_analyze("status")
+        assert reg.calls[0] == ("git_analyze", {"repo_path": ".", "analysis_type": "status"}, False)
+
+    def test_db_query_empty(self):
+        svc = make_service()
+        assert svc.db_query("").startswith("[提示]")
+
+    def test_db_connect_calls_tool(self, monkeypatch):
+        reg = _FakeRegistry("connected")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.db_connect("sqlite", "/tmp/a.db")
+        assert reg.calls[0][0] == "database_connect"
+
+    def test_graph_build_empty(self):
+        svc = make_service()
+        assert svc.graph_build("").startswith("[提示]")

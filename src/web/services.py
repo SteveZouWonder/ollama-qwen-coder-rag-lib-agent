@@ -174,28 +174,42 @@ class WebService:
 
     # ---------- RAG 检索 ----------
 
-    def rag_query_stream(self, question: str) -> Iterator[StreamEvent]:
-        """流式 RAG 检索。
+    def rag_query_stream(
+        self, question: str, enable_web_search: bool = True
+    ) -> Iterator[StreamEvent]:
+        """流式 RAG 检索，与 CLI 的 ``/ask`` 行为一致。
 
-        把 ``RAGEngine.query_with_sources`` 的 ``progress_callback`` 桥接为可迭代
-        的 ``StreamEvent`` 序列，最后产出一个带答案与 sources 的 ``answer`` 事件。
+        改动说明：此前仅裸调 ``query_with_sources``，缺少 CLI 独有的高级编排，
+        导致同一问题两端答案质量差异极大。现改为调用共享层
+        ``rag_pipeline.answer_question``，从而获得：元/概览问题直答、LLM 驱动
+        的网络搜索规划、多查询合并、页面正文增强、知识库/网络双区综合、0 命中
+        网络回退。编排级进度与 RAG 检索进度统一桥接为 ``StreamEvent``；对话完成
+        后自动写入当前会话（record_conversation），与 CLI 持久化行为对齐。
         """
         question = (question or "").strip()
         if not question:
             yield StreamEvent("error", "问题不能为空")
             return
 
+        import rag_pipeline
+
         q: "queue.Queue" = queue.Queue()
         result_holder: Dict[str, Any] = {}
         error_holder: Dict[str, BaseException] = {}
 
         def progress_cb(evt: Dict[str, Any]):
+            # 元/概览事件带结构化数据（files/stats），透传给 UI 展示。
             q.put(StreamEvent("progress", evt.get("message", ""), evt))
 
         def worker():
             try:
-                result_holder["result"] = self.rag_engine.query_with_sources(
-                    question, progress_callback=progress_cb
+                result_holder["result"] = rag_pipeline.answer_question(
+                    self.rag_engine,
+                    question,
+                    enable_web_search=enable_web_search,
+                    show_progress=True,
+                    progress=progress_cb,
+                    rag_progress_callback=progress_cb,
                 )
             except BaseException as exc:  # noqa: BLE001
                 error_holder["error"] = exc
@@ -215,23 +229,47 @@ class WebService:
             yield StreamEvent("error", f"检索失败: {error_holder['error']}")
             return
 
-        result = result_holder.get("result", {})
+        result = result_holder.get("result", {}) or {}
+        answer = result.get("answer", "")
+
+        # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
+        try:
+            recorded = "[知识库概览]" if result.get("kind") == "meta" else answer
+            rag_pipeline.record_conversation(question, recorded)
+        except Exception:  # noqa: BLE001 - 落库失败不影响返回
+            pass
+
         yield StreamEvent(
             "answer",
-            result.get("answer", ""),
-            {"sources": result.get("sources", [])},
+            answer,
+            {
+                "kind": result.get("kind", "answer"),
+                "sources": result.get("kb_sources", []),
+                "web_sources": result.get("web_sources", []),
+                "meta": result.get("meta"),
+            },
         )
 
-    def rag_query(self, question: str) -> Dict[str, Any]:
-        """非流式 RAG 检索，返回 ``{answer, sources}``。"""
-        events = list(self.rag_query_stream(question))
+    def rag_query(self, question: str, enable_web_search: bool = True) -> Dict[str, Any]:
+        """非流式 RAG 检索，返回 ``{answer, sources, web_sources, kind, meta}``。"""
+        events = list(self.rag_query_stream(question, enable_web_search=enable_web_search))
         for evt in events:
             if evt.kind == "error":
-                return {"answer": f"[错误] {evt.message}", "sources": []}
+                return {
+                    "answer": f"[错误] {evt.message}",
+                    "sources": [], "web_sources": [], "kind": "error", "meta": None,
+                }
         for evt in reversed(events):
             if evt.kind == "answer":
-                return {"answer": evt.message, "sources": (evt.data or {}).get("sources", [])}
-        return {"answer": "", "sources": []}
+                data = evt.data or {}
+                return {
+                    "answer": evt.message,
+                    "sources": data.get("sources", []),
+                    "web_sources": data.get("web_sources", []),
+                    "kind": data.get("kind", "answer"),
+                    "meta": data.get("meta"),
+                }
+        return {"answer": "", "sources": [], "web_sources": [], "kind": "answer", "meta": None}
 
     # ---------- 单 Agent（ReAct）----------
 
@@ -283,9 +321,16 @@ class WebService:
         if "error" in error_holder:
             yield StreamEvent("error", f"Agent 执行失败: {error_holder['error']}")
         else:
+            answer = result_holder.get("answer", "")
+            # 对话落库（与 CLI handle_agent 一致）
+            try:
+                import rag_pipeline
+                rag_pipeline.record_conversation(user_input, answer)
+            except Exception:  # noqa: BLE001
+                pass
             yield StreamEvent(
                 "answer",
-                result_holder.get("answer", ""),
+                answer,
                 {"step_log": getattr(engine, "step_log", [])},
             )
         self._active_react = None
@@ -304,6 +349,13 @@ class WebService:
         request = (request or "").strip()
         if not request:
             return {"success": False, "error": "请求不能为空", "summary": "请求为空"}
+
+        # 确保知识库引擎已注入全局注册表：RAGAgent 承接通用任务时会复用
+        # rag_pipeline.answer_question，需要全局 rag_engine 才能真正检索。
+        try:
+            _ = self.rag_engine
+        except Exception:  # noqa: BLE001 - 引擎不可用时仍允许多 Agent 尝试运行
+            pass
 
         resolved = self._resolve_mode(mode)
         orchestrator = self._orchestrator_factory()
@@ -439,6 +491,265 @@ class WebService:
             return self.graph_query.get_graph_summary()
         except BaseException as exc:  # noqa: BLE001
             return {"is_available": False, "error": str(exc)}
+
+    # ---------- 工具命令（对齐 CLI 的 registry 工具命令面）----------
+
+    def run_tool(self, tool_name: str, args: Optional[Dict[str, Any]] = None,
+                 auto_confirm: bool = False) -> str:
+        """通用工具执行入口，桥接 agent_tools 全局注册表。
+
+        CLI 的 /web-search、/code-*、/git-*、/db-* 等命令底层都调用
+        ``registry.execute(tool, args)``；Web 侧此前无直接入口，只能靠 Agent
+        间接触发。此方法把这些工具直接暴露给 Web，与 CLI 命令面对齐。
+        """
+        try:
+            import agent_tools
+            # 确保知识库工具就绪（部分工具依赖 rag_engine）
+            _ = self.rag_engine
+            return agent_tools.registry.execute(
+                tool_name, args or {}, auto_confirm=auto_confirm
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 工具 {tool_name} 执行失败: {exc}"
+
+    # -- 网络搜索 --
+    def web_search(self, query: str) -> str:
+        query = (query or "").strip()
+        if not query:
+            return "[提示] 请输入搜索查询"
+        return self.run_tool("web_search", {"query": query})
+
+    def web_extract(self, url: str) -> str:
+        url = (url or "").strip()
+        if not url:
+            return "[提示] 请输入 URL"
+        return self.run_tool("web_content_extract", {"url": url})
+
+    def web_cache_status(self) -> str:
+        return self.run_tool("web_cache_status", {})
+
+    def web_cache_clear(self) -> str:
+        return self.run_tool("web_cache_clear", {}, auto_confirm=True)
+
+    # -- 代码分析 --
+    def code_ast(self, pattern: str, path: str = ".") -> str:
+        pattern = (pattern or "").strip()
+        if not pattern:
+            return "[提示] 请输入搜索模式"
+        return self.run_tool("ast_search", {"pattern": pattern, "path": path or "."})
+
+    def code_quality(self, path: str = ".") -> str:
+        return self.run_tool("code_quality_check", {"path": (path or ".").strip() or "."})
+
+    # -- Git --
+    def git_analyze(self, analysis_type: str = "history", repo_path: str = ".") -> str:
+        allowed = {"history", "status", "authors"}
+        analysis_type = (analysis_type or "history").strip().lower()
+        if analysis_type not in allowed:
+            return f"[错误] 未知分析类型 '{analysis_type}'，支持: history / status / authors"
+        return self.run_tool(
+            "git_analyze", {"repo_path": repo_path or ".", "analysis_type": analysis_type}
+        )
+
+    def git_commit_gen(self, repo_path: str = ".") -> str:
+        return self.run_tool("git_commit_gen", {"repo_path": repo_path or ".", "use_ai": True})
+
+    # -- 数据库 --
+    def db_connect(self, db_type: str, database: str) -> str:
+        db_type = (db_type or "").strip()
+        database = (database or "").strip()
+        if not db_type or not database:
+            return "[提示] 请提供数据库类型和路径"
+        return self.run_tool("database_connect", {"db_type": db_type, "database": database})
+
+    def db_query(self, sql: str) -> str:
+        sql = (sql or "").strip()
+        if not sql:
+            return "[提示] 请输入 SQL 查询语句"
+        return self.run_tool("database_query", {"sql": sql})
+
+    def db_execute(self, sql: str) -> str:
+        sql = (sql or "").strip()
+        if not sql:
+            return "[提示] 请输入 SQL 语句"
+        return self.run_tool("database_execute", {"sql": sql})
+
+    def db_schema(self, table: str = "") -> str:
+        return self.run_tool("database_get_schema", {"table": (table or "").strip()})
+
+    # -- 知识图谱构建 --
+    def graph_build(self, text: str, doc_id: str = "manual", doc_type: str = "text") -> str:
+        text = (text or "").strip()
+        if not text:
+            return "[提示] 请输入用于构建知识图谱的文本"
+        return self.run_tool(
+            "knowledge_graph_build",
+            {"text": text, "doc_id": doc_id or "manual", "doc_type": doc_type or "text"},
+        )
+
+    def graph_query_typed(self, query: str, query_type: str = "entity") -> Dict[str, Any]:
+        """带类型的图谱查询（entity/type/neighbors/path/similar）。"""
+        query = (query or "").strip()
+        if not query:
+            return {"entities": [], "relations": [], "explanation": "查询内容不能为空"}
+        result = self.run_tool(
+            "knowledge_graph_query", {"query": query, "query_type": query_type or "entity"}
+        )
+        return {"text": result}
+
+    # ---------- 文件管理 ----------
+
+    def file_list(self) -> List[Dict[str, Any]]:
+        """列出知识库已登记的文件（等价 /file-list）。"""
+        try:
+            from file_metadata import get_global_metadata_manager
+            manager = get_global_metadata_manager()
+            files = manager.list_files()
+            out = []
+            for fm in files:
+                try:
+                    size = manager._format_size(fm.file_size)
+                except Exception:  # noqa: BLE001
+                    size = "?"
+                out.append({"path": fm.file_path, "size": size})
+            return out
+        except BaseException as exc:  # noqa: BLE001
+            return [{"path": f"[错误] {exc}", "size": ""}]
+
+    def file_stats(self) -> Dict[str, Any]:
+        """文件统计概览（等价 /file-stats）。"""
+        try:
+            from file_metadata import get_global_metadata_manager
+            manager = get_global_metadata_manager()
+            get_stats = getattr(manager, "get_statistics", None) or getattr(manager, "get_stats", None)
+            if callable(get_stats):
+                return get_stats()
+            files = manager.list_files()
+            return {"total_files": len(files)}
+        except BaseException as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    # ---------- 知识库管理 ----------
+
+    def generate_skills(self) -> str:
+        """从知识库生成 Skills（等价 /generate-skills）。"""
+        try:
+            from knowledge_to_skills import KnowledgeToSkillsEngine
+            engine = KnowledgeToSkillsEngine()
+            results = engine.convert()
+            lines = [f"[成功] 生成 {len(results)} 个 Skills:"]
+            for key, path in results.items():
+                lines.append(f"  • {key}: {path}")
+            return "\n".join(lines)
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 生成 Skills 失败: {exc}"
+
+    def knowledge_summary(self) -> str:
+        """知识库文档摘要（等价 /knowledge-summary）。"""
+        try:
+            from knowledge_to_skills import KnowledgeToSkillsEngine
+            engine = KnowledgeToSkillsEngine()
+            summary = engine.get_document_summary()
+            lines = ["知识库文档摘要:"]
+            for doc in summary:
+                kind = "通用" if doc.get("is_generic") else "项目"
+                lines.append(
+                    f"- {doc.get('file_name')}（{kind}, "
+                    f"置信度 {doc.get('confidence', 0):.2f}, "
+                    f"chunks {doc.get('chunk_count', 0)}）"
+                )
+            return "\n".join(lines) if summary else "知识库暂无文档"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 获取知识库摘要失败: {exc}"
+
+    def snapshot_list(self) -> str:
+        """列出知识库快照（等价 /snapshot-list）。"""
+        try:
+            from knowledge_snapshot import KnowledgeSnapshotManager
+            manager = KnowledgeSnapshotManager()
+            snapshots = manager.list_snapshots()
+            if not snapshots:
+                return "暂无快照"
+            lines = [f"共 {len(snapshots)} 个快照:"]
+            for snap in snapshots:
+                lines.append(
+                    f"- `{snap['snapshot_id']}` {snap['timestamp']} "
+                    f"（文档 {snap['document_count']}, chunks {snap['total_chunks']}, "
+                    f"触发 {snap['trigger']}）"
+                )
+            return "\n".join(lines)
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 获取快照列表失败: {exc}"
+
+    def snapshot_create(self) -> str:
+        """创建知识库快照（等价 /snapshot-create）。"""
+        try:
+            from knowledge_snapshot import KnowledgeSnapshotManager
+            manager = KnowledgeSnapshotManager()
+            snapshot = manager.create_snapshot(trigger="manual")
+            return (
+                f"[成功] 快照已创建: {snapshot.snapshot_id}\n"
+                f"时间: {snapshot.timestamp}，文档数: {len(snapshot.documents)}"
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 创建快照失败: {exc}"
+
+    def snapshot_restore(self, snapshot_id: str) -> str:
+        """为指定快照生成恢复脚本（等价 /snapshot-restore）。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            return "[提示] 请指定快照 ID"
+        try:
+            from knowledge_snapshot import KnowledgeSnapshotManager, RestoreHelper
+            manager = KnowledgeSnapshotManager()
+            snapshot = manager.load_snapshot(snapshot_id)
+            if not snapshot:
+                return f"[错误] 快照不存在: {snapshot_id}"
+            helper = RestoreHelper(manager)
+            script_file = helper.generate_restore_script(snapshot_id)
+            return (
+                f"[成功] 恢复脚本已生成: {script_file}\n"
+                f"（文档数 {len(snapshot.documents)}）请运行该脚本恢复知识库。"
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 恢复快照失败: {exc}"
+
+    # ---------- 会话高级 ----------
+
+    def session_info(self, session_id: str = "") -> Dict[str, Any]:
+        """获取会话详情（等价 /session-info）。空 ID 表示当前会话。"""
+        try:
+            session_id = (session_id or "").strip()
+            if session_id:
+                session = self.session_manager.get_session(session_id) \
+                    if hasattr(self.session_manager, "get_session") else None
+                if session is None and hasattr(self.session_manager, "load_session"):
+                    session = self.session_manager.load_session(session_id)
+            else:
+                session = self.session_manager.get_current_session()
+            if session is None:
+                return {"error": "未找到会话"}
+            return {
+                "session_id": session.session_id,
+                "title": session.title,
+                "messages": len(getattr(session, "messages", [])),
+            }
+        except BaseException as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def delete_session(self, session_id: str) -> str:
+        """删除指定会话（等价 /session-delete）。"""
+        session_id = (session_id or "").strip()
+        if not session_id:
+            return "[提示] 请指定会话 ID"
+        try:
+            deleter = getattr(self.session_manager, "delete_session", None)
+            if not callable(deleter):
+                return "[错误] 当前会话管理器不支持删除"
+            ok = deleter(session_id)
+            return f"[成功] 已删除会话 {session_id[:8]}" if ok else f"[错误] 删除失败: {session_id[:8]}"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 删除会话失败: {exc}"
 
 
 # ==================== 模块级单例 ====================
