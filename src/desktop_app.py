@@ -505,6 +505,59 @@ class BaseApp:
         launcher = Path(__file__).parent.parent / "launcher.py"
         return [script_path, str(launcher), "--web"], Path.cwd()
 
+    def _child_env(self) -> dict:
+        """构造用于启动 Web 子进程的干净环境变量。
+
+        关键修复：PyInstaller 打包（尤其 onefile / 窗口化 .app）运行时会在环境中
+        注入 ``_MEIPASS2`` / ``_PYI_*`` / ``_MEI*`` 等变量。若直接以
+        ``subprocess.Popen([sys.executable, "--web"])`` 复用当前可执行体，子进程会
+        继承这些变量，导致其 bootloader 误判"已解包"、指向父进程（可能已被清理）
+        的临时目录，从而无法正确启动 Python —— 表现为"浏览器打开了但服务没起来"。
+
+        CLI 入口通过 Terminal/shell 间接启动，天然清掉了这些变量所以不受影响；
+        Web 入口是直接 Popen，必须显式剔除，才能让子进程作为全新的打包进程启动。
+        macOS 下同时移除 PyInstaller 追加的 ``DYLD_LIBRARY_PATH``。
+        """
+        env = dict(os.environ)
+        for key in list(env.keys()):
+            if key == "_MEIPASS2" or key.startswith("_PYI") or key.startswith("_MEI"):
+                env.pop(key, None)
+        # PyInstaller 会用自己的动态库路径覆盖，子进程作为独立打包体应自行设置
+        if is_frozen():
+            env.pop("DYLD_LIBRARY_PATH", None)
+            env.pop("LD_LIBRARY_PATH", None)
+        return env
+
+    def _wait_web_ready(self, timeout: float = 60.0, interval: float = 0.5) -> bool:
+        """轮询等待 Web 服务端口就绪。
+
+        比固定 sleep 更可靠：打包后首启需先做 Ollama 引导 + 加载索引，服务可能
+        数秒到数十秒才起来。就绪后再打开浏览器，避免用户看到"服务没启动"的空页。
+        子进程中途退出则提前返回 False。
+        """
+        import socket
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # 子进程已退出则不再等待
+            if self.web_process is not None:
+                try:
+                    if self.web_process.poll() is not None:
+                        return False
+                except Exception:
+                    pass
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(interval)
+            try:
+                sock.connect((self.WEB_HOST, self.WEB_PORT))
+                return True
+            except OSError:
+                pass
+            finally:
+                sock.close()
+            time.sleep(interval)
+        return False
+
     def open_web_interface(self):
         """启动 Web 界面（独立长驻子进程）并在浏览器中打开。
 
@@ -536,14 +589,20 @@ class BaseApp:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=self._child_env(),
             )
             self.logger.info(f"Web界面子进程已启动 (pid={self.web_process.pid})")
 
-            # 稍等服务器起来再打开浏览器
+            # 后台等待服务真正就绪后再打开浏览器，避免打开空白/无法连接的页面
             def _open_browser():
-                time.sleep(2.0)
+                ready = self._wait_web_ready()
+                if not ready:
+                    self.logger.warning("Web 服务未在预期时间内就绪")
+                    self.show_notification("Web界面", "⚠️ Web 服务启动较慢或失败，请稍后重试")
+                    return
                 try:
                     webbrowser.open(self._web_url())
+                    self.logger.info("Web 服务已就绪，已打开浏览器")
                 except Exception as e:  # noqa: BLE001
                     self.logger.warning(f"打开浏览器失败: {e}")
 
@@ -552,8 +611,8 @@ class BaseApp:
 
             if hasattr(self, 'set_success_state'):
                 self.set_success_state()
-            self.show_notification("Web界面", f"✅ 已启动，浏览器打开 {self._web_url()}")
-            self.show_popup("Web界面", f"✅ 已启动 {self._web_url()}", duration=1500)
+            self.show_notification("Web界面", f"正在启动，就绪后将自动打开 {self._web_url()}")
+            self.show_popup("Web界面", f"正在启动 {self._web_url()}", duration=1500)
             return True
         except Exception as e:  # noqa: BLE001
             self.logger.error(f"启动Web界面失败: {e}")
