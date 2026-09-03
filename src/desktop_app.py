@@ -70,7 +70,10 @@ def _default_warm_up_models():
 
 DEFAULT_CONFIG = {
     "autostart": False,
-    "warm_up_on_startup": True,
+    # 默认不在启动时预热：预热会让模型常驻内存，在 16GB 机器上与 IDE/浏览器并行
+    # 时会加剧换页卡顿；Ollama 会在首次请求时按需加载，闲置后自动释放。
+    # 内存宽裕的机器可在 app_config.json 中改为 true 以换取首问响应速度。
+    "warm_up_on_startup": False,
     "warm_up_models": _default_warm_up_models(),
     "ollama_base_url": "http://localhost:11434",
     "check_interval": 300  # 5分钟

@@ -1,8 +1,8 @@
 {
   "autostart": false,
-  "warm_up_on_startup": true,
+  "warm_up_on_startup": false,
   "warm_up_models": [
-    "qwen2.5-coder:7b",
+    "qwen3.5:4b",
     "nomic-embed-text:latest"
   ],
   "ollama_base_url": "http://localhost:11434",

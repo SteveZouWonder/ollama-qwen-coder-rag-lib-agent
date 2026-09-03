@@ -712,3 +712,102 @@ class TestToolCommands:
     def test_graph_build_empty(self):
         svc = make_service()
         assert svc.graph_build("").startswith("[提示]")
+
+
+# ==================== 模型管理（热切换）====================
+
+class _FakeSwitchResult:
+    def __init__(self, ok=True, model="qwen3.5:9b", previous="qwen3.5:4b",
+                 num_ctx=8192, unloaded=True, message="ok"):
+        self.ok = ok
+        self.model = model
+        self.previous = previous
+        self.num_ctx = num_ctx
+        self.unloaded_previous = unloaded
+        self.message = message
+
+
+class _FakeSwitcher:
+    def __init__(self, installed=None, info=None, result=None, raise_on=None):
+        self.installed = installed if installed is not None else ["qwen3.5:4b", "qwen3.5:9b"]
+        self.info = info or {"model": "qwen3.5:4b", "num_ctx": 16384, "think": False,
+                             "loaded": True, "size_bytes": 4_000_000_000, "loaded_models": ["qwen3.5:4b"]}
+        self.result = result or _FakeSwitchResult()
+        self.raise_on = raise_on or set()
+        self.switch_calls = []
+
+    def list_installed_models(self):
+        if "list" in self.raise_on:
+            raise RuntimeError("down")
+        return self.installed
+
+    def current_model_info(self):
+        if "info" in self.raise_on:
+            raise RuntimeError("down")
+        return self.info
+
+    def switch_model(self, model, rag_engine=None, react_engine=None):
+        if "switch" in self.raise_on:
+            raise RuntimeError("down")
+        self.switch_calls.append((model, rag_engine, react_engine))
+        return self.result
+
+
+class TestModelManagement:
+    def test_list_models(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        assert svc.list_models() == ["qwen3.5:4b", "qwen3.5:9b"]
+
+    def test_list_models_error_returns_empty(self):
+        sw = _FakeSwitcher(raise_on={"list"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        assert svc.list_models() == []
+
+    def test_current_model(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        info = svc.current_model()
+        assert info["model"] == "qwen3.5:4b"
+        assert info["loaded"] is True
+
+    def test_current_model_error(self):
+        sw = _FakeSwitcher(raise_on={"info"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        info = svc.current_model()
+        assert info["model"] == "?"
+        assert "error" in info
+
+    def test_switch_model_before_rag_created_passes_none(self):
+        """RAG 引擎尚未惰性创建时不应触发创建（避免为切换而加载 Ollama/Chroma）。"""
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("qwen3.5:9b")
+        assert out["ok"] is True
+        assert out["model"] == "qwen3.5:9b"
+        assert out["previous"] == "qwen3.5:4b"
+        assert out["num_ctx"] == 8192
+        assert out["unloaded_previous"] is True
+        assert sw.switch_calls == [("qwen3.5:9b", None, None)]
+        assert svc._rag_engine is None
+
+    def test_switch_model_after_rag_created_syncs_engine(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        rag = svc.rag_engine  # 触发惰性创建
+        svc.switch_model("qwen3.5:9b")
+        assert sw.switch_calls[0][1] is rag
+
+    def test_switch_model_failure_result(self):
+        sw = _FakeSwitcher(result=_FakeSwitchResult(ok=False, model="", message="未安装"))
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("nope")
+        assert out["ok"] is False
+        assert "未安装" in out["message"]
+
+    def test_switch_model_exception(self):
+        sw = _FakeSwitcher(raise_on={"switch"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("qwen3.5:9b")
+        assert out["ok"] is False
+        assert "切换失败" in out["message"]

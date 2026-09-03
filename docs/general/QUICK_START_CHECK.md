@@ -55,7 +55,7 @@ curl http://localhost:11434/api/tags
 
 ```bash
 # 下载主模型
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3.5:4b
 
 # 下载嵌入模型
 ollama pull nomic-embed-text:latest
@@ -188,7 +188,7 @@ curl http://localhost:11434/api/tags  # 应该返回JSON
 
 ### ✅ 必需模型
 ```bash
-ollama list | grep qwen2.5-coder    # 应该显示模型
+ollama list | grep qwen3.5          # 应该显示模型
 ollama list | grep nomic-embed-text # 应该显示模型
 ```
 

@@ -2,6 +2,7 @@
 融合配置 - RAG 知识库 + Code Agent
 """
 import os
+import re
 import logging
 import warnings
 
@@ -46,10 +47,21 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # 全局唯一 LLM：用户只需选这一个模型，它同时用于 ReAct Agent、代码任务、
 # RAG 综合回答与相关性判定。全程只驻留单一模型，避免多模型同时占用显存导致
-# 卡顿（尤其中端统一内存机器）。默认 qwen3.5:4b（通用理解 + 中文归纳强、显存省）；
-# 可用 CLI `--model` 或 LLM_MODEL 环境变量覆盖。
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:4b")
+# 卡顿（尤其中端统一内存机器）。
+#
+# 默认 qwen3.5:4b（"协同档"）：16K 上下文下实测约 3.7GB 驻留，可与 IDE/浏览器
+# 在 16GB 机器上共存；工具调用、中文归纳、长文本能力均可满足日常查询、报告分析、
+# 文件整理、SQL 查询与简单重构。需要更强能力且内存宽裕时可切到 qwen3.5:9b
+# （"性能档"，约 6GB 驻留）。可用 CLI `--model` / `/model <name>`、Web 界面下拉，
+# 或 LLM_MODEL 环境变量覆盖。
+DEFAULT_LLM_MODEL = "qwen3.5:4b"
+LLM_MODEL = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text:latest")
+
+# 是否让支持"思考模式"的模型（qwen3.5 等）在回答前输出思维链。ReAct 工具调用与
+# RAG 综合回答对隐式思考几乎无收益，却会让 4B 模型为三句话答案生成上千 token
+# （本机实测约 40 秒）。默认关闭以换取响应速度；需要复杂推理时可设 LLM_THINK=true。
+LLM_THINK = os.getenv("LLM_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def resolve_num_ctx(model: str) -> int:
@@ -66,19 +78,50 @@ def resolve_num_ctx(model: str) -> int:
             return int(override)
         except ValueError:
             pass
+    # 从模型名中解析参数量（单位 B），兼容 "qwen3.5:4b"、"qwen2.5-coder:7b"、
+    # "SparkLLM/Spark-X2.5-4B" 等命名（大小写不敏感，冒号/连字符分隔均可）。
+    # 取最后一个匹配，避免把 "x2.5" 之类版本号误判为参数量。
     name = (model or "").lower()
+    matches = re.findall(r"(?:^|[:\-_/])(\d+(?:\.\d+)?)b(?![a-z0-9])", name)
+    params_b = float(matches[-1]) if matches else 0.0
     # 12B~14B：权重最重，上下文最保守
-    if any(t in name for t in (":14b", ":13b", ":12b", "-14b", "-13b", "-12b")):
+    if params_b >= 12:
         return 4096
     # 7B~9B：中等权重
-    if any(t in name for t in (":9b", ":8b", ":7b", "-9b", "-8b", "-7b")):
+    if params_b >= 7:
         return 8192
-    # 4B 及以下：显存宽裕，可给较大上下文
+    # 4B 及以下（或无法识别）：显存宽裕，可给较大上下文
     return 16384
 
 
 # 全局唯一 LLM 的上下文窗口，按所选模型自动推导（零配置），可用 LLM_NUM_CTX 覆盖。
 LLM_NUM_CTX = resolve_num_ctx(LLM_MODEL)
+
+
+def set_llm_model(model: str) -> int:
+    """运行时切换全局唯一 LLM（供 CLI ``/model <name>`` 与 Web 模型下拉使用）。
+
+    同步更新模块级 ``LLM_MODEL`` / ``LLM_NUM_CTX`` 以及兼容类 ``Config`` 的
+    ``MODEL`` / ``LLM_MODEL``，使所有"调用时读取 config"的模块（多 Agent 配置、
+    提交信息生成、知识快照等）自动跟随。已在 import 时绑定常量的引擎
+    （RAGEngine / ReActEngine）需另行调用各自的 ``set_model``。
+
+    返回新模型对应的 num_ctx。
+    """
+    global LLM_MODEL, LLM_NUM_CTX
+    model = (model or "").strip()
+    if not model:
+        raise ValueError("模型名不能为空")
+    LLM_MODEL = model
+    LLM_NUM_CTX = resolve_num_ctx(model)
+    os.environ["LLM_MODEL"] = model
+    # Config 是 dataclass，字段默认值在类定义时冻结，这里直接改类属性。
+    try:
+        Config.MODEL = model
+        Config.LLM_MODEL = model
+    except NameError:  # Config 尚未定义（模块加载期不会走到这里）
+        pass
+    return LLM_NUM_CTX
 
 # ==================== 向量数据库配置 ====================
 VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")

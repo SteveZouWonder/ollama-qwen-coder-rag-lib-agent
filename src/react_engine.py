@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ReAct 推理引擎 - 带迭代可视化和安全确认
-适配 qwen2.5-coder:7b，集成 RAG 知识库工具
+适配本地小模型（默认 qwen3.5:4b），集成 RAG 知识库工具
 """
 import re
 import ast
@@ -33,7 +33,7 @@ def read_system_prompt_from_file():
 
 # 内置后备系统提示（fallback）。
 # 仅当 .devin/SYSTEM_PROMPT.md 读取失败时使用，因此保持精简：
-# 只保留驱动本地小模型（如 qwen2.5-coder:7b）做 ReAct 工具调用所必需的内容。
+# 只保留驱动本地小模型（如 qwen3.5:4b）做 ReAct 工具调用所必需的内容。
 # 完整的开发规范/工作流/多 Agent 协作说明见 .devin/SYSTEM_PROMPT.md。
 def _extract_json_object(text: str) -> Optional[str]:
     """
@@ -181,17 +181,40 @@ class ReActEngine:
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
         # 按所选模型自动推导安全的上下文窗口，避免大默认上下文撑爆显存导致卡顿。
+        self.num_ctx = self._resolve_num_ctx(self.model)
+        # 是否启用模型"思考模式"：ReAct 的 Thought/Action 协议本身就是显式推理，
+        # 再叠加隐式思维链只会拖慢每一步（4B 模型可多出上千 token）。默认关闭。
         try:
-            from config import resolve_num_ctx
-            self.num_ctx = resolve_num_ctx(self.model)
+            from config import LLM_THINK
+            self.think = bool(LLM_THINK)
         except Exception:  # noqa: BLE001
-            self.num_ctx = 8192
+            self.think = False
         self.history = ChatHistory(Config.HISTORY_FILE, Config.MAX_HISTORY)
         self._init_system()
         self._stop_event = threading.Event()
         self.on_step = on_step
         self.on_confirm = on_confirm
         self.step_log: List[Dict] = []
+
+    @staticmethod
+    def _resolve_num_ctx(model: str) -> int:
+        try:
+            from config import resolve_num_ctx
+            return resolve_num_ctx(model)
+        except Exception:  # noqa: BLE001
+            return 8192
+
+    def set_model(self, model: str) -> int:
+        """运行时切换模型（供 CLI ``/model <name>`` 使用），同步重算 num_ctx。
+
+        对话历史与系统提示保持不变，无需重建实例。返回新 num_ctx。
+        """
+        model = (model or "").strip()
+        if not model:
+            raise ValueError("模型名不能为空")
+        self.model = model
+        self.num_ctx = self._resolve_num_ctx(model)
+        return self.num_ctx
 
     def _init_system(self):
         msgs = self.history.get_messages()
@@ -406,6 +429,9 @@ class ReActEngine:
                     "model": self.model,
                     "messages": clean_messages,
                     "stream": False,
+                    # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
+                    # 不支持的模型 Ollama 会忽略该字段。
+                    "think": self.think,
                     "options": {
                         "temperature": 0.3,
                         "num_ctx": self.num_ctx,

@@ -380,3 +380,87 @@ def test_module_exports():
     assert hasattr(app, "launch")
     assert hasattr(app, "main")
     assert hasattr(app, "serve_blocking")
+
+
+class TestModelStatusFormatting:
+    def test_loaded_with_others(self):
+        out = app.format_model_status({
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": False, "loaded": True,
+            "size_bytes": 4 * 1024 ** 3, "loaded_models": ["qwen3.5:4b", "qwen3.5:9b"],
+        })
+        assert "`qwen3.5:4b`" in out
+        assert "4.0 GB" in out
+        assert "num_ctx=16384" in out
+        assert "思考模式 关" in out
+        assert "`qwen3.5:9b`" in out  # 提示其他驻留模型
+
+    def test_not_loaded(self):
+        out = app.format_model_status({
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": True, "loaded": False,
+            "size_bytes": 0, "loaded_models": [],
+        })
+        assert "未加载" in out
+        assert "思考模式 开" in out
+        assert "驻留:" not in out
+
+    def test_error(self):
+        out = app.format_model_status({"model": "x", "error": "down"})
+        assert "[错误]" in out
+
+    def test_switch_result(self):
+        assert app.format_switch_result({"ok": True, "message": "done"}).startswith("✅")
+        assert app.format_switch_result({"ok": False, "message": "bad"}).startswith("❌")
+
+    def test_format_stats_shows_num_ctx(self):
+        out = app.format_stats({"total_documents": 1, "llm_model": "m", "llm_num_ctx": 8192})
+        assert "num_ctx=8192" in out
+
+
+class TestModelHandlers:
+    def test_on_model_status(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = {
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": False, "loaded": False,
+            "size_bytes": 0, "loaded_models": [],
+        }
+        h = build_handlers(svc)
+        assert "`qwen3.5:4b`" in h["on_model_status"]()
+
+    def test_on_model_choices_prepends_current_if_missing(self):
+        svc = make_service_mock()
+        svc.list_models.return_value = ["a:1", "b:2"]
+        svc.current_model.return_value = {"model": "c:3"}
+        h = build_handlers(svc)
+        choices, current = h["on_model_choices"]()
+        assert choices == ["c:3", "a:1", "b:2"]
+        assert current == "c:3"
+
+    def test_on_model_choices_current_in_list(self):
+        svc = make_service_mock()
+        svc.list_models.return_value = ["a:1", "b:2"]
+        svc.current_model.return_value = {"model": "b:2"}
+        h = build_handlers(svc)
+        choices, current = h["on_model_choices"]()
+        assert choices == ["a:1", "b:2"]
+        assert current == "b:2"
+
+    def test_on_switch_model_empty(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = {"model": "x", "num_ctx": 1, "think": False,
+                                          "loaded": False, "size_bytes": 0, "loaded_models": []}
+        h = build_handlers(svc)
+        result, status = h["on_switch_model"]("  ")
+        assert result.startswith("❌")
+        svc.switch_model.assert_not_called()
+        assert "`x`" in status
+
+    def test_on_switch_model_ok(self):
+        svc = make_service_mock()
+        svc.switch_model.return_value = {"ok": True, "message": "已切换到 qwen3.5:9b"}
+        svc.current_model.return_value = {"model": "qwen3.5:9b", "num_ctx": 8192, "think": False,
+                                          "loaded": False, "size_bytes": 0, "loaded_models": []}
+        h = build_handlers(svc)
+        result, status = h["on_switch_model"]("qwen3.5:9b")
+        assert result.startswith("✅")
+        assert "`qwen3.5:9b`" in status
+        svc.switch_model.assert_called_once_with("qwen3.5:9b")

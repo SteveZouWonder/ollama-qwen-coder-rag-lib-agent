@@ -91,12 +91,41 @@ def format_stats(stats: Dict[str, Any]) -> str:
         return f"[错误] 获取统计失败: {stats['error']}"
     return (
         f"- 文档片段总数: **{stats.get('total_documents', 0)}**\n"
-        f"- LLM 模型: `{stats.get('llm_model', '?')}`\n"
+        f"- LLM 模型: `{stats.get('llm_model', '?')}`"
+        + (f"（num_ctx={stats['llm_num_ctx']}）" if stats.get("llm_num_ctx") else "")
+        + "\n"
         f"- Embedding 模型: `{stats.get('embed_model', '?')}`\n"
         f"- 分块大小: {stats.get('chunk_size', '?')}\n"
         f"- 分块重叠: {stats.get('chunk_overlap', '?')}\n"
         f"- 检索数量 TOP_K: {stats.get('top_k', '?')}"
     )
+
+
+def format_model_status(info: Dict[str, Any]) -> str:
+    """把当前模型概况渲染为一行 Markdown 状态（对话页顶部显示）。"""
+    if info.get("error"):
+        return f"**模型**: `{info.get('model', '?')}`  ·  [错误] {info['error']}"
+    if info.get("loaded"):
+        size = info.get("size_bytes") or 0
+        gb = size / (1024 ** 3)
+        state = f"已加载，驻留 {gb:.1f} GB" if gb >= 0.1 else "已加载"
+    else:
+        state = "未加载（首次提问时按需加载）"
+    think = "开" if info.get("think") else "关"
+    line = (
+        f"**模型**: `{info.get('model', '?')}`  ·  {state}  ·  "
+        f"num_ctx={info.get('num_ctx', '?')}  ·  思考模式 {think}"
+    )
+    others = [m for m in info.get("loaded_models", []) if m != info.get("model")]
+    if others:
+        line += f"  ·  ⚠️ 内存中还驻留: {', '.join(f'`{m}`' for m in others)}"
+    return line
+
+
+def format_switch_result(result: Dict[str, Any]) -> str:
+    """把模型切换结果渲染为 Markdown。"""
+    prefix = "✅" if result.get("ok") else "❌"
+    return f"{prefix} {result.get('message', '')}"
 
 
 def format_multi_agent_result(result: Dict[str, Any]) -> str:
@@ -350,6 +379,27 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_stop() -> str:
         return "已发送停止信号" if service.stop_agent() else "当前没有运行中的任务"
 
+    # ---------- 模型管理（热切换）----------
+
+    def on_model_status() -> str:
+        return format_model_status(service.current_model())
+
+    def on_model_choices() -> Tuple[List[str], str]:
+        """返回 (可选模型列表, 当前模型)，供下拉框初始化/刷新。"""
+        choices = service.list_models()
+        current = service.current_model().get("model", "")
+        if current and current not in choices:
+            choices = [current] + choices
+        return choices, current
+
+    def on_switch_model(model: str) -> Tuple[str, str]:
+        """切换模型；返回 (切换结果, 刷新后的状态行)。"""
+        model = (model or "").strip()
+        if not model:
+            return "❌ 请选择模型", on_model_status()
+        result = service.switch_model(model)
+        return format_switch_result(result), on_model_status()
+
     # ---------- 阶段三：工具命令面 ----------
 
     def on_web_search(query: str) -> str:
@@ -436,6 +486,9 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_graph_summary": on_graph_summary,
         "on_graph_build": on_graph_build,
         "on_stop": on_stop,
+        "on_model_status": on_model_status,
+        "on_model_choices": on_model_choices,
+        "on_switch_model": on_switch_model,
         "on_web_search": on_web_search,
         "on_web_extract": on_web_extract,
         "on_web_cache_status": on_web_cache_status,
@@ -469,8 +522,33 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
 
     with gr.Blocks(title="Cerebro 🧠") as app:
         gr.Markdown("# Cerebro 🧠\n本地优先的 RAG + Agent 助手")
+        # 顶部状态行：当前模型 / 是否已加载 / num_ctx / 思考模式；切换后即时刷新
+        model_status = gr.Markdown(handlers["on_model_status"]())
 
         with gr.Tab("对话"):
+            # 模型热切换：下拉列出本机已安装模型，切换会同步 RAG/Agent 并释放旧模型
+            _choices, _current = handlers["on_model_choices"]()
+            with gr.Row():
+                model_dd = gr.Dropdown(
+                    choices=_choices,
+                    value=_current or None,
+                    label="模型（切换后立即生效，旧模型自动释放）",
+                    scale=6,
+                    allow_custom_value=True,
+                )
+                model_switch_btn = gr.Button("切换模型", scale=1)
+                model_refresh_btn = gr.Button("刷新列表", scale=1)
+            model_switch_result = gr.Markdown()
+            model_switch_btn.click(
+                handlers["on_switch_model"], model_dd, [model_switch_result, model_status]
+            )
+
+            def _refresh_model_dropdown():
+                choices, current = handlers["on_model_choices"]()
+                return gr.update(choices=choices, value=current or None)
+
+            model_refresh_btn.click(_refresh_model_dropdown, None, model_dd)
+
             mode = gr.Radio(
                 ["RAG 检索", "单 Agent", "多 Agent 协作"],
                 value="RAG 检索",

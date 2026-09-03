@@ -118,7 +118,7 @@ curl http://localhost:11434/api/tags
 ```bash
 export HTTPS_PROXY=http://your-proxy:port
 export HTTP_PROXY=http://your-proxy:port
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3.5:4b
 ```
 
 2. 使用国内镜像（如果有）
@@ -127,8 +127,8 @@ ollama pull qwen2.5-coder:7b
 ```bash
 # 先下载小的嵌入模型
 ollama pull nomic-embed-text:latest
-# 再下载大的主模型
-ollama pull qwen2.5-coder:7b
+# 再下载主模型
+ollama pull qwen3.5:4b
 ```
 
 4. 检查网络连接:
@@ -151,8 +151,9 @@ vm_stat  # macOS
 
 2. 调整模型大小:
 ```bash
-# 使用更小的模型
-ollama pull qwen2.5-coder:3b
+# 使用更小的模型（默认 qwen3.5:4b 约 3.7GB 驻留，8GB 低配机器可换用 2B 版本）
+ollama pull qwen3.5:2b
+export LLM_MODEL=qwen3.5:2b   # 或在 CLI 中运行 /model qwen3.5:2b 热切换
 ```
 
 3. 减少并发数:
@@ -312,7 +313,7 @@ print(config.__dict__)
 curl http://localhost:11434/api/tags
 
 # 测试模型
-echo "测试" | ollama run qwen2.5-coder:7b "请回答：1+1等于几？"
+echo "测试" | ollama run qwen3.5:4b "请回答：1+1等于几？"
 ```
 
 ### 4. 验证依赖安装

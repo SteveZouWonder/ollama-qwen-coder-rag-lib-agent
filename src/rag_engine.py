@@ -36,6 +36,7 @@ from config import (
     OLLAMA_BASE_URL,
     LLM_MODEL,
     LLM_NUM_CTX,
+    LLM_THINK,
     EMBED_MODEL,
     VECTOR_DB_PATH,
     INDEX_DIR,
@@ -44,6 +45,7 @@ from config import (
     TOP_K,
     SIMILARITY_CUTOFF,
 )
+from config import resolve_num_ctx as _resolve_num_ctx
 from document_loader import load_documents
 
 # 导入快照管理
@@ -114,19 +116,39 @@ class RAGEngine:
             except Exception as e:
                 print(f"⚠️ 文件元数据管理器初始化失败: {e}")
 
-    def _setup_llm(self):
-        """配置 Ollama LLM"""
-        print(f"🤖 加载 LLM 模型: {LLM_MODEL} (num_ctx={LLM_NUM_CTX})")
+    def _setup_llm(self, model: Optional[str] = None, num_ctx: Optional[int] = None):
+        """配置 Ollama LLM（初始化与运行时热切换共用）。"""
+        self.llm_model = model or LLM_MODEL
+        self.llm_num_ctx = num_ctx or (
+            LLM_NUM_CTX if model is None else _resolve_num_ctx(self.llm_model)
+        )
+        print(f"🤖 加载 LLM 模型: {self.llm_model} (num_ctx={self.llm_num_ctx})")
         Settings.llm = Ollama(
-            model=LLM_MODEL,
+            model=self.llm_model,
             base_url=OLLAMA_BASE_URL,
             request_timeout=120.0,
             temperature=0.1,
             # 显式限制上下文窗口，避免 Ollama 按模型默认的超大上下文（如 256K）
             # 分配 KV cache 撑爆显存、卸载到 CPU 导致卡顿。值按模型自动推导。
-            context_window=LLM_NUM_CTX,
-            additional_kwargs={"num_ctx": LLM_NUM_CTX},
+            context_window=self.llm_num_ctx,
+            additional_kwargs={"num_ctx": self.llm_num_ctx},
+            # 默认关闭思考模式：RAG 综合/相关性判定无需长思维链，显著缩短响应。
+            thinking=LLM_THINK,
         )
+
+    def set_model(self, model: str) -> int:
+        """运行时切换 LLM（供 CLI ``/model <name>`` 与 Web 下拉使用）。
+
+        重建 ``Settings.llm`` 并重建已缓存的 query_engine（llama_index 在
+        ``as_query_engine`` 时把 LLM 捕获进 response synthesizer，仅替换
+        ``Settings.llm`` 不会生效）。Embedding 与向量库不受影响。返回新 num_ctx。
+        """
+        model = (model or "").strip()
+        if not model:
+            raise ValueError("模型名不能为空")
+        self._setup_llm(model=model)
+        self._setup_query_engine()
+        return self.llm_num_ctx
 
     def _setup_embedding(self):
         """配置 Ollama Embedding"""
@@ -558,7 +580,7 @@ class RAGEngine:
             return (
                 f"知识库统计:\n"
                 f"- 文档片段总数: {count}\n"
-                f"- LLM 模型: {LLM_MODEL}\n"
+                f"- LLM 模型: {self.llm_model}\n"
                 f"- Embedding 模型: {EMBED_MODEL}\n"
                 f"- 分块大小: {CHUNK_SIZE}\n"
                 f"- 检索数量: {TOP_K}"
@@ -572,7 +594,8 @@ class RAGEngine:
         return {
             "total_documents": count,
             "vector_db_path": VECTOR_DB_PATH,
-            "llm_model": LLM_MODEL,
+            "llm_model": self.llm_model,
+            "llm_num_ctx": self.llm_num_ctx,
             "embed_model": EMBED_MODEL,
             "chunk_size": CHUNK_SIZE,
             "chunk_overlap": CHUNK_OVERLAP,

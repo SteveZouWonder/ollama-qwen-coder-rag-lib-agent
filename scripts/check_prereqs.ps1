@@ -134,21 +134,25 @@ function Test-Ollama {
             Write-Host "  请运行: ollama serve"
         }
         
-        # 检查模型
+        # 检查模型（默认模型名与 check_prereqs.sh 保持一致）
+        $DefaultLlmModel = "qwen3.5:4b"
+        $DefaultEmbedModel = "nomic-embed-text"
+        
         Write-Host "  已安装的模型:"
         $models = ollama list 2>&1
-        if ($models -match "qwen2.5-coder") {
-            Print-Result 0 "qwen2.5-coder 模型已安装"
+        # 按字面字符串匹配（模型名含 '.'），忽略大小写
+        if ($models -imatch [regex]::Escape($DefaultLlmModel)) {
+            Print-Result 0 "$DefaultLlmModel 模型已安装"
         } else {
-            Print-Result 1 "qwen2.5-coder 模型未安装"
-            Write-Host "  请运行: ollama pull qwen2.5-coder:7b"
+            Print-Result 1 "$DefaultLlmModel 模型未安装"
+            Write-Host "  请运行: ollama pull $DefaultLlmModel"
         }
         
-        if ($models -match "nomic-embed-text") {
-            Print-Result 0 "nomic-embed-text 模型已安装"
+        if ($models -match $DefaultEmbedModel) {
+            Print-Result 0 "$DefaultEmbedModel 模型已安装"
         } else {
-            Print-Result 1 "nomic-embed-text 模型未安装"
-            Write-Host "  请运行: ollama pull nomic-embed-text:latest"
+            Print-Result 1 "$DefaultEmbedModel 模型未安装"
+            Write-Host "  请运行: ollama pull ${DefaultEmbedModel}:latest"
         }
         
         return $true
@@ -557,7 +561,7 @@ function Main {
             Write-Host "Ollama相关问题 ($OLLAMA_ISSUES 个):" -ForegroundColor Yellow
             Write-Host "  1. 安装Ollama: 从 https://ollama.com/download 下载"
             Write-Host "  2. 启动服务: ollama serve"
-            Write-Host "  3. 下载模型: ollama pull qwen2.5-coder:7b"
+            Write-Host "  3. 下载模型: ollama pull qwen3.5:4b"
             Write-Host "  4. 验证服务: curl http://localhost:11434/api/tags"
             Write-Host ""
         }

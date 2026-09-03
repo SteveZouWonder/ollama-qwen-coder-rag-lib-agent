@@ -337,7 +337,7 @@ TUTORIAL_TEXT = """
   /exec      执行命令（走安全确认）
   /pwd       显示当前目录
   /cd        切换目录
-  /model     显示模型信息
+  /model     显示模型信息；/model <name> 热切换模型
   /reset     重置 Agent 对话上下文
   /quit      退出
 
@@ -586,7 +586,9 @@ def print_help():
   /exec <cmd>        快速执行命令（走安全确认流程）
   /pwd               显示当前工作目录
   /cd <path>         切换当前工作目录
-  /model             显示当前模型信息
+  /model             显示当前模型信息（含是否已加载、驻留大小）
+  /model list        列出本机已安装的模型
+  /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
   /reset             重置 Agent 对话上下文
   /exit 或 /quit     退出程序
 
@@ -819,6 +821,9 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("ask", user_input, arg)
     if cmd == "/agent":
         return ParsedCommand("agent", user_input, arg)
+    if cmd == "/model":
+        # /model <name> 运行时热切换；/model list 列出可选模型
+        return ParsedCommand("model", user_input, arg)
     if cmd == "/add":
         return ParsedCommand("add", user_input, arg)
     if cmd == "/file":
@@ -1314,10 +1319,57 @@ def handle_cd(ctx, parsed):
 
 
 def handle_model(ctx, parsed):
-    console.print(f"[green]模型: {react_engine.model}[/green]")
-    console.print(f"[green]Ollama: {react_engine.host}[/green]")
-    console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
+    """``/model`` 显示当前模型；``/model list`` 列出可选；``/model <name>`` 热切换。
+
+    切换会同步 RAG 引擎（重建 LLM 与 query_engine）、ReAct 引擎（模型名 +
+    num_ctx）与全局 config（多 Agent 等跟随），并立即释放旧模型避免双驻留。
+    """
+    import model_switcher
+
+    arg = (parsed.arg or "").strip()
     record_command_execution("model")
+
+    if not arg:
+        info = model_switcher.current_model_info()
+        state = (
+            f"已加载，驻留 {model_switcher.format_size(info['size_bytes'])}"
+            if info["loaded"] else "未加载（首次请求时按需加载）"
+        )
+        console.print(f"[green]模型: {info['model']}[/green]  ({state})")
+        console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
+        console.print(f"[green]Ollama: {react_engine.host if react_engine else Config.OLLAMA_HOST}[/green]")
+        console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
+        others = [m for m in info["loaded_models"] if m != info["model"]]
+        if others:
+            console.print(f"[yellow]提示: 内存中还驻留着其他模型: {', '.join(others)}（可用 ollama stop 释放）[/yellow]")
+        console.print("[dim]用法: /model list 查看可选模型；/model <name> 切换（如 /model qwen3.5:9b）[/dim]")
+        return True
+
+    if arg.lower() in ("list", "ls"):
+        installed = model_switcher.list_installed_models()
+        if not installed:
+            console.print("[red]无法获取模型列表，请确认 Ollama 已启动[/red]")
+            return True
+        loaded = {m["name"] for m in model_switcher.list_loaded_models()}
+        current = Config.LLM_MODEL
+        console.print("[bold]本机已安装模型:[/bold]")
+        for name in installed:
+            marks = []
+            if name == current:
+                marks.append("当前")
+            if name in loaded:
+                marks.append("已加载")
+            suffix = f"  [{'/'.join(marks)}]" if marks else ""
+            console.print(f"  - {name}{suffix}")
+        console.print("[dim]切换: /model <name>[/dim]")
+        return True
+
+    result = model_switcher.switch_model(
+        arg, rag_engine=ctx.rag_engine if ctx else rag_engine,
+        react_engine=ctx.react_engine if ctx else react_engine,
+    )
+    color = "green" if result.ok else "red"
+    console.print(f"[{color}]{result.message}[/{color}]")
     return True
 
 
@@ -1571,8 +1623,8 @@ def main():
   # 启动并构建新知识库
   python query_interface.py --data ./my_docs
 
-  # 指定模型
-  python query_interface.py --model qwen2.5-coder:7b
+  # 指定模型（默认 qwen3.5:4b；内存宽裕时可用 qwen3.5:9b，运行中可用 /model 切换）
+  python query_interface.py --model qwen3.5:9b
 
   # 单次知识库查询
   python query_interface.py --data ./papers --query "实验结果是什么？"

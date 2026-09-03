@@ -33,10 +33,17 @@ def _default_rag_factory():
 
 
 def _default_react_factory(on_step=None, on_confirm=None):
-    """创建一个 ReActEngine。"""
+    """创建一个 ReActEngine（模型取自 config.LLM_MODEL，热切换后自动跟随）。"""
     from react_engine import ReActEngine
 
     return ReActEngine(on_step=on_step, on_confirm=on_confirm)
+
+
+def _default_model_switcher():
+    """返回 model_switcher 模块（便于测试注入替身）。"""
+    import model_switcher
+
+    return model_switcher
 
 
 def _default_orchestrator_factory():
@@ -135,6 +142,7 @@ class WebService:
         set_rag_engine: Callable = _default_set_rag_engine,
         load_documents: Callable = _default_load_documents,
         resolve_mode: Callable = _default_collaboration_mode,
+        model_switcher_factory: Callable = _default_model_switcher,
     ):
         self._rag_factory = rag_factory
         self._react_factory = react_factory
@@ -144,6 +152,7 @@ class WebService:
         self._set_rag_engine = set_rag_engine
         self._load_documents = load_documents
         self._resolve_mode = resolve_mode
+        self._model_switcher_factory = model_switcher_factory
 
         self._rag_engine = None
         self._session_manager = None
@@ -171,6 +180,49 @@ class WebService:
         if self._graph_query is None:
             self._graph_query = self._graph_query_factory()
         return self._graph_query
+
+    # ---------- 模型管理（热切换）----------
+
+    def list_models(self) -> List[str]:
+        """本机 Ollama 已安装模型名列表（失败返回空列表）。"""
+        try:
+            return list(self._model_switcher_factory().list_installed_models())
+        except BaseException:  # noqa: BLE001
+            return []
+
+    def current_model(self) -> Dict[str, Any]:
+        """当前模型概况：``model`` / ``num_ctx`` / ``think`` / ``loaded`` / ``size_bytes``。"""
+        try:
+            return dict(self._model_switcher_factory().current_model_info())
+        except BaseException as exc:  # noqa: BLE001
+            return {"model": "?", "num_ctx": 0, "think": False, "loaded": False,
+                    "size_bytes": 0, "loaded_models": [], "error": str(exc)}
+
+    def switch_model(self, model: str) -> Dict[str, Any]:
+        """热切换全局 LLM。
+
+        同步 RAG 引擎（若已创建；未创建则下次惰性创建时自然读取新 config），
+        更新全局 config（Web 端 ReActEngine / 多 Agent 每次对话新建，会自动跟随），
+        并立即释放旧模型避免双驻留。返回 ``{ok, model, previous, num_ctx, message}``。
+        """
+        try:
+            switcher = self._model_switcher_factory()
+            result = switcher.switch_model(
+                model,
+                rag_engine=self._rag_engine,  # 仅同步已创建的实例，不触发惰性加载
+                react_engine=None,
+            )
+            return {
+                "ok": result.ok,
+                "model": result.model,
+                "previous": result.previous,
+                "num_ctx": result.num_ctx,
+                "unloaded_previous": result.unloaded_previous,
+                "message": result.message,
+            }
+        except BaseException as exc:  # noqa: BLE001
+            return {"ok": False, "model": "", "previous": "", "num_ctx": 0,
+                    "unloaded_previous": False, "message": f"切换失败: {exc}"}
 
     # ---------- RAG 检索 ----------
 

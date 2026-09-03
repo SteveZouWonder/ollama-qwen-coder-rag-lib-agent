@@ -3,7 +3,7 @@
 ## 🎯 核心定位
 
 **项目名称**: 智能文档+代码助手 v4.1  
-**核心技术**: Ollama qwen2.5-coder:7b + RAG + ReAct Agent  
+**核心技术**: Ollama qwen3.5:4b + RAG + ReAct Agent  
 **应用场景**: 文档知识库检索 + 代码自动化操作 + 多Agent协作
 
 这是一个融合型AI助手项目，集成了多种AI能力：
@@ -200,7 +200,7 @@
 
 ### 核心技术
 - **语言**: Python 3.13
-- **LLM**: Ollama qwen2.5-coder:7b
+- **LLM**: Ollama qwen3.5:4b
 - **Embedding**: nomic-embed-text:latest
 - **向量库**: ChromaDB
 - **RAG框架**: LlamaIndex

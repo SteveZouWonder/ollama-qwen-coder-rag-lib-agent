@@ -39,7 +39,7 @@ class CommitMessageGenerator:
                 from config import LLM_MODEL
                 model = LLM_MODEL
             except Exception:  # noqa: BLE001
-                model = "qwen2.5-coder:7b"
+                model = "qwen3.5:4b"
         self.model = model
         self.logger = logger
     

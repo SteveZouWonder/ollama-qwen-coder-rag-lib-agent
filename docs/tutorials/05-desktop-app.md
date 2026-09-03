@@ -42,7 +42,7 @@ python desktop_app.py --tray
   "ollama_base_url": "http://localhost:11434",
   "models_to_warm_up": [
     "nomic-embed-text:latest",
-    "qwen2.5-coder:7b"
+    "qwen3.5:4b"
   ],
   "check_interval": 600,
   "warm_up_on_startup": false,
@@ -55,9 +55,9 @@ python desktop_app.py --tray
 | 配置项 | 类型 | 说明 | 默认值 |
 |-------|------|------|--------|
 | `ollama_base_url` | string | Ollama 服务地址 | `http://localhost:11434` |
-| `models_to_warm_up` | array | 需要预热的模型列表 | `["nomic-embed-text:latest", "qwen2.5-coder:7b"]` |
+| `models_to_warm_up` | array | 需要预热的模型列表 | `["nomic-embed-text:latest", "qwen3.5:4b"]` |
 | `check_interval` | integer | 状态检查间隔（秒） | `600` |
-| `warm_up_on_startup` | boolean | 启动时是否自动预热 | `false` |
+| `warm_up_on_startup` | boolean | 启动时是否自动预热（默认不预热，避免模型常驻与 IDE 争内存；内存宽裕的机器可改为 `true` 换取首问速度） | `false` |
 | `autostart` | boolean | 是否开机自启（未实现） | `false` |
 
 ---
@@ -76,7 +76,7 @@ python desktop_app.py --status
 ```
 ========== Ollama 服务状态 ==========
 Ollama服务: ✅ 正常
-已加载模型: nomic-embed-text:latest, qwen2.5-coder:7b
+已加载模型: nomic-embed-text:latest, qwen3.5:4b
 ```
 
 ### 2. 模型预热
@@ -91,7 +91,7 @@ python desktop_app.py --warm-up
 ```
 开始预热 2 个模型...
 预热 nomic-embed-text:latest: ✅ 成功
-预热 qwen2.5-coder:7b: ✅ 成功
+预热 qwen3.5:4b: ✅ 成功
 所有模型预热完成！
 ```
 
@@ -212,7 +212,7 @@ tail -f logs/warmup.log
 
 **错误信息**:
 ```
-预热 qwen2.5-coder:7b: ❌ 失败 - 错误信息
+预热 qwen3.5:4b: ❌ 失败 - 错误信息
 ```
 
 **解决方案**:
@@ -222,7 +222,7 @@ tail -f logs/warmup.log
    ```
 2. 手动拉取模型:
    ```bash
-   ollama pull qwen2.5-coder:7b
+   ollama pull qwen3.5:4b
    ```
 3. 检查磁盘空间是否充足:
    ```bash
@@ -265,7 +265,7 @@ tail -f logs/warmup.log
 {
   "models_to_warm_up": [
     "nomic-embed-text:latest",
-    "qwen2.5-coder:7b",
+    "qwen3.5:4b",
     "llama3:8b",
     "mistral:7b"
   ]
