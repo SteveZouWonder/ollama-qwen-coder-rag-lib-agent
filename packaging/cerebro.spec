@@ -70,6 +70,12 @@ for pkg in (
     # "No such file or directory: '.../justext/stoplists'"（虽会回退到 bs4，
     # 但会污染日志并降低提取质量），故用 collect_all 一并收集其数据文件。
     "justext",
+    # Web UI（托盘「打开 Web UI」/ `--web`）依赖 Gradio 的静态前端（templates/frontend）
+    # 与主题/组件数据文件，必须 collect_all 完整收集，否则打包后 Web 页面 404。
+    "gradio",
+    "gradio_client",
+    "safehttpx",
+    "groovy",
 ):
     try:
         d, b, h = collect_all(pkg)

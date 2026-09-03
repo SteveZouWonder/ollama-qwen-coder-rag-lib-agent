@@ -1316,3 +1316,402 @@ class TestSessionContextHelpers:
         monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
         svc.mark_suggested(sid)
         svc.continue_session(sid)
+
+
+# ==================== 交互式确认（单 Agent 危险操作审批）====================
+
+class _ConfirmingReact(FakeReact):
+    """执行中调用 on_confirm 一次，把结果写入答案。"""
+
+    def chat(self, user_input):
+        ok = self.on_confirm({"tool": "execute_command", "command": "rm x", "message": "确认?"})
+        return f"confirmed={ok}"
+
+
+class TestInteractiveConfirm:
+    def _svc(self):
+        return make_service(
+            react_factory=lambda on_step=None, on_confirm=None, context=None: _ConfirmingReact(
+                on_step=on_step, on_confirm=on_confirm, context=context
+            )
+        )
+
+    def test_confirm_event_then_resolve_true(self):
+        svc = self._svc()
+        gen = svc.agent_chat_stream("x", interactive_confirm=True)
+        evt = next(gen)
+        assert evt.kind == "confirm"
+        assert evt.data["command"] == "rm x"
+        assert svc.pending_confirm()["tool"] == "execute_command"
+        assert svc.resolve_confirm(True) is True
+        rest = list(gen)
+        assert rest[-1].kind == "answer"
+        assert rest[-1].message == "confirmed=True"
+        assert svc.pending_confirm() is None
+
+    def test_resolve_false(self):
+        svc = self._svc()
+        gen = svc.agent_chat_stream("x", interactive_confirm=True)
+        assert next(gen).kind == "confirm"
+        svc.resolve_confirm(False)
+        assert list(gen)[-1].message == "confirmed=False"
+
+    def test_resolve_without_pending(self):
+        assert make_service().resolve_confirm(True) is False
+
+    def test_timeout_rejects(self):
+        svc = self._svc()
+        svc.confirm_timeout = 0.05
+        events = list(svc.agent_chat_stream("x", interactive_confirm=True))
+        assert events[0].kind == "confirm"
+        assert events[-1].message == "confirmed=False"
+
+    def test_stop_releases_pending_confirm(self):
+        svc = self._svc()
+        gen = svc.agent_chat_stream("x", interactive_confirm=True)
+        assert next(gen).kind == "confirm"
+        assert svc.stop_current() is True
+        events = list(gen)
+        assert any(e.kind == "cancelled" for e in events)
+
+    def test_not_interactive_defaults_reject(self):
+        svc = self._svc()
+        events = list(svc.agent_chat_stream("x"))
+        assert not any(e.kind == "confirm" for e in events)
+        assert events[-1].message == "confirmed=False"
+
+    def test_explicit_handler_wins(self):
+        svc = self._svc()
+        events = list(svc.agent_chat_stream("x", confirm_handler=lambda e: True, interactive_confirm=True))
+        assert not any(e.kind == "confirm" for e in events)
+        assert events[-1].message == "confirmed=True"
+
+
+# ==================== CLI 对齐：新增服务方法 ====================
+
+class TestCollaborationModes:
+    def test_first_is_auto_and_contains_enum(self):
+        modes = make_service().collaboration_modes()
+        assert modes[0][1] == ""
+        values = {v for _, v in modes}
+        assert {"hierarchy", "parallel", "sequential", "competitive"} <= values
+
+    def test_multi_agent_stream_passes_mode(self):
+        orch = MagicMock()
+        orch.process_request.return_value = {"success": True, "summary": "ok", "results": []}
+        svc = make_service(orchestrator_factory=lambda: orch)
+        list(svc.multi_agent_stream("任务", mode="parallel"))
+        assert orch.process_request.call_args[0][1] == "parallel"
+
+
+class TestAddPath:
+    def test_empty(self):
+        assert make_service().add_path("").startswith("[提示]")
+
+    def test_append_success_with_types(self):
+        calls = []
+
+        def loader(path, file_types=None):
+            calls.append((path, file_types))
+            return [MagicMock(), MagicMock()]
+
+        svc = make_service(load_documents=loader)
+        svc._fake_rag.last_graph_derived = True
+        out = svc.add_path("/docs", ".pdf, .md")
+        assert out.startswith("[成功]") and "2 个片段" in out and "已同步更新知识图谱" in out
+        assert calls == [("/docs", [".pdf", ".md"])]
+        assert svc._fake_rag.added[0][1] == ["/docs"]
+
+    def test_no_docs(self):
+        svc = make_service(load_documents=lambda p, t=None: [])
+        assert "未找到" in svc.add_path("/x")
+
+    def test_load_error(self):
+        def loader(p, t=None):
+            raise ValueError("路径不存在")
+
+        assert "[错误] 加载失败" in make_service(load_documents=loader).add_path("/x")
+
+    def test_add_error(self):
+        svc = make_service()
+        svc._fake_rag.raise_on_add = True
+        assert "[错误] 入库失败" in svc.add_path("/x")
+
+
+class TestSessionInfo:
+    def test_current_and_fields(self):
+        svc = make_service()
+        s = svc.session_manager.create_session("标题")
+        info = svc.session_info("")
+        assert info["session_id"] == s.session_id
+        assert info["title"] == "标题"
+        assert info["status"] == "active"
+        assert info["created_at"] and info["updated_at"]
+        assert info["messages"] == 0 and info["tags"] == [] and info["metadata"] == {}
+
+    def test_substring_match(self):
+        svc = make_service()
+        s = svc.session_manager.create_session("A")
+        assert svc.session_info(s.session_id[:6])["session_id"] == s.session_id
+
+    def test_not_found(self):
+        assert "error" in make_service().session_info("nope")
+
+
+class TestGraphTyped:
+    def _svc(self, monkeypatch, reg):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        return make_service()
+
+    def test_prefix_overrides_type(self, monkeypatch):
+        reg = _FakeRegistry("找到 1 个实体")
+        svc = self._svc(monkeypatch, reg)
+        out = svc.graph_query_typed("type:tool", "entity")
+        assert out["query_type"] == "type" and out["query"] == "tool"
+        assert reg.calls[0][1] == {"query": "tool", "query_type": "type"}
+
+    def test_unknown_prefix_kept_as_entity_text(self, monkeypatch):
+        reg = _FakeRegistry("x")
+        svc = self._svc(monkeypatch, reg)
+        out = svc.graph_query_typed("http://a", "neighbors")
+        assert out["query_type"] == "neighbors" and out["query"] == "http://a"
+
+    def test_empty(self):
+        assert make_service().graph_query_typed("")["text"].startswith("[提示]")
+
+    def test_build_file(self, monkeypatch, tmp_path):
+        reg = _FakeRegistry("built")
+        svc = self._svc(monkeypatch, reg)
+        f = tmp_path / "a.py"
+        f.write_text("def f(): pass", encoding="utf-8")
+        assert svc.graph_build_file(f"@{f}") == "built"
+        assert reg.calls[0][1]["doc_type"] == "code" and reg.calls[0][1]["doc_id"] == "a.py"
+        assert "[错误] 文件不存在" in svc.graph_build_file("/nope/x.txt")
+        empty = tmp_path / "e.txt"
+        empty.write_text("", encoding="utf-8")
+        assert "[提示] 文件内容为空" in svc.graph_build_file(str(empty))
+        assert svc.graph_build_file("").startswith("[提示]")
+
+
+class TestDbWrite:
+    def _svc(self, monkeypatch, reg):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        return make_service()
+
+    def test_create_table(self, monkeypatch):
+        reg = _FakeRegistry("ok")
+        svc = self._svc(monkeypatch, reg)
+        assert svc.db_create_table("t", '{"id": "INTEGER"}') == "ok"
+        assert reg.calls[0] == ("database_create_table", {"table": "t", "columns": {"id": "INTEGER"}}, True)
+        assert svc.db_create_table("", "{}").startswith("[提示]")
+        assert "JSON" in svc.db_create_table("t", "{bad")
+        assert "JSON 对象" in svc.db_create_table("t", "[1]")
+
+    def test_insert(self, monkeypatch):
+        reg = _FakeRegistry("ok")
+        svc = self._svc(monkeypatch, reg)
+        assert svc.db_insert("t", '{"a": 1}') == "ok"
+        assert reg.calls[0][0] == "database_insert" and reg.calls[0][2] is True
+
+
+class TestShellAndFiles:
+    def _svc(self, monkeypatch, reg, analyze=None):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        fake_at.CommandSafetyChecker.analyze = analyze or (lambda cmd: {
+            "command": cmd, "is_dangerous": "rm -rf" in cmd, "danger_reasons": ["危险"] if "rm -rf" in cmd else [],
+            "needs_confirm": not cmd.startswith("ls"), "risk_level": "low" if cmd.startswith("ls") else "high",
+        })
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        return make_service()
+
+    def test_exec_analyze_and_run(self, monkeypatch):
+        reg = _FakeRegistry("out")
+        svc = self._svc(monkeypatch, reg)
+        assert svc.exec_analyze("ls")["risk_level"] == "low"
+        assert "error" in svc.exec_analyze("")
+        assert svc.exec_run("ls") == "out"
+        assert reg.calls[0] == ("execute_command", {"command": "ls"}, True)
+        assert "[错误] 该命令被安全系统拦截" in svc.exec_run("rm -rf /")
+        assert svc.exec_run("").startswith("[提示]")
+
+    def test_read_write(self, monkeypatch):
+        reg = _FakeRegistry("content")
+        svc = self._svc(monkeypatch, reg)
+        assert svc.read_file("a.txt", 10, 50) == "content"
+        assert reg.calls[0] == ("read_file", {"path": "a.txt", "offset": 10, "limit": 50}, True)
+        assert svc.read_file("").startswith("[提示]")
+        svc.write_file("b.txt", "hi", append=True)
+        assert reg.calls[-1] == ("write_file", {"path": "b.txt", "content": "hi", "append": True}, True)
+        assert svc.write_file("", "x").startswith("[提示]")
+
+    def test_cwd_chdir(self, tmp_path, monkeypatch):
+        import os
+        svc = make_service()
+        old = os.getcwd()
+        try:
+            assert svc.chdir(str(tmp_path)).startswith("[成功]")
+            assert svc.cwd() == str(tmp_path.resolve()) or svc.cwd().endswith(tmp_path.name)
+            assert "[错误] 目录不存在" in svc.chdir("/definitely/not/here")
+            assert svc.chdir("").startswith("[提示]")
+        finally:
+            os.chdir(old)
+
+    def test_list_tools(self, monkeypatch):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry.tools = {"read_file": {"safe": True, "description": "读", "parameters": {"path": "p"}}}
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        tools = make_service().list_tools()
+        assert tools == [{"name": "read_file", "safe": True, "description": "读", "parameters": {"path": "p"}}]
+
+    def test_env_info_has_keys(self):
+        info = make_service().env_info()
+        assert "ollama_url" in info and "cwd" in info and "app_version" in info
+
+
+class _FakeFM:
+    def __init__(self, path, size=100, h=None, ptype="permanent"):
+        self.file_path = path
+        self.file_size = size
+        self.file_hash = h
+        self.persistence_type = ptype
+        self.upload_time = "2026-09-03T10:00:00.123"
+        self.last_access = None
+        self.access_count = 1
+        self.document_count = 1
+        self.chunk_count = 3
+        self.tags = ["t"]
+
+
+class _FakeFileManager:
+    def __init__(self, files):
+        self.files = files
+        self.removed = []
+        self.cleaned = False
+
+    def list_files(self):
+        return list(self.files)
+
+    def get_file_metadata(self, path):
+        return next((f for f in self.files if f.file_path == path), None)
+
+    def get_files_to_cleanup(self):
+        return [f for f in self.files if f.persistence_type == "temporary"]
+
+    def cleanup_files(self):
+        self.cleaned = True
+        return [f.file_path for f in self.get_files_to_cleanup()]
+
+    def remove_file(self, path):
+        self.removed.append(path)
+
+    @staticmethod
+    def _format_size(n):
+        return f"{n} B"
+
+
+class TestFileManagement:
+    def _patch(self, monkeypatch, files):
+        import sys as _sys
+        mgr = _FakeFileManager(files)
+        fake = MagicMock()
+        fake.get_global_metadata_manager = lambda: mgr
+        monkeypatch.setitem(_sys.modules, "file_metadata", fake)
+        return mgr
+
+    def test_list_and_info(self, monkeypatch):
+        self._patch(monkeypatch, [_FakeFM("/a.md")])
+        svc = make_service()
+        rows = svc.file_list()
+        assert rows[0]["path"] == "/a.md" and rows[0]["size"] == "100 B"
+        assert rows[0]["upload_time"] == "2026-09-03 10:00:00" and rows[0]["chunk_count"] == 3
+        assert svc.file_info("/a.md")["tags"] == ["t"]
+        assert "error" in svc.file_info("/missing")
+        assert "error" in svc.file_info("")
+
+    def test_cleanup(self, monkeypatch):
+        mgr = self._patch(monkeypatch, [_FakeFM("/a", ptype="temporary"), _FakeFM("/b")])
+        svc = make_service()
+        assert [p["path"] for p in svc.file_cleanup_preview()] == ["/a"]
+        assert svc.file_cleanup() == "[成功] 已清理 1 个文件" and mgr.cleaned
+        mgr.files = [_FakeFM("/b")]
+        assert svc.file_cleanup().startswith("[提示]")
+
+    def test_dedupe(self, monkeypatch):
+        mgr = self._patch(monkeypatch, [_FakeFM("/a", h="h1"), _FakeFM("/b", h="h1"), _FakeFM("/c", h=None)])
+        svc = make_service()
+        dups = svc.file_duplicates()
+        assert [d["path"] for d in dups] == ["/b"] and dups[0]["duplicate_of"] == "/a"
+        assert svc.file_deduplicate() == "[成功] 已移除 1 个重复登记"
+        assert mgr.removed == ["/b"]
+        mgr.files = [_FakeFM("/a", h="h1")]
+        assert svc.file_deduplicate().startswith("[提示]")
+
+    def test_errors(self, monkeypatch):
+        import sys as _sys
+        fake = MagicMock()
+        fake.get_global_metadata_manager = MagicMock(side_effect=RuntimeError("fm-boom"))
+        monkeypatch.setitem(_sys.modules, "file_metadata", fake)
+        svc = make_service()
+        assert svc.file_list()[0]["path"].startswith("[错误]")
+        assert svc.file_cleanup_preview()[0]["path"].startswith("[错误]")
+        assert svc.file_duplicates()[0]["path"].startswith("[错误]")
+        assert svc.file_cleanup().startswith("[错误]")
+        assert svc.file_deduplicate().startswith("[错误]")
+        assert "error" in svc.file_info("/x")
+
+
+class TestStructuredLists:
+    def test_snapshot_list_data(self, monkeypatch):
+        import sys as _sys
+        fake = MagicMock()
+        fake.KnowledgeSnapshotManager.return_value.list_snapshots.return_value = [
+            {"snapshot_id": "s1", "timestamp": "t", "document_count": 2, "total_chunks": 5, "trigger": "manual"},
+        ]
+        monkeypatch.setitem(_sys.modules, "knowledge_snapshot", fake)
+        rows = make_service().snapshot_list_data()
+        assert rows == [{"snapshot_id": "s1", "timestamp": "t", "document_count": 2, "total_chunks": 5, "trigger": "manual"}]
+
+    def test_snapshot_list_data_error(self, monkeypatch):
+        import sys as _sys
+        fake = MagicMock()
+        fake.KnowledgeSnapshotManager.side_effect = RuntimeError("no")
+        monkeypatch.setitem(_sys.modules, "knowledge_snapshot", fake)
+        assert make_service().snapshot_list_data()[0]["snapshot_id"].startswith("[错误]")
+
+    def test_knowledge_summary_data(self, monkeypatch):
+        import sys as _sys
+        fake = MagicMock()
+        fake.KnowledgeToSkillsEngine.return_value.get_document_summary.return_value = [
+            {"file_name": "a.md", "file_path": "/a.md", "is_generic": True, "confidence": 0.5,
+             "chunk_count": 2, "topics": ["x", "y"]},
+        ]
+        monkeypatch.setitem(_sys.modules, "knowledge_to_skills", fake)
+        rows = make_service().knowledge_summary_data()
+        assert rows[0]["kind"] == "通用" and rows[0]["topics"] == "x, y"
+
+    def test_knowledge_summary_data_error(self, monkeypatch):
+        import sys as _sys
+        fake = MagicMock()
+        fake.KnowledgeToSkillsEngine.side_effect = RuntimeError("no")
+        monkeypatch.setitem(_sys.modules, "knowledge_to_skills", fake)
+        assert make_service().knowledge_summary_data()[0]["file_name"].startswith("[错误]")
+
+    def test_model_table(self):
+        switcher = MagicMock()
+        switcher.current_model_info.return_value = {
+            "model": "b", "num_ctx": 1, "think": False, "loaded": True, "size_bytes": 1,
+            "loaded_models": ["b"],
+        }
+        switcher.list_installed_models.return_value = ["a", "b"]
+        rows = make_service(model_switcher_factory=lambda: switcher).model_table()
+        assert rows == [{"name": "a", "current": False, "loaded": False},
+                        {"name": "b", "current": True, "loaded": True}]

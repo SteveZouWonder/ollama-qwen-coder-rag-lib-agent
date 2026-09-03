@@ -434,7 +434,7 @@ def _rag_answer(msg="答案", **data):
 
 
 class TestChatStream:
-    """``on_chat_stream`` yield 五元组 (history, status, process, sources, hint)。
+    """``on_chat_stream`` yield 六元组 (history, status, process, sources, hint, confirm)。
 
     ``history`` 为 Chatbot（messages 格式）的完整多轮列表：既有会话历史 + 本轮
     用户消息，完成后追加助手回答。
@@ -443,7 +443,7 @@ class TestChatStream:
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 5, f"应为五元组: {item!r}"
+            assert len(item) == 6, f"应为六元组: {item!r}"
             assert isinstance(item[0], list)
         return out
 
@@ -481,7 +481,7 @@ class TestChatStream:
         assert "已用时" in out[0][1]
         assert [m["content"] for m in out[0][0]] == ["旧问", "旧答", "问题"]
         # 最终一条：追加助手回答 + 完成状态 + 已完成的处理过程
-        history, status, process, _, hint = out[-1]
+        history, status, process, _, hint, _ = out[-1]
         assert self._last_assistant(history) == "答案"
         assert len(history) == 4
         assert status.startswith("✅ 完成")
@@ -530,8 +530,8 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        assert any("网络搜索中" in process for _, _, process, _, _ in out)
-        history, _, _, sources, _ = out[-1]
+        assert any("网络搜索中" in process for _, _, process, _, _, _ in out)
+        history, _, _, sources, _, _ = out[-1]
         assert self._last_assistant(history) == "最终"
         assert "f.md" in sources and "http://x" in sources
 
@@ -549,7 +549,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("它多少钱", "RAG 检索"))
-        history, status, process, _, hint = out[-1]
+        history, status, process, _, hint, _ = out[-1]
         content = self._last_assistant(history)
         assert content.startswith("> 🔗 已理解为：DJI OSMO 360 多少钱")
         assert content.endswith("2999 元")
@@ -603,7 +603,7 @@ class TestChatStream:
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, _, _, _ = out[-1]
+        history, status, _, _, _, _ = out[-1]
         assert "检索炸了" in self._last_assistant(history)
         assert status.startswith("❌")
 
@@ -615,7 +615,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, process, _, _ = out[-1]
+        history, status, process, _, _, _ = out[-1]
         assert "已停止" in status
         assert "规划搜索" in process
         # 未产出回答：历史只到用户消息
@@ -638,11 +638,11 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True, "sid2"))
-        assert any("第一步" in process for _, _, process, _, _ in out)
+        assert any("第一步" in process for _, _, process, _, _, _ in out)
         # 心跳出现在状态行，但不进入执行过程列表
-        assert any("模型推理中" in status for _, status, _, _, _ in out)
-        assert not any("模型推理中" in process for _, _, process, _, _ in out)
-        history, status, process, _, _ = out[-1]
+        assert any("模型推理中" in status for _, status, _, _, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _, _, _ in out)
+        history, status, process, _, _, _ = out[-1]
         assert self._last_assistant(history) == "完成"
         assert "执行过程" in process
         assert "上下文 10 / 100" in status
@@ -671,9 +671,9 @@ class TestChatStream:
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
         # 中间能看到分解/执行阶段
-        assert any("分解任务" in process for _, _, process, _, _ in out)
-        assert any("执行子任务" in process for _, _, process, _, _ in out)
-        history, status, process, _, _ = out[-1]
+        assert any("分解任务" in process for _, _, process, _, _, _ in out)
+        assert any("执行子任务" in process for _, _, process, _, _, _ in out)
+        history, status, process, _, _, _ = out[-1]
         content = self._last_assistant(history)
         assert "协作完成" in content and "已理解为：帮我总结 X" in content
         assert status.startswith("✅")
@@ -950,3 +950,288 @@ class TestThinkHandler:
         assert result.startswith("❌")
         assert "思考模式 关" in status
         assert value is False
+
+
+# ==================== 新增格式化函数 ====================
+
+class TestNewFormatters:
+    def test_format_step_log(self):
+        out = app.format_step_log([
+            {"step": 1, "phase": "action", "tool": "read_file", "confirmed": True, "thought": "先看看"},
+            {"step": 2, "phase": "action", "tool": "execute_command", "confirmed": False,
+             "safety": {"risk_level": "high"}},
+            {"step": 3, "phase": "blocked"}, {"step": 4, "phase": "rejected"}, {"step": 5, "phase": "final"},
+            "not-a-dict",
+        ])
+        assert "执行摘要" in out and "`read_file`" in out and "先看看" in out
+        assert "⛔ 调用 `execute_command`（风险 high）" in out
+        assert "危险命令被拦截" in out and "用户拒绝执行" in out and "最终答案" in out
+        assert app.format_step_log([]) == ""
+        assert app.format_step_log([{"phase": "thinking"}]) == ""
+
+    def test_format_confirm_request(self):
+        out = app.format_confirm_request({
+            "tool": "execute_command", "command": "rm -r build", "safety": {"risk_level": "high"},
+        })
+        assert "execute_command" in out and "rm -r build" in out and "cb-risk-high" in out and "高" in out
+        out2 = app.format_confirm_request({"tool": "write_file", "args": {"path": "a"}})
+        assert "```json" in out2 and '"path"' in out2
+        assert app.format_confirm_request({}) == ""
+
+    def test_format_exec_analysis(self):
+        assert app.format_exec_analysis({}) == ""
+        assert app.format_exec_analysis({"error": "x"}).startswith("❌")
+        assert "拦截" in app.format_exec_analysis({"is_dangerous": True, "risk_level": "critical", "danger_reasons": ["r"]})
+        assert "需确认" in app.format_exec_analysis({"needs_confirm": True, "risk_level": "medium"})
+        assert "只读" in app.format_exec_analysis({"needs_confirm": False, "risk_level": "low"})
+
+    def test_format_session_info(self):
+        assert app.format_session_info({}) == ""
+        assert "没找到" in app.format_session_info({"error": "没找到"})
+        out = app.format_session_info({
+            "session_id": "abc", "title": "T", "status": "active", "created_at": "c", "updated_at": "u",
+            "messages": 3, "tags": ["x"], "metadata": {"k": 1},
+        })
+        assert "`abc`" in out and "🟢 活跃" in out and "x" in out and "'k'" in out
+
+    def test_format_file_info(self):
+        assert app.format_file_info({}) == ""
+        assert app.format_file_info({"error": "e"}) == "_e_"
+        out = app.format_file_info({"path": "/a", "size": "1 KB", "type": "permanent", "chunk_count": 2, "tags": ["t"]})
+        assert "`/a`" in out and "permanent" in out and "| 片段数 | 2 |" in out and "t" in out
+
+    def test_format_env_info(self):
+        assert app.format_env_info({}) == ""
+        assert "读取配置失败" in app.format_env_info({"error": "x"})
+        out = app.format_env_info({"ollama_url": "http://h", "think": True, "cwd": "/w", "app_version": "1.0"})
+        assert "http://h" in out and "| 思考模式 | 开 |" in out and "/w" in out and "1.0" in out
+
+    def test_format_stats_cards(self):
+        assert "获取统计失败" in app.format_stats_cards({"error": "x"})
+        out = app.format_stats_cards({"total_documents": 5, "embed_model": "e", "chunk_size": 1, "chunk_overlap": 0, "top_k": 3}, file_count=2)
+        assert out.count('class="cb-card"') == 5 and ">5<" in out and ">2<" in out
+        assert app.format_stats_cards({"total_documents": 1}).count('class="cb-card"') == 4
+
+    def test_format_model_chip(self):
+        assert "连接失败" in app.format_model_chip({"model": "m", "error": "x"})
+        loaded = app.format_model_chip({"model": "m", "loaded": True, "size_bytes": 2 * 1024 ** 3, "num_ctx": 8, "think": True,
+                                        "loaded_models": ["m", "o"]})
+        assert "已加载 2.0 GB" in loaded and "思考 开" in loaded and "另驻留 1 个模型" in loaded and 'class="dot"' in loaded
+        assert "dot off" in app.format_model_chip({"model": "m", "loaded": False})
+
+    def test_format_kv_table(self):
+        assert app.format_kv_table([]) == ""
+        assert "| a | 1 |" in app.format_kv_table([("a", 1), ("b", "")])
+        assert "| b | — |" in app.format_kv_table([("b", "")])
+
+
+# ==================== 对话流：审批卡片 / 执行摘要 / 协作模式 ====================
+
+class TestChatStreamConfirmAndSummary:
+    def test_confirm_event_shows_card_then_hides(self):
+        svc = make_service_mock()
+        svc.agent_chat_stream.return_value = iter([
+            StreamEvent("confirm", "确认?", {"tool": "execute_command", "command": "rm x", "safety": {"risk_level": "high"}}),
+            StreamEvent("heartbeat", "", {"elapsed": 1.0}),
+            StreamEvent("step", "继续", {"phase": "action"}),
+            StreamEvent("answer", "done", {"step_log": [{"step": 1, "phase": "final"}], "context": {}}),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("做事", "单 Agent", True, False, "s1"))
+        confirm_frames = [o for o in out if o[5]]
+        assert len(confirm_frames) == 2  # confirm + heartbeat 保持卡片
+        assert "rm x" in confirm_frames[0][5] and "等待你确认" in confirm_frames[0][1]
+        assert out[-1][5] == ""
+        assert "执行摘要" in out[-1][2] and "最终答案" in out[-1][2]
+        _, kwargs = svc.agent_chat_stream.call_args
+        assert kwargs["interactive_confirm"] is True and kwargs["confirm_handler"] is None
+
+    def test_auto_confirm_disables_interactive(self):
+        svc = make_service_mock()
+        svc.agent_chat_stream.return_value = iter([StreamEvent("answer", "x", {})])
+        h = build_handlers(svc)
+        list(h["on_chat_stream"]("做事", "单 Agent", True, True))
+        _, kwargs = svc.agent_chat_stream.call_args
+        assert kwargs["interactive_confirm"] is False and kwargs["confirm_handler"] is not None
+
+    def test_collab_mode_passed(self):
+        svc = make_service_mock()
+        svc.multi_agent_stream.return_value = iter([StreamEvent("answer", "ok", {"success": True, "summary": "ok"})])
+        h = build_handlers(svc)
+        list(h["on_chat_stream"]("任务", "多 Agent 协作", True, False, "", "parallel"))
+        _, kwargs = svc.multi_agent_stream.call_args
+        assert kwargs["mode"] == "parallel"
+        list(h["on_chat_stream"]("任务", "多 Agent 协作", True, False, "", ""))
+        assert svc.multi_agent_stream.call_args[1]["mode"] is None
+
+    def test_on_resolve_confirm(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        svc.resolve_confirm.return_value = False
+        assert "没有等待确认" in h["on_resolve_confirm"](True)
+        svc.resolve_confirm.return_value = True
+        assert h["on_resolve_confirm"](True).startswith("✅")
+        assert h["on_resolve_confirm"](False).startswith("⛔")
+
+
+# ==================== 新增处理器 ====================
+
+class TestNewHandlers:
+    def test_session_list_state_fallback(self):
+        svc = make_service_mock()
+        svc.session_choices.return_value = [("A", "a"), ("B", "b")]
+        svc.ensure_session.return_value = "a"
+        h = build_handlers(svc)
+        assert h["on_session_list_state"]("b") == ([("A", "a"), ("B", "b")], "b")
+        assert h["on_session_list_state"]("gone")[1] == "a"
+
+    def test_session_filter(self):
+        svc = make_service_mock()
+        svc.session_choices.return_value = [("会话一（2 条）", "a"), ("Other", "b")]
+        svc.search_sessions.return_value = [{"session_id": "b"}]
+        h = build_handlers(svc)
+        assert h["on_session_filter"]("") == svc.session_choices.return_value
+        assert h["on_session_filter"]("会话") == [("会话一（2 条）", "a"), ("Other", "b")]
+
+    def test_sidebar_archive_delete(self):
+        svc = make_service_mock()
+        svc.session_choices.return_value = [("A", "a")]
+        svc.ensure_session.return_value = "a"
+        svc.archive_session.return_value = "[成功] 已归档"
+        svc.delete_session.return_value = "[成功] 已删除"
+        h = build_handlers(svc)
+        msg, choices, sid = h["on_sidebar_archive"]("a")
+        assert msg.startswith("✅") and sid == "a"
+        msg, choices, sid = h["on_sidebar_delete"]("b")
+        assert msg.startswith("✅") and sid == "a"
+        svc.delete_session.return_value = "[提示] 不能删除当前会话"
+        assert h["on_sidebar_delete"]("a")[0].startswith("💡")
+
+    def test_session_info_handler(self):
+        svc = make_service_mock()
+        svc.session_info.return_value = {"session_id": "x", "title": "T", "status": "active", "messages": 1}
+        assert "`x`" in build_handlers(svc)["on_session_info"]("x")
+
+    def test_stats_cards_and_add_path(self):
+        svc = make_service_mock()
+        svc.get_stats.return_value = {"total_documents": 1}
+        svc.file_list.return_value = [{"path": "/a"}, {"path": "[错误] x"}]
+        svc.add_path.return_value = "[成功] 已追加入库 3 个片段"
+        h = build_handlers(svc)
+        assert ">1<" in h["on_stats_cards"]()
+        msg, cards = h["on_add_path"]("/docs", ".md")
+        assert msg.startswith("✅") and "cb-cards" in cards
+        svc.add_path.assert_called_with("/docs", ".md")
+
+    def test_file_table_and_info(self):
+        svc = make_service_mock()
+        svc.file_list.return_value = [{"path": "/x/a.md", "size": "1 KB", "type": "permanent",
+                                       "upload_time": "t", "chunk_count": 2, "access_count": 0}]
+        svc.file_info.return_value = {"path": "/x/a.md", "size": "1 KB"}
+        h = build_handlers(svc)
+        rows = h["on_file_table"]()
+        assert rows[0][0] == "a.md" and rows[0][-1] == "/x/a.md"
+        assert h["headers"]["files"][0] == "文件"
+        assert "`/x/a.md`" in h["on_file_info"]("/x/a.md")
+
+    def test_file_stats_md(self):
+        svc = make_service_mock()
+        svc.file_stats.return_value = {"total_files": 2, "total_size": 10, "total_size_formatted": "10 B"}
+        out = build_handlers(svc)["on_file_stats_md"]()
+        assert "| 文件总数 | 2 |" in out and "10 B" in out and "total_size" not in out
+        svc.file_stats.return_value = {"error": "e"}
+        assert build_handlers(svc)["on_file_stats_md"]().startswith("❌")
+
+    def test_cleanup_and_dedupe(self):
+        svc = make_service_mock()
+        svc.file_cleanup_preview.return_value = []
+        svc.file_duplicates.return_value = []
+        svc.file_list.return_value = []
+        h = build_handlers(svc)
+        assert "没有需要清理" in h["on_file_cleanup_preview"]()
+        assert "没有发现重复" in h["on_file_dedupe_preview"]()
+        svc.file_cleanup_preview.return_value = [{"path": "/t", "type": "temporary"}]
+        svc.file_duplicates.return_value = [{"path": "/b", "duplicate_of": "/a"}]
+        assert "/t" in h["on_file_cleanup_preview"]() and "磁盘删除" in h["on_file_cleanup_preview"]()
+        assert "/b" in h["on_file_dedupe_preview"]() and "/a" in h["on_file_dedupe_preview"]()
+        svc.file_cleanup_preview.return_value = [{"path": "[错误] x"}]
+        svc.file_duplicates.return_value = [{"path": "[错误] y"}]
+        assert h["on_file_cleanup_preview"]().startswith("❌") and h["on_file_dedupe_preview"]().startswith("❌")
+        svc.file_cleanup.return_value = "[成功] 已清理 1 个文件"
+        svc.file_deduplicate.return_value = "[成功] 已移除 1 个重复登记"
+        assert h["on_file_cleanup"]()[0].startswith("✅") and h["on_file_dedupe"]()[0].startswith("✅")
+
+    def test_snapshot_and_summary_tables(self):
+        svc = make_service_mock()
+        svc.snapshot_list_data.return_value = [{"snapshot_id": "s", "timestamp": "t", "document_count": 1, "total_chunks": 2, "trigger": "manual"}]
+        svc.snapshot_create.return_value = "[成功] ok"
+        svc.knowledge_summary_data.return_value = [{"file_name": "a", "kind": "通用", "confidence": 0.5, "chunk_count": 1, "topics": "x"}]
+        h = build_handlers(svc)
+        assert h["on_snapshot_table"]() == [["s", "t", 1, 2, "manual"]]
+        msg, rows = h["on_snapshot_create_table"]()
+        assert msg.startswith("✅") and rows
+        assert h["on_knowledge_summary_table"]() == [["a", "通用", "0.50", 1, "x"]]
+
+    def test_graph_typed_and_build(self):
+        svc = make_service_mock()
+        svc.graph_query_typed.return_value = {"text": "[提示] 空"}
+        svc.graph_build.return_value = "built-text"
+        svc.graph_build_file.return_value = "built-file"
+        h = build_handlers(svc)
+        assert h["on_graph_query_typed"]("type", "tool").startswith("💡")
+        assert h["on_graph_build_any"]("文本", "abc") == "built-text"
+        assert h["on_graph_build_any"]("文件路径", "/a.py") == "built-file"
+
+    def test_db_write_handlers(self):
+        svc = make_service_mock()
+        svc.db_create_table.return_value = "[成功] ok"
+        svc.db_insert.return_value = "[错误] bad"
+        h = build_handlers(svc)
+        assert h["on_db_create_table"]("t", "{}").startswith("✅")
+        assert h["on_db_insert"]("t", "{}").startswith("❌")
+
+    def test_exec_handlers(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_exec_analyze"]("") == ("", False, False)
+        svc.exec_analyze.return_value = {"risk_level": "low", "needs_confirm": False}
+        md, can, needs = h["on_exec_analyze"]("ls")
+        assert can and not needs and "只读" in md
+        svc.exec_analyze.return_value = {"risk_level": "high", "needs_confirm": True}
+        assert h["on_exec_analyze"]("rm x")[1:] == (False, True)
+        svc.exec_analyze.return_value = {"risk_level": "critical", "is_dangerous": True, "danger_reasons": []}
+        assert h["on_exec_analyze"]("rm -rf /")[1:] == (False, False)
+        svc.exec_run.return_value = "hello"
+        assert h["on_exec_run"]("echo hi") == "```\nhello\n```"
+        svc.exec_run.return_value = "[错误] 拦截"
+        assert h["on_exec_run"]("rm -rf /").startswith("❌")
+
+    def test_file_rw_and_cwd(self):
+        svc = make_service_mock()
+        svc.read_file.return_value = "line"
+        svc.write_file.return_value = "[成功] 写入"
+        svc.cwd.return_value = "/w"
+        svc.chdir.return_value = "[成功] 已切换"
+        h = build_handlers(svc)
+        assert h["on_read_file"]("a", 0, 10) == "```\nline\n```"
+        svc.read_file.assert_called_with("a", 0, 10)
+        svc.read_file.return_value = "[提示] 请输入文件路径"
+        assert h["on_read_file"]("").startswith("💡")
+        assert h["on_write_file"]("a", "c", True).startswith("✅")
+        svc.write_file.assert_called_with("a", "c", True)
+        assert "`/w`" in h["on_cwd"]()
+        msg, cwd = h["on_chdir"]("/w")
+        assert msg.startswith("✅") and "/w" in cwd
+
+    def test_env_tools_models(self):
+        svc = make_service_mock()
+        svc.env_info.return_value = {"ollama_url": "http://h", "cwd": "/w"}
+        svc.list_tools.return_value = [{"name": "t", "safe": False, "description": "d", "parameters": {"a": "x"}}]
+        svc.model_table.return_value = [{"name": "m", "current": True, "loaded": False}]
+        svc.collaboration_modes.return_value = [("自动", "")]
+        h = build_handlers(svc)
+        assert "http://h" in h["on_env_info"]()
+        assert h["on_tools_table"]() == [["t", "需确认（会修改系统）", "d", "a"]]
+        assert h["on_model_table"]() == [["m", "✔", ""]]
+        assert h["on_collab_choices"]() == [("自动", "")]
+        assert "cb-status-chip" in h["on_model_chip"]()

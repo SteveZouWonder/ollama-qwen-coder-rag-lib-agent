@@ -220,6 +220,29 @@ def format_model_status(info: Dict[str, Any]) -> str:
     return line
 
 
+def format_model_chip(info: Dict[str, Any]) -> str:
+    """把当前模型概况渲染为顶栏状态胶囊（HTML）。"""
+    model = info.get("model", "?")
+    if info.get("error"):
+        return (
+            f'<span class="cb-status-chip"><span class="dot off"></span>'
+            f'<code>{model}</code> · 连接失败</span>'
+        )
+    if info.get("loaded"):
+        gb = (info.get("size_bytes") or 0) / (1024 ** 3)
+        state = f"已加载 {gb:.1f} GB" if gb >= 0.1 else "已加载"
+        dot = "dot"
+    else:
+        state = "未加载"
+        dot = "dot off"
+    think = "思考 开" if info.get("think") else "思考 关"
+    parts = [f"<code>{model}</code>", state, f"ctx {info.get('num_ctx', '?')}", think]
+    others = [m for m in info.get("loaded_models", []) if m != model]
+    if others:
+        parts.append(f"⚠️ 另驻留 {len(others)} 个模型")
+    return f'<span class="cb-status-chip"><span class="{dot}"></span>{" · ".join(parts)}</span>'
+
+
 def format_switch_result(result: Dict[str, Any]) -> str:
     """把模型切换结果渲染为 Markdown。"""
     prefix = "✅" if result.get("ok") else "❌"
@@ -256,7 +279,7 @@ _SESSION_STATUS_ICON = {"active": "🟢 活跃", "archived": "📦 已归档", "
 
 def _md_cell(text: Any) -> str:
     """表格单元格转义：去掉换行与竖线，避免破坏 Markdown 表格。"""
-    return str(text or "").replace("\n", " ").replace("|", "／").strip()
+    return str("" if text is None else text).replace("\n", " ").replace("|", "／").strip()
 
 
 def format_sessions(sessions: List[Dict[str, Any]]) -> str:
@@ -311,6 +334,183 @@ def with_context_status(status: str, ctx: Optional[Dict[str, Any]]) -> str:
     """在状态行末尾追加 ``上下文 3.2K / 4.8K · 已压缩 1 次``。"""
     extra = format_context_status(ctx) if isinstance(ctx, dict) and not ctx.get("error") else ""
     return f"{status} · {extra}" if extra else status
+
+
+def format_step_log(step_log: List[Dict[str, Any]]) -> str:
+    """把单 Agent 的 ``step_log`` 渲染为执行摘要（对齐 CLI ``/summary``）。"""
+    if not step_log:
+        return ""
+    lines = ["**执行摘要**", ""]
+    for log in step_log:
+        if not isinstance(log, dict):
+            continue
+        step = log.get("step", "?")
+        phase = log.get("phase", "")
+        if phase == "action":
+            mark = "✅" if log.get("confirmed", True) else "⛔"
+            tool = log.get("tool", "?")
+            line = f"- Step {step} {mark} 调用 `{tool}`"
+            safety = log.get("safety") or {}
+            if isinstance(safety, dict) and safety.get("risk_level"):
+                line += f"（风险 {safety['risk_level']}）"
+            thought = (log.get("thought") or "").strip().replace("\n", " ")
+            if thought:
+                line += f" — {thought[:80]}{'…' if len(thought) > 80 else ''}"
+            lines.append(line)
+        elif phase == "blocked":
+            lines.append(f"- Step {step} 🛡️ 危险命令被拦截")
+        elif phase == "rejected":
+            lines.append(f"- Step {step} ⛔ 用户拒绝执行")
+        elif phase == "final":
+            lines.append(f"- Step {step} 🏁 给出最终答案")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+_RISK_LABEL = {"low": "低", "medium": "中", "high": "高", "critical": "危险"}
+
+
+def format_confirm_request(evt: Dict[str, Any]) -> str:
+    """把 Agent 的确认请求渲染为审批卡片文案。"""
+    if not evt:
+        return ""
+    tool = evt.get("tool") or "操作"
+    lines = [f"**⚠️ Agent 请求执行需确认的操作：`{tool}`**"]
+    cmd = evt.get("command")
+    if cmd:
+        lines.append(f"```\n{cmd}\n```")
+    args = evt.get("args")
+    if args and not cmd:
+        try:
+            import json
+            lines.append(f"```json\n{json.dumps(args, ensure_ascii=False, indent=2)[:600]}\n```")
+        except Exception:  # noqa: BLE001
+            lines.append(f"`{args}`")
+    safety = evt.get("safety") or {}
+    if isinstance(safety, dict) and safety.get("risk_level"):
+        risk = safety["risk_level"]
+        lines.append(
+            f"风险等级：<span class=\"cb-risk-{risk}\">{_RISK_LABEL.get(risk, risk)}</span>"
+        )
+    lines.append("_点击「允许」继续执行，「拒绝」则 Agent 会改用其他方式或说明风险。_")
+    return "\n\n".join(lines)
+
+
+def format_exec_analysis(safety: Dict[str, Any]) -> str:
+    """把 Shell 命令安全分析渲染为 Markdown。"""
+    if not safety:
+        return ""
+    if safety.get("error"):
+        return f"❌ {safety['error']}"
+    risk = safety.get("risk_level", "unknown")
+    label = _RISK_LABEL.get(risk, risk)
+    line = f"风险等级：<span class=\"cb-risk-{risk}\">{label}</span>"
+    if safety.get("is_dangerous"):
+        reasons = "；".join(safety.get("danger_reasons") or [])
+        return f"🛡️ **该命令被安全系统拦截，拒绝执行。** {reasons}\n\n{line}"
+    if safety.get("needs_confirm"):
+        return f"{line} · 该命令会修改系统，执行前需确认。"
+    return f"{line} · 只读命令，可直接执行。"
+
+
+def format_kv_table(rows: List[Tuple[str, Any]]) -> str:
+    """把键值对渲染为两列 Markdown 表格。"""
+    if not rows:
+        return ""
+    lines = ["| 项 | 值 |", "|---|---|"]
+    for k, v in rows:
+        lines.append(f"| {_md_cell(k)} | {_md_cell(v) or '—'} |")
+    return "\n".join(lines)
+
+
+def format_session_info(info: Dict[str, Any]) -> str:
+    """会话详情（对齐 CLI ``/session-info``）。"""
+    if not info:
+        return ""
+    if info.get("error"):
+        return f"_{info['error']}_"
+    rows = [
+        ("ID", f"`{info.get('session_id', '')}`"),
+        ("标题", info.get("title", "")),
+        ("状态", _SESSION_STATUS_ICON.get(info.get("status") or "", info.get("status") or "—")),
+        ("创建时间", info.get("created_at", "")),
+        ("最近更新", info.get("updated_at", "")),
+        ("消息数", info.get("messages", 0)),
+    ]
+    tags = info.get("tags") or []
+    if tags:
+        rows.append(("标签", ", ".join(map(str, tags))))
+    meta = info.get("metadata") or {}
+    if meta:
+        rows.append(("元数据", str(meta)[:200]))
+    return format_kv_table(rows)
+
+
+def format_file_info(info: Dict[str, Any]) -> str:
+    """单文件元数据详情（对齐 CLI ``/file-info``）。"""
+    if not info:
+        return ""
+    if info.get("error"):
+        return f"_{info['error']}_"
+    rows = [
+        ("路径", f"`{info.get('path', '')}`"),
+        ("大小", info.get("size", "")),
+        ("持久化类型", info.get("type", "")),
+        ("上传时间", info.get("upload_time", "")),
+        ("最后访问", info.get("last_access", "") or "—"),
+        ("访问次数", info.get("access_count", 0)),
+        ("文档数", info.get("document_count", 0)),
+        ("片段数", info.get("chunk_count", 0)),
+    ]
+    tags = info.get("tags") or []
+    if tags:
+        rows.append(("标签", ", ".join(map(str, tags))))
+    return format_kv_table(rows)
+
+
+def format_env_info(info: Dict[str, Any]) -> str:
+    """运行环境概览（对齐 CLI 横幅 + ``/model`` 附加字段）。"""
+    if not info:
+        return ""
+    if info.get("error"):
+        return f"_读取配置失败：{info['error']}_"
+    rows = [
+        ("Ollama 地址", f"`{info.get('ollama_url', '')}`"),
+        ("LLM 模型", f"`{info.get('llm_model', '')}`"),
+        ("Embedding 模型", f"`{info.get('embed_model', '')}`"),
+        ("num_ctx", info.get("num_ctx", "")),
+        ("思考模式", "开" if info.get("think") else "关"),
+        ("自动确认（环境变量）", "开" if info.get("auto_confirm_env") else "关"),
+        ("工作目录", f"`{info.get('cwd', '')}`"),
+        ("数据目录", f"`{info.get('data_dir', '')}`"),
+        ("索引目录", f"`{info.get('index_dir', '')}`"),
+        ("向量库路径", f"`{info.get('vector_db_path', '')}`"),
+        ("会话存储", f"`{info.get('session_storage', '')}`"),
+        ("TOP_K", info.get("top_k", "")),
+        ("分块大小 / 重叠", f"{info.get('chunk_size', '')} / {info.get('chunk_overlap', '')}"),
+        ("相似度阈值", info.get("similarity_cutoff", "")),
+        ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
+        ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
+        ("版本", info.get("app_version", "")),
+    ]
+    return format_kv_table(rows)
+
+
+def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) -> str:
+    """把知识库统计渲染为指标卡片（HTML，供 ``gr.HTML`` 展示）。"""
+    if "error" in stats:
+        return f'<div class="cb-empty">❌ 获取统计失败：{stats["error"]}</div>'
+
+    def card(k: str, v: Any, small: bool = False) -> str:
+        cls = "v small" if small else "v"
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="{cls}" title="{v}">{v}</div></div>'
+
+    cards = [card("文档片段", stats.get("total_documents", 0))]
+    if file_count is not None:
+        cards.append(card("已登记文件", file_count))
+    cards.append(card("Embedding", stats.get("embed_model", "?"), small=True))
+    cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}", small=True))
+    cards.append(card("TOP_K", stats.get("top_k", "?")))
+    return f'<div class="cb-cards">{"".join(cards)}</div>'
 
 
 def format_graph_result(result: Dict[str, Any]) -> str:
@@ -428,32 +628,37 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         enable_web: bool = True,
         auto_confirm: bool = False,
         session_id: str = "",
+        collab_mode: str = "",
     ):
         """流式对话入口（供 Gradio 使用）。
 
-        yield 五元组 ``(history, status_md, process_md, sources_md, hint_md)``：
+        yield 六元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md)``：
 
         - ``history``：Chatbot（messages 格式）的完整多轮消息列表——会话内既有
           历史 + 本轮用户消息，完成后追加助手回答；
         - ``status_md``：一行状态，始终显示"当前在做什么 + 已用时"，完成/出错/
           停止时换成对应结论，完成后追加 ``上下文 3.2K / 4.8K · 已压缩 N 次``；
         - ``process_md``：按阶段累积的处理过程列表（心跳与计数类事件原地刷新，
-          不刷屏；含"结合上下文理解问题""压缩历史上下文"等上下文事件）；
+          不刷屏；含"结合上下文理解问题""压缩历史上下文"等上下文事件）；单
+          Agent 完成后追加执行摘要（对齐 CLI ``/summary``）；
         - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细；
-        - ``hint_md``：健康度建议（如"对话较长，建议新建会话"），空串表示无提示。
+        - ``hint_md``：健康度建议（如"对话较长，建议新建会话"），空串表示无提示；
+        - ``confirm_md``：单 Agent 遇到危险操作时的审批卡片文案（非空时 UI 显示
+          「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串。
 
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
-        并绑定到 ``session_id``（每个浏览器标签页自己的会话）。
+        并绑定到 ``session_id``（每个浏览器标签页自己的会话）。多 Agent 可指定
+        ``collab_mode``（hierarchy/parallel/sequential/competitive，空为自动）。
         """
         message = (message or "").strip()
         session_id = (session_id or "").strip()
         history = _load_history(session_id)
         if not message:
-            yield history, "_请输入内容_", "", "", ""
+            yield history, "_请输入内容_", "", "", "", ""
             return
 
         if service.is_running() is True:
-            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", ""
+            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", ""
             return
 
         activity, hint = _startup_hint()
@@ -463,15 +668,19 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         history = history + [{"role": "user", "content": message}]
 
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield history, tracker.render_status(), "", "", ""
+        yield history, tracker.render_status(), "", "", "", ""
 
         if mode == "多 Agent 协作":
-            stream = service.multi_agent_stream(message, session_id=session_id or None)
+            stream = service.multi_agent_stream(
+                message, mode=(collab_mode or "").strip() or None, session_id=session_id or None,
+            )
             title = "协作过程"
         elif mode == "单 Agent":
+            # 勾选"自动确认"时全部放行（等价 CLI --yes）；否则挂起等待页面审批
             confirm_handler = (lambda evt: True) if auto_confirm else None
             stream = service.agent_chat_stream(
-                message, confirm_handler=confirm_handler, session_id=session_id or None
+                message, confirm_handler=confirm_handler, session_id=session_id or None,
+                interactive_confirm=not auto_confirm,
             )
             title = "执行过程"
         else:
@@ -481,18 +690,24 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             title = "处理过程"
 
         final = None
+        confirm_md = ""
         for evt in stream:
-            if evt.kind in ("progress", "step"):
+            if evt.kind == "confirm":
+                confirm_md = format_confirm_request(evt.data if isinstance(evt.data, dict) else {})
+                tracker.current = "⏸️ 等待你确认危险操作…"
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
+            elif evt.kind in ("progress", "step"):
+                confirm_md = ""
                 tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield history, tracker.render_status(), tracker.render_steps(title), "", ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", ""
             elif evt.kind == "heartbeat":
-                yield history, tracker.render_status(), tracker.render_steps(title), "", ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
                 yield (
                     history, tracker.render_status("cancelled"),
-                    tracker.render_steps(title, done=True), "", "",
+                    tracker.render_steps(title, done=True), "", "", "",
                 )
                 return
             elif evt.kind == "error":
@@ -502,12 +717,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                     tracker.render_steps(title, done=True),
                     "",
                     "",
+                    "",
                 )
                 return
 
         steps_md = tracker.render_steps(title, done=True)
         if final is None:
-            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", ""
+            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", ""
             return
 
         data = final.data if isinstance(final.data, dict) else {}
@@ -527,17 +743,20 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
         if mode == "多 Agent 协作":
             content = prefix + format_multi_agent_result(data)
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
             return
 
         if mode == "单 Agent":
             content = prefix + (final.message or "")
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
+            summary = format_step_log(data.get("step_log") or [])
+            if summary:
+                steps_md = f"{steps_md}\n\n{summary}" if steps_md else summary
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
             return
 
         if data.get("kind") == "meta":
             content = format_meta_overview(data.get("meta") or {})
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
             return
         yield (
             history + [{"role": "assistant", "content": prefix + (final.message or "")}],
@@ -550,7 +769,14 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                 }
             ),
             hint_md,
+            "",
         )
+
+    def on_resolve_confirm(approved: bool) -> str:
+        """用户在审批卡片上点「允许 / 拒绝」。返回写入状态行的文案。"""
+        if not service.resolve_confirm(bool(approved)):
+            return "当前没有等待确认的操作"
+        return "✅ 已允许，Agent 继续执行…" if approved else "⛔ 已拒绝，Agent 将改用其他方式或说明风险…"
 
     # ---------- 对话页会话控件（每个标签页绑定自己的会话）----------
 
@@ -694,6 +920,9 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_model_status() -> str:
         return format_model_status(service.current_model())
 
+    def on_model_chip() -> str:
+        return format_model_chip(service.current_model())
+
     def on_model_choices() -> Tuple[List[str], str]:
         """返回 (可选模型列表, 当前模型)，供下拉框初始化/刷新。"""
         choices = service.list_models()
@@ -789,7 +1018,254 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_graph_build(text: str) -> str:
         return service.graph_build(text)
 
+    # ---------- 侧栏会话列表 / 会话详情 ----------
+
+    def on_session_list_state(session_id: str = "") -> Tuple[List[Tuple[str, str]], str]:
+        """侧栏会话列表：返回 (选项, 应选中的会话 id)。
+
+        若传入的 id 已不存在（被删除），回落到服务层当前会话。
+        """
+        choices = service.session_choices()
+        ids = {sid for _, sid in choices}
+        sid = (session_id or "").strip()
+        if sid not in ids:
+            try:
+                sid = service.ensure_session()
+            except Exception:  # noqa: BLE001
+                sid = ""
+            if sid not in ids:
+                choices = service.session_choices()
+        return choices, sid
+
+    def on_session_filter(keyword: str) -> List[Tuple[str, str]]:
+        """按关键词过滤侧栏会话列表（标题或消息内容）。"""
+        keyword = (keyword or "").strip()
+        choices = service.session_choices()
+        if not keyword:
+            return choices
+        hit = {s.get("session_id") for s in service.search_sessions(keyword)}
+        return [(label, sid) for label, sid in choices if sid in hit or keyword.lower() in label.lower()]
+
+    def on_session_info(session_id: str) -> str:
+        return format_session_info(service.session_info(session_id or ""))
+
+    def on_sidebar_archive(session_id: str) -> Tuple[str, List[Tuple[str, str]], str]:
+        """侧栏归档当前选中会话：返回 (结果文案, 列表选项, 选中 id)。"""
+        msg = _fmt_result(service.archive_session(session_id))
+        choices, sid = on_session_list_state(session_id)
+        return msg, choices, sid
+
+    def on_sidebar_delete(session_id: str) -> Tuple[str, List[Tuple[str, str]], str]:
+        """侧栏删除当前选中会话（不允许删除当前会话）：返回 (结果, 选项, 选中 id)。"""
+        msg = _fmt_result(service.delete_session(session_id))
+        choices, sid = on_session_list_state("" if msg.startswith("✅") else session_id)
+        return msg, choices, sid
+
+    # ---------- 知识库：追加入库 / 卡片统计 / 文件管理 / 快照 / 摘要 ----------
+
+    def on_stats_cards() -> str:
+        stats = service.get_stats()
+        files = service.file_list()
+        count = len([f for f in files if not str(f.get("path", "")).startswith("[错误]")])
+        return format_stats_cards(stats, file_count=count)
+
+    def on_add_path(path: str, file_types: str = "") -> Tuple[str, str]:
+        """追加服务器上的文件/目录入库（等价 CLI /add）。返回 (结果, 统计卡片)。"""
+        return _fmt_result(service.add_path(path, file_types)), on_stats_cards()
+
+    _FILE_HEADERS = ["文件", "大小", "类型", "上传时间", "片段", "访问", "路径"]
+
+    def on_file_table() -> List[List[Any]]:
+        """文件表：首列文件名便于浏览，末列完整路径供选中行取值。"""
+        rows = []
+        for f in service.file_list():
+            path = str(f.get("path", ""))
+            name = path.rsplit("/", 1)[-1] if "/" in path else path
+            rows.append([
+                name, f.get("size", ""), f.get("type", ""),
+                f.get("upload_time", ""), f.get("chunk_count", 0), f.get("access_count", 0), path,
+            ])
+        return rows
+
+    def on_file_info(path: str) -> str:
+        return format_file_info(service.file_info(path))
+
+    def on_file_stats_md() -> str:
+        stats = service.file_stats()
+        if "error" in stats:
+            return f"❌ {stats['error']}"
+        labels = {
+            "total_files": "文件总数", "total_size_formatted": "总大小",
+            "permanent_count": "永久", "temporary_count": "临时", "session_count": "会话级",
+            "cleanup_count": "待清理",
+        }
+        rows = [(labels.get(k, k), v) for k, v in stats.items() if k != "total_size"]
+        return format_kv_table(rows)
+
+    def on_file_cleanup_preview() -> str:
+        pending = service.file_cleanup_preview()
+        if not pending:
+            return "✅ 没有需要清理的文件"
+        if str(pending[0].get("path", "")).startswith("[错误]"):
+            return f"❌ {pending[0]['path']}"
+        lines = [f"🧹 发现 {len(pending)} 个待清理文件（临时/过期，**将从磁盘删除**）：", ""]
+        lines.extend(f"- `{p.get('path')}`（{p.get('type')}）" for p in pending[:20])
+        if len(pending) > 20:
+            lines.append(f"- … 共 {len(pending)} 个")
+        return "\n".join(lines)
+
+    def on_file_cleanup() -> Tuple[str, List[List[Any]]]:
+        return _fmt_result(service.file_cleanup()), on_file_table()
+
+    def on_file_dedupe_preview() -> str:
+        dups = service.file_duplicates()
+        if not dups:
+            return "✅ 没有发现重复文件"
+        if str(dups[0].get("path", "")).startswith("[错误]"):
+            return f"❌ {dups[0]['path']}"
+        lines = [f"⚠️ 发现 {len(dups)} 个重复登记（只移除登记，不删磁盘文件）：", ""]
+        lines.extend(f"- `{d.get('path')}` ⟶ 与 `{d.get('duplicate_of')}` 重复" for d in dups[:20])
+        return "\n".join(lines)
+
+    def on_file_dedupe() -> Tuple[str, List[List[Any]]]:
+        return _fmt_result(service.file_deduplicate()), on_file_table()
+
+    _SNAPSHOT_HEADERS = ["快照 ID", "时间", "文档", "片段", "触发"]
+
+    def on_snapshot_table() -> List[List[Any]]:
+        return [
+            [s.get("snapshot_id", ""), s.get("timestamp", ""), s.get("document_count", 0),
+             s.get("total_chunks", 0), s.get("trigger", "")]
+            for s in service.snapshot_list_data()
+        ]
+
+    def on_snapshot_create_table() -> Tuple[str, List[List[Any]]]:
+        return _fmt_result(service.snapshot_create()), on_snapshot_table()
+
+    _SUMMARY_HEADERS = ["文件", "类型", "置信度", "片段", "主题"]
+
+    def on_knowledge_summary_table() -> List[List[Any]]:
+        return [
+            [d.get("file_name", ""), d.get("kind", ""),
+             f"{d.get('confidence', 0):.2f}" if isinstance(d.get("confidence"), (int, float)) else "",
+             d.get("chunk_count", 0), d.get("topics", "")]
+            for d in service.knowledge_summary_data()
+        ]
+
+    # ---------- 知识图谱：带类型查询 / 文件构建 ----------
+
+    def on_graph_query_typed(query_type: str, query: str) -> str:
+        result = service.graph_query_typed(query, query_type or "entity")
+        return _fmt_result(str(result.get("text", "")))
+
+    def on_graph_build_any(source: str, text: str) -> str:
+        """按来源构建：``文件路径`` 读取服务器文件，否则按文本。"""
+        if (source or "").startswith("文件"):
+            return _fmt_result(service.graph_build_file(text))
+        return _fmt_result(service.graph_build(text))
+
+    # ---------- 工具：数据库写操作 / Shell / 文件读写 / 工作目录 ----------
+
+    def on_db_create_table(table: str, columns_json: str) -> str:
+        return _fmt_result(service.db_create_table(table, columns_json))
+
+    def on_db_insert(table: str, data_json: str) -> str:
+        return _fmt_result(service.db_insert(table, data_json))
+
+    def on_exec_analyze(command: str) -> Tuple[str, bool, bool]:
+        """分析命令：返回 (分析文案, 可直接执行, 需二次确认)。"""
+        safety = service.exec_analyze(command)
+        if not command or not command.strip():
+            return "", False, False
+        if safety.get("error") or safety.get("is_dangerous"):
+            return format_exec_analysis(safety), False, False
+        needs = bool(safety.get("needs_confirm"))
+        return format_exec_analysis(safety), not needs, needs
+
+    def on_exec_run(command: str) -> str:
+        result = service.exec_run(command)
+        if result.startswith("[错误]") or result.startswith("[提示]"):
+            return _fmt_result(result)
+        return f"```\n{result}\n```"
+
+    def on_read_file(path: str, offset: float = 0, limit: float = 200) -> str:
+        result = service.read_file(path, int(offset or 0), int(limit or 200))
+        if result.startswith("[错误]") or result.startswith("[提示]"):
+            return _fmt_result(result)
+        return f"```\n{result}\n```"
+
+    def on_write_file(path: str, content: str, append: bool = False) -> str:
+        return _fmt_result(service.write_file(path, content, bool(append)))
+
+    def on_cwd() -> str:
+        return f"当前工作目录：`{service.cwd()}`"
+
+    def on_chdir(path: str) -> Tuple[str, str]:
+        """切换工作目录：返回 (结果, 当前目录文案)。"""
+        return _fmt_result(service.chdir(path)), on_cwd()
+
+    # ---------- 系统：环境 / 工具清单 / 模型表 ----------
+
+    def on_env_info() -> str:
+        return format_env_info(service.env_info())
+
+    _TOOL_HEADERS = ["工具", "安全等级", "描述", "参数"]
+
+    def on_tools_table() -> List[List[Any]]:
+        return [
+            [t.get("name", ""), "安全（只读）" if t.get("safe", True) else "需确认（会修改系统）",
+             t.get("description", ""), ", ".join((t.get("parameters") or {}).keys())]
+            for t in service.list_tools()
+        ]
+
+    _MODEL_HEADERS = ["模型", "当前", "已加载"]
+
+    def on_model_table() -> List[List[Any]]:
+        return [
+            [m.get("name", ""), "✔" if m.get("current") else "", "✔" if m.get("loaded") else ""]
+            for m in service.model_table()
+        ]
+
+    def on_collab_choices() -> List[Tuple[str, str]]:
+        return service.collaboration_modes()
+
     return {
+        "on_resolve_confirm": on_resolve_confirm,
+        "on_session_list_state": on_session_list_state,
+        "on_session_filter": on_session_filter,
+        "on_session_info": on_session_info,
+        "on_sidebar_archive": on_sidebar_archive,
+        "on_sidebar_delete": on_sidebar_delete,
+        "on_stats_cards": on_stats_cards,
+        "on_add_path": on_add_path,
+        "on_file_table": on_file_table,
+        "on_file_info": on_file_info,
+        "on_file_stats_md": on_file_stats_md,
+        "on_file_cleanup_preview": on_file_cleanup_preview,
+        "on_file_cleanup": on_file_cleanup,
+        "on_file_dedupe_preview": on_file_dedupe_preview,
+        "on_file_dedupe": on_file_dedupe,
+        "on_snapshot_table": on_snapshot_table,
+        "on_snapshot_create_table": on_snapshot_create_table,
+        "on_knowledge_summary_table": on_knowledge_summary_table,
+        "on_graph_query_typed": on_graph_query_typed,
+        "on_graph_build_any": on_graph_build_any,
+        "on_db_create_table": on_db_create_table,
+        "on_db_insert": on_db_insert,
+        "on_exec_analyze": on_exec_analyze,
+        "on_exec_run": on_exec_run,
+        "on_read_file": on_read_file,
+        "on_write_file": on_write_file,
+        "on_cwd": on_cwd,
+        "on_chdir": on_chdir,
+        "on_env_info": on_env_info,
+        "on_tools_table": on_tools_table,
+        "on_model_table": on_model_table,
+        "on_collab_choices": on_collab_choices,
+        "headers": {
+            "files": _FILE_HEADERS, "snapshots": _SNAPSHOT_HEADERS, "summary": _SUMMARY_HEADERS,
+            "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS,
+        },
         "on_chat": on_chat,
         "on_chat_stream": on_chat_stream,
         "on_session_init": on_session_init,
@@ -814,6 +1290,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_graph_build": on_graph_build,
         "on_stop": on_stop,
         "on_model_status": on_model_status,
+        "on_model_chip": on_model_chip,
         "on_model_choices": on_model_choices,
         "on_switch_model": on_switch_model,
         "on_toggle_think": on_toggle_think,
@@ -841,406 +1318,19 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
 # ==================== Gradio 装配（不做单元测试）====================
 
-# 对话页样式：操作按钮靠右排列、状态行固定高度避免抖动。
-# Gradio 6 起 css 需在 launch() 传入，而非 Blocks()。
-APP_CSS = """
-.chat-actions { justify-content: flex-end !important; gap: 8px; }
-.chat-actions > * { flex-grow: 0 !important; }
-.chat-status { min-height: 1.8em; opacity: 0.9; }
-.chat-hint { align-items: center; padding: 6px 10px; border-radius: 8px;
-             background: var(--color-accent-soft, rgba(255, 196, 0, 0.12)); }
-/* 对话区：标题「对话」与右上角按钮固定不随滚轮滚动。
-   Gradio 未设固定 height 时会让整个 .block 以 overflow:auto 滚动，而标签/按钮是相对
-   .block 绝对定位的，于是一起滚走。这里让 .block 不滚、只让内部消息区滚动。 */
-#chatbot { overflow: hidden !important; display: flex !important; flex-direction: column; }
-#chatbot > .wrapper { flex: 1 1 auto; min-height: 0; }
-#chatbot .bubble-wrap, #chatbot .panel-wrap { overflow-y: auto; min-height: 0; }
-/* 会话页：表格撑满宽度，标题列可换行、其余列不换行 */
-.session-list table { width: 100%; table-layout: auto; }
-.session-list th, .session-list td { white-space: nowrap; }
-.session-list td:nth-child(2), .session-list td:nth-child(6) { white-space: normal; }
-"""
+# 完整样式（布局 + 多主题色变量）由 theme 模块生成；Gradio 6 起 css 需在 launch() 传入。
+from .theme import build_css as _build_css  # noqa: E402
+
+APP_CSS = _build_css()
 
 
 def build_app(service: Optional[WebService] = None):  # pragma: no cover
-    """组装 Gradio Blocks 应用。"""
-    import gradio as gr
+    """组装 Gradio Blocks 应用（布局细节见 ``web.ui`` 包）。"""
+    from .ui.layout import build_layout
 
     service = service or get_web_service()
     handlers = build_handlers(service)
-
-    with gr.Blocks(title="Cerebro 🧠") as app:
-        gr.Markdown("# Cerebro 🧠\n本地优先的 RAG + Agent 助手")
-        # 顶部状态行：当前模型 / 是否已加载 / num_ctx / 思考模式；切换后即时刷新
-        model_status = gr.Markdown(handlers["on_model_status"]())
-
-        with gr.Tab("对话"):
-            # 模型热切换：下拉列出本机已安装模型，切换会同步 RAG/Agent 并释放旧模型
-            _choices, _current = handlers["on_model_choices"]()
-            with gr.Row():
-                model_dd = gr.Dropdown(
-                    choices=_choices,
-                    value=_current or None,
-                    label="模型（切换后立即生效，旧模型自动释放）",
-                    scale=6,
-                    allow_custom_value=True,
-                )
-                model_switch_btn = gr.Button("切换模型", scale=1)
-                model_refresh_btn = gr.Button("刷新列表", scale=1)
-                # 思考模式：默认关（响应快）；开启需模型支持，不支持时自动回弹
-                think_cb = gr.Checkbox(
-                    value=bool(service.current_model().get("think")),
-                    label="思考模式（慢，适合复杂推理）",
-                    scale=2,
-                )
-            model_switch_result = gr.Markdown()
-            model_switch_btn.click(
-                handlers["on_switch_model"], model_dd, [model_switch_result, model_status]
-            )
-            think_cb.input(
-                handlers["on_toggle_think"], think_cb,
-                [model_switch_result, model_status, think_cb],
-            )
-
-            def _refresh_model_dropdown():
-                choices, current = handlers["on_model_choices"]()
-                return gr.update(choices=choices, value=current or None)
-
-            model_refresh_btn.click(_refresh_model_dropdown, None, model_dd)
-
-            # ---- 会话控件：每个浏览器标签页用 gr.State 绑定自己的会话 ----
-            session_state = gr.State("")
-            with gr.Row():
-                session_dd = gr.Dropdown(
-                    choices=[], value=None, label="会话（切换后加载该会话的多轮历史）",
-                    scale=6, allow_custom_value=True,
-                )
-                carry_cb = gr.Checkbox(value=False, label="携带摘要", scale=1)
-                new_session_btn = gr.Button("新建会话", scale=1)
-                clear_ctx_btn = gr.Button("清空上下文", scale=1)
-                compact_btn = gr.Button("压缩历史", scale=1)
-            context_box = gr.Markdown(elem_classes=["chat-status"])
-
-            mode = gr.Radio(
-                ["RAG 检索", "单 Agent", "多 Agent 协作"],
-                value="RAG 检索",
-                label="模式",
-            )
-            with gr.Row():
-                enable_web = gr.Checkbox(
-                    value=True,
-                    label="联网搜索增强（RAG 模式，等价 CLI /ask 的网络增强）",
-                )
-                auto_confirm = gr.Checkbox(
-                    value=False,
-                    label="自动确认危险命令（单 Agent 模式，等价 CLI --yes）",
-                )
-
-            # ---- 多轮对话展示（Gradio 6 的 Chatbot 即 messages 格式）----
-            # 不设固定 height（默认 400px 会让空会话留一大片空白）：随消息自动扩展，
-            # 超过 max_height 后在内部滚动；空态用 placeholder 提示，可拖拽右下角调高。
-            chatbot = gr.Chatbot(
-                label="对话",
-                elem_id="chatbot",
-                height=None,
-                min_height=96,
-                max_height=560,
-                resizable=True,
-                placeholder="_还没有消息。输入问题开始对话，支持追问（如“它多少钱”）。_",
-            )
-
-            # ---- 输入区：输入框在上，操作按钮在其下方右对齐 ----
-            # 此前输入框与两个按钮同排，按钮顶部对齐到输入框的 label 行，视觉错位。
-            with gr.Group():
-                msg_box = gr.Textbox(
-                    placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行；支持追问，如“它多少钱”）",
-                    show_label=False,
-                    lines=1,
-                    max_lines=6,
-                    autofocus=True,
-                )
-                with gr.Row(elem_classes=["chat-actions"]):
-                    stop_btn = gr.Button("停止", scale=0, min_width=96, interactive=False)
-                    send_btn = gr.Button("发送", scale=0, min_width=120, variant="primary")
-
-            # ---- 输出区：状态行 → 健康度提示 → 处理过程 → 引用来源 ----
-            status_box = gr.Markdown(elem_classes=["chat-status"])
-            with gr.Row(visible=False, elem_classes=["chat-hint"]) as hint_row:
-                hint_box = gr.Markdown(scale=6)
-                hint_new_btn = gr.Button("新建会话", scale=1, size="sm")
-                hint_continue_btn = gr.Button("继续当前会话", scale=1, size="sm")
-            with gr.Accordion("处理过程", open=True):
-                process_box = gr.Markdown()
-            with gr.Accordion("引用来源 / 结果明细", open=False):
-                sources_box = gr.Markdown()
-
-            # 待发送消息暂存：先把输入框清空并锁定按钮，再用暂存值发起对话
-            pending_msg = gr.State("")
-            _chat_outputs = [chatbot, status_box, process_box, sources_box, hint_box, hint_row]
-
-            def _chat_stream_ui(message, mode_v, web_v, confirm_v, sid):
-                """把处理器的五元组映射为组件更新（提示非空时显示提示行）。"""
-                for history, status, process, sources, hint in handlers["on_chat_stream"](
-                    message, mode_v, web_v, confirm_v, sid
-                ):
-                    yield history, status, process, sources, hint, gr.update(visible=bool(hint))
-
-            def _begin(message: str):
-                """点击发送：暂存消息、清空输入框、禁用发送、启用停止。"""
-                return (
-                    message,
-                    "",
-                    gr.update(interactive=False),
-                    gr.update(interactive=True),
-                )
-
-            def _end(sid):
-                """任务结束/停止后：恢复发送、禁用停止、刷新上下文状态与会话列表。"""
-                return (
-                    gr.update(interactive=True),
-                    gr.update(interactive=False),
-                    handlers["on_session_select"](sid)[2],
-                    gr.update(choices=service.session_choices(), value=sid or None),
-                )
-
-            _begin_outputs = [pending_msg, msg_box, send_btn, stop_btn]
-            _chat_inputs = [pending_msg, mode, enable_web, auto_confirm, session_state]
-            _end_outputs = [send_btn, stop_btn, context_box, session_dd]
-
-            send_chain = send_btn.click(_begin, msg_box, _begin_outputs).then(
-                _chat_stream_ui, _chat_inputs, _chat_outputs
-            )
-            send_chain.then(_end, session_state, _end_outputs)
-            submit_chain = msg_box.submit(_begin, msg_box, _begin_outputs).then(
-                _chat_stream_ui, _chat_inputs, _chat_outputs
-            )
-            submit_chain.then(_end, session_state, _end_outputs)
-
-            # 停止：通知服务层取消（三种模式通用），同时让 Gradio 中断正在推送的流
-            stop_btn.click(
-                handlers["on_stop"], None, status_box,
-                cancels=[send_chain, submit_chain],
-            ).then(_end, session_state, _end_outputs)
-
-            # ---- 会话控件事件 ----
-            def _session_init():
-                choices, sid, history, ctx_md = handlers["on_session_init"]()
-                return gr.update(choices=choices, value=sid), sid, history, ctx_md
-
-            app.load(_session_init, None, [session_dd, session_state, chatbot, context_box])
-
-            def _session_select(sid):
-                new_sid, history, ctx_md, hint = handlers["on_session_select"](sid)
-                return new_sid, history, ctx_md, hint, gr.update(visible=False)
-
-            session_dd.input(
-                _session_select, session_dd,
-                [session_state, chatbot, context_box, hint_box, hint_row],
-            )
-
-            def _new_session(carry, sid):
-                choices, new_sid, history, ctx_md, hint = handlers["on_new_session"](carry, sid)
-                return (
-                    gr.update(choices=choices, value=new_sid), new_sid, history, ctx_md,
-                    hint, gr.update(visible=False), "✨ 已新建会话" + ("（已携带摘要）" if carry else ""),
-                )
-
-            _new_outputs = [session_dd, session_state, chatbot, context_box, hint_box, hint_row, status_box]
-            new_session_btn.click(_new_session, [carry_cb, session_state], _new_outputs)
-            hint_new_btn.click(_new_session, [carry_cb, session_state], _new_outputs)
-
-            def _clear_ctx(sid):
-                history, msg, ctx_md, hint = handlers["on_clear_context"](sid)
-                return history, msg, ctx_md, hint, gr.update(visible=False)
-
-            clear_ctx_btn.click(
-                _clear_ctx, session_state,
-                [chatbot, status_box, context_box, hint_box, hint_row],
-            )
-            compact_btn.click(
-                handlers["on_compact_context"], session_state, [status_box, context_box]
-            )
-
-            def _continue(sid):
-                handlers["on_continue_session"](sid)
-                return "", gr.update(visible=False)
-
-            hint_continue_btn.click(_continue, session_state, [hint_box, hint_row])
-
-        with gr.Tab("知识库"):
-            stats_box = gr.Markdown(format_stats(service.get_stats()))
-            upload = gr.File(file_count="multiple", type="filepath", label="上传文档")
-            upload_result = gr.Markdown()
-            with gr.Row():
-                refresh_btn = gr.Button("刷新统计")
-                clear_btn = gr.Button("清空索引", variant="stop")
-            upload.upload(handlers["on_upload"], upload, [upload_result, stats_box])
-            refresh_btn.click(handlers["on_refresh_stats"], None, stats_box)
-            clear_btn.click(handlers["on_clear_index"], None, [upload_result, stats_box])
-            gr.Markdown("---\n**从目录重建索引**")
-            with gr.Row():
-                rebuild_path = gr.Textbox(
-                    placeholder="数据目录/文件路径...", scale=8, label="重建路径"
-                )
-                rebuild_btn = gr.Button("重建索引", scale=1)
-            rebuild_result = gr.Markdown()
-            rebuild_btn.click(
-                handlers["on_rebuild_index"], rebuild_path, [rebuild_result, stats_box]
-            )
-
-        with gr.Tab("会话"):
-            # 会话管理：表格列表 + 下拉选中后 切换 / 归档 / 删除 + 新建（可携带摘要）+ 搜索。
-            # 与 CLI 的 /session-* 命令面对齐；删除同样禁止删当前会话。
-            _s_msg, _s_list, _s_choices, _s_current = handlers["on_sessions_refresh"]()
-            sessions_box = gr.Markdown(_s_list, elem_classes=["session-list"])
-            session_result = gr.Markdown(elem_classes=["chat-status"])
-            with gr.Row():
-                manage_dd = gr.Dropdown(
-                    choices=_s_choices, value=_s_current, label="选择会话",
-                    scale=6, allow_custom_value=True,
-                )
-                switch_btn = gr.Button("切换", scale=1, variant="primary")
-                archive_btn = gr.Button("归档", scale=1)
-                delete_btn = gr.Button("删除", scale=1, variant="stop")
-                list_btn = gr.Button("刷新", scale=1)
-            with gr.Row():
-                new_title = gr.Textbox(placeholder="会话标题（可选，留空按时间命名）", label="新建会话", scale=5)
-                new_carry_cb = gr.Checkbox(value=False, label="携带当前会话摘要", scale=2)
-                new_btn = gr.Button("新建并切换", scale=1)
-            with gr.Row():
-                search_kw = gr.Textbox(placeholder="按标题或消息内容搜索…", scale=6, label="搜索会话")
-                search_btn = gr.Button("搜索", scale=1)
-            search_result = gr.Markdown()
-
-            _session_outputs = [session_result, sessions_box, manage_dd]
-
-            def _wrap_session(fn):
-                """把 (文案, 列表, 选项, 当前值) 映射为组件更新（下拉需 gr.update）。"""
-                def inner(*args):
-                    msg, table, choices, current = fn(*args)
-                    return msg, table, gr.update(choices=choices, value=current)
-                inner.__name__ = fn.__name__  # 保持 API 端点名可读（/on_switch_session 等）
-                return inner
-
-            switch_btn.click(_wrap_session(handlers["on_switch_session"]), manage_dd, _session_outputs)
-            archive_btn.click(_wrap_session(handlers["on_archive_session"]), manage_dd, _session_outputs)
-            delete_btn.click(_wrap_session(handlers["on_delete_session"]), manage_dd, _session_outputs)
-            list_btn.click(_wrap_session(handlers["on_sessions_refresh"]), None, _session_outputs)
-            new_btn.click(
-                _wrap_session(handlers["on_create_session"]), [new_title, new_carry_cb], _session_outputs
-            )
-            search_btn.click(handlers["on_search_sessions"], search_kw, search_result)
-            search_kw.submit(handlers["on_search_sessions"], search_kw, search_result)
-
-        with gr.Tab("知识图谱"):
-            entity_box = gr.Textbox(placeholder="输入实体名...", label="查询实体")
-            with gr.Row():
-                graph_btn = gr.Button("查询实体")
-                summary_btn = gr.Button("图谱概览")
-            graph_result = gr.Markdown()
-            graph_btn.click(handlers["on_query_graph"], entity_box, graph_result)
-            summary_btn.click(handlers["on_graph_summary"], None, graph_result)
-            gr.Markdown("---\n**从文本构建图谱**")
-            gb_text = gr.Textbox(lines=3, placeholder="输入用于构建知识图谱的文本...", label="构建文本")
-            gb_btn = gr.Button("构建")
-            gb_result = gr.Markdown()
-            gb_btn.click(handlers["on_graph_build"], gb_text, gb_result)
-
-        with gr.Tab("文件管理"):
-            with gr.Row():
-                fl_btn = gr.Button("文件列表")
-                fs_btn = gr.Button("文件统计")
-            file_result = gr.Markdown()
-            fl_btn.click(handlers["on_file_list"], None, file_result)
-            fs_btn.click(handlers["on_file_stats"], None, file_result)
-
-        with gr.Tab("网络搜索"):
-            with gr.Row():
-                ws_query = gr.Textbox(placeholder="搜索关键词...", scale=8, label="网络搜索")
-                ws_btn = gr.Button("搜索", scale=1, variant="primary")
-            ws_result = gr.Markdown()
-            ws_btn.click(handlers["on_web_search"], ws_query, ws_result)
-            with gr.Row():
-                we_url = gr.Textbox(placeholder="https://...", scale=8, label="提取网页正文")
-                we_btn = gr.Button("提取", scale=1)
-            we_result = gr.Markdown()
-            we_btn.click(handlers["on_web_extract"], we_url, we_result)
-            with gr.Row():
-                wc_status_btn = gr.Button("缓存状态")
-                wc_clear_btn = gr.Button("清空缓存", variant="stop")
-            wc_result = gr.Markdown()
-            wc_status_btn.click(handlers["on_web_cache_status"], None, wc_result)
-            wc_clear_btn.click(handlers["on_web_cache_clear"], None, wc_result)
-
-        with gr.Tab("代码分析"):
-            with gr.Row():
-                ca_pattern = gr.Textbox(placeholder="AST 搜索模式...", scale=6, label="AST 搜索")
-                ca_path = gr.Textbox(value=".", scale=2, label="路径")
-                ca_btn = gr.Button("搜索", scale=1)
-            ca_result = gr.Markdown()
-            ca_btn.click(handlers["on_code_ast"], [ca_pattern, ca_path], ca_result)
-            with gr.Row():
-                cq_path = gr.Textbox(value=".", scale=8, label="代码质量检查路径")
-                cq_btn = gr.Button("检查", scale=1)
-            cq_result = gr.Markdown()
-            cq_btn.click(handlers["on_code_quality"], cq_path, cq_result)
-
-        with gr.Tab("Git"):
-            ga_type = gr.Radio(
-                ["history", "status", "authors"], value="history", label="分析类型"
-            )
-            ga_btn = gr.Button("Git 分析")
-            ga_result = gr.Markdown()
-            ga_btn.click(handlers["on_git_analyze"], ga_type, ga_result)
-            gr.Markdown("---")
-            gcg_btn = gr.Button("生成提交信息（AI）")
-            gcg_result = gr.Markdown()
-            gcg_btn.click(handlers["on_git_commit_gen"], None, gcg_result)
-
-        with gr.Tab("数据库"):
-            with gr.Row():
-                db_type = gr.Textbox(placeholder="sqlite / mysql ...", scale=3, label="类型")
-                db_name = gr.Textbox(placeholder="数据库路径/名称", scale=5, label="数据库")
-                db_conn_btn = gr.Button("连接", scale=1)
-            db_conn_result = gr.Markdown()
-            db_conn_btn.click(handlers["on_db_connect"], [db_type, db_name], db_conn_result)
-            with gr.Row():
-                dq_sql = gr.Textbox(placeholder="SELECT ...", scale=8, label="查询 SQL")
-                dq_btn = gr.Button("查询", scale=1)
-            dq_result = gr.Markdown()
-            dq_btn.click(handlers["on_db_query"], dq_sql, dq_result)
-            with gr.Row():
-                de_sql = gr.Textbox(placeholder="INSERT/UPDATE/DDL ...", scale=8, label="执行 SQL")
-                de_btn = gr.Button("执行", scale=1)
-            de_result = gr.Markdown()
-            de_btn.click(handlers["on_db_execute"], de_sql, de_result)
-            with gr.Row():
-                ds_table = gr.Textbox(placeholder="表名（留空列出所有表）", scale=8, label="查看 Schema")
-                ds_btn = gr.Button("Schema", scale=1)
-            ds_result = gr.Markdown()
-            ds_btn.click(handlers["on_db_schema"], ds_table, ds_result)
-
-        with gr.Tab("知识库管理"):
-            with gr.Row():
-                gs_btn = gr.Button("生成 Skills")
-                ks_btn = gr.Button("知识库摘要")
-            km_result = gr.Markdown()
-            gs_btn.click(handlers["on_generate_skills"], None, km_result)
-            ks_btn.click(handlers["on_knowledge_summary"], None, km_result)
-            gr.Markdown("---\n**快照管理**")
-            with gr.Row():
-                sl_btn = gr.Button("快照列表")
-                sc_btn = gr.Button("创建快照")
-            snap_result = gr.Markdown()
-            sl_btn.click(handlers["on_snapshot_list"], None, snap_result)
-            sc_btn.click(handlers["on_snapshot_create"], None, snap_result)
-            with gr.Row():
-                sr_id = gr.Textbox(placeholder="快照 ID...", scale=8, label="恢复快照")
-                sr_btn = gr.Button("生成恢复脚本", scale=1)
-            sr_result = gr.Markdown()
-            sr_btn.click(handlers["on_snapshot_restore"], sr_id, sr_result)
-
-    return app
+    return build_layout(service, handlers)
 
 
 def serve_blocking(app, wait: Optional[Callable[[], None]] = None) -> None:
@@ -1285,15 +1375,29 @@ def launch(
     ``serve_blocking`` 统一负责阻塞与优雅关闭，从而保证 Ctrl+C 时能干净地
     释放端口、Gradio 服务器随进程一并退出。
     """
-    import gradio as gr
+    from pathlib import Path
+
+    from .theme import HEAD_HTML, make_gradio_theme
+
+    # favicon 复用桌面端图标（打包后 assets 目录随包分发）
+    favicon = None
+    for candidate in (
+        Path(__file__).resolve().parents[2] / "assets" / "icon.png",
+        Path(__file__).resolve().parents[1] / "assets" / "icon.png",
+    ):
+        if candidate.exists():
+            favicon = str(candidate)
+            break
 
     app = build_app()
     app.launch(
         server_name=server_name,
         server_port=server_port,
         share=share,
-        theme=gr.themes.Soft(),
+        theme=make_gradio_theme(),
         css=APP_CSS,
+        head=HEAD_HTML,
+        favicon_path=favicon,
         prevent_thread_lock=True,
         **kwargs,
     )

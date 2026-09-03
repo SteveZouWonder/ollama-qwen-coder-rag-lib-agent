@@ -37,6 +37,9 @@ prompt-toolkit
 pystray
 pillow
 
+# Web UI（托盘「打开 Web UI」与 --web）
+gradio
+
 # 打包器
 pyinstaller>=6.0.0
 # Windows exe 版本信息嵌入所需（PyInstaller win32 versioninfo 依赖）
