@@ -22,8 +22,8 @@ curl -fsSL https://ollama.com/install.sh | sh
 ### 步骤2：拉取所需模型
 
 ```bash
-# 下载主模型（约4-5GB）
-ollama pull qwen2.5-coder:7b
+# 下载主模型（约 2.5GB）
+ollama pull qwen3.5:4b
 
 # 下载嵌入模型（约200MB）
 ollama pull nomic-embed-text:latest
@@ -106,7 +106,7 @@ pip list
 ollama list
 
 # 测试模型
-echo "测试" | ollama run qwen2.5-coder:7b "请回答：1+1等于几？"
+echo "测试" | ollama run qwen3.5:4b "请回答：1+1等于几？"
 ```
 
 ---
@@ -120,7 +120,7 @@ echo "测试" | ollama run qwen2.5-coder:7b "请回答：1+1等于几？"
 cat > .env << EOF
 # Ollama配置
 OLLAMA_BASE_URL=http://localhost:11434
-LLM_MODEL=qwen2.5-coder:7b
+LLM_MODEL=qwen3.5:4b
 EMBED_MODEL=nomic-embed-text:latest
 
 # RAG配置
@@ -154,7 +154,7 @@ chmod 600 .env
   "ollama_base_url": "http://localhost:11434",
   "models_to_warm_up": [
     "nomic-embed-text:latest",
-    "qwen2.5-coder:7b"
+    "qwen3.5:4b"
   ],
   "check_interval": 600,
   "warm_up_on_startup": false,

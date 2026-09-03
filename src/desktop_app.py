@@ -59,13 +59,22 @@ CONFIG_FILE = config_dir() / "app_config.json"
 LOG_FILE = logs_dir() / "app.log"
 STATUS_FILE = logs_dir() / "status.log"
 
+def _default_warm_up_models():
+    """预热模型列表：全局唯一 LLM（config.LLM_MODEL）+ Embedding，与单模型架构一致。"""
+    try:
+        from config import LLM_MODEL, EMBED_MODEL
+        return [LLM_MODEL, EMBED_MODEL]
+    except Exception:  # noqa: BLE001
+        return ["qwen3.5:4b", "nomic-embed-text:latest"]
+
+
 DEFAULT_CONFIG = {
     "autostart": False,
-    "warm_up_on_startup": True,
-    "warm_up_models": [
-        "qwen2.5-coder:7b",
-        "nomic-embed-text:latest"
-    ],
+    # 默认不在启动时预热：预热会让模型常驻内存，在 16GB 机器上与 IDE/浏览器并行
+    # 时会加剧换页卡顿；Ollama 会在首次请求时按需加载，闲置后自动释放。
+    # 内存宽裕的机器可在 app_config.json 中改为 true 以换取首问响应速度。
+    "warm_up_on_startup": False,
+    "warm_up_models": _default_warm_up_models(),
     "ollama_base_url": "http://localhost:11434",
     "check_interval": 300  # 5分钟
 }

@@ -74,7 +74,7 @@
 
 ## 核心定位
 - 项目名称: 智能文档+代码助手 v4.1
-- 核心技术: Ollama qwen2.5-coder:7b + RAG + ReAct Agent
+- 核心技术: Ollama qwen3.5:4b + RAG + ReAct Agent
 - 应用场景: 文档知识库检索 + 代码自动化操作
 
 ## 融合架构

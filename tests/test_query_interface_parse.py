@@ -58,7 +58,27 @@ class TestParseCommandNoArg:
         assert parse_command("/pwd").cmd_type == "pwd"
 
     def test_model(self):
-        assert parse_command("/model").cmd_type == "model"
+        r = parse_command("/model")
+        assert r.cmd_type == "model"
+        assert r.arg == ""
+
+    def test_model_with_arg(self):
+        r = parse_command("/model qwen3.5:9b")
+        assert r.cmd_type == "model"
+        assert r.arg == "qwen3.5:9b"
+
+    def test_model_list(self):
+        r = parse_command("/model list")
+        assert r.cmd_type == "model"
+        assert r.arg == "list"
+
+    def test_think_variants(self):
+        assert parse_command("/think").cmd_type == "think"
+        assert parse_command("/think").arg == ""
+        r = parse_command("/think on")
+        assert r.cmd_type == "think" and r.arg == "on"
+        r = parse_command("/think off")
+        assert r.cmd_type == "think" and r.arg == "off"
 
 
 class TestParseCommandWithArg:

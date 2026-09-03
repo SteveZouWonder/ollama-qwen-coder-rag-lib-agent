@@ -4,6 +4,7 @@
 服务层是 Web 界面唯一与核心引擎交互的层。通过依赖注入把各引擎替换为
 MagicMock/桩对象，在不启动真实 Ollama/ChromaDB 的前提下覆盖全部分支。
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,6 +31,9 @@ class FakeRAG:
         self.raise_on_add = False
         self.raise_on_stats = False
         self.raise_on_clear = False
+        # 共享编排层 rag_pipeline.answer_question 会检查 query_engine 判断
+        # 知识库是否已初始化；桩默认设为真值，走"知识库检索"分支。
+        self.query_engine = object()
 
     def load_index(self):
         return None
@@ -162,13 +166,16 @@ class TestRagQuery:
 
     def test_stream_success_progress_then_answer(self):
         svc = make_service()
-        events = list(svc.rag_query_stream("什么是RAG"))
+        events = list(svc.rag_query_stream("什么是RAG", enable_web_search=False))
         kinds = [e.kind for e in events]
         assert "progress" in kinds
         assert kinds[-1] == "answer"
         answer_evt = events[-1]
         assert answer_evt.message == "答案:什么是RAG"
         assert answer_evt.data["sources"][0]["file"] == "f.md"
+        # 新增：答案事件带 kind / web_sources 字段
+        assert answer_evt.data["kind"] == "answer"
+        assert answer_evt.data["web_sources"] == []
 
     def test_stream_error(self):
         rag = FakeRAG()
@@ -180,7 +187,7 @@ class TestRagQuery:
 
     def test_query_nonstream_success(self):
         svc = make_service()
-        result = svc.rag_query("hi")
+        result = svc.rag_query("hi", enable_web_search=False)
         assert result["answer"] == "答案:hi"
         assert len(result["sources"]) == 1
 
@@ -202,10 +209,12 @@ class TestRagQuery:
         svc = make_service()
         monkeypatch.setattr(
             svc, "rag_query_stream",
-            lambda q: iter([StreamEvent("progress", "p")]),
+            lambda q, enable_web_search=True: iter([StreamEvent("progress", "p")]),
         )
         result = svc.rag_query("hi")
-        assert result == {"answer": "", "sources": []}
+        assert result == {
+            "answer": "", "sources": [], "web_sources": [], "kind": "answer", "meta": None,
+        }
 
 
 # ==================== 单 Agent ====================
@@ -614,3 +623,233 @@ class TestDefaultFactories:
 
     def test_default_collaboration_mode_none(self):
         assert services._default_collaboration_mode("") is None
+
+
+# ==================== 阶段三：工具命令面 ====================
+
+class _FakeRegistry:
+    """记录调用的桩注册表。"""
+
+    def __init__(self, result="OK", raise_error=False):
+        self.calls = []
+        self._result = result
+        self._raise = raise_error
+
+    def execute(self, tool, args, auto_confirm=False):
+        self.calls.append((tool, args, auto_confirm))
+        if self._raise:
+            raise RuntimeError("tool-boom")
+        return self._result
+
+
+class TestToolCommands:
+    def _patch_registry(self, monkeypatch, reg):
+        import sys as _sys
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+
+    def test_run_tool_success(self, monkeypatch):
+        reg = _FakeRegistry("结果")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        assert svc.run_tool("web_search", {"query": "x"}) == "结果"
+        assert reg.calls[0][0] == "web_search"
+
+    def test_run_tool_error(self, monkeypatch):
+        reg = _FakeRegistry(raise_error=True)
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        out = svc.run_tool("web_search", {"query": "x"})
+        assert out.startswith("[错误]")
+
+    def test_web_search_empty(self):
+        svc = make_service()
+        assert svc.web_search("  ").startswith("[提示]")
+
+    def test_web_search_calls_tool(self, monkeypatch):
+        reg = _FakeRegistry("命中")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        assert svc.web_search("python") == "命中"
+        assert reg.calls[0] == ("web_search", {"query": "python"}, False)
+
+    def test_web_cache_clear_auto_confirm(self, monkeypatch):
+        reg = _FakeRegistry("cleared")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.web_cache_clear()
+        assert reg.calls[0][2] is True  # auto_confirm
+
+    def test_code_ast_args(self, monkeypatch):
+        reg = _FakeRegistry("ast")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.code_ast("def foo", "src")
+        assert reg.calls[0] == ("ast_search", {"pattern": "def foo", "path": "src"}, False)
+
+    def test_git_analyze_invalid_type(self):
+        svc = make_service()
+        assert svc.git_analyze("bogus").startswith("[错误]")
+
+    def test_git_analyze_valid(self, monkeypatch):
+        reg = _FakeRegistry("git")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.git_analyze("status")
+        assert reg.calls[0] == ("git_analyze", {"repo_path": ".", "analysis_type": "status"}, False)
+
+    def test_db_query_empty(self):
+        svc = make_service()
+        assert svc.db_query("").startswith("[提示]")
+
+    def test_db_connect_calls_tool(self, monkeypatch):
+        reg = _FakeRegistry("connected")
+        self._patch_registry(monkeypatch, reg)
+        svc = make_service()
+        svc.db_connect("sqlite", "/tmp/a.db")
+        assert reg.calls[0][0] == "database_connect"
+
+    def test_graph_build_empty(self):
+        svc = make_service()
+        assert svc.graph_build("").startswith("[提示]")
+
+
+# ==================== 模型管理（热切换）====================
+
+class _FakeSwitchResult:
+    def __init__(self, ok=True, model="qwen3.5:9b", previous="qwen3.5:4b",
+                 num_ctx=8192, unloaded=True, message="ok"):
+        self.ok = ok
+        self.model = model
+        self.previous = previous
+        self.num_ctx = num_ctx
+        self.unloaded_previous = unloaded
+        self.message = message
+
+
+class _FakeSwitcher:
+    def __init__(self, installed=None, info=None, result=None, raise_on=None):
+        self.installed = installed if installed is not None else ["qwen3.5:4b", "qwen3.5:9b"]
+        self.info = info or {"model": "qwen3.5:4b", "num_ctx": 16384, "think": False,
+                             "loaded": True, "size_bytes": 4_000_000_000, "loaded_models": ["qwen3.5:4b"]}
+        self.result = result or _FakeSwitchResult()
+        self.raise_on = raise_on or set()
+        self.switch_calls = []
+
+    def list_installed_models(self):
+        if "list" in self.raise_on:
+            raise RuntimeError("down")
+        return self.installed
+
+    def current_model_info(self):
+        if "info" in self.raise_on:
+            raise RuntimeError("down")
+        return self.info
+
+    def switch_model(self, model, rag_engine=None, react_engine=None):
+        if "switch" in self.raise_on:
+            raise RuntimeError("down")
+        self.switch_calls.append((model, rag_engine, react_engine))
+        return self.result
+
+    def switch_think(self, enabled, rag_engine=None, react_engine=None):
+        if "think" in self.raise_on:
+            raise RuntimeError("down")
+        self.think_calls = getattr(self, "think_calls", [])
+        self.think_calls.append((enabled, rag_engine, react_engine))
+        return self.think_result if hasattr(self, "think_result") else SimpleNamespace(
+            ok=True, enabled=enabled, changed=True, message="思考模式已开启" if enabled else "思考模式已关闭"
+        )
+
+
+class TestModelManagement:
+    def test_list_models(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        assert svc.list_models() == ["qwen3.5:4b", "qwen3.5:9b"]
+
+    def test_list_models_error_returns_empty(self):
+        sw = _FakeSwitcher(raise_on={"list"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        assert svc.list_models() == []
+
+    def test_current_model(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        info = svc.current_model()
+        assert info["model"] == "qwen3.5:4b"
+        assert info["loaded"] is True
+
+    def test_current_model_error(self):
+        sw = _FakeSwitcher(raise_on={"info"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        info = svc.current_model()
+        assert info["model"] == "?"
+        assert "error" in info
+
+    def test_switch_model_before_rag_created_passes_none(self):
+        """RAG 引擎尚未惰性创建时不应触发创建（避免为切换而加载 Ollama/Chroma）。"""
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("qwen3.5:9b")
+        assert out["ok"] is True
+        assert out["model"] == "qwen3.5:9b"
+        assert out["previous"] == "qwen3.5:4b"
+        assert out["num_ctx"] == 8192
+        assert out["unloaded_previous"] is True
+        assert sw.switch_calls == [("qwen3.5:9b", None, None)]
+        assert svc._rag_engine is None
+
+    def test_switch_model_after_rag_created_syncs_engine(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        rag = svc.rag_engine  # 触发惰性创建
+        svc.switch_model("qwen3.5:9b")
+        assert sw.switch_calls[0][1] is rag
+
+    def test_switch_model_failure_result(self):
+        sw = _FakeSwitcher(result=_FakeSwitchResult(ok=False, model="", message="未安装"))
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("nope")
+        assert out["ok"] is False
+        assert "未安装" in out["message"]
+
+    def test_switch_model_exception(self):
+        sw = _FakeSwitcher(raise_on={"switch"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.switch_model("qwen3.5:9b")
+        assert out["ok"] is False
+        assert "切换失败" in out["message"]
+
+
+class TestThinkToggle:
+    def test_set_think_before_rag_created_passes_none(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out == {"ok": True, "enabled": True, "changed": True, "message": "思考模式已开启"}
+        assert sw.think_calls == [(True, None, None)]
+        assert svc._rag_engine is None
+
+    def test_set_think_after_rag_created_syncs_engine(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        rag = svc.rag_engine
+        svc.set_think(False)
+        assert sw.think_calls[0] == (False, rag, None)
+
+    def test_set_think_rejected(self):
+        sw = _FakeSwitcher()
+        sw.think_result = SimpleNamespace(ok=False, enabled=False, changed=False, message="不支持思考模式")
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out["ok"] is False and out["enabled"] is False
+        assert "不支持" in out["message"]
+
+    def test_set_think_exception(self):
+        sw = _FakeSwitcher(raise_on={"think"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out["ok"] is False
+        assert "设置失败" in out["message"]

@@ -4,6 +4,8 @@ test_react_engine.py — ReAct 引擎单元测试（Mock requests.post）
 """
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from react_engine import (
     ReActEngine,
     _extract_json_object,
@@ -686,3 +688,73 @@ class TestUserConfirmation:
 class TestUserInterrupt:
     """测试用户中断逻辑 - 这个路径很难测试，跳过"""
     pass
+
+
+class TestSetModelAndThink:
+    """运行时热切换模型 + 思考模式开关"""
+
+    @patch("react_engine.ChatHistory")
+    def test_set_model_updates_model_and_num_ctx(self, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(**{"get_messages.return_value": []})
+        engine = ReActEngine(model="qwen3.5:4b")
+        assert engine.num_ctx == 16384
+        ctx = engine.set_model("qwen3.5:9b")
+        assert ctx == 8192
+        assert engine.model == "qwen3.5:9b"
+        assert engine.num_ctx == 8192
+
+    @patch("react_engine.ChatHistory")
+    def test_set_model_rejects_empty(self, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(**{"get_messages.return_value": []})
+        engine = ReActEngine(model="qwen3.5:4b")
+        with pytest.raises(ValueError):
+            engine.set_model("  ")
+
+    @patch("react_engine.ChatHistory")
+    def test_think_defaults_false(self, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(**{"get_messages.return_value": []})
+        engine = ReActEngine()
+        assert engine.think is False
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
+    def test_call_model_sends_think_flag(self, mock_post, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(
+            **{"get_messages.return_value": [{"role": "user", "content": "hi"}]}
+        )
+        mock_post.return_value = MagicMock(**{"json.return_value": {"message": {"content": "ok"}}})
+        engine = ReActEngine(model="qwen3.5:9b")
+        engine._call_model()
+        body = mock_post.call_args.kwargs["json"]
+        assert body["think"] is False
+        assert body["model"] == "qwen3.5:9b"
+        assert body["options"]["num_ctx"] == 8192
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
+    def test_call_model_after_switch_uses_new_model(self, mock_post, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(
+            **{"get_messages.return_value": [{"role": "user", "content": "hi"}]}
+        )
+        mock_post.return_value = MagicMock(**{"json.return_value": {"message": {"content": "ok"}}})
+        engine = ReActEngine(model="qwen3.5:4b")
+        engine.set_model("qwen3.5:9b")
+        engine._call_model()
+        body = mock_post.call_args.kwargs["json"]
+        assert body["model"] == "qwen3.5:9b"
+        assert body["options"]["num_ctx"] == 8192
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
+    def test_set_think_affects_next_request(self, mock_post, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(
+            **{"get_messages.return_value": [{"role": "user", "content": "hi"}]}
+        )
+        mock_post.return_value = MagicMock(**{"json.return_value": {"message": {"content": "ok"}}})
+        engine = ReActEngine(model="qwen3.5:4b")
+        assert engine.set_think(True) is True
+        engine._call_model()
+        assert mock_post.call_args.kwargs["json"]["think"] is True
+        assert engine.set_think(False) is False
+        engine._call_model()
+        assert mock_post.call_args.kwargs["json"]["think"] is False

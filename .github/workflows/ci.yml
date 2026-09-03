@@ -142,8 +142,18 @@ jobs:
         # name passed to nltk.data.load()/find(). nltk is only a transitive dependency of
         # llama-index; this project never calls those APIs with user-controlled input, so the
         # vulnerability does not apply. No fixed version of nltk exists yet.
+        # CVE-2026-45830 / CVE-2026-45831 / CVE-2026-45833: chromadb *server* multi-tenant
+        # authorization bypass and model-repository code injection by authenticated clients.
+        # This project only uses the embedded chromadb.PersistentClient (no server, no auth,
+        # single tenant; embeddings come from Ollama), so none apply. No fixed version yet.
+        # PYSEC-2026-3740 (CVE-2026-81726): nltk model-artifact APIs accept caller-controlled
+        # outside-root paths; nltk is only used transitively by llama-index sentence splitting
+        # with bundled resources, no user input reaches it. No fixed version yet.
+        # Keep this list in sync with .github/workflows/pr-build-vulnerability-gate.yml.
         pip-audit --requirement requirements.txt --format json --output pip-audit-check.json \
-          --ignore-vuln CVE-2026-45829 --ignore-vuln CVE-2026-12243 || true
+          --ignore-vuln CVE-2026-45829 --ignore-vuln CVE-2026-12243 \
+          --ignore-vuln CVE-2026-45830 --ignore-vuln CVE-2026-45831 \
+          --ignore-vuln CVE-2026-45833 --ignore-vuln PYSEC-2026-3740 || true
         echo "Checking for known vulnerabilities in dependencies..."
         if [ -f pip-audit-check.json ]; then
           vuln_count=$(python3 -c "import json, pathlib; data = json.loads(pathlib.Path('pip-audit-check.json').read_text(encoding='utf-8', errors='ignore') or '{}'); deps = data.get('dependencies', []) if isinstance(data, dict) else []; print(sum(len(d.get('vulns', [])) for d in deps if isinstance(d, dict)))")

@@ -2,6 +2,7 @@
 融合配置 - RAG 知识库 + Code Agent
 """
 import os
+import re
 import logging
 import warnings
 
@@ -43,9 +44,96 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==================== Ollama 模型配置 ====================
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-# 统一使用 qwen2.5-coder:7b
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-coder:7b")
+
+# 全局唯一 LLM：用户只需选这一个模型，它同时用于 ReAct Agent、代码任务、
+# RAG 综合回答与相关性判定。全程只驻留单一模型，避免多模型同时占用显存导致
+# 卡顿（尤其中端统一内存机器）。
+#
+# 默认 qwen3.5:4b（"协同档"）：16K 上下文下实测约 3.7GB 驻留，可与 IDE/浏览器
+# 在 16GB 机器上共存；工具调用、中文归纳、长文本能力均可满足日常查询、报告分析、
+# 文件整理、SQL 查询与简单重构。需要更强能力且内存宽裕时可切到 qwen3.5:9b
+# （"性能档"，约 6GB 驻留）。可用 CLI `--model` / `/model <name>`、Web 界面下拉，
+# 或 LLM_MODEL 环境变量覆盖。
+DEFAULT_LLM_MODEL = "qwen3.5:4b"
+LLM_MODEL = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text:latest")
+
+# 是否让支持"思考模式"的模型（qwen3.5 等）在回答前输出思维链。ReAct 工具调用与
+# RAG 综合回答对隐式思考几乎无收益，却会让 4B 模型为三句话答案生成上千 token
+# （本机实测约 40 秒）。默认关闭以换取响应速度；需要复杂推理时可设 LLM_THINK=true。
+LLM_THINK = os.getenv("LLM_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_num_ctx(model: str) -> int:
+    """按模型规格自动推导安全且够用的上下文窗口（num_ctx），用户零配置。
+
+    许多模型（如 qwen3.5 系列）默认上下文高达 256K，Ollama 会据此分配 KV cache
+    撑爆显存并卸载到 CPU，导致推理近乎卡死。此处按参数量给出在中端机上仍能全 GPU
+    驻留、且对 RAG/Agent 任务够用的上下文：参数量越大，权重占显存越多、留给 KV
+    cache 的预算越小，num_ctx 越保守。可用 LLM_NUM_CTX 环境变量强制覆盖。
+    """
+    override = os.getenv("LLM_NUM_CTX")
+    if override and override.strip():
+        try:
+            return int(override)
+        except ValueError:
+            pass
+    # 从模型名中解析参数量（单位 B），兼容 "qwen3.5:4b"、"qwen2.5-coder:7b"、
+    # "SparkLLM/Spark-X2.5-4B" 等命名（大小写不敏感，冒号/连字符分隔均可）。
+    # 取最后一个匹配，避免把 "x2.5" 之类版本号误判为参数量。
+    name = (model or "").lower()
+    matches = re.findall(r"(?:^|[:\-_/])(\d+(?:\.\d+)?)b(?![a-z0-9])", name)
+    params_b = float(matches[-1]) if matches else 0.0
+    # 12B~14B：权重最重，上下文最保守
+    if params_b >= 12:
+        return 4096
+    # 7B~9B：中等权重
+    if params_b >= 7:
+        return 8192
+    # 4B 及以下（或无法识别）：显存宽裕，可给较大上下文
+    return 16384
+
+
+# 全局唯一 LLM 的上下文窗口，按所选模型自动推导（零配置），可用 LLM_NUM_CTX 覆盖。
+LLM_NUM_CTX = resolve_num_ctx(LLM_MODEL)
+
+
+def set_llm_model(model: str) -> int:
+    """运行时切换全局唯一 LLM（供 CLI ``/model <name>`` 与 Web 模型下拉使用）。
+
+    同步更新模块级 ``LLM_MODEL`` / ``LLM_NUM_CTX`` 以及兼容类 ``Config`` 的
+    ``MODEL`` / ``LLM_MODEL``，使所有"调用时读取 config"的模块（多 Agent 配置、
+    提交信息生成、知识快照等）自动跟随。已在 import 时绑定常量的引擎
+    （RAGEngine / ReActEngine）需另行调用各自的 ``set_model``。
+
+    返回新模型对应的 num_ctx。
+    """
+    global LLM_MODEL, LLM_NUM_CTX
+    model = (model or "").strip()
+    if not model:
+        raise ValueError("模型名不能为空")
+    LLM_MODEL = model
+    LLM_NUM_CTX = resolve_num_ctx(model)
+    os.environ["LLM_MODEL"] = model
+    # Config 是 dataclass，字段默认值在类定义时冻结，这里直接改类属性。
+    try:
+        Config.MODEL = model
+        Config.LLM_MODEL = model
+    except NameError:  # Config 尚未定义（模块加载期不会走到这里）
+        pass
+    return LLM_NUM_CTX
+
+
+def set_llm_think(enabled: bool) -> bool:
+    """运行时开关思考模式（供 CLI ``/think on|off`` 与 Web 复选框使用）。
+
+    仅更新模块级 ``LLM_THINK`` 与环境变量；已创建的引擎需另行调用各自的
+    ``set_think``（见 model_switcher.switch_think）。返回新值。
+    """
+    global LLM_THINK
+    LLM_THINK = bool(enabled)
+    os.environ["LLM_THINK"] = "true" if LLM_THINK else "false"
+    return LLM_THINK
 
 # ==================== 向量数据库配置 ====================
 VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")
@@ -58,6 +146,42 @@ TOP_K = int(os.getenv("TOP_K", "10"))
 # 对“知识库里有什么”这类元/概览查询，正文语义分数偏低（实测约 0.39），
 # 0.4 阈值会把有效结果全部过滤，导致检索为 0；下调到 0.3 作为更合理的下限。
 SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.3"))
+
+# 知识库“命中相关性”阈值（区别于上面的检索召回阈值 SIMILARITY_CUTOFF）。
+# 说明：SIMILARITY_CUTOFF 故意调低到 0.3 以保护元/概览类查询的召回，但这也会
+# 让一些语义几乎无关的片段（实测约 0.39~0.42）被召回。若把它们当作“知识库命中”
+# 塞进综合回答的上下文与引用来源，会产生答非所问的噪音（例如问“某产品售价”却
+# 引用了讲 Cloudflare 配置的片段）。因此在问答编排层用一个更高的“相关性阈值”
+# 判定知识库是否“真正命中”：低于该分数的片段视为噪音，不计入知识库来源、不进
+# 综合 prompt，从而回退到网络/模型回答。仅影响问答判定，不改变底层检索召回。
+KB_RELEVANCE_THRESHOLD = float(os.getenv("KB_RELEVANCE_THRESHOLD", "0.45"))
+
+# ==================== 网络搜索配置 ====================
+# 此前网络搜索完全未设 region/backend，DuckDuckGo 默认 us-en，天然偏英文/海外
+# 结果，导致中国国内信息（中文网页、国行价格、国内新闻等）召回与准确率很差。
+# 这里把关键参数外置为可配置项，并给出对中英文都友好的默认值。
+#
+# WEB_SEARCH_REGION：搜索区域。取值 auto（按查询语境自动判断）或 ddgs 的具体
+#   region（如 wt-wt 全球 / cn-zh 中国区中文 / us-en 美国英文）。默认 auto：
+#   含中文或"国内/售价/淘宝/京东"等语境的查询用 cn-zh（能召回淘宝/京东等国内
+#   电商与价格），英文/全球性查询用 wt-wt。显式设为具体 region 则强制固定。
+WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "auto")
+# WEB_SEARCH_BACKEND：ddgs 后端引擎，逗号分隔可聚合/降级多引擎。
+#   注意：部分 ddgs 版本的 bing 后端已被禁用（运行时会告警并忽略），故默认改用
+#   brave/duckduckgo/google（对中文与国内信息覆盖好）。整体失败会逐个后端降级重试。
+WEB_SEARCH_BACKEND = os.getenv("WEB_SEARCH_BACKEND", "brave, duckduckgo, google")
+# WEB_SEARCH_SAFESEARCH：安全搜索级别（on / moderate / off）。
+WEB_SEARCH_SAFESEARCH = os.getenv("WEB_SEARCH_SAFESEARCH", "moderate")
+# WEB_SEARCH_TIMELIMIT：时间范围（d/w/m/y 或空表示不限）。默认不限。
+WEB_SEARCH_TIMELIMIT = os.getenv("WEB_SEARCH_TIMELIMIT", "") or None
+# WEB_SEARCH_MAX_RESULTS：单次搜索返回结果数上限。
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "10"))
+# WEB_SEARCH_TIMEOUT：网页正文提取超时（秒）。
+WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "30"))
+# WEB_SEARCH_CACHE_TTL_HOURS：搜索结果缓存有效期（小时）。
+WEB_SEARCH_CACHE_TTL_HOURS = int(os.getenv("WEB_SEARCH_CACHE_TTL_HOURS", "24"))
+# WEB_SEARCH_AGGREGATE：是否聚合多个引擎的结果（合并去重）而非"首个非空即返回"。
+WEB_SEARCH_AGGREGATE = os.getenv("WEB_SEARCH_AGGREGATE", "true").lower() == "true"
 
 # ==================== Agent 配置 ====================
 # 打包运行时收纳到用户数据目录，源码运行时仍为 ~/.code_agent_history.json

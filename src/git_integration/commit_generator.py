@@ -29,9 +29,18 @@ class CommitSuggestion:
 class CommitMessageGenerator:
     """提交信息生成器"""
     
-    def __init__(self, repo_path: str = ".", ollama_base_url: str = "http://localhost:11434"):
+    def __init__(self, repo_path: str = ".", ollama_base_url: str = "http://localhost:11434",
+                 model: Optional[str] = None):
         self.repo_path = repo_path
         self.ollama_base_url = ollama_base_url
+        # 使用全局唯一 LLM（config.LLM_MODEL），保持与 Agent/RAG 同一模型，避免额外驻留。
+        if model is None:
+            try:
+                from config import LLM_MODEL
+                model = LLM_MODEL
+            except Exception:  # noqa: BLE001
+                model = "qwen3.5:4b"
+        self.model = model
         self.logger = logger
     
     def get_staged_changes(self) -> str:
@@ -144,7 +153,7 @@ detailed description (if needed)"""
             response = requests.post(
                 f"{self.ollama_base_url}/api/generate",
                 json={
-                    "model": "qwen2.5-coder:7b",
+                    "model": self.model,
                     "prompt": prompt,
                     "stream": False
                 },

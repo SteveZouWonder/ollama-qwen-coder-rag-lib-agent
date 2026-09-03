@@ -8,7 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/SteveZouWonder/ollama-qwen-coder-rag-lib-agent)](../../releases)
 [![Stars](https://img.shields.io/github/stars/SteveZouWonder/ollama-qwen-coder-rag-lib-agent?style=social)](../../stargazers)
 [![Python](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/)
-[![Ollama](https://img.shields.io/badge/Ollama-qwen2.5--coder-000000)](https://ollama.com)
+[![Ollama](https://img.shields.io/badge/Ollama-qwen3.5-000000)](https://ollama.com)
 
 [下载安装](#下载安装包普通用户推荐) · [快速开始](#快速开始开发者--源码运行) · [使用场景](#使用场景) · [文档](#-文档资源)
 
@@ -16,7 +16,7 @@
 
 > *Cerebro* —— 拉丁语「大脑」。一个**完全本地运行**的智能体：把你的 PDF、论文、笔记变成可检索的「第二大脑」，并让 AI 帮你读写代码、执行任务——**全程离线，数据不离开你的电脑**。
 
-基于 **Ollama qwen2.5-coder:7b**，三合一融合：**📚 RAG 知识库检索** + **🤖 ReAct Agent 代码操作** + **🤝 多 Agent 协作系统**。
+基于 **Ollama qwen3.5**（默认 `qwen3.5:4b`，可按机器配置一键切换，见[模型选择指南](#模型选择指南)），三合一融合：**📚 RAG 知识库检索** + **🤖 ReAct Agent 代码操作** + **🤝 多 Agent 协作系统**。
 
 **为什么选 Cerebro？**
 
@@ -65,7 +65,7 @@
           └───────────────────┬───────────┘    │ (测试专家)│(文档)│      │
                               ▼              ├─────────┼───────┤      │
 ┌─────────────────────────────────────────────────────────────┐    │AuditAgent│      │
-│                     Ollama qwen2.5-coder:7b                         │    │ (审计专家)│      │
+│                Ollama qwen3.5:4b（可热切换 9b/27b）                  │    │ (审计专家)│      │
 │              统一 LLM：文档理解 + 代码生成 + 推理 + 协作               │    └─────────┴───────┘      │
 │              Embedding: nomic-embed-text (语义编码)                 │                             │
 └─────────────────────────────────────────────────────────────┘                             │
@@ -139,7 +139,7 @@
 | Linux | `Cerebro-x.x.x-x86_64.AppImage` | `chmod +x Cerebro-*.AppImage` 后双击运行 |
 
 **运行前提**：应用依赖本地 [Ollama](https://ollama.com) 服务。首次启动会自动检测，
-若未安装会引导你安装 Ollama 并拉取所需模型（`qwen2.5-coder:7b`、`nomic-embed-text:latest`）。
+若未安装会引导你安装 Ollama 并拉取所需模型（`qwen3.5:4b`、`nomic-embed-text:latest`）。
 
 **使用方式**：
 - 直接运行 = 系统托盘桌面应用（GUI）
@@ -194,8 +194,8 @@ xattr -dr com.apple.quarantine /Applications/Cerebro.app
 # 安装 Ollama（如未安装）
 curl -fsSL https://ollama.com/install.sh | sh
 
-# 拉取模型
-ollama pull qwen2.5-coder:7b
+# 拉取模型（默认协同档 4b；内存宽裕可再拉 qwen3.5:9b，运行中用 /model 切换）
+ollama pull qwen3.5:4b
 ollama pull nomic-embed-text:latest
 ```
 
@@ -304,6 +304,12 @@ python query_interface.py --data ./papers --query "实验结果是什么？"
 python query_interface.py --agent "检查 main.py 的语法错误"
 ```
 
+**Web 界面**：
+```bash
+python launcher.py --web        # 默认 http://127.0.0.1:7860
+```
+对话页支持 RAG / 单 Agent / 多 Agent 三种模式，顶部可查看并热切换模型。
+
 ---
 
 ## 项目结构
@@ -320,7 +326,8 @@ ollama-qwen-coder-rag-lib/
 │   ├── preprocessor.py    # 图像预处理器
 │   └── cache.py           # OCR 结果缓存
 ├── rag_engine.py          # RAG 核心引擎（向量索引 + Agent 工具接口）
-├── react_engine.py        # ReAct 推理引擎（qwen2.5-coder:7b）
+├── react_engine.py        # ReAct 推理引擎（qwen3.5:4b，支持运行时热切换）
+├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
 ├── chat_history.py        # 对话历史持久化
 ├── query_interface.py     # 统一 CLI 入口
@@ -578,7 +585,11 @@ ResultIntegrator 整合结果
 | `/session-search <query>` | - | 🆕 搜索会话 |
 | `/session-current` | - | 🆕 显示当前会话信息 |
 | `/session-compress` | - | 🆕 压缩当前会话历史 |
-| `/model` | - | 显示模型信息 |
+| `/model` | - | 显示当前模型（是否已加载、驻留大小、num_ctx、思考模式） |
+| `/model list` | - | 🆕 列出本机已安装模型 |
+| `/model <name>` | - | 🆕 运行时热切换模型并释放旧模型（如 `/model qwen3.5:9b`） |
+| `/think` | - | 🆕 显示思考模式状态（默认关） |
+| `/think on\|off` | - | 🆕 运行时开关思考模式（需模型支持，如 qwen3.5） |
 | `/tutorial` | - | 使用教程 |
 | `/help` | - | 帮助 |
 | `/quit` | - | 退出 |
@@ -704,7 +715,7 @@ from agent_config import AgentConfigManager
 
 # 自定义配置
 config = AgentConfigManager.create_custom_config(
-    model="qwen2.5-coder:7b",
+    model="qwen3.5:9b",  # 不传则跟随全局 LLM_MODEL
     max_parallel_tasks=8,
     default_mode="parallel"
 )
@@ -868,7 +879,9 @@ pytest tests/ --cov=src --cov-report=html
 
 ```python
 # 模型配置
-LLM_MODEL = "qwen2.5-coder:7b"      # 主模型（统一）
+LLM_MODEL = "qwen3.5:4b"            # 全局唯一 LLM（Agent/RAG/多 Agent 共用），见下方「模型选择指南」
+LLM_THINK = False                   # 思考模式，默认关闭（4B 模型响应 31s → 2.8s）
+LLM_NUM_CTX = 自动                  # 按模型参数量推导（4B→16K，7~9B→8K，12B+→4K），可用环境变量覆盖
 EMBED_MODEL = "nomic-embed-text"     # 嵌入模型
 
 # RAG 配置
@@ -892,12 +905,66 @@ LOG_LEVEL = "INFO"                   # 日志级别
 
 **环境变量方式**：
 ```bash
-export LLM_MODEL="qwen2.5-coder:7b"
+export LLM_MODEL="qwen3.5:9b"
+export LLM_THINK=false
+export LLM_NUM_CTX=16384
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
 
 python query_interface.py --data ./data
 ```
+
+---
+
+## 模型选择指南
+
+Cerebro 采用「单一模型」架构：一个 LLM 同时驱动 RAG 综合、ReAct Agent 与多 Agent 协作，
+全程只驻留一个模型。默认 **`qwen3.5:4b`（协同档）**：16K 上下文实测约 **3.7GB** 驻留，
+可与 IDEA / PyCharm / 浏览器在 16GB 机器上并行运行；工具调用、中文归纳、长文本与代码
+能力足以覆盖日常查询、报告分析、文件整理、SQL 查询与简单重构。
+
+### 按场景推荐
+
+| 场景 | 内存 | 推荐模型 | 说明 |
+|---|---|---|---|
+| **日常助手，与 IDE/浏览器并行（默认）** | 16GB | `qwen3.5:4b` | 约 3.7GB 驻留，M4 实测 ~25 tok/s |
+| 专注模式 / 复杂重构 / 多步 Agent | 16GB（关闭 IDE）或 32GB | `qwen3.5:9b` | 约 6GB 驻留，~16 tok/s；工具调用（BFCL 66 vs 50）、SWE-Bench（53 vs 39）明显更强 |
+| 低配 / 老机器 | 8GB | `qwen3.5:2b` | 约 1.9GB，适合问答与检索 |
+| 工作站 | 32GB+ 或 24GB 显卡 | `qwen3.5:27b` / `gemma4:26b` | 17~19GB |
+| 严格格式化输出 / 翻译为主，不依赖工具调用 | 16GB（关闭 IDE） | `gemma4:12b-it-qat` | 指令遵循最强（IFEval 94.8），但工具调用偏弱（BFCL 37） |
+| Embedding（所有场景） | — | `nomic-embed-text:latest` | 固定 |
+
+> 基准分数来自各模型官方页公开的模型卡数据；吞吐/驻留为 Apple M4 MacBook Air 16GB 实测。
+
+### 三种切换方式
+
+```bash
+# 1) 启动时指定
+python src/query_interface.py --model qwen3.5:9b
+
+# 2) 环境变量
+export LLM_MODEL=qwen3.5:9b
+
+# 3) 运行中热切换（CLI）—— 同步 RAG/Agent/多 Agent，并立即释放旧模型
+/model            # 查看当前模型、是否已加载、驻留大小
+/model list       # 列出本机已安装模型
+/model qwen3.5:9b # 切换
+```
+
+Web 界面：对话页顶部有**模型下拉**，选择后点「切换模型」即时生效；旁边的**「思考模式」复选框**可随时开关（模型不支持时会自动回弹并提示）。状态栏显示当前模型、驻留情况与思考模式。
+
+### 与 IDE 共存的内存实践
+
+- **思考模式默认关闭**（`LLM_THINK=false`）：ReAct 的 Thought/Action 已是显式推理，再叠加隐式思维链只会拖慢。同一问题 qwen3.5:4b 从 31s 降到 2.8s。需要深度推理时可**运行中开启**：CLI `/think on`、Web 勾选「思考模式」，或启动前 `LLM_THINK=true`。仅 `ollama show <model>` 的 Capabilities 含 `thinking` 的模型（qwen3.5 系列等）支持，`/think on` 会自动校验。
+- **桌面应用默认不预热**（`warm_up_on_startup: false`）：预热会让模型常驻；Ollama 会在首问时按需加载，闲置 5 分钟后释放。内存宽裕可改回 `true` 换首问速度，或设 `OLLAMA_KEEP_ALIVE=2m` 更快归还内存。
+- **上下文自动推导**：4B→16K，7~9B→8K，12B+→4K；每 +16K 约多占 0.6GB（4B 实测）。长文档任务可临时 `LLM_NUM_CTX=32768`。
+- **避免双驻留**：Ollama 只在"放不下"时才驱逐旧模型，4B+9B 会被同时保留。项目的 `/model` 切换会主动释放旧模型；若曾用 `ollama run` 手动加载过其他模型，`/model` 会给出提示，用 `ollama stop <name>` 释放。
+
+### 关注中（暂不推荐）
+
+`SparkLLM/Spark-X2.5-4B` 在同尺寸模型中 Agent / 代码基准领先（BFCL 65、SWE-Bench Pro 44），
+但官方 Ollama 尚不支持其 `spark2_5` 架构（llama.cpp [PR #27868](https://github.com/ggml-org/llama.cpp/pull/27868) 进行中），
+目前需自编译运行时且仅有 8.2GB 未量化版本。待上游合入并提供量化 tag 后再评估。
 
 ---
 
@@ -947,8 +1014,9 @@ engine.build_index(all_docs)
 
 1. **Embedding 模型**：`nomic-embed-text` 速度快、效果好
 2. **分块大小**：论文 1024，代码 512，笔记 768
-3. **模型选择**：`qwen2.5-coder:7b` 兼顾代码和文档理解
-4. **硬件要求**：7B 模型约需 8GB 显存/内存
+3. **模型选择**：默认 `qwen3.5:4b` 兼顾速度与能力；内存宽裕时切 `qwen3.5:9b`，详见[模型选择指南](#模型选择指南)
+4. **硬件要求**：4B 模型约 3.7GB 驻留（16K 上下文），9B 约 6GB；16GB 机器与 IDE 并行请用 4B
+5. **思考模式**：默认关闭（`LLM_THINK=false`），同一问题 31s → 2.8s；仅复杂推理时开启
 
 ---
 
@@ -980,10 +1048,11 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 - [x] 知识库自动快照系统
 - [x] 知识库到Skill智能转化
 - [x] 内容安全扫描器（防止提示词攻击）
-- [ ] Web UI（Gradio / Streamlit）
-- [ ] 图片/图表 OCR 提取
-- [ ] Git 集成（diff、commit、blame）
-- [ ] 代码质量自动检查（pylint、flake8）
+- [x] Web UI（Gradio，`python launcher.py --web`）
+- [x] 图片/图表 OCR 提取
+- [x] Git 集成（历史/状态/作者分析、AI 提交信息）
+- [x] 代码质量自动检查（AST 搜索、质量检查）
+- [x] 运行时模型热切换（CLI `/model` / Web 下拉）
 - [ ] 多用户集合隔离
 
 ---
@@ -1062,7 +1131,7 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 | 组件 | 用途 |
 |------|------|
 | Ollama | 本地 LLM 推理 |
-| qwen2.5-coder:7b | 代码/文档理解与生成 |
+| qwen3.5:4b（默认，可热切换 9b/27b） | 通用理解 / 代码 / 工具调用 |
 | nomic-embed-text | 文本语义嵌入 |
 | LlamaIndex | RAG 框架 |
 | ChromaDB | 向量数据库 |

@@ -116,10 +116,17 @@ class SearchCache:
         
         return None
     
-    def set(self, query: str, source: str, results: List[SearchResult], ttl_hours: int = 24):
-        """设置缓存"""
+    def set(self, query: str, source: str, results: List[SearchResult], ttl_hours: int = None):
+        """设置缓存。ttl_hours 为 None 时读取配置 WEB_SEARCH_CACHE_TTL_HOURS。"""
         cache_key = self._get_cache_key(query, source)
-        
+
+        if ttl_hours is None:
+            try:
+                from config import WEB_SEARCH_CACHE_TTL_HOURS
+                ttl_hours = WEB_SEARCH_CACHE_TTL_HOURS
+            except Exception:  # noqa: BLE001
+                ttl_hours = 24
+
         # 转换为可序列化的格式
         results_data = [result.to_dict() for result in results]
         

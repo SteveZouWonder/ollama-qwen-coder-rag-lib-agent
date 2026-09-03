@@ -546,7 +546,7 @@ class TestRAGEngineAgentTools:
         engine = RAGEngine()
         result = engine.get_stats_tool()
         assert "42" in result
-        assert "qwen2.5-coder:7b" in result
+        assert "qwen3.5:4b" in result
 
 
 class TestRAGEngineStats:
@@ -563,8 +563,97 @@ class TestRAGEngineStats:
         engine = RAGEngine()
         stats = engine.get_stats()
         assert stats["total_documents"] == 10
-        assert stats["llm_model"] == "qwen2.5-coder:7b"
+        assert stats["llm_model"] == "qwen3.5:4b"
+        assert stats["llm_num_ctx"] == 16384
         assert stats["chunk_size"] == 1024
+
+
+class TestRAGEngineSetModel:
+    """运行时热切换 LLM + 思考模式"""
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_init_passes_thinking_false(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        RAGEngine()
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs["model"] == "qwen3.5:4b"
+        assert kwargs["thinking"] is False
+        assert kwargs["context_window"] == 16384
+        assert kwargs["additional_kwargs"] == {"num_ctx": 16384}
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_set_model_rebuilds_llm_and_query_engine(self, mock_chroma, mock_embed, mock_llm):
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 1
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        engine = RAGEngine()
+        # 模拟已加载索引：query_engine 应被重建
+        engine.index = MagicMock()
+        engine.index.as_query_engine.return_value = "new-qe"
+
+        ctx = engine.set_model("qwen3.5:9b")
+
+        assert ctx == 8192
+        assert engine.llm_model == "qwen3.5:9b"
+        assert engine.llm_num_ctx == 8192
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs["model"] == "qwen3.5:9b"
+        assert kwargs["context_window"] == 8192
+        assert kwargs["additional_kwargs"] == {"num_ctx": 8192}
+        assert engine.query_engine == "new-qe"
+        assert engine.get_stats()["llm_model"] == "qwen3.5:9b"
+        assert "qwen3.5:9b" in engine.get_stats_tool()
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_set_model_without_index_is_safe(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        assert engine.index is None
+        engine.set_model("qwen3.5:9b")
+        assert engine.query_engine is None
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_set_think_rebuilds_llm_and_keeps_model(self, mock_chroma, mock_embed, mock_llm):
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 1
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        engine = RAGEngine()
+        engine.index = MagicMock()
+        engine.index.as_query_engine.return_value = "qe2"
+
+        assert engine.set_think(True) is True
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs["thinking"] is True
+        assert kwargs["model"] == "qwen3.5:4b"
+        assert kwargs["context_window"] == 16384
+        assert engine.query_engine == "qe2"
+        assert engine.get_stats()["llm_think"] is True
+
+        # 切换模型时保留思考开关状态
+        engine.set_model("qwen3.5:9b")
+        assert mock_llm.call_args.kwargs["thinking"] is True
+        assert engine.llm_think is True
+
+        assert engine.set_think(False) is False
+        assert mock_llm.call_args.kwargs["thinking"] is False
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_set_model_rejects_empty(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        with pytest.raises(ValueError):
+            engine.set_model("")
 
 
 class TestRAGEngineClear:

@@ -265,6 +265,79 @@ class TestHandlers:
         assert "没有运行中" in h["on_stop"]()
 
 
+# ==================== 流式对话处理器（点击后立即反馈）====================
+
+class TestChatStream:
+    def _collect(self, gen):
+        return list(gen)
+
+    def test_empty_message(self):
+        h = build_handlers(make_service_mock())
+        out = self._collect(h["on_chat_stream"]("  ", "RAG 检索"))
+        assert out[-1][1] and "请输入内容" in out[-1][1]
+
+    def test_rag_first_yield_is_processing(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "检索知识库..."),
+            StreamEvent("answer", "答案", {"kind": "answer", "sources": [], "web_sources": []}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
+        # 第一条应为"处理中"占位
+        assert "正在处理" in out[0][1]
+        # 最终一条应为答案
+        assert out[-1][0] == "答案"
+
+    def test_rag_progress_then_answer(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "🌐 网络搜索中"),
+            StreamEvent("answer", "最终", {"kind": "answer", "sources": [], "web_sources": []}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
+        # 中间应出现进度
+        assert any("网络搜索中" in side for _, side in out)
+        assert out[-1][0] == "最终"
+
+    def test_rag_meta_query(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("answer", "[知识库概览]", {"kind": "meta", "meta": {"files": [], "stats": {}}}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("知识库里有什么", "RAG 检索"))
+        assert "知识库概览" in out[-1][0]
+
+    def test_rag_error(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
+        assert "检索炸了" in out[-1][1]
+
+    def test_single_agent_stream(self):
+        svc = make_service_mock()
+        svc.agent_chat_stream.return_value = iter([
+            StreamEvent("step", "第一步"),
+            StreamEvent("answer", "完成"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("做事", "单 Agent"))
+        assert any("第一步" in side for _, side in out)
+        assert out[-1][0] == "完成"
+
+    def test_multi_agent_stream(self):
+        svc = make_service_mock()
+        svc.multi_agent_run.return_value = {"success": True, "summary": "协作完成"}
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
+        # 先有"执行中"占位，最后是结果
+        assert any("协作" in side for _, side in out)
+        assert "协作完成" in out[-1][1]
+
+
 # ==================== 优雅退出 ====================
 
 class TestServeBlocking:
@@ -307,3 +380,114 @@ def test_module_exports():
     assert hasattr(app, "launch")
     assert hasattr(app, "main")
     assert hasattr(app, "serve_blocking")
+
+
+class TestModelStatusFormatting:
+    def test_loaded_with_others(self):
+        out = app.format_model_status({
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": False, "loaded": True,
+            "size_bytes": 4 * 1024 ** 3, "loaded_models": ["qwen3.5:4b", "qwen3.5:9b"],
+        })
+        assert "`qwen3.5:4b`" in out
+        assert "4.0 GB" in out
+        assert "num_ctx=16384" in out
+        assert "思考模式 关" in out
+        assert "`qwen3.5:9b`" in out  # 提示其他驻留模型
+
+    def test_not_loaded(self):
+        out = app.format_model_status({
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": True, "loaded": False,
+            "size_bytes": 0, "loaded_models": [],
+        })
+        assert "未加载" in out
+        assert "思考模式 开" in out
+        assert "驻留:" not in out
+
+    def test_error(self):
+        out = app.format_model_status({"model": "x", "error": "down"})
+        assert "[错误]" in out
+
+    def test_switch_result(self):
+        assert app.format_switch_result({"ok": True, "message": "done"}).startswith("✅")
+        assert app.format_switch_result({"ok": False, "message": "bad"}).startswith("❌")
+
+    def test_format_stats_shows_num_ctx(self):
+        out = app.format_stats({"total_documents": 1, "llm_model": "m", "llm_num_ctx": 8192})
+        assert "num_ctx=8192" in out
+
+
+class TestModelHandlers:
+    def test_on_model_status(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = {
+            "model": "qwen3.5:4b", "num_ctx": 16384, "think": False, "loaded": False,
+            "size_bytes": 0, "loaded_models": [],
+        }
+        h = build_handlers(svc)
+        assert "`qwen3.5:4b`" in h["on_model_status"]()
+
+    def test_on_model_choices_prepends_current_if_missing(self):
+        svc = make_service_mock()
+        svc.list_models.return_value = ["a:1", "b:2"]
+        svc.current_model.return_value = {"model": "c:3"}
+        h = build_handlers(svc)
+        choices, current = h["on_model_choices"]()
+        assert choices == ["c:3", "a:1", "b:2"]
+        assert current == "c:3"
+
+    def test_on_model_choices_current_in_list(self):
+        svc = make_service_mock()
+        svc.list_models.return_value = ["a:1", "b:2"]
+        svc.current_model.return_value = {"model": "b:2"}
+        h = build_handlers(svc)
+        choices, current = h["on_model_choices"]()
+        assert choices == ["a:1", "b:2"]
+        assert current == "b:2"
+
+    def test_on_switch_model_empty(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = {"model": "x", "num_ctx": 1, "think": False,
+                                          "loaded": False, "size_bytes": 0, "loaded_models": []}
+        h = build_handlers(svc)
+        result, status = h["on_switch_model"]("  ")
+        assert result.startswith("❌")
+        svc.switch_model.assert_not_called()
+        assert "`x`" in status
+
+    def test_on_switch_model_ok(self):
+        svc = make_service_mock()
+        svc.switch_model.return_value = {"ok": True, "message": "已切换到 qwen3.5:9b"}
+        svc.current_model.return_value = {"model": "qwen3.5:9b", "num_ctx": 8192, "think": False,
+                                          "loaded": False, "size_bytes": 0, "loaded_models": []}
+        h = build_handlers(svc)
+        result, status = h["on_switch_model"]("qwen3.5:9b")
+        assert result.startswith("✅")
+        assert "`qwen3.5:9b`" in status
+        svc.switch_model.assert_called_once_with("qwen3.5:9b")
+
+
+class TestThinkHandler:
+    def _status(self, think):
+        return {"model": "qwen3.5:4b", "num_ctx": 16384, "think": think, "loaded": False,
+                "size_bytes": 0, "loaded_models": []}
+
+    def test_toggle_on_ok(self):
+        svc = make_service_mock()
+        svc.set_think.return_value = {"ok": True, "enabled": True, "changed": True, "message": "思考模式已开启"}
+        svc.current_model.return_value = self._status(True)
+        h = build_handlers(svc)
+        result, status, value = h["on_toggle_think"](True)
+        assert result.startswith("✅")
+        assert "思考模式 开" in status
+        assert value is True
+        svc.set_think.assert_called_once_with(True)
+
+    def test_toggle_on_rejected_bounces_back(self):
+        svc = make_service_mock()
+        svc.set_think.return_value = {"ok": False, "enabled": False, "changed": False, "message": "不支持思考模式"}
+        svc.current_model.return_value = self._status(False)
+        h = build_handlers(svc)
+        result, status, value = h["on_toggle_think"](True)
+        assert result.startswith("❌")
+        assert "思考模式 关" in status
+        assert value is False

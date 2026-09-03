@@ -30,8 +30,24 @@ class TestConfigDefaults:
         assert OLLAMA_BASE_URL == "http://localhost:11434"
 
     def test_llm_model_default(self, clean_env):
-        from config import LLM_MODEL
-        assert LLM_MODEL == "qwen2.5-coder:7b"
+        from config import LLM_MODEL, DEFAULT_LLM_MODEL
+        assert DEFAULT_LLM_MODEL == "qwen3.5:4b"
+        assert LLM_MODEL == DEFAULT_LLM_MODEL
+
+    def test_llm_think_default_false(self, clean_env):
+        from config import LLM_THINK
+        assert LLM_THINK is False
+
+    def test_llm_think_env_true(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        monkeypatch.setenv("LLM_THINK", "true")
+        importlib.reload(config)
+        try:
+            assert config.LLM_THINK is True
+        finally:
+            os.environ.pop("LLM_THINK", None)
+            importlib.reload(config)
 
     def test_embed_model_default(self, clean_env):
         from config import EMBED_MODEL
@@ -300,3 +316,122 @@ class TestProgressConfig:
         assert config.ESTIMATE_TIME is True
         assert config.SHOW_STATS is False
         assert config.VERBOSE_MODE is False
+
+
+class TestResolveNumCtx:
+    """按模型规格自动推导上下文窗口（num_ctx）。"""
+
+    def test_small_model_large_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen3.5:4b") == 16384
+        assert resolve_num_ctx("qwen3.5:1.5b") == 16384
+
+    def test_default_model_ctx(self, clean_env):
+        from config import resolve_num_ctx, DEFAULT_LLM_MODEL
+        assert resolve_num_ctx(DEFAULT_LLM_MODEL) == 16384
+
+    def test_unusual_model_naming(self, clean_env):
+        """形如 SparkLLM/Spark-X2.5-4B 的命名：大写 B、以连字符分隔、带 x2.5 版本号，
+        必须识别为 4B 而不是把 2.5 误当参数量。"""
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("SparkLLM/Spark-X2.5-4B") == 16384
+        assert resolve_num_ctx("SparkLLM/Spark-X2.5-7B") == 8192
+        assert resolve_num_ctx("SparkLLM/Spark-X2.5-14B") == 4096
+
+    def test_mid_model_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen2.5-coder:7b") == 8192
+        assert resolve_num_ctx("qwen3.5:8b") == 8192
+        assert resolve_num_ctx("qwen3.5:9b") == 8192
+
+    def test_large_model_small_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen2.5:14b") == 4096
+        assert resolve_num_ctx("some-13b-model") == 4096
+        # 更大的模型同样保守
+        assert resolve_num_ctx("qwen2.5:32b") == 4096
+
+    def test_unknown_model_defaults_large(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("mystery-model") == 16384
+        assert resolve_num_ctx("") == 16384
+
+    def test_env_override(self, monkeypatch, clean_env):
+        monkeypatch.setenv("LLM_NUM_CTX", "2048")
+        from config import resolve_num_ctx
+        # 覆盖对任何模型都生效
+        assert resolve_num_ctx("qwen3.5:9b") == 2048
+        assert resolve_num_ctx("qwen3.5:4b") == 2048
+
+    def test_env_override_invalid_ignored(self, monkeypatch, clean_env):
+        monkeypatch.setenv("LLM_NUM_CTX", "not-a-number")
+        from config import resolve_num_ctx
+        # 非法值忽略，回退按模型推导
+        assert resolve_num_ctx("qwen3.5:4b") == 16384
+
+    def test_llm_num_ctx_module_value(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        monkeypatch.setenv("LLM_MODEL", "qwen3.5:9b")
+        importlib.reload(config)
+        try:
+            assert config.LLM_NUM_CTX == 8192
+        finally:
+            # 恢复干净的模块级 config，避免污染后续依赖 config.LLM_MODEL 的测试
+            os.environ.pop("LLM_MODEL", None)
+            importlib.reload(config)
+
+
+class TestSetLlmModel:
+    """运行时热切换全局模型。"""
+
+    def test_switch_updates_module_and_config_class(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        importlib.reload(config)
+        try:
+            ctx = config.set_llm_model("qwen3.5:9b")
+            assert ctx == 8192
+            assert config.LLM_MODEL == "qwen3.5:9b"
+            assert config.LLM_NUM_CTX == 8192
+            assert config.Config.LLM_MODEL == "qwen3.5:9b"
+            assert config.Config.MODEL == "qwen3.5:9b"
+            assert os.environ["LLM_MODEL"] == "qwen3.5:9b"
+        finally:
+            os.environ.pop("LLM_MODEL", None)
+            importlib.reload(config)
+
+    def test_switch_followed_by_lazy_readers(self, monkeypatch, clean_env):
+        """agent_config 等在调用时才 import config 的模块应自动跟随新模型。"""
+        import importlib
+        import config
+        importlib.reload(config)
+        try:
+            config.set_llm_model("qwen3.5:9b")
+            from agent_config import _default_model
+            assert _default_model() == "qwen3.5:9b"
+        finally:
+            os.environ.pop("LLM_MODEL", None)
+            importlib.reload(config)
+
+    def test_switch_rejects_empty(self, clean_env):
+        import config
+        with pytest.raises(ValueError):
+            config.set_llm_model("   ")
+
+
+class TestSetLlmThink:
+    def test_toggle(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        importlib.reload(config)
+        try:
+            assert config.set_llm_think(True) is True
+            assert config.LLM_THINK is True
+            assert os.environ["LLM_THINK"] == "true"
+            assert config.set_llm_think(0) is False
+            assert config.LLM_THINK is False
+            assert os.environ["LLM_THINK"] == "false"
+        finally:
+            os.environ.pop("LLM_THINK", None)
+            importlib.reload(config)

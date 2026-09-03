@@ -365,9 +365,19 @@ done
 ### 多模型切换
 
 ```bash
-# 切换到不同模型
-export LLM_MODEL=llama3:8b
+# 启动前切换到不同模型
+export LLM_MODEL=qwen3.5:9b
 python query_interface.py --data ./data
+```
+
+**运行中热切换（CLI 命令）**:
+
+```bash
+/model             显示当前模型（是否已加载、驻留大小、num_ctx、思考模式）
+/model list        列出本机已安装模型
+/model <name>      运行时热切换模型，旧模型立即释放（如 /model qwen3.5:9b）
+/think             显示思考模式状态（默认关，响应快）
+/think on|off      运行时开关思考模式（需模型支持，如 qwen3.5；不支持时会提示）
 ```
 
 ---
@@ -757,7 +767,7 @@ from agent_config import AgentConfigManager
 
 # 自定义配置
 config = AgentConfigManager.create_custom_config(
-    model="qwen2.5-coder:7b",
+    model="qwen3.5:4b",
     max_parallel_tasks=8,
     default_mode="parallel"
 )

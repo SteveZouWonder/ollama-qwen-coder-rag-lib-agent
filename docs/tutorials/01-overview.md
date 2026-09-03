@@ -1,6 +1,6 @@
 # 项目概述和系统要求
 
-> 基于 Ollama qwen2.5-coder:7b 的融合型 AI 助手，同时支持 RAG 知识库检索和 ReAct Agent 代码操作。
+> 基于 Ollama qwen3.5:4b 的融合型 AI 助手，同时支持 RAG 知识库检索和 ReAct Agent 代码操作。
 
 ---
 
@@ -22,7 +22,7 @@
     ├── ReAct引擎 (react_engine.py) - 自动工具调用 + 安全护栏
     └── 工具链 (agent_tools.py) - 文件/命令/搜索操作
          ↓
-    Ollama qwen2.5-coder:7b (统一LLM)
+    Ollama qwen3.5:4b (统一LLM)
     + nomic-embed-text (语义编码)
 ```
 

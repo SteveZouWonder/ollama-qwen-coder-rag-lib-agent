@@ -152,16 +152,17 @@ check_ollama() {
         fi
         
         # 检查模型（从配置文件读取默认模型，如果没有配置则使用默认值）
-        DEFAULT_LLM_MODEL="qwen2.5-coder"
+        DEFAULT_LLM_MODEL="qwen3.5:4b"
         DEFAULT_EMBED_MODEL="nomic-embed-text"
         
         echo "  已安装的模型:"
         models=$(ollama list 2>&1)
-        if echo "$models" | grep -q "$DEFAULT_LLM_MODEL"; then
+        # 使用 -F 按字面字符串匹配（模型名含 '.'），-i 忽略大小写
+        if echo "$models" | grep -qiF "$DEFAULT_LLM_MODEL"; then
             print_result 0 "$DEFAULT_LLM_MODEL 模型已安装"
         else
             print_result 1 "$DEFAULT_LLM_MODEL 模型未安装"
-            echo "  请运行: ollama pull $DEFAULT_LLM_MODEL:7b"
+            echo "  请运行: ollama pull $DEFAULT_LLM_MODEL"
             OLLAMA_ISSUES=$((OLLAMA_ISSUES + 1))
         fi
         
@@ -752,7 +753,7 @@ main() {
             echo -e "${YELLOW}Ollama相关问题 ($OLLAMA_ISSUES 个):${NC}"
             echo "  1. 安装Ollama: curl -fsSL https://ollama.com/install.sh | sh"
             echo "  2. 启动服务: ollama serve"
-            echo "  3. 下载模型: ollama pull qwen2.5-coder:7b"
+            echo "  3. 下载模型: ollama pull qwen3.5:4b"
             echo "  4. 验证服务: curl http://localhost:11434/api/tags"
             echo ""
         fi

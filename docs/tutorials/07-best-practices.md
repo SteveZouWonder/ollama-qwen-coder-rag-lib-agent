@@ -136,16 +136,41 @@ python query_interface.py
 
 ## 4. 性能优化
 
-### 模型选择
+### 模型选择（按机器与使用场景）
 
-**根据任务选择合适的模型**:
+默认模型 `qwen3.5:4b`（"协同档"）在 16GB 内存机器上、与 IDE/浏览器同时运行时仍能全 GPU 驻留
+（16K 上下文实测约 3.7GB）。运行中可用 CLI `/model <name>` 或 Web 对话页的模型下拉热切换，
+旧模型会被立即释放。
+
+| 场景 | 内存 | 推荐模型 | 说明 |
+|---|---|---|---|
+| 日常助手，与 IDE/浏览器并行（默认） | 16GB | `qwen3.5:4b` | 约 3.7GB 驻留，本机 M4 实测 ~25 tok/s |
+| 专注模式 / 复杂重构 / 多步 Agent | 16GB（关闭 IDE）或 32GB | `qwen3.5:9b` | 约 6GB 驻留，~16 tok/s；工具调用（BFCL 66 vs 50）与代码能力明显更强 |
+| 低配 / 老机器 | 8GB | `qwen3.5:2b` | 约 1.9GB，适合问答与检索 |
+| 工作站 | 32GB+ 或 24GB 显卡 | `qwen3.5:27b` / `gemma4:26b` | 17~19GB |
+| 严格格式化输出 / 翻译为主，不依赖工具调用 | 16GB（关闭 IDE） | `gemma4:12b-it-qat` | 指令遵循最强，但工具调用偏弱 |
+| Embedding（所有场景） | — | `nomic-embed-text:latest` | 固定 |
+
 ```bash
-# 快速任务：使用小模型
-export LLM_MODEL=qwen2.5-coder:3b
-
-# 复杂任务：使用大模型
-export LLM_MODEL=qwen2.5-coder:7b
+# 启动时指定
+python src/query_interface.py --model qwen3.5:9b
+# 或环境变量
+export LLM_MODEL=qwen3.5:9b
+# 运行中热切换（CLI）
+/model list
+/model qwen3.5:9b
+# 运行中开关思考模式（CLI）
+/think on
+/think off
 ```
+
+**与 IDE 共存的内存实践**
+- 项目默认关闭思考模式（`LLM_THINK=false`）：同一问题 qwen3.5:4b 从 31s 降到 2.8s；需要深度推理时可运行中开启——CLI `/think on`（`/think off` 关闭、`/think` 查看），Web 对话页勾选「思考模式」；仅支持思考的模型（qwen3.5 等）可开启，不支持时会被拒绝并提示。
+- 桌面应用默认不在启动时预热模型（`warm_up_on_startup: false`），Ollama 会在首次请求时按需加载、闲置 5 分钟后释放；可设 `OLLAMA_KEEP_ALIVE=2m` 更快归还内存。
+- 上下文按模型自动推导（4B→16K，7~9B→8K，12B+→4K）；每 +16K 约多占 0.6GB，长文档任务可临时 `LLM_NUM_CTX=32768`。
+- 切换模型时项目会主动释放旧模型；若用 `ollama run` 手动加载过其他模型，用 `/model` 查看并 `ollama stop <name>` 释放。
+
+**关注中（暂不推荐）**：`SparkLLM/Spark-X2.5-4B` 在同尺寸模型中 Agent/代码基准领先，但官方 Ollama 尚不支持其 `spark2_5` 架构（llama.cpp PR #27868 进行中，需自编译运行时且仅有 8.2GB 未量化版本）。待上游合入并提供量化 tag 后再评估。
 
 ### 查询优化
 
