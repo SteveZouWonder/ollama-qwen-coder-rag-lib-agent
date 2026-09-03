@@ -181,6 +181,10 @@ class WorkflowAnalyzer:
             "/git-commit-gen": "AI 生成提交信息",
             "/graph-build": "构建知识图谱",
             "/graph-query": "查询知识图谱",
+            "/graph-summary": "图谱概览",
+            "/graph-export": "导出交互式图谱 HTML",
+            "/file-delete": "从知识库删除文件",
+            "/snapshot-info": "查看快照详情",
             "check_prereqs.sh": "检查前置条件",
             "verify_deps.sh": "验证依赖",
             "run_tests.sh": "运行测试套件"

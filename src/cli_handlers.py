@@ -232,13 +232,24 @@ def handle_snapshot_create(ctx, parsed):
 
 
 def handle_snapshot_restore(ctx, parsed):
+    """/snapshot-restore <id> [--apply [--replace]]
+
+    - 默认：生成恢复脚本（保持旧行为）；
+    - ``--apply``：直接按快照文档清单重新入库（追加到现有索引）；
+    - ``--apply --replace``：先清空索引再入库（需确认）。缺失文件跳过并列出。
+    """
     console = ctx.console
     if not _require_knowledge_management(ctx):
         return False
-    snapshot_id = parsed.arg
+    tokens = parsed.arg.split()
+    flags = {t.lower() for t in tokens if t.startswith("--")}
+    positional = [t for t in tokens if not t.startswith("--")]
+    snapshot_id = positional[0] if positional else ""
     if not snapshot_id:
-        console.print("❌ 请指定快照ID: /snapshot-restore <id>", style="yellow")
+        console.print("❌ 请指定快照ID: /snapshot-restore <id> [--apply [--replace]]", style="yellow")
         return False
+    apply = "--apply" in flags
+    replace = "--replace" in flags
     try:
         from knowledge_snapshot import KnowledgeSnapshotManager, RestoreHelper
         manager = KnowledgeSnapshotManager()
@@ -248,14 +259,179 @@ def handle_snapshot_restore(ctx, parsed):
             return False
         console.print(f"🔄 恢复快照: {snapshot_id}", style="cyan")
         console.print(f"📄 文档数: {len(snapshot.documents)}", style="dim")
-        helper = RestoreHelper(manager)
-        script_file = helper.generate_restore_script(snapshot_id)
-        console.print(f"✅ 恢复脚本已生成: {script_file}", style="green")
-        console.print("💡 请运行该脚本来恢复知识库", style="yellow")
-        ctx.record_command("snapshot_restore", snapshot_id)
+
+        if not apply:
+            helper = RestoreHelper(manager)
+            script_file = helper.generate_restore_script(snapshot_id)
+            console.print(f"✅ 恢复脚本已生成: {script_file}", style="green")
+            console.print("💡 请运行该脚本来恢复知识库；或使用 /snapshot-restore <id> --apply 直接恢复", style="yellow")
+            ctx.record_command("snapshot_restore", snapshot_id)
+            return True
+
+        if not ctx.rag_engine:
+            console.print("❌ 知识库未初始化，无法直接恢复", style="yellow")
+            return False
+        missing = [d.file_path for d in snapshot.documents if not Path(d.file_path).exists()]
+        if missing:
+            console.print(f"⚠️  {len(missing)} 个文件已不存在，将跳过:", style="yellow")
+            for m in missing:
+                console.print(f"  - {m}", style="dim")
+        mode = "replace" if replace else "append"
+        if replace:
+            console.print("⚠️  替换模式将先清空现有索引与图谱，再按快照重新入库", style="yellow")
+            if not _confirm(console, "确认替换恢复? (y/n): "):
+                console.print("❌ 已取消", style="yellow")
+                ctx.record_command("snapshot_restore", snapshot_id, "cancelled")
+                return True
+
+        def progress(evt):
+            msg = evt.get("message", "")
+            if evt.get("stage") == "load":
+                console.print(f"  [{evt.get('current')}/{evt.get('total')}] {msg}", style="dim")
+            elif msg:
+                console.print(f"  {msg}", style="dim")
+
+        result = manager.restore_apply(
+            snapshot_id, ctx.rag_engine, mode=mode,
+            load_documents=ctx.load_documents, progress=progress,
+        )
+        if not result.get("ok"):
+            console.print(f"❌ {result.get('error', '恢复失败')}", style="red")
+            ctx.record_command("snapshot_restore", snapshot_id, "failed", str(result.get("error")))
+            return True
+        console.print(
+            f"✅ 恢复完成（{mode}）：成功 {result['restored']}，跳过 {result['skipped']}，"
+            f"失败 {result['failed']}，共 {result['chunks']} 个片段",
+            style="green",
+        )
+        for err in result.get("errors", []):
+            console.print(f"  ✗ {err}", style="red")
+        console.print("💡 可用 /stats 查看当前知识库统计", style="dim")
+        ctx.record_command("snapshot_restore", f"{snapshot_id} --apply{' --replace' if replace else ''}", "success")
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 恢复快照失败: {e}", style="red")
         ctx.record_command("snapshot_restore", snapshot_id, "failed", str(e))
+    return True
+
+
+def handle_snapshot_info(ctx, parsed):
+    """/snapshot-info <id>：快照详情（文档清单 + 文件是否仍存在 + 模型配置）。"""
+    console = ctx.console
+    if not _require_knowledge_management(ctx):
+        return False
+    snapshot_id = parsed.arg.strip()
+    if not snapshot_id:
+        console.print("❌ 请指定快照ID: /snapshot-info <id>", style="yellow")
+        return False
+    try:
+        from knowledge_snapshot import KnowledgeSnapshotManager
+        info = KnowledgeSnapshotManager().snapshot_info(snapshot_id)
+        if not info:
+            console.print(f"❌ 快照不存在: {snapshot_id}", style="red")
+            return False
+        model = info.get("model_config") or {}
+        console.print(f"📸 快照 {info['snapshot_id']}", style="bold cyan")
+        console.print(f"  📅 时间: {info.get('timestamp', '')}", style="dim")
+        console.print(f"  ⚡ 触发: {info.get('trigger', '')}", style="dim")
+        console.print(
+            f"  📄 文档 {info.get('document_count', 0)} 个 / 片段 {info.get('total_chunks', 0)}"
+            f"（缺失 {info.get('missing_count', 0)} 个文件）",
+            style="dim",
+        )
+        console.print(
+            f"  🤖 模型: LLM {model.get('llm_model', '?')} / Embedding {model.get('embed_model', '?')}",
+            style="dim",
+        )
+        console.print("  文档清单:", style="cyan")
+        for doc in info.get("documents", []):
+            mark = "✓" if doc.get("exists") else "✗"
+            style = "green" if doc.get("exists") else "red"
+            console.print(
+                f"    {mark} {doc.get('file_name')}  ({doc.get('chunk_count', 0)} chunks)  {doc.get('file_path')}",
+                style=style,
+            )
+        if info.get("missing_count"):
+            console.print("  ⚠️  缺失的文件恢复时将被跳过", style="yellow")
+        ctx.record_command("snapshot_info", snapshot_id)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 获取快照详情失败: {e}", style="red")
+        ctx.record_command("snapshot_info", snapshot_id, "failed", str(e))
+    return True
+
+
+def handle_snapshot_delete(ctx, parsed):
+    """/snapshot-delete <id>：删除快照（需确认）。"""
+    console = ctx.console
+    if not _require_knowledge_management(ctx):
+        return False
+    snapshot_id = parsed.arg.strip()
+    if not snapshot_id:
+        console.print("❌ 请指定快照ID: /snapshot-delete <id>", style="yellow")
+        return False
+    try:
+        from knowledge_snapshot import KnowledgeSnapshotManager
+        manager = KnowledgeSnapshotManager()
+        snapshot = manager.load_snapshot(snapshot_id)
+        if not snapshot:
+            console.print(f"❌ 快照不存在: {snapshot_id}", style="red")
+            return False
+        console.print(
+            f"⚠️  将删除快照 {snapshot_id}（{snapshot.timestamp}，文档 {len(snapshot.documents)} 个）",
+            style="yellow",
+        )
+        if not _confirm(console, "确认删除? (y/n): "):
+            console.print("❌ 已取消", style="yellow")
+            ctx.record_command("snapshot_delete", snapshot_id, "cancelled")
+            return True
+        if manager.delete_snapshot(snapshot_id):
+            console.print(f"✅ 快照已删除: {snapshot_id}", style="green")
+            ctx.record_command("snapshot_delete", snapshot_id, "success")
+        else:
+            console.print(f"❌ 删除失败: {snapshot_id}", style="red")
+            ctx.record_command("snapshot_delete", snapshot_id, "failed")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 删除快照失败: {e}", style="red")
+        ctx.record_command("snapshot_delete", snapshot_id, "failed", str(e))
+    return True
+
+
+def handle_snapshot_prune(ctx, parsed):
+    """/snapshot-prune [N]：清理自动触发的快照，仅保留最近 N 个（默认 10）。"""
+    console = ctx.console
+    if not _require_knowledge_management(ctx):
+        return False
+    arg = parsed.arg.strip()
+    keep = 10
+    if arg:
+        try:
+            keep = max(0, int(arg))
+        except ValueError:
+            console.print("❌ 保留数量必须是整数: /snapshot-prune [N]", style="yellow")
+            return False
+    try:
+        from knowledge_snapshot import KnowledgeSnapshotManager
+        manager = KnowledgeSnapshotManager()
+        pending = manager.prune_preview(keep=keep, auto_only=True)
+        if not pending:
+            console.print(f"✅ 自动快照不超过 {keep} 个，无需清理", style="green")
+            ctx.record_command("snapshot_prune", str(keep), "nothing")
+            return True
+        console.print(
+            f"🧹 将删除 {len(pending)} 个自动快照（保留最近 {keep} 个，手动快照不受影响）:",
+            style="yellow",
+        )
+        for snap in pending:
+            console.print(f"  - {snap['snapshot_id']}  {snap['timestamp']}  ({snap['trigger']})", style="dim")
+        if not _confirm(console, "确认清理? (y/n): "):
+            console.print("❌ 已取消", style="yellow")
+            ctx.record_command("snapshot_prune", str(keep), "cancelled")
+            return True
+        deleted = manager.prune(keep=keep, auto_only=True)
+        console.print(f"✅ 已清理 {len(deleted)} 个自动快照", style="green")
+        ctx.record_command("snapshot_prune", str(keep), "success")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 清理快照失败: {e}", style="red")
+        ctx.record_command("snapshot_prune", str(keep), "failed", str(e))
     return True
 
 
@@ -339,6 +515,57 @@ def handle_file_info(ctx, parsed):
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 获取文件信息失败: {e}", style="red")
         ctx.record_command("file_info", file_path, "failed", str(e))
+    return True
+
+
+def handle_file_delete(ctx, parsed):
+    """/file-delete <path>：从知识库删除文件（向量片段 + 图谱来源 + 元数据，不删磁盘文件）。"""
+    console = ctx.console
+    file_path = parsed.arg.strip()
+    if not file_path:
+        console.print("❌ 请指定文件路径: /file-delete <path>", style="yellow")
+        return False
+    if not ctx.rag_engine:
+        console.print("❌ 知识库未初始化", style="yellow")
+        return False
+    try:
+        preview = ctx.rag_engine.file_delete_preview(file_path)
+        if not preview.get("exists"):
+            console.print(f"❌ 文件不在知识库中: {file_path}", style="yellow")
+            ctx.record_command("file_delete", file_path, "not_found")
+            return False
+        console.print(f"🗑️  将从知识库删除: {preview.get('file_name') or file_path}", style="yellow")
+        console.print(f"  🧩 向量片段: {preview.get('chunk_count', 0)} 个", style="dim")
+        if preview.get("graph_shared_basename"):
+            console.print("  🕸️  图谱: 保留（另有同名文件）", style="dim")
+        elif preview.get("graph_nodes") or preview.get("graph_edges"):
+            console.print(
+                f"  🕸️  图谱: 移除 {preview.get('graph_nodes', 0)} 个节点 / "
+                f"{preview.get('graph_edges', 0)} 条边的来源（仅该文件贡献的会被删除）",
+                style="dim",
+            )
+        else:
+            console.print("  🕸️  图谱: 无变更", style="dim")
+        console.print("  💾 磁盘上的原文件不会被删除", style="dim")
+        if not _confirm(console, "确认删除? (y/n): "):
+            console.print("❌ 已取消", style="yellow")
+            ctx.record_command("file_delete", file_path, "cancelled")
+            return True
+        result = ctx.rag_engine.remove_file(file_path)
+        graph = "图谱已更新" if result.get("graph_updated") else (result.get("note") or "图谱未变更")
+        console.print(
+            f"✅ 已删除 {result.get('file_name')}：{result.get('chunks_deleted', 0)} 个片段，{graph}",
+            style="green",
+        )
+        console.print("💡 可用 /stats 查看当前知识库统计", style="dim")
+        ctx.record_command("file_delete", file_path, "success")
+    except FileNotFoundError as e:
+        console.print(f"❌ {e}", style="yellow")
+        ctx.record_command("file_delete", file_path, "not_found")
+        return False
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 删除文件失败: {e}", style="red")
+        ctx.record_command("file_delete", file_path, "failed", str(e))
     return True
 
 
@@ -978,6 +1205,169 @@ def handle_graph_build(ctx, parsed):
     return True
 
 
+def _get_graph_builder():
+    try:
+        from knowledge_graph import get_graph_builder
+    except ImportError:  # pragma: no cover
+        from src.knowledge_graph import get_graph_builder  # type: ignore
+    return get_graph_builder()
+
+
+def handle_graph_summary(ctx, parsed):
+    """/graph-summary：图谱概览（节点/边/连通分量/类型分布）。"""
+    console = ctx.console
+    try:
+        builder = _get_graph_builder()
+        if getattr(builder, "graph", None) is None:
+            console.print("❌ 知识图谱不可用（networkx 未安装）", style="red")
+            return False
+        stats = builder.get_statistics()
+        console.print("🕸️  知识图谱概览", style="bold cyan")
+        console.print(f"  节点: {stats.total_nodes}   边: {stats.total_edges}", style="bold")
+        console.print(
+            f"  连通分量: {stats.connected_components}   平均度: {stats.average_degree:.2f}   "
+            f"密度: {stats.density:.4f}",
+            style="dim",
+        )
+        if stats.total_nodes == 0:
+            console.print("  图谱为空：/add 入库文档会自动派生，或 /graph-build 手动构建", style="yellow")
+        if stats.entity_types:
+            console.print("  实体类型分布:", style="cyan")
+            for t, c in sorted(stats.entity_types.items(), key=lambda kv: -kv[1]):
+                console.print(f"    {t:<14} {c}", style="dim")
+        if stats.relation_types:
+            console.print("  关系类型分布:", style="cyan")
+            for t, c in sorted(stats.relation_types.items(), key=lambda kv: -kv[1]):
+                console.print(f"    {t:<14} {c}", style="dim")
+        console.print("💡 /graph-export 可导出交互式 3D 图谱 HTML 并在浏览器打开", style="dim")
+        ctx.record_command("graph_summary")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 获取图谱概览失败: {e}", style="red")
+        ctx.record_command("graph_summary", "", "failed", str(e))
+    return True
+
+
+def parse_graph_export_args(arg: str) -> dict:
+    """解析 ``/graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops N]``。
+
+    ``--focus`` 的值可含空格（取到下一个 ``--`` 开头的 token 为止）。返回
+    ``{"path", "dim", "types", "max_nodes", "focus", "hops", "error"}``。
+    """
+    out = {"path": "", "dim": 3, "types": None, "max_nodes": 500, "focus": None, "hops": 1, "error": ""}
+    tokens = (arg or "").split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        low = tok.lower()
+        if low == "--3d":
+            out["dim"] = 3
+        elif low == "--2d":
+            out["dim"] = 2
+        elif low in ("--types", "--type"):
+            i += 1
+            if i >= len(tokens):
+                out["error"] = "--types 需要参数，如 --types tool,concept"
+                break
+            out["types"] = [t.strip() for t in tokens[i].split(",") if t.strip()] or None
+        elif low == "--max":
+            i += 1
+            try:
+                out["max_nodes"] = max(1, int(tokens[i]))
+            except (IndexError, ValueError):
+                out["error"] = "--max 需要正整数参数"
+                break
+        elif low == "--hops":
+            i += 1
+            try:
+                out["hops"] = max(1, min(3, int(tokens[i])))
+            except (IndexError, ValueError):
+                out["error"] = "--hops 需要整数参数（1-3）"
+                break
+        elif low == "--focus":
+            words = []
+            i += 1
+            while i < len(tokens) and not tokens[i].startswith("--"):
+                words.append(tokens[i])
+                i += 1
+            if not words:
+                out["error"] = "--focus 需要实体名参数"
+                break
+            out["focus"] = " ".join(words)
+            continue
+        elif tok.startswith("--"):
+            out["error"] = f"未知选项: {tok}"
+            break
+        else:
+            out["path"] = tok
+        i += 1
+    return out
+
+
+def handle_graph_export(ctx, parsed, open_browser=None):
+    """/graph-export：导出自包含的交互式 HTML 图谱（Plotly，离线）并在浏览器打开。"""
+    console = ctx.console
+    opts = parse_graph_export_args(parsed.arg)
+    if opts["error"]:
+        console.print(f"❌ {opts['error']}", style="yellow")
+        console.print(
+            "用法: /graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops 1|2]",
+            style="dim",
+        )
+        return False
+    try:
+        try:
+            from web.app import build_graph_figure
+        except ImportError:  # pragma: no cover
+            from src.web.app import build_graph_figure  # type: ignore
+        builder = _get_graph_builder()
+        if getattr(builder, "graph", None) is None:
+            console.print("❌ 知识图谱不可用（networkx 未安装）", style="red")
+            return False
+        view = builder.subgraph_for_view(
+            types=opts["types"], max_nodes=opts["max_nodes"], focus=opts["focus"], hops=opts["hops"],
+        )
+        if not view["nodes"]:
+            console.print("📭 没有可导出的节点（图谱为空或筛选条件过严）", style="yellow")
+            ctx.record_command("graph_export", parsed.arg, "empty")
+            return True
+        positions = builder.layout_positions([n["id"] for n in view["nodes"]], dim=opts["dim"])
+        title = f"Cerebro 知识图谱（{len(view['nodes'])} 节点 / {len(view['edges'])} 边）"
+        try:
+            fig = build_graph_figure(
+                view["nodes"], view["edges"], dim=opts["dim"], positions=positions,
+                edge_labels=(opts["dim"] == 2), title=title,
+            )
+        except ImportError:
+            console.print("❌ 未安装 plotly：pip install plotly 后重试", style="red")
+            return False
+        from datetime import datetime
+        path = opts["path"] or f"knowledge_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        out_path = Path(path).expanduser()
+        if out_path.suffix.lower() != ".html":
+            out_path = out_path.with_suffix(".html")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.write_html(str(out_path), include_plotlyjs=True, full_html=True)
+        console.print(
+            f"✅ 已导出 {opts['dim']}D 图谱: {out_path}（{len(view['nodes'])} 节点 / {len(view['edges'])} 边"
+            + ("，已按度数截断" if view.get("truncated") else "") + "）",
+            style="green",
+        )
+        opener = open_browser
+        if opener is None:
+            import webbrowser
+            opener = webbrowser.open
+        try:
+            opener(out_path.resolve().as_uri())
+            console.print("🌐 已在浏览器中打开", style="dim")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"⚠️  无法自动打开浏览器: {e}", style="yellow")
+        ctx.record_command("graph_export", str(out_path), "success")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 导出图谱失败: {e}", style="red")
+        ctx.record_command("graph_export", parsed.arg, "failed", str(e))
+    return True
+
+
 # ==================== Git 命令 ====================
 
 # /git-analyze 支持的分析类型；含常见单复数别名以提升容错。
@@ -1190,9 +1580,13 @@ COMMAND_HANDLERS: dict[str, Callable[[CLIContext, Any], bool]] = {
     "snapshot_list": handle_snapshot_list,
     "snapshot_create": handle_snapshot_create,
     "snapshot_restore": handle_snapshot_restore,
+    "snapshot_info": handle_snapshot_info,
+    "snapshot_delete": handle_snapshot_delete,
+    "snapshot_prune": handle_snapshot_prune,
     "knowledge_summary": handle_knowledge_summary,
     "file_list": handle_file_list,
     "file_info": handle_file_info,
+    "file_delete": handle_file_delete,
     "file_stats": handle_file_stats,
     "file_cleanup": handle_file_cleanup,
     "file_deduplicate": handle_file_deduplicate,
@@ -1214,6 +1608,8 @@ COMMAND_HANDLERS: dict[str, Callable[[CLIContext, Any], bool]] = {
     "code_quality": handle_code_quality,
     "graph_query": handle_graph_query,
     "graph_build": handle_graph_build,
+    "graph_summary": handle_graph_summary,
+    "graph_export": handle_graph_export,
     "git_analyze": handle_git_analyze,
     "git_commit_gen": handle_git_commit_gen,
     "db_connect": handle_db_connect,

@@ -313,6 +313,14 @@ python launcher.py --web        # 默认 http://127.0.0.1:7860
 展示上下文用量、处理过程与引用来源，单 Agent 遇到危险操作会弹出「允许 / 拒绝」审批卡片；
 右上角可切换 6 套主题色（跟随系统深浅色）。功能面与 CLI 命令一一对应，见「系统 → 帮助」。
 
+知识库页的文件 / 快照表格末列有「⋯」：点击任意单元格即选中该行并弹出操作条——文件可
+**查看详情 / 删除文件**（删向量片段 + 图谱来源 + 元数据，不删磁盘文件，二步确认并预览影响），
+快照可 **详情 / 恢复（追加）/ 恢复（替换）/ 生成脚本 / 删除**，并可一键清理多余的自动快照。
+知识图谱页提供 **3D / 2D 交互式图谱视图**（Plotly，离线）：按实体类型 / 置信度 / 节点数筛选、
+聚焦某实体的 1–2 跳邻域，节点按类型着色、按度数定大小，悬停查看来源文档与关系类型。
+对应 CLI：`/file-delete`、`/snapshot-info|delete|prune`、`/snapshot-restore <id> --apply [--replace]`、
+`/graph-summary`、`/graph-export [--3d|--2d] [--focus 实体]`（导出自包含 HTML 并在浏览器打开）。
+
 ---
 
 ## 项目结构
@@ -562,7 +570,10 @@ ResultIntegrator 整合结果
 | `/generate-skills` | RAG | 将知识库转化为Skills |
 | `/snapshot-list` | RAG | 查看知识库快照 |
 | `/snapshot-create` | RAG | 手动创建快照 |
-| `/snapshot-restore <id>` | RAG | 恢复指定快照 |
+| `/snapshot-restore <id> [--apply [--replace]]` | RAG | 生成恢复脚本；`--apply` 直接恢复（追加 / 替换） |
+| `/snapshot-info <id>` | RAG | 🆕 快照详情（文档清单、文件是否仍存在） |
+| `/snapshot-delete <id>` | RAG | 🆕 删除快照（确认） |
+| `/snapshot-prune [N]` | RAG | 🆕 清理自动快照，仅保留最近 N 个 |
 | `/knowledge-summary` | RAG | 查看知识库文档摘要 |
 | `/file <路径>` | Agent | 快速读取文件 |
 | `/write <路径>` | Agent | 交互式写入文件 |
@@ -576,6 +587,9 @@ ResultIntegrator 整合结果
 | `/pwd` / `/cd` | - | 目录操作 |
 | `/file-list` | - | 🆕 列出知识库中的所有文件 |
 | `/file-info <path>` | - | 🆕 查看文件详细信息 |
+| `/file-delete <path>` | RAG | 🆕 从知识库删除文件（向量 + 图谱来源 + 元数据，不删磁盘文件） |
+| `/graph-summary` | - | 🆕 图谱概览（节点 / 边 / 类型分布） |
+| `/graph-export [路径] [--3d\|--2d] [--focus 实体]` | - | 🆕 导出交互式 HTML 图谱并在浏览器打开 |
 | `/file-cleanup` | - | 🆕 清理临时/重复文件 |
 | `/file-deduplicate` | - | 🆕 手动触发去重 |
 | `/file-stats` | - | 🆕 显示文件统计信息 |
@@ -1077,8 +1091,17 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 # 手动创建快照
 >>> /snapshot-create
 
-# 恢复指定快照
+# 查看快照详情（文档清单、文件是否仍在磁盘）
+>>> /snapshot-info <snapshot_id>
+
+# 生成恢复脚本 / 直接恢复（追加）/ 先清空再恢复
 >>> /snapshot-restore <snapshot_id>
+>>> /snapshot-restore <snapshot_id> --apply
+>>> /snapshot-restore <snapshot_id> --apply --replace
+
+# 删除快照 / 清理自动快照仅保留最近 5 个
+>>> /snapshot-delete <snapshot_id>
+>>> /snapshot-prune 5
 ```
 
 #### 2. 知识库到Skill智能转化

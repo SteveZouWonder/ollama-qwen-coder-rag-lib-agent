@@ -70,7 +70,7 @@ def build_layout(service, handlers: Dict[str, Callable]) -> gr.Blocks:  # pragma
         with gr.Column(visible=False) as kb_col:
             kb = build_knowledge_page(service, handlers)
         with gr.Column(visible=False) as graph_col:
-            build_graph_page(service, handlers)
+            graph = build_graph_page(service, handlers)
         with gr.Column(visible=False) as tools_col:
             build_tools_page(service, handlers)
         with gr.Column(visible=False) as system_col:
@@ -90,6 +90,15 @@ def build_layout(service, handlers: Dict[str, Callable]) -> gr.Blocks:  # pragma
         nav.change(
             lambda p: kb["file_rows"]() if p == NAV_KB else (gr.update(), gr.update()),
             nav, [kb["file_table"], kb["file_paths"]], show_progress="hidden",
+        )
+        nav.change(
+            lambda p: kb["snap_rows"]() if p == NAV_KB else gr.update(),
+            nav, kb["snap_table"], show_progress="hidden",
+        )
+        # 进入知识图谱页时渲染一次图谱视图（惰性：不在启动时计算布局）
+        nav.change(
+            lambda p, *args: graph["render"](*args) if p == NAV_GRAPH else (gr.update(), gr.update(), gr.update()),
+            [nav, *graph["inputs"]], graph["outputs"], show_progress="minimal",
         )
         nav.change(
             lambda p: handlers["on_env_info"]() if p == NAV_SYSTEM else gr.update(),

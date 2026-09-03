@@ -39,6 +39,8 @@ pillow
 
 # Web UI（托盘「打开 Web UI」与 --web）
 gradio
+# 知识图谱 3D/2D 可视化（自包含 plotly.js 随包分发）
+plotly
 
 # 打包器
 pyinstaller>=6.0.0

@@ -29,13 +29,17 @@ def table(  # pragma: no cover
     max_height: int = 360,
     search: bool = True,
     column_widths: Optional[List[str]] = None,
+    datatype: Any = "str",
 ) -> gr.Dataframe:
-    """只读数据表（``type="array"``，便于按行索引取值）。"""
+    """只读数据表（``type="array"``，便于按行索引取值）。
+
+    ``datatype`` 可传每列类型列表（如末列 ``"html"`` 用于「⋯」操作列）。
+    """
     return gr.Dataframe(
         headers=headers,
         value=value or [],
         type="array",
-        datatype="str",
+        datatype=datatype,
         interactive=False,
         wrap=True,
         max_height=max_height,
@@ -112,6 +116,15 @@ class Confirm:  # pragma: no cover
         dep = self.ok.click(fn, inputs, outputs)
         dep.then(self._reset, None, [self.trigger, self.row], show_progress="hidden")
         return dep
+
+
+MORE_CELL = '<span class="cb-more" title="操作">⋯</span>'
+"""表格末列「⋯」操作单元格（HTML 列）。"""
+
+
+def with_more_column(rows: List[List[Any]]) -> List[List[Any]]:  # pragma: no cover
+    """给每行追加「⋯」操作列。"""
+    return [[*r, MORE_CELL] for r in rows]
 
 
 def toggle_visible(*flags: bool):  # pragma: no cover

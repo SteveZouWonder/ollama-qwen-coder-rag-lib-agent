@@ -121,6 +121,16 @@ for sub in SRC_DIR.iterdir():
         except Exception as exc:  # noqa: BLE001
             print(f"[spec] collect_submodules 跳过 {sub.name}: {exc}")
 
+# plotly：知识图谱 3D/2D 可视化。plotly.js 与 validators 以数据文件形式存在
+# （package_data/plotly.min.js、validators/*.json），只收子模块会导致打包后
+# `fig.write_html(include_plotlyjs=True)` 找不到 JS，故子模块 + 数据文件一并收集。
+for pkg in ("plotly", "_plotly_utils"):
+    try:
+        hiddenimports += collect_submodules(pkg)
+        datas += collect_data_files(pkg)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[spec] 收集 {pkg} 跳过: {exc}")
+
 # 部分 tokenizer / 配置数据
 for pkg in ("tiktoken_ext", "tiktoken"):
     try:

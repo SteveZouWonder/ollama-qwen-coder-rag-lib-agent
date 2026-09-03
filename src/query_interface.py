@@ -345,9 +345,16 @@ TUTORIAL_TEXT = """
 文件管理命令：
   /file-list           列出知识库中的所有文件
   /file-info <path>    查看文件详细信息
+  /file-delete <path>  从知识库删除文件（不删磁盘文件，需确认）
   /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重
+  /file-deduplicate    手动触发去重（只移除登记，不删向量）
   /file-stats          显示文件统计信息
+
+知识库快照命令：
+  /snapshot-list / /snapshot-create        列出 / 手动创建快照
+  /snapshot-info <id>                      快照详情（文档清单与文件是否仍存在）
+  /snapshot-restore <id> [--apply [--replace]]  生成恢复脚本 / 直接恢复（追加或替换）
+  /snapshot-delete <id> | /snapshot-prune [N]   删除快照 / 清理自动快照仅保留最近 N 个
 
 会话管理命令：
   /session-new [title]        创建新会话
@@ -379,6 +386,8 @@ Git 命令：
   /graph-query type:<类型>    列出某类型实体（如 type:tool）
   /graph-query neighbors:<实体>  查询邻居  | path:<A>-><B> 查路径 | similar:<实体> 查相似
   /graph-build <文本|@文件>   构建知识图谱
+  /graph-summary              图谱概览（节点/边/类型分布）
+  /graph-export [路径] [--3d|--2d] [--focus 实体]  导出交互式 HTML 图谱并在浏览器打开
 """
 
 def show_tutorial():
@@ -604,13 +613,19 @@ def print_help():
   /generate-skills   将知识库内容转化为Skills
   /snapshot-list    查看所有知识库快照
   /snapshot-create  手动创建知识库快照
-  /snapshot-restore <id>  恢复指定快照的知识库
+  /snapshot-info <id>     查看快照详情（文档清单、文件是否仍存在、模型配置）
+  /snapshot-restore <id>  生成恢复脚本；加 --apply 直接恢复（追加），--apply --replace 先清空再恢复
+  /snapshot-delete <id>   删除指定快照（需确认）
+  /snapshot-prune [N]     清理自动快照，仅保留最近 N 个（默认 10，手动快照不受影响）
   /knowledge-summary  查看知识库文档摘要
 
 知识图谱管理命令（新功能）：
   /graph-query <文本>       按实体名模糊查询（默认）
   /graph-query type:<类型>  列出某类型实体；另支持 neighbors:/path:/similar: 前缀
   /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
+  /graph-summary            图谱概览（节点/边/类型分布）
+  /graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops 1|2]
+                            导出自包含的交互式 HTML 图谱并在浏览器打开
 
 数据库管理命令（新功能）：
   /db-connect <type> <database>  连接数据库
@@ -623,8 +638,9 @@ def print_help():
 文件管理命令（新功能）：
   /file-list           列出知识库中的所有文件
   /file-info <path>    查看文件详细信息
+  /file-delete <path>  从知识库删除文件（向量片段 + 图谱来源 + 元数据，不删磁盘文件，需确认）
   /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重
+  /file-deduplicate    手动触发去重（只移除重复登记，不删向量；彻底删除请用 /file-delete）
   /file-stats          显示文件统计信息
 
 会话管理命令（新功能）：
@@ -855,6 +871,12 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("snapshot_create", user_input, arg)
     if cmd == "/snapshot-restore":
         return ParsedCommand("snapshot_restore", user_input, arg)
+    if cmd == "/snapshot-info":
+        return ParsedCommand("snapshot_info", user_input, arg)
+    if cmd == "/snapshot-delete":
+        return ParsedCommand("snapshot_delete", user_input, arg)
+    if cmd == "/snapshot-prune":
+        return ParsedCommand("snapshot_prune", user_input, arg)
     if cmd == "/knowledge-summary":
         return ParsedCommand("knowledge_summary", user_input, arg)
     
@@ -863,6 +885,10 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("graph_query", user_input, arg)
     if cmd == "/graph-build":
         return ParsedCommand("graph_build", user_input, arg)
+    if cmd == "/graph-summary":
+        return ParsedCommand("graph_summary", user_input, arg)
+    if cmd == "/graph-export":
+        return ParsedCommand("graph_export", user_input, arg)
     
     # 数据库管理命令
     if cmd == "/db-connect":
@@ -889,6 +915,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("file_deduplicate", user_input, arg)
     if cmd == "/file-stats":
         return ParsedCommand("file_stats", user_input, arg)
+    if cmd == "/file-delete":
+        return ParsedCommand("file_delete", user_input, arg)
 
     # 会话管理命令
     if cmd == "/session-new":
@@ -956,11 +984,13 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
                      "clear", "history", "summary", "reset", "context", "compact",
                      "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
-                     "snapshot_restore", "knowledge_summary",
-                     "graph_query", "graph_build",
+                     "snapshot_restore", "snapshot_info", "snapshot_delete", "snapshot_prune",
+                     "knowledge_summary",
+                     "graph_query", "graph_build", "graph_summary", "graph_export",
                      "db_connect", "db_query", "db_execute",
                      "db_create_table", "db_insert", "db_schema",
                      "file_list", "file_info", "file_cleanup", "file_deduplicate", "file_stats",
+                     "file_delete",
                      "session_new", "session_list", "session_switch", "session_archive",
                      "session_delete", "session_info", "session_search", "session_current",
                      "session_compress", "web_search", "web_cache", "web_extract",

@@ -1390,6 +1390,31 @@ class WebService:
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 去重失败: {exc}"
 
+    def file_delete_preview(self, path: str) -> Dict[str, Any]:
+        """删除文件前的影响预览（片段数 / 图谱节点边数 / 是否同名保留）。"""
+        path = (path or "").strip()
+        if not path:
+            return {"error": "请先选择文件"}
+        try:
+            return dict(self.rag_engine.file_delete_preview(path))
+        except BaseException as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def remove_file(self, path: str) -> str:
+        """从知识库删除文件：向量 chunk + 图谱贡献 + 元数据，不删磁盘文件（等价 /file-delete）。"""
+        path = (path or "").strip()
+        if not path:
+            return "[提示] 请先选择要删除的文件"
+        try:
+            result = self.rag_engine.remove_file(path)
+        except FileNotFoundError as exc:
+            return f"[错误] {exc}"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 删除失败: {exc}"
+        name = result.get("file_name") or path.rsplit("/", 1)[-1]
+        graph = "图谱已更新" if result.get("graph_updated") else (result.get("note") or "图谱未变更")
+        return f"[成功] 已删除 {name}：{result.get('chunks_deleted', 0)} 个片段，{graph}"
+
     def file_stats(self) -> Dict[str, Any]:
         """文件统计概览（等价 /file-stats）。"""
         try:
@@ -1523,6 +1548,131 @@ class WebService:
             )
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 恢复快照失败: {exc}"
+
+    # ---------- 快照：详情 / 恢复 / 删除 / 批量清理 ----------
+
+    @staticmethod
+    def _snapshot_manager():
+        from knowledge_snapshot import KnowledgeSnapshotManager
+
+        return KnowledgeSnapshotManager()
+
+    def snapshot_info(self, snapshot_id: str) -> Dict[str, Any]:
+        """快照详情（文档清单 + 每个文件是否仍在磁盘 + 模型配置 + 触发方式）。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            return {"error": "请指定快照 ID"}
+        try:
+            info = self._snapshot_manager().snapshot_info(snapshot_id)
+            return info or {"error": f"快照不存在: {snapshot_id}"}
+        except BaseException as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def snapshot_delete(self, snapshot_id: str) -> str:
+        """删除单个快照（等价 /snapshot-delete）。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            return "[提示] 请指定快照 ID"
+        try:
+            ok = self._snapshot_manager().delete_snapshot(snapshot_id)
+            return f"[成功] 已删除快照 {snapshot_id}" if ok else f"[错误] 快照不存在: {snapshot_id}"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 删除快照失败: {exc}"
+
+    def snapshot_prune_preview(self, keep: int = 10) -> List[Dict[str, Any]]:
+        """批量清理预览：将被删除的自动快照列表。"""
+        try:
+            return list(self._snapshot_manager().prune_preview(keep=int(keep or 0), auto_only=True))
+        except BaseException as exc:  # noqa: BLE001
+            return [{"snapshot_id": f"[错误] {exc}"}]
+
+    def snapshot_prune(self, keep: int = 10) -> str:
+        """批量清理自动快照，保留最近 ``keep`` 个（等价 /snapshot-prune）。"""
+        try:
+            deleted = self._snapshot_manager().prune(keep=int(keep or 0), auto_only=True)
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 清理失败: {exc}"
+        if not deleted:
+            return "[提示] 没有需要清理的自动快照"
+        return f"[成功] 已清理 {len(deleted)} 个自动快照，保留最近 {int(keep or 0)} 个"
+
+    def snapshot_restore_apply(self, snapshot_id: str, mode: str = "append", progress=None) -> Dict[str, Any]:
+        """阻塞式真正恢复快照（``append`` 追加 / ``replace`` 替换）。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            return {"ok": False, "error": "请指定快照 ID"}
+        try:
+            return self._snapshot_manager().restore_apply(
+                snapshot_id, self.rag_engine, mode=mode,
+                load_documents=self._load_documents, progress=progress,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    def snapshot_restore_stream(self, snapshot_id: str, mode: str = "append") -> Iterator[StreamEvent]:
+        """流式恢复快照：逐文件 ``progress`` 事件 + 最终 ``answer``（data 为结果 dict）。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            yield StreamEvent("error", "请指定快照 ID")
+            return
+
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def progress_cb(evt: Dict[str, Any]):
+                q.put(StreamEvent("progress", evt.get("message", ""), evt))
+
+            return self.snapshot_restore_apply(snapshot_id, mode=mode, progress=progress_cb)
+
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                yield StreamEvent("error", f"恢复失败: {error_holder['error']}")
+                return
+            result = result_holder.get("result") or {}
+            if not result.get("ok"):
+                yield StreamEvent("error", str(result.get("error") or "恢复失败"))
+                return
+            yield StreamEvent(
+                "answer",
+                f"恢复完成：成功 {result.get('restored', 0)}，跳过 {result.get('skipped', 0)}，"
+                f"失败 {result.get('failed', 0)}",
+                result,
+            )
+
+        yield from self._bridge(run, on_finish)
+
+    # ---------- 知识图谱可视化 ----------
+
+    def _graph_builder(self):
+        try:
+            from knowledge_graph import get_graph_builder
+        except ImportError:  # pragma: no cover
+            from src.knowledge_graph import get_graph_builder  # type: ignore
+        return get_graph_builder()
+
+    def graph_view_data(
+        self, types: Optional[List[str]] = None, min_confidence: float = 0.0,
+        max_nodes: int = 500, focus: Optional[str] = None, hops: int = 1, dim: int = 3,
+    ) -> Dict[str, Any]:
+        """可视化子图：节点/边列表 + 每个节点的布局坐标（``positions``）。"""
+        try:
+            builder = self._graph_builder()
+            view = builder.subgraph_for_view(
+                types=types, min_confidence=min_confidence, max_nodes=max_nodes,
+                focus=focus, hops=hops,
+            )
+            view["positions"] = builder.layout_positions([n["id"] for n in view["nodes"]], dim=dim)
+            view["dim"] = 3 if int(dim or 3) >= 3 else 2
+            return view
+        except BaseException as exc:  # noqa: BLE001
+            return {"nodes": [], "edges": [], "positions": {}, "dim": dim,
+                    "total_nodes": 0, "total_edges": 0, "truncated": False, "error": str(exc)}
+
+    def graph_entity_types(self) -> List[str]:
+        """图谱中出现过的实体类型（按数量倒序），供筛选控件使用。"""
+        try:
+            stats = self._graph_builder().get_statistics()
+            return [k for k, _ in sorted(stats.entity_types.items(), key=lambda kv: -kv[1])]
+        except BaseException:  # noqa: BLE001
+            return []
 
     # ---------- 会话高级 ----------
 

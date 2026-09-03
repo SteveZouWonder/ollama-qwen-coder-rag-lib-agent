@@ -539,6 +539,349 @@ def format_graph_result(result: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def format_file_delete_prompt(preview: Dict[str, Any]) -> str:
+    """删除文件二步确认的提示文案（片段数 / 元数据 / 图谱影响，强调不删磁盘文件）。"""
+    if not preview:
+        return ""
+    if preview.get("error"):
+        return f"❌ {preview['error']}"
+    name = preview.get("file_name") or preview.get("file_path") or "?"
+    if not preview.get("exists", True):
+        return f"❌ 文件不在知识库中：`{name}`"
+    if preview.get("graph_shared_basename"):
+        graph = "图谱保留（另有同名文件）"
+    elif preview.get("graph_nodes") or preview.get("graph_edges"):
+        graph = f"移除 {preview.get('graph_nodes', 0)} 个节点 / {preview.get('graph_edges', 0)} 条边的来源"
+    else:
+        graph = "无变更"
+    return (
+        f"将删除 `{name}` 的 **{preview.get('chunk_count', 0)} 个片段**与元数据，"
+        f"不删除磁盘文件；图谱：{graph}。继续？"
+    )
+
+
+def format_file_action_bar(path: str) -> str:
+    """文件操作条标题：``📄 文件名``（附完整路径 tooltip）。"""
+    path = (path or "").strip()
+    if not path:
+        return ""
+    name = path.rsplit("/", 1)[-1] if "/" in path else path
+    return f'<div class="cb-action-title" title="{path}">📄 <b>{name}</b></div>'
+
+
+_SNAPSHOT_TRIGGER_LABEL = {
+    "manual": "手动", "document_added": "自动（入库）", "batch_added": "自动（批量入库）",
+}
+
+
+def format_snapshot_info(info: Dict[str, Any]) -> str:
+    """快照详情（键值表 + 缺失文件提示）；文档清单另以表格展示。"""
+    if not info:
+        return ""
+    if info.get("error"):
+        return f"_{info['error']}_"
+    model = info.get("model_config") or {}
+    rows = [
+        ("快照 ID", f"`{info.get('snapshot_id', '')}`"),
+        ("时间", str(info.get("timestamp", ""))[:19].replace("T", " ")),
+        ("触发", _SNAPSHOT_TRIGGER_LABEL.get(info.get("trigger", ""), info.get("trigger", "") or "—")),
+        ("文档数 / 片段数", f"{info.get('document_count', 0)} / {info.get('total_chunks', 0)}"),
+        ("LLM / Embedding", f"`{model.get('llm_model', '?')}` / `{model.get('embed_model', '?')}`"),
+    ]
+    out = format_kv_table(rows)
+    missing = int(info.get("missing_count", 0) or 0)
+    if missing:
+        out += f"\n\n⚠️ **{missing} 个文件已不在磁盘上**，恢复时将跳过（下表红色标出）。"
+    return out
+
+
+def snapshot_doc_rows(info: Dict[str, Any]) -> List[List[Any]]:
+    """快照文档清单表格行：``[状态, 文件, 类型, 片段, 路径]``（不存在的文件标红）。"""
+    rows = []
+    for d in (info or {}).get("documents") or []:
+        exists = bool(d.get("exists", True))
+        status = "✅ 存在" if exists else '<span style="color:#dc2626;font-weight:700">❌ 缺失</span>'
+        name = d.get("file_name") or ""
+        if not exists:
+            name = f'<span style="color:#dc2626">{name}</span>'
+        rows.append([status, name, d.get("file_type", "") or "—", d.get("chunk_count", 0), d.get("file_path", "")])
+    return rows
+
+
+def format_restore_result(result: Dict[str, Any]) -> str:
+    """把 ``restore_apply`` 的结果渲染为 Markdown。"""
+    if not result:
+        return ""
+    if not result.get("ok"):
+        return f"❌ {result.get('error', '恢复失败')}"
+    mode = "替换" if result.get("mode") == "replace" else "追加"
+    lines = [
+        f"✅ 快照 `{result.get('snapshot_id', '')}` 已恢复（{mode}）：成功 **{result.get('restored', 0)}**，"
+        f"跳过 {result.get('skipped', 0)}，失败 {result.get('failed', 0)}，共 {result.get('chunks', 0)} 个片段"
+    ]
+    missing = result.get("missing") or []
+    if missing:
+        lines.append("")
+        lines.append(f"⚠️ 以下 {len(missing)} 个文件已不存在，已跳过：")
+        lines.extend(f"- `{m}`" for m in missing[:20])
+        if len(missing) > 20:
+            lines.append(f"- … 共 {len(missing)} 个")
+    errors = result.get("errors") or []
+    if errors:
+        lines.append("")
+        lines.append("❌ 失败明细：")
+        lines.extend(f"- {e}" for e in errors[:20])
+    return "\n".join(lines)
+
+
+def format_prune_preview(pending: List[Dict[str, Any]], keep: int) -> str:
+    """批量清理自动快照的确认预览。"""
+    if pending and str(pending[0].get("snapshot_id", "")).startswith("[错误]"):
+        return f"❌ {pending[0]['snapshot_id']}"
+    if not pending:
+        return f"✅ 自动快照不超过 {keep} 个，无需清理"
+    lines = [f"🧹 将删除 **{len(pending)}** 个自动快照（保留最近 {keep} 个，手动快照不受影响）：", ""]
+    lines.extend(
+        f"- `{p.get('snapshot_id')}` {str(p.get('timestamp', ''))[:19].replace('T', ' ')}"
+        for p in pending[:15]
+    )
+    if len(pending) > 15:
+        lines.append(f"- … 共 {len(pending)} 个")
+    return "\n".join(lines)
+
+
+# ==================== 知识图谱可视化（Plotly，可测试）====================
+
+# 实体类型 → 颜色（与 EntityType 对齐；未知类型回落到 other）
+GRAPH_TYPE_COLORS: Dict[str, str] = {
+    "person": "#f97316", "organization": "#8b5cf6", "location": "#10b981",
+    "concept": "#3b82f6", "technology": "#06b6d4", "tool": "#eab308",
+    "language": "#ec4899", "framework": "#14b8a6", "other": "#9ca3af",
+}
+
+
+def _node_size(degree: int, dim: int) -> float:
+    """按度数定节点大小（平方根缩放，避免高频节点过大）。"""
+    base = 6.0 if dim == 3 else 9.0
+    return base + min(float(degree or 0), 60.0) ** 0.5 * (2.2 if dim == 3 else 3.0)
+
+
+def _hover_docs(docs: List[str], limit: int = 5) -> str:
+    docs = [str(d) for d in (docs or []) if d]
+    if not docs:
+        return "—"
+    shown = ", ".join(docs[:limit])
+    return shown + (f" 等 {len(docs)} 个" if len(docs) > limit else "")
+
+
+def build_graph_figure(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    dim: int = 3,
+    positions: Optional[Dict[str, Tuple[float, ...]]] = None,
+    edge_labels: bool = False,
+    title: str = "",
+):
+    """把子图（节点/边列表）渲染为 Plotly Figure（2D 或 3D）。
+
+    - 节点按 ``entity_type`` 着色、按 ``degree`` 定大小，悬停显示名称 / 类型 / 来源文档；
+    - 边悬停显示 ``relation_type``（在边中点放透明标记承载 hover）；2D 可选显示边标签；
+    - ``positions`` 缺失时用 networkx spring 布局现场计算；
+    - 无节点时返回带"暂无数据"提示的空图。
+
+    依赖 plotly（惰性导入，未安装时抛 ImportError 由调用方提示）。
+    """
+    import plotly.graph_objects as go
+
+    dim = 3 if int(dim or 3) >= 3 else 2
+    fig = go.Figure()
+    layout_common = dict(
+        title=dict(text=title, x=0.01, font=dict(size=14)) if title else None,
+        margin=dict(l=0, r=0, t=30 if title else 8, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#6b7280"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1.0,
+                    bgcolor="rgba(0,0,0,0)", itemsizing="constant"),
+        hoverlabel=dict(font_size=12),
+        height=560,
+    )
+
+    if not nodes:
+        fig.update_layout(
+            **layout_common,
+            annotations=[dict(
+                text="暂无图谱数据：请先入库文档或在下方「构建」中手动构建，或放宽筛选条件",
+                showarrow=False, xref="paper", yref="paper", x=0.5, y=0.5, font=dict(size=14),
+            )],
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+        )
+        return fig
+
+    ids = [str(n["id"]) for n in nodes]
+    if not positions or any(i not in positions for i in ids):
+        import networkx as nx
+
+        g = nx.Graph()
+        g.add_nodes_from(ids)
+        g.add_edges_from((str(e["source"]), str(e["target"])) for e in edges
+                         if str(e.get("source")) in g and str(e.get("target")) in g)
+        positions = {str(k): tuple(float(x) for x in v) for k, v in nx.spring_layout(g, dim=dim, seed=42).items()}
+
+    def coord(node_id: str, axis: int) -> float:
+        pos = positions.get(node_id) or (0.0, 0.0, 0.0)
+        return float(pos[axis]) if axis < len(pos) else 0.0
+
+    # ---- 边：一条 trace 画全部线段（用 None 断开）+ 中点透明标记承载 hover ----
+    ex: List[Optional[float]] = []
+    ey: List[Optional[float]] = []
+    ez: List[Optional[float]] = []
+    mx: List[float] = []
+    my: List[float] = []
+    mz: List[float] = []
+    mtext: List[str] = []
+    mlabel: List[str] = []
+    id_set = set(ids)
+    for e in edges:
+        s, t = str(e.get("source")), str(e.get("target"))
+        if s not in id_set or t not in id_set:
+            continue
+        xs, ys = coord(s, 0), coord(s, 1)
+        xt, yt = coord(t, 0), coord(t, 1)
+        ex += [xs, xt, None]
+        ey += [ys, yt, None]
+        mx.append((xs + xt) / 2)
+        my.append((ys + yt) / 2)
+        if dim == 3:
+            zs, zt = coord(s, 2), coord(t, 2)
+            ez += [zs, zt, None]
+            mz.append((zs + zt) / 2)
+        rel = str(e.get("relation_type", "related"))
+        s_text = next((n.get("text", s) for n in nodes if str(n["id"]) == s), s)
+        t_text = next((n.get("text", t) for n in nodes if str(n["id"]) == t), t)
+        mtext.append(f"<b>{s_text}</b> —[{rel}]→ <b>{t_text}</b><br>置信度 {float(e.get('confidence', 0) or 0):.2f}"
+                     f"<br>来源: {_hover_docs(e.get('documents') or [])}")
+        mlabel.append(rel)
+
+    edge_line = dict(color="rgba(148,163,184,0.45)", width=1.2 if dim == 3 else 1.0)
+    if ex:
+        if dim == 3:
+            fig.add_trace(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=edge_line,
+                                       hoverinfo="none", showlegend=False, name="边"))
+            fig.add_trace(go.Scatter3d(
+                x=mx, y=my, z=mz, mode="markers", marker=dict(size=2, color="rgba(148,163,184,0.01)"),
+                hovertext=mtext, hoverinfo="text", showlegend=False, name="关系",
+            ))
+        else:
+            fig.add_trace(go.Scatter(x=ex, y=ey, mode="lines", line=edge_line,
+                                     hoverinfo="none", showlegend=False, name="边"))
+            fig.add_trace(go.Scatter(
+                x=mx, y=my, mode="markers+text" if edge_labels else "markers",
+                marker=dict(size=4, color="rgba(148,163,184,0.01)"),
+                text=mlabel if edge_labels else None, textposition="top center",
+                textfont=dict(size=9, color="#94a3b8"),
+                hovertext=mtext, hoverinfo="text", showlegend=False, name="关系",
+            ))
+
+    # ---- 节点：按类型分 trace（便于图例显隐）----
+    by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for n in nodes:
+        by_type.setdefault(str(n.get("entity_type", "other")).lower(), []).append(n)
+    for etype in sorted(by_type, key=lambda t: -len(by_type[t])):
+        group = by_type[etype]
+        color = GRAPH_TYPE_COLORS.get(etype, GRAPH_TYPE_COLORS["other"])
+        xs = [coord(str(n["id"]), 0) for n in group]
+        ys = [coord(str(n["id"]), 1) for n in group]
+        sizes = [_node_size(int(n.get("degree", 0) or 0), dim) for n in group]
+        hover = [
+            f"<b>{n.get('text', n['id'])}</b><br>类型: {etype}<br>度数: {int(n.get('degree', 0) or 0)}"
+            f"<br>置信度: {float(n.get('confidence', 0) or 0):.2f}<br>来源: {_hover_docs(n.get('documents') or [])}"
+            for n in group
+        ]
+        labels = [str(n.get("text", n["id"])) for n in group]
+        marker = dict(size=sizes, color=color, opacity=0.92,
+                      line=dict(width=0.6, color="rgba(255,255,255,0.7)"))
+        name = f"{etype}（{len(group)}）"
+        if dim == 3:
+            zs = [coord(str(n["id"]), 2) for n in group]
+            fig.add_trace(go.Scatter3d(
+                x=xs, y=ys, z=zs, mode="markers+text", marker=marker, text=labels,
+                textposition="top center", textfont=dict(size=9),
+                hovertext=hover, hoverinfo="text", name=name,
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers+text", marker=marker, text=labels,
+                textposition="top center", textfont=dict(size=10),
+                hovertext=hover, hoverinfo="text", name=name,
+            ))
+
+    axis_off = dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
+    if dim == 3:
+        fig.update_layout(
+            **layout_common,
+            scene=dict(xaxis=dict(**axis_off, title=""), yaxis=dict(**axis_off, title=""),
+                       zaxis=dict(**axis_off, title=""), bgcolor="rgba(0,0,0,0)",
+                       camera=dict(eye=dict(x=1.4, y=1.4, z=1.0))),
+        )
+    else:
+        fig.update_layout(**layout_common, xaxis=axis_off, yaxis=axis_off)
+    return fig
+
+
+def format_graph_view_stats(view: Dict[str, Any]) -> str:
+    """当前视图统计：显示节点/边数（相对总量）、类型分布、截断提示。"""
+    if not view:
+        return ""
+    if view.get("error"):
+        return f"❌ 图谱不可用：{view['error']}"
+    nodes = view.get("nodes") or []
+    edges = view.get("edges") or []
+    total_n = int(view.get("total_nodes", 0) or 0)
+    total_e = int(view.get("total_edges", 0) or 0)
+    if not total_n:
+        return "_图谱为空：入库文档后会自动派生，也可在下方「构建」手动喂入文本。_"
+    types: Dict[str, int] = {}
+    for n in nodes:
+        t = str(n.get("entity_type", "other"))
+        types[t] = types.get(t, 0) + 1
+    dist = " · ".join(f"{t} {c}" for t, c in sorted(types.items(), key=lambda kv: -kv[1]))
+    line = (
+        f"当前视图：**{len(nodes)}** / {total_n} 节点 · **{len(edges)}** / {total_e} 边"
+        + (f" · {'3D' if int(view.get('dim', 3) or 3) >= 3 else '2D'}")
+    )
+    if dist:
+        line += f"\n\n类型分布：{dist}"
+    if view.get("truncated"):
+        line += "\n\n_已按度数截取前 N 个节点，可调大「最多节点数」或用聚焦实体缩小范围。_"
+    if view.get("focus"):
+        line += f"\n\n聚焦：`{view['focus']}`（{view.get('hops', 1)} 跳）"
+    return line
+
+
+def format_graph_summary_cards(summary: Dict[str, Any]) -> str:
+    """图谱概览指标卡片（HTML）：节点 / 边 / 连通分量 / 平均度 / 类型数。"""
+    if not summary.get("is_available", True) and summary.get("error"):
+        return f'<div class="cb-empty">❌ 知识图谱不可用：{summary["error"]}</div>'
+    stats = summary.get("statistics") or {}
+
+    def card(k: str, v: Any, small: bool = False) -> str:
+        cls = "v small" if small else "v"
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="{cls}" title="{v}">{v}</div></div>'
+
+    avg = stats.get("average_degree", 0) or 0
+    density = stats.get("density", 0) or 0
+    cards = [
+        card("节点", stats.get("total_nodes", 0)),
+        card("边", stats.get("total_edges", 0)),
+        card("实体类型", len(stats.get("entity_types") or {})),
+        card("关系类型", len(stats.get("relation_types") or {})),
+        card("连通分量", stats.get("connected_components", 0)),
+        card("平均度 / 密度", f"{float(avg):.2f} / {float(density):.4f}", small=True),
+    ]
+    return f'<div class="cb-cards">{"".join(cards)}</div>'
+
+
 # ==================== UI 处理器工厂（可测试）====================
 
 def build_handlers(service: WebService) -> Dict[str, Callable]:
@@ -1130,17 +1473,79 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_file_dedupe() -> Tuple[str, List[List[Any]]]:
         return _fmt_result(service.file_deduplicate()), on_file_table()
 
+    # -- 文件「⋯」操作条：删除文件（向量 + 图谱 + 元数据，不删磁盘）--
+
+    def on_file_action_bar(path: str) -> str:
+        return format_file_action_bar(path)
+
+    def on_file_delete_preview(path: str) -> str:
+        return format_file_delete_prompt(service.file_delete_preview(path))
+
+    def on_file_delete(path: str) -> Tuple[str, List[List[Any]], str]:
+        """删除文件：返回 (结果, 刷新后的文件表, 刷新后的统计卡片)。"""
+        msg = _fmt_result(service.remove_file(path))
+        return msg, on_file_table(), on_stats_cards()
+
     _SNAPSHOT_HEADERS = ["快照 ID", "时间", "文档", "片段", "触发"]
+    _SNAPSHOT_DOC_HEADERS = ["状态", "文件", "类型", "片段", "路径"]
 
     def on_snapshot_table() -> List[List[Any]]:
         return [
-            [s.get("snapshot_id", ""), s.get("timestamp", ""), s.get("document_count", 0),
-             s.get("total_chunks", 0), s.get("trigger", "")]
+            [s.get("snapshot_id", ""), str(s.get("timestamp", ""))[:19].replace("T", " "),
+             s.get("document_count", 0), s.get("total_chunks", 0),
+             _SNAPSHOT_TRIGGER_LABEL.get(s.get("trigger", ""), s.get("trigger", ""))]
             for s in service.snapshot_list_data()
         ]
 
     def on_snapshot_create_table() -> Tuple[str, List[List[Any]]]:
         return _fmt_result(service.snapshot_create()), on_snapshot_table()
+
+    # -- 快照「⋯」操作条：详情 / 恢复 / 删除 / 批量清理 --
+
+    def on_snapshot_info(snapshot_id: str) -> Tuple[str, List[List[Any]]]:
+        """快照详情：返回 (键值表 Markdown, 文档清单表格行)。"""
+        info = service.snapshot_info(snapshot_id)
+        return format_snapshot_info(info), snapshot_doc_rows(info)
+
+    def on_snapshot_delete(snapshot_id: str) -> Tuple[str, List[List[Any]]]:
+        return _fmt_result(service.snapshot_delete(snapshot_id)), on_snapshot_table()
+
+    def on_snapshot_prune_preview(keep: float = 10) -> str:
+        keep_n = int(keep or 0)
+        return format_prune_preview(service.snapshot_prune_preview(keep_n), keep_n)
+
+    def on_snapshot_prune(keep: float = 10) -> Tuple[str, List[List[Any]]]:
+        return _fmt_result(service.snapshot_prune(int(keep or 0))), on_snapshot_table()
+
+    def on_snapshot_restore_stream(snapshot_id: str, mode: str = "append"):
+        """流式恢复快照：yield (状态行, 结果 Markdown)。"""
+        snapshot_id = (snapshot_id or "").strip()
+        if not snapshot_id:
+            yield "_请先选中一个快照_", ""
+            return
+        tracker = ProgressTracker()
+        tracker.current = "准备恢复…"
+        yield tracker.render_status(), ""
+        final = None
+        for evt in service.snapshot_restore_stream(snapshot_id, mode=mode):
+            if evt.kind == "progress":
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield tracker.render_status(), tracker.render_steps("恢复进度")
+            elif evt.kind == "heartbeat":
+                yield tracker.render_status(), tracker.render_steps("恢复进度")
+            elif evt.kind == "answer":
+                final = evt
+            elif evt.kind == "cancelled":
+                yield tracker.render_status("cancelled"), tracker.render_steps("恢复进度", done=True)
+                return
+            elif evt.kind == "error":
+                yield tracker.render_status("error"), f"❌ {evt.message}"
+                return
+        if final is None:
+            yield tracker.render_status("error", "未获得结果"), ""
+            return
+        data = final.data if isinstance(final.data, dict) else {}
+        yield tracker.render_status("done"), format_restore_result(data)
 
     _SUMMARY_HEADERS = ["文件", "类型", "置信度", "片段", "主题"]
 
@@ -1163,6 +1568,40 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         if (source or "").startswith("文件"):
             return _fmt_result(service.graph_build_file(text))
         return _fmt_result(service.graph_build(text))
+
+    # ---------- 知识图谱：3D / 2D 可视化 ----------
+
+    def on_graph_type_choices() -> List[str]:
+        return service.graph_entity_types()
+
+    def on_graph_summary_cards() -> str:
+        return format_graph_summary_cards(service.graph_summary())
+
+    def on_graph_view(
+        dim_label: str = "3D", types: Optional[List[str]] = None, min_confidence: float = 0.0,
+        max_nodes: float = 500, focus: str = "", hops: float = 1, edge_labels: bool = False,
+    ):
+        """渲染图谱视图：返回 (Plotly Figure 或 None, 视图统计 Markdown, 概览卡片 HTML)。"""
+        dim = 3 if str(dim_label or "3D").upper().startswith("3") else 2
+        view = service.graph_view_data(
+            types=list(types or []) or None, min_confidence=float(min_confidence or 0),
+            max_nodes=int(max_nodes or 500), focus=(focus or "").strip() or None,
+            hops=int(hops or 1), dim=dim,
+        )
+        view["focus"] = (focus or "").strip()
+        view["hops"] = int(hops or 1)
+        stats_md = format_graph_view_stats(view)
+        cards = on_graph_summary_cards()
+        try:
+            fig = build_graph_figure(
+                view.get("nodes") or [], view.get("edges") or [], dim=dim,
+                positions=view.get("positions") or None, edge_labels=bool(edge_labels) and dim == 2,
+            )
+        except ImportError:
+            return None, "❌ 未安装 plotly：`pip install plotly` 后重启即可显示图谱视图", cards
+        except Exception as exc:  # noqa: BLE001
+            return None, f"❌ 渲染失败：{exc}", cards
+        return fig, stats_md, cards
 
     # ---------- 工具：数据库写操作 / Shell / 文件读写 / 工作目录 ----------
 
@@ -1247,6 +1686,17 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_file_dedupe": on_file_dedupe,
         "on_snapshot_table": on_snapshot_table,
         "on_snapshot_create_table": on_snapshot_create_table,
+        "on_file_action_bar": on_file_action_bar,
+        "on_file_delete_preview": on_file_delete_preview,
+        "on_file_delete": on_file_delete,
+        "on_snapshot_info": on_snapshot_info,
+        "on_snapshot_delete": on_snapshot_delete,
+        "on_snapshot_prune_preview": on_snapshot_prune_preview,
+        "on_snapshot_prune": on_snapshot_prune,
+        "on_snapshot_restore_stream": on_snapshot_restore_stream,
+        "on_graph_type_choices": on_graph_type_choices,
+        "on_graph_summary_cards": on_graph_summary_cards,
+        "on_graph_view": on_graph_view,
         "on_knowledge_summary_table": on_knowledge_summary_table,
         "on_graph_query_typed": on_graph_query_typed,
         "on_graph_build_any": on_graph_build_any,
@@ -1264,7 +1714,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_collab_choices": on_collab_choices,
         "headers": {
             "files": _FILE_HEADERS, "snapshots": _SNAPSHOT_HEADERS, "summary": _SUMMARY_HEADERS,
-            "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS,
+            "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS, "snapshot_docs": _SNAPSHOT_DOC_HEADERS,
         },
         "on_chat": on_chat,
         "on_chat_stream": on_chat_stream,

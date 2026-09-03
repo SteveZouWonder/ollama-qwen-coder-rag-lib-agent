@@ -263,6 +263,39 @@ button.stop:hover { background: #fecaca !important; }
 .cb-kv th { text-align: left; opacity: .6; font-size: .8rem; }
 .cb-kv td:first-child { white-space: nowrap; opacity: .75; width: 32%; }
 
+/* ---- 表格「⋯」操作列 / 选中行操作条 ---- */
+.cb-more { display: inline-block; width: 100%; text-align: center; font-weight: 800; font-size: 1.1rem;
+  line-height: 1; color: var(--cb-accent); cursor: pointer; letter-spacing: .05em; }
+.cb-more:hover { color: var(--cb-accent-strong); }
+.cb-action-bar { border: 1px solid var(--cb-accent-border); background: var(--cb-accent-soft);
+  border-radius: var(--cb-radius); padding: 10px 12px; gap: 8px !important; margin-bottom: 8px; }
+.cb-action-title { font-size: .95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-action-title code { font-size: .82rem; }
+.cb-action-bar .cb-inline-actions { gap: 6px !important; flex-wrap: wrap; }
+/* 操作条内展开确认时，确认气泡独占一整行、提示文案在上按钮在下，避免被挤成竖条 */
+.cb-action-bar .cb-confirm-wrap:has(> .cb-confirm:not(.hidden)) { flex: 1 1 100% !important; width: 100%; }
+.cb-action-bar .cb-confirm { flex-wrap: wrap; }
+.cb-action-bar .cb-confirm > .block { flex: 1 1 100% !important; min-width: 0 !important; }
+.cb-action-bar .cb-confirm > .cb-btn { flex: 1 1 0 !important; }
+.cb-action-bar .cb-confirm code { word-break: break-all; }
+
+/* ---- 知识图谱视图 ---- */
+.cb-graph-controls { align-items: flex-end !important; gap: 10px !important; flex-wrap: wrap; }
+.cb-graph-controls > .cb-segment, .cb-graph-controls > .cb-hops { flex: 0 0 auto !important; }
+.cb-graph-controls .form { display: flex; gap: 10px; align-items: flex-end; flex: 1 1 auto; flex-wrap: nowrap;
+  background: transparent !important; border: none !important; box-shadow: none !important; }
+.cb-graph-controls .form > * { flex: 1 1 0 !important; min-width: 0 !important; max-width: none !important;
+  width: auto !important; }
+.cb-graph-controls .form > *:has(input[type=number]):not(:has(input[type=range])) { flex: 0 0 130px !important; }
+.cb-graph-controls .form > .cb-segment, .cb-graph-controls .form > .cb-hops { flex: 0 0 auto !important; }
+.cb-graph-controls .cb-hops .wrap { flex-wrap: nowrap; }
+.cb-graph-controls .form > *:has(input[type=checkbox]) { flex: 0 0 auto !important; }
+.cb-graph-controls .cb-btn { flex: 0 0 auto !important; }
+.cb-graph-controls label > span { font-size: .75rem; }
+.cb-graph-plot { border-radius: var(--cb-radius); border: 1px solid var(--border-color-primary);
+  background: var(--background-fill-secondary); min-height: 560px; }
+.cb-graph-plot .js-plotly-plot, .cb-graph-plot .plot-container { background: transparent !important; }
+
 /* ---- 响应式 ---- */
 @media (max-width: 1100px) {
   .cb-side-panel { min-width: 100% !important; }

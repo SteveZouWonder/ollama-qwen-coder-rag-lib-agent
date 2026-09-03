@@ -621,6 +621,161 @@ class RAGEngine:
             "top_k": TOP_K,
         }
 
+    # ==================== 文件删除 ====================
+
+    def _chunk_metadatas_for_file(self, file_path: str) -> List[dict]:
+        """向量库中属于该文件的全部 chunk 元数据（按 ``file_path`` 精确匹配）。"""
+        try:
+            data = self.chroma_collection.get(where={"file_path": file_path}, include=["metadatas"])
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️ 读取向量库元数据失败: {e}")
+            return []
+        return [m for m in ((data or {}).get("metadatas") or []) if m]
+
+    def _other_files_share_basename(self, file_path: str, basename: str) -> bool:
+        """库中是否还有其他 ``file_path`` 不同、但 basename 相同的文件（删除后判定）。"""
+        try:
+            data = self.chroma_collection.get(where={"file_name": basename}, include=["metadatas"])
+        except Exception:  # noqa: BLE001
+            return False
+        for meta in (data or {}).get("metadatas") or []:
+            if meta and str(meta.get("file_path") or "") != file_path:
+                return True
+        return False
+
+    def remove_file(self, file_path: str) -> dict:
+        """从知识库删除一个文件：向量库 chunk（含 docstore）→ 知识图谱 → 文件元数据。
+
+        不删除磁盘上的原文件。图谱以 basename 作为 doc_id，若库中还有另一个同名
+        basename 的文件（不同路径），则**不动图谱**，仅在 ``note`` 中提示。
+
+        Returns:
+            ``{"file_path", "chunks_deleted", "graph_updated", "graph": {...}, "note"}``
+        """
+        file_path = str(file_path or "").strip()
+        if not file_path:
+            raise ValueError("文件路径不能为空")
+
+        metas = self._chunk_metadatas_for_file(file_path)
+        registered = (
+            self.metadata_manager.get_file_metadata(file_path) is not None
+            if self.metadata_manager else False
+        )
+        if not metas and not registered:
+            raise FileNotFoundError(f"文件不在知识库中: {file_path}")
+
+        basename = Path(file_path).name
+        for meta in metas:
+            if meta.get("file_name"):
+                basename = str(meta["file_name"])
+                break
+
+        # 1) 删除向量库 chunk（优先经索引删除，同时清理 docstore/index_struct）
+        chunks_deleted = len(metas)
+        ref_doc_ids = {
+            str(m.get("document_id") or m.get("ref_doc_id") or m.get("doc_id") or "")
+            for m in metas
+        }
+        ref_doc_ids.discard("")
+        if metas:
+            deleted_via_index = False
+            if self.index is not None and ref_doc_ids:
+                try:
+                    for ref_id in ref_doc_ids:
+                        self.index.delete_ref_doc(ref_id, delete_from_docstore=True)
+                    deleted_via_index = True
+                except Exception as e:  # noqa: BLE001
+                    print(f"⚠️ 经索引删除失败，改为直接删除向量: {e}")
+            if not deleted_via_index:
+                self.chroma_collection.delete(where={"file_path": file_path})
+            # 兜底：确保按 file_path 残留的 chunk 也被清掉
+            try:
+                leftover = self._chunk_metadatas_for_file(file_path)
+                if leftover:
+                    self.chroma_collection.delete(where={"file_path": file_path})
+            except Exception:  # noqa: BLE001
+                pass
+            if self.index is not None:
+                try:
+                    self._persist_index()
+                except Exception as e:  # noqa: BLE001
+                    print(f"⚠️ 持久化索引失败: {e}")
+
+        # 2) 知识图谱：仅当库中无其他同名 basename 文件时移除该文档贡献
+        graph_result: dict = {}
+        graph_updated = False
+        note = ""
+        if self._other_files_share_basename(file_path, basename):
+            note = f"图谱保留：另有同名文件 {basename}"
+        else:
+            try:
+                try:
+                    from knowledge_graph import get_graph_builder
+                except ImportError:  # pragma: no cover
+                    from src.knowledge_graph import get_graph_builder  # type: ignore
+                builder = get_graph_builder()
+                if getattr(builder, "graph", None) is not None:
+                    graph_result = builder.remove_document(basename)
+                    graph_updated = any(graph_result.values())
+                    if not graph_updated:
+                        note = "图谱无该文件的贡献，未变更"
+            except Exception as e:  # noqa: BLE001
+                note = f"图谱更新失败: {e}"
+
+        # 3) 文件元数据
+        if self.metadata_manager:
+            try:
+                self.metadata_manager.remove_file(file_path)
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ 移除文件元数据失败: {e}")
+
+        print(f"🗑️  已删除文件 {basename}：{chunks_deleted} 个片段" + (f"（{note}）" if note else ""))
+        return {
+            "file_path": file_path,
+            "file_name": basename,
+            "chunks_deleted": chunks_deleted,
+            "graph_updated": graph_updated,
+            "graph": graph_result,
+            "note": note,
+        }
+
+    def file_delete_preview(self, file_path: str) -> dict:
+        """删除前预览：片段数、是否同名冲突、图谱中受影响的节点/边数。"""
+        file_path = str(file_path or "").strip()
+        metas = self._chunk_metadatas_for_file(file_path) if file_path else []
+        basename = Path(file_path).name if file_path else ""
+        for meta in metas:
+            if meta.get("file_name"):
+                basename = str(meta["file_name"])
+                break
+        shared = self._other_files_share_basename(file_path, basename) if file_path else False
+        nodes = edges = 0
+        if not shared and basename:
+            try:
+                try:
+                    from knowledge_graph import get_graph_builder
+                except ImportError:  # pragma: no cover
+                    from src.knowledge_graph import get_graph_builder  # type: ignore
+                g = getattr(get_graph_builder(), "graph", None)
+                if g is not None:
+                    nodes = sum(1 for _, d in g.nodes(data=True) if basename in (d.get("documents") or []))
+                    edges = sum(1 for _, _, d in g.edges(data=True) if basename in (d.get("documents") or []))
+            except Exception:  # noqa: BLE001
+                pass
+        registered = bool(
+            self.metadata_manager and file_path
+            and self.metadata_manager.get_file_metadata(file_path) is not None
+        )
+        return {
+            "file_path": file_path,
+            "file_name": basename,
+            "exists": bool(metas) or registered,
+            "chunk_count": len(metas),
+            "graph_shared_basename": shared,
+            "graph_nodes": nodes,
+            "graph_edges": edges,
+        }
+
     def clear_index(self):
         """清空索引"""
         print("🗑️  清空索引...")

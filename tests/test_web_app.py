@@ -1167,7 +1167,7 @@ class TestNewHandlers:
         svc.snapshot_create.return_value = "[成功] ok"
         svc.knowledge_summary_data.return_value = [{"file_name": "a", "kind": "通用", "confidence": 0.5, "chunk_count": 1, "topics": "x"}]
         h = build_handlers(svc)
-        assert h["on_snapshot_table"]() == [["s", "t", 1, 2, "manual"]]
+        assert h["on_snapshot_table"]() == [["s", "t", 1, 2, "手动"]]
         msg, rows = h["on_snapshot_create_table"]()
         assert msg.startswith("✅") and rows
         assert h["on_knowledge_summary_table"]() == [["a", "通用", "0.50", 1, "x"]]

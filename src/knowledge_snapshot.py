@@ -260,6 +260,173 @@ class KnowledgeSnapshotManager:
         self.logger.info(f"快照已删除: {snapshot_id}")
         return True
     
+    # 自动触发的快照类型（批量清理只动这些，手动快照始终保留）
+    AUTO_TRIGGERS = ("document_added", "batch_added")
+
+    def snapshot_info(self, snapshot_id: str) -> Optional[Dict]:
+        """快照详情：文档清单（含磁盘是否存在）、模型配置、触发方式等。"""
+        snapshot = self.load_snapshot(snapshot_id)
+        if not snapshot:
+            return None
+        documents = []
+        missing = 0
+        for doc in snapshot.documents:
+            exists = Path(doc.file_path).exists()
+            if not exists:
+                missing += 1
+            documents.append({
+                "file_path": doc.file_path,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "chunk_count": int(doc.chunk_count or 0),
+                "file_hash": doc.file_hash,
+                "added_timestamp": doc.added_timestamp,
+                "exists": exists,
+            })
+        return {
+            "snapshot_id": snapshot.snapshot_id,
+            "timestamp": snapshot.timestamp,
+            "version": snapshot.version,
+            "trigger": (snapshot.metadata or {}).get("trigger", "unknown"),
+            "document_count": len(documents),
+            "missing_count": missing,
+            "total_chunks": int(snapshot.total_chunks or 0),
+            "model_config": dict(snapshot.model_config or {}),
+            "storage_paths": dict(snapshot.storage_paths or {}),
+            "documents": documents,
+        }
+
+    def restore_apply(
+        self,
+        snapshot_id: str,
+        rag_engine,
+        mode: str = "append",
+        load_documents=None,
+        progress=None,
+    ) -> Dict:
+        """真正执行恢复：按快照中的文档清单重新加载并入库。
+
+        Args:
+            snapshot_id: 快照 ID。
+            rag_engine: 已初始化的 RAGEngine（需有 ``add_documents`` / ``clear_index``）。
+            mode: ``append``（追加到现有索引）或 ``replace``（先清空索引再入库）。
+            load_documents: 文档加载函数 ``(path) -> List[Document]``；默认
+                ``document_loader.load_documents``。
+            progress: 可选进度回调，接收 ``{"stage", "message", "current", "total"}``。
+
+        Returns:
+            ``{"ok", "mode", "restored", "skipped", "failed", "chunks", "missing": [...],
+            "errors": [...]}``；快照不存在时 ``ok=False`` 并带 ``error``。
+        """
+        snapshot = self.load_snapshot(snapshot_id)
+        if not snapshot:
+            return {"ok": False, "error": f"快照不存在: {snapshot_id}"}
+        mode = (mode or "append").strip().lower()
+        if mode not in ("append", "replace"):
+            return {"ok": False, "error": f"未知恢复模式: {mode}（支持 append / replace）"}
+        if load_documents is None:
+            try:
+                from document_loader import load_documents as _ld
+            except ImportError:
+                from src.document_loader import load_documents as _ld  # type: ignore
+            load_documents = _ld
+
+        def emit(stage: str, message: str, current: int = 0, total: int = 0):
+            if progress is not None:
+                try:
+                    progress({"stage": stage, "message": message, "current": current, "total": total})
+                except Exception:  # noqa: BLE001 - 进度回调失败不影响恢复
+                    pass
+
+        total = len(snapshot.documents)
+        missing = [d.file_path for d in snapshot.documents if not Path(d.file_path).exists()]
+        present = [d for d in snapshot.documents if d.file_path not in set(missing)]
+        emit("plan", f"快照 {snapshot_id}：{total} 个文档，{len(missing)} 个文件缺失将跳过", 0, total)
+
+        if mode == "replace":
+            emit("clear", "清空现有索引…", 0, total)
+            rag_engine.clear_index()
+            # 清空时索引对象置空，后续 add_documents 会自动重建
+            # 图谱同为派生索引，替换模式下一并清空（重新入库会派生重建）
+            try:
+                try:
+                    from knowledge_graph import get_graph_builder
+                except ImportError:  # pragma: no cover
+                    from src.knowledge_graph import get_graph_builder  # type: ignore
+                builder = get_graph_builder()
+                if getattr(builder, "graph", None) is not None:
+                    builder.clear(persist=True)
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"替换恢复时清空图谱失败: {e}")
+
+        restored, failed, chunks = 0, 0, 0
+        errors: List[str] = []
+        prev_auto = getattr(rag_engine, "auto_snapshot_trigger", None)
+        # 恢复过程中抑制自动快照，避免每个文件都产生一份新快照
+        if prev_auto is not None:
+            try:
+                rag_engine.auto_snapshot_trigger = None
+            except Exception:  # noqa: BLE001
+                prev_auto = None
+        try:
+            for i, doc in enumerate(present, 1):
+                emit("load", f"加载 {doc.file_name}", i, len(present))
+                try:
+                    docs = load_documents(doc.file_path)
+                    if not docs:
+                        failed += 1
+                        errors.append(f"{doc.file_path}: 无法加载文档")
+                        continue
+                    rag_engine.add_documents(docs, [doc.file_path])
+                    restored += 1
+                    chunks += len(docs)
+                except Exception as e:  # noqa: BLE001
+                    failed += 1
+                    errors.append(f"{doc.file_path}: {e}")
+        finally:
+            if prev_auto is not None:
+                rag_engine.auto_snapshot_trigger = prev_auto
+
+        emit("done", f"恢复完成：成功 {restored}，跳过 {len(missing)}，失败 {failed}", len(present), len(present))
+        return {
+            "ok": True,
+            "snapshot_id": snapshot_id,
+            "mode": mode,
+            "total": total,
+            "restored": restored,
+            "skipped": len(missing),
+            "failed": failed,
+            "chunks": chunks,
+            "missing": missing,
+            "errors": errors,
+        }
+
+    def prune_preview(self, keep: int = 10, auto_only: bool = True) -> List[Dict]:
+        """批量清理预览：返回将被删除的快照（自动触发优先，保留最近 ``keep`` 个）。"""
+        try:
+            keep = max(0, int(keep))
+        except (TypeError, ValueError):
+            keep = 10
+        snapshots = self.list_snapshots()  # 已按文件名（时间戳）倒序
+        if auto_only:
+            candidates = [s for s in snapshots if s.get("trigger") in self.AUTO_TRIGGERS]
+        else:
+            candidates = list(snapshots)
+        return candidates[keep:]
+
+    def prune(self, keep: int = 10, auto_only: bool = True) -> List[str]:
+        """批量清理快照：只删自动触发的（``auto_only``），保留最近 ``keep`` 个。
+
+        Returns:
+            已删除的快照 ID 列表。
+        """
+        deleted: List[str] = []
+        for snap in self.prune_preview(keep=keep, auto_only=auto_only):
+            sid = snap.get("snapshot_id", "")
+            if sid and self.delete_snapshot(sid):
+                deleted.append(sid)
+        return deleted
+
     def get_latest_snapshot(self) -> Optional[KnowledgeSnapshot]:
         """获取最新的快照"""
         snapshots = self.list_snapshots()
