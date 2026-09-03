@@ -46,7 +46,7 @@ class TestConfigDefaults:
         try:
             assert config.LLM_THINK is True
         finally:
-            monkeypatch.delenv("LLM_THINK", raising=False)
+            os.environ.pop("LLM_THINK", None)
             importlib.reload(config)
 
     def test_embed_model_default(self, clean_env):
@@ -378,7 +378,7 @@ class TestResolveNumCtx:
             assert config.LLM_NUM_CTX == 8192
         finally:
             # 恢复干净的模块级 config，避免污染后续依赖 config.LLM_MODEL 的测试
-            monkeypatch.delenv("LLM_MODEL", raising=False)
+            os.environ.pop("LLM_MODEL", None)
             importlib.reload(config)
 
 
@@ -398,7 +398,7 @@ class TestSetLlmModel:
             assert config.Config.MODEL == "qwen3.5:9b"
             assert os.environ["LLM_MODEL"] == "qwen3.5:9b"
         finally:
-            monkeypatch.delenv("LLM_MODEL", raising=False)
+            os.environ.pop("LLM_MODEL", None)
             importlib.reload(config)
 
     def test_switch_followed_by_lazy_readers(self, monkeypatch, clean_env):
@@ -411,10 +411,27 @@ class TestSetLlmModel:
             from agent_config import _default_model
             assert _default_model() == "qwen3.5:9b"
         finally:
-            monkeypatch.delenv("LLM_MODEL", raising=False)
+            os.environ.pop("LLM_MODEL", None)
             importlib.reload(config)
 
     def test_switch_rejects_empty(self, clean_env):
         import config
         with pytest.raises(ValueError):
             config.set_llm_model("   ")
+
+
+class TestSetLlmThink:
+    def test_toggle(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        importlib.reload(config)
+        try:
+            assert config.set_llm_think(True) is True
+            assert config.LLM_THINK is True
+            assert os.environ["LLM_THINK"] == "true"
+            assert config.set_llm_think(0) is False
+            assert config.LLM_THINK is False
+            assert os.environ["LLM_THINK"] == "false"
+        finally:
+            os.environ.pop("LLM_THINK", None)
+            importlib.reload(config)

@@ -224,6 +224,27 @@ class WebService:
             return {"ok": False, "model": "", "previous": "", "num_ctx": 0,
                     "unloaded_previous": False, "message": f"切换失败: {exc}"}
 
+    def set_think(self, enabled: bool) -> Dict[str, Any]:
+        """运行时开关思考模式。
+
+        同步已创建的 RAG 引擎（重建 LLM）并更新全局 config（Web 端 ReActEngine
+        每次对话新建，会自动跟随）。开启前校验当前模型是否支持 thinking。
+        返回 ``{ok, enabled, changed, message}``。
+        """
+        try:
+            result = self._model_switcher_factory().switch_think(
+                bool(enabled), rag_engine=self._rag_engine, react_engine=None,
+            )
+            return {
+                "ok": result.ok,
+                "enabled": result.enabled,
+                "changed": result.changed,
+                "message": result.message,
+            }
+        except BaseException as exc:  # noqa: BLE001
+            return {"ok": False, "enabled": False, "changed": False,
+                    "message": f"设置失败: {exc}"}
+
     # ---------- RAG 检索 ----------
 
     def rag_query_stream(

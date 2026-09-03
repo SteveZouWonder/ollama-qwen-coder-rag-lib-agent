@@ -588,6 +588,8 @@ ResultIntegrator 整合结果
 | `/model` | - | 显示当前模型（是否已加载、驻留大小、num_ctx、思考模式） |
 | `/model list` | - | 🆕 列出本机已安装模型 |
 | `/model <name>` | - | 🆕 运行时热切换模型并释放旧模型（如 `/model qwen3.5:9b`） |
+| `/think` | - | 🆕 显示思考模式状态（默认关） |
+| `/think on\|off` | - | 🆕 运行时开关思考模式（需模型支持，如 qwen3.5） |
 | `/tutorial` | - | 使用教程 |
 | `/help` | - | 帮助 |
 | `/quit` | - | 退出 |
@@ -949,11 +951,11 @@ export LLM_MODEL=qwen3.5:9b
 /model qwen3.5:9b # 切换
 ```
 
-Web 界面：对话页顶部有**模型下拉**，选择后点「切换模型」即时生效，状态栏显示当前模型与驻留情况。
+Web 界面：对话页顶部有**模型下拉**，选择后点「切换模型」即时生效；旁边的**「思考模式」复选框**可随时开关（模型不支持时会自动回弹并提示）。状态栏显示当前模型、驻留情况与思考模式。
 
 ### 与 IDE 共存的内存实践
 
-- **思考模式默认关闭**（`LLM_THINK=false`）：ReAct 的 Thought/Action 已是显式推理，再叠加隐式思维链只会拖慢。同一问题 qwen3.5:4b 从 31s 降到 2.8s。需要深度推理时 `LLM_THINK=true`（仅支持思考模式的模型）。
+- **思考模式默认关闭**（`LLM_THINK=false`）：ReAct 的 Thought/Action 已是显式推理，再叠加隐式思维链只会拖慢。同一问题 qwen3.5:4b 从 31s 降到 2.8s。需要深度推理时可**运行中开启**：CLI `/think on`、Web 勾选「思考模式」，或启动前 `LLM_THINK=true`。仅 `ollama show <model>` 的 Capabilities 含 `thinking` 的模型（qwen3.5 系列等）支持，`/think on` 会自动校验。
 - **桌面应用默认不预热**（`warm_up_on_startup: false`）：预热会让模型常驻；Ollama 会在首问时按需加载，闲置 5 分钟后释放。内存宽裕可改回 `true` 换首问速度，或设 `OLLAMA_KEEP_ALIVE=2m` 更快归还内存。
 - **上下文自动推导**：4B→16K，7~9B→8K，12B+→4K；每 +16K 约多占 0.6GB（4B 实测）。长文档任务可临时 `LLM_NUM_CTX=32768`。
 - **避免双驻留**：Ollama 只在"放不下"时才驱逐旧模型，4B+9B 会被同时保留。项目的 `/model` 切换会主动释放旧模型；若曾用 `ollama run` 手动加载过其他模型，`/model` 会给出提示，用 `ollama stop <name>` 释放。

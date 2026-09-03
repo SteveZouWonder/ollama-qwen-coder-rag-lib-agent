@@ -338,6 +338,7 @@ TUTORIAL_TEXT = """
   /pwd       显示当前目录
   /cd        切换目录
   /model     显示模型信息；/model <name> 热切换模型
+  /think     显示/开关思考模式（/think on|off）
   /reset     重置 Agent 对话上下文
   /quit      退出
 
@@ -589,6 +590,8 @@ def print_help():
   /model             显示当前模型信息（含是否已加载、驻留大小）
   /model list        列出本机已安装的模型
   /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
+  /think             显示思考模式状态（默认关，响应快）
+  /think on|off      运行时开关思考模式（开启需模型支持，如 qwen3.5）
   /reset             重置 Agent 对话上下文
   /exit 或 /quit     退出程序
 
@@ -811,6 +814,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("pwd", user_input)
     if user_input == "/model":
         return ParsedCommand("model", user_input)
+    if user_input == "/think":
+        return ParsedCommand("think", user_input)
 
     # 带参数命令（至少一个空格分隔）
     parts = user_input.split(None, 1)
@@ -824,6 +829,9 @@ def parse_command(user_input: str) -> ParsedCommand:
     if cmd == "/model":
         # /model <name> 运行时热切换；/model list 列出可选模型
         return ParsedCommand("model", user_input, arg)
+    if cmd == "/think":
+        # /think on|off 运行时开关思考模式
+        return ParsedCommand("think", user_input, arg)
     if cmd == "/add":
         return ParsedCommand("add", user_input, arg)
     if cmd == "/file":
@@ -1373,6 +1381,40 @@ def handle_model(ctx, parsed):
     return True
 
 
+def handle_think(ctx, parsed):
+    """``/think`` 显示思考模式状态；``/think on|off`` 运行时开关。
+
+    同步 RAG 引擎（重建 LLM）与 ReAct 引擎；开启前会校验当前模型是否支持 thinking。
+    """
+    import model_switcher
+
+    arg = (parsed.arg or "").strip()
+    record_command_execution("think")
+
+    if not arg:
+        info = model_switcher.current_model_info()
+        state = "开" if info["think"] else "关"
+        console.print(f"[green]思考模式: {state}  （模型: {info['model']}）[/green]")
+        console.print(
+            "[dim]关闭时响应更快（4B 模型同一问题约 31s → 3s），适合日常查询与工具调用；"
+            "开启时模型先输出思维链再作答，适合复杂推理。用法: /think on | /think off[/dim]"
+        )
+        return True
+
+    flag = model_switcher.parse_think_flag(arg)
+    if flag is None:
+        console.print(f"[red]无法识别参数 '{arg}'，请使用 /think on 或 /think off[/red]")
+        return True
+
+    result = model_switcher.switch_think(
+        flag, rag_engine=ctx.rag_engine if ctx else rag_engine,
+        react_engine=ctx.react_engine if ctx else react_engine,
+    )
+    color = "green" if result.ok else "red"
+    console.print(f"[{color}]{result.message}[/{color}]")
+    return True
+
+
 def handle_ask(ctx, parsed):
     """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。
 
@@ -1561,6 +1603,7 @@ _ENGINE_HANDLERS = {
     "pwd": handle_pwd,
     "cd": handle_cd,
     "model": handle_model,
+    "think": handle_think,
     "ask": handle_ask,
     "agent": handle_agent,
     "natural": handle_natural,

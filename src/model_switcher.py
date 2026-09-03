@@ -234,6 +234,106 @@ def switch_model(
     )
 
 
+@dataclass
+class ThinkResult:
+    ok: bool
+    enabled: bool = False
+    changed: bool = False
+    message: str = ""
+
+
+_TRUE_WORDS = {"on", "true", "1", "yes", "y", "开", "开启", "enable", "enabled"}
+_FALSE_WORDS = {"off", "false", "0", "no", "n", "关", "关闭", "disable", "disabled"}
+
+
+def parse_think_flag(text: str) -> Optional[bool]:
+    """把用户输入解析为 True/False；无法识别返回 None。"""
+    t = (text or "").strip().lower()
+    if t in _TRUE_WORDS:
+        return True
+    if t in _FALSE_WORDS:
+        return False
+    return None
+
+
+def model_supports_thinking(model: Optional[str] = None, timeout: float = 5.0) -> Optional[bool]:
+    """查询 Ollama ``/api/show`` 判断模型是否具备 thinking 能力。
+
+    返回 True/False；无法判断（服务不可达等）返回 None。
+    """
+    import config
+
+    name = (model or config.LLM_MODEL or "").strip()
+    if not name:
+        return None
+    try:
+        import requests
+
+        resp = requests.post(f"{_base_url()}/api/show", json={"model": name}, timeout=timeout)
+        if resp.status_code != 200:
+            return None
+        caps = resp.json().get("capabilities") or []
+        return "thinking" in [str(c).lower() for c in caps]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def switch_think(
+    enabled: bool,
+    rag_engine: Any = None,
+    react_engine: Any = None,
+    check_capability: bool = True,
+) -> ThinkResult:
+    """运行时开关思考模式并同步各引擎。
+
+    开启时会先查询当前模型是否支持 thinking：不支持则拒绝（否则 Ollama 会对每次
+    请求返回 400 "does not support thinking"）；无法查询时放行并提示。
+    """
+    import config
+
+    enabled = bool(enabled)
+    previous = bool(getattr(config, "LLM_THINK", False))
+
+    warn = ""
+    if enabled and check_capability:
+        supported = model_supports_thinking(config.LLM_MODEL)
+        if supported is False:
+            return ThinkResult(
+                False,
+                enabled=previous,
+                message=f"当前模型 {config.LLM_MODEL} 不支持思考模式，未开启。"
+                        "可先 /model 切换到支持的模型（如 qwen3.5:4b / qwen3.5:9b）",
+            )
+        if supported is None:
+            warn = "（无法确认模型是否支持思考，若请求报错请关闭）"
+
+    config.set_llm_think(enabled)
+
+    errors: List[str] = []
+    if rag_engine is not None and hasattr(rag_engine, "set_think"):
+        try:
+            rag_engine.set_think(enabled)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"RAG 引擎设置失败: {exc}")
+    if react_engine is not None and hasattr(react_engine, "set_think"):
+        try:
+            react_engine.set_think(enabled)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Agent 引擎设置失败: {exc}")
+
+    state = "开" if enabled else "关"
+    if previous == enabled and not errors:
+        msg = f"思考模式已是{state}"
+    else:
+        msg = f"思考模式已{'开启' if enabled else '关闭'}" + (
+            "（回答更慎重但响应明显变慢）" if enabled else "（响应更快，适合日常查询与工具调用）"
+        )
+    msg += warn
+    if errors:
+        msg += "；" + "；".join(errors)
+    return ThinkResult(ok=not errors, enabled=enabled, changed=previous != enabled, message=msg)
+
+
 def current_model_info() -> Dict[str, Any]:
     """当前模型概况：名称、num_ctx、思考模式、是否已加载及驻留大小。"""
     import config

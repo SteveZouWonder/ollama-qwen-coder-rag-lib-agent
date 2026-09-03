@@ -216,6 +216,11 @@ class ReActEngine:
         self.num_ctx = self._resolve_num_ctx(model)
         return self.num_ctx
 
+    def set_think(self, enabled: bool) -> bool:
+        """运行时开关思考模式（供 CLI ``/think on|off`` 使用），下一次请求即生效。"""
+        self.think = bool(enabled)
+        return self.think
+
     def _init_system(self):
         msgs = self.history.get_messages()
         has_system = any(m.get("role") == "system" for m in msgs)

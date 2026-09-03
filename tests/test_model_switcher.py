@@ -10,13 +10,22 @@ import model_switcher as ms
 
 
 @pytest.fixture
-def clean_config(monkeypatch):
-    """每个用例后恢复干净的 config 模块，避免 LLM_MODEL 污染其他测试。"""
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    importlib.reload(config)
+def clean_config():
+    """每个用例前后恢复干净的 config 模块与环境变量。
+
+    注意不能用 monkeypatch.delenv 做清理：它会把清理时刻的（已污染）值记录为
+    "原值"并在 fixture 结束后恢复回去，导致污染泄漏到其他测试文件。
+    """
+    import os
+
+    def _reset():
+        os.environ.pop("LLM_MODEL", None)
+        os.environ.pop("LLM_THINK", None)
+        importlib.reload(config)
+
+    _reset()
     yield
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    importlib.reload(config)
+    _reset()
 
 
 # ==================== 名称解析 ====================
@@ -227,3 +236,116 @@ class TestCurrentModelInfo:
         info = ms.current_model_info()
         assert info["loaded"] is False
         assert info["size_bytes"] == 0
+
+
+# ==================== 思考模式开关 ====================
+
+class TestParseThinkFlag:
+    @pytest.mark.parametrize("word", ["on", "ON", "true", "1", "yes", "开", "开启"])
+    def test_true_words(self, word):
+        assert ms.parse_think_flag(word) is True
+
+    @pytest.mark.parametrize("word", ["off", "false", "0", "no", "关", "关闭"])
+    def test_false_words(self, word):
+        assert ms.parse_think_flag(word) is False
+
+    @pytest.mark.parametrize("word", ["", "maybe", "开关"])
+    def test_unknown(self, word):
+        assert ms.parse_think_flag(word) is None
+
+
+class TestModelSupportsThinking:
+    @patch("requests.post")
+    def test_supported(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, json=lambda: {"capabilities": ["completion", "tools", "thinking"]}
+        )
+        assert ms.model_supports_thinking("qwen3.5:4b") is True
+        assert mock_post.call_args.kwargs["json"] == {"model": "qwen3.5:4b"}
+        assert mock_post.call_args[0][0].endswith("/api/show")
+
+    @patch("requests.post")
+    def test_not_supported(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, json=lambda: {"capabilities": ["completion", "tools"]}
+        )
+        assert ms.model_supports_thinking("qwen2.5-coder:7b") is False
+
+    @patch("requests.post")
+    def test_unknown_on_error(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=404)
+        assert ms.model_supports_thinking("x") is None
+        mock_post.side_effect = ConnectionError("down")
+        assert ms.model_supports_thinking("x") is None
+
+    def test_uses_config_model_when_omitted(self, clean_config):
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200, json=lambda: {"capabilities": []})
+            ms.model_supports_thinking()
+            assert mock_post.call_args.kwargs["json"] == {"model": "qwen3.5:4b"}
+
+    def test_empty_model(self, clean_config):
+        with patch.object(config, "LLM_MODEL", ""):
+            assert ms.model_supports_thinking("") is None
+
+
+class TestSwitchThink:
+    @patch("model_switcher.model_supports_thinking", return_value=True)
+    def test_enable_syncs_engines(self, _cap, clean_config):
+        rag, react = MagicMock(), MagicMock()
+        r = ms.switch_think(True, rag_engine=rag, react_engine=react)
+        assert r.ok is True and r.enabled is True and r.changed is True
+        assert "已开启" in r.message
+        rag.set_think.assert_called_once_with(True)
+        react.set_think.assert_called_once_with(True)
+        assert config.LLM_THINK is True
+        import os
+        assert os.environ.get("LLM_THINK") == "true"
+
+    @patch("model_switcher.model_supports_thinking", return_value=False)
+    def test_enable_rejected_when_unsupported(self, _cap, clean_config):
+        rag = MagicMock()
+        r = ms.switch_think(True, rag_engine=rag)
+        assert r.ok is False and r.enabled is False and r.changed is False
+        assert "不支持思考模式" in r.message
+        rag.set_think.assert_not_called()
+        assert config.LLM_THINK is False
+
+    @patch("model_switcher.model_supports_thinking", return_value=None)
+    def test_enable_with_unknown_capability_warns(self, _cap, clean_config):
+        r = ms.switch_think(True)
+        assert r.ok is True and r.enabled is True
+        assert "无法确认" in r.message
+
+    @patch("model_switcher.model_supports_thinking")
+    def test_disable_skips_capability_check(self, mock_cap, clean_config):
+        config.set_llm_think(True)
+        r = ms.switch_think(False)
+        assert r.ok is True and r.enabled is False and r.changed is True
+        assert "已关闭" in r.message
+        mock_cap.assert_not_called()
+        assert config.LLM_THINK is False
+
+    def test_noop_when_same(self, clean_config):
+        r = ms.switch_think(False)
+        assert r.ok is True and r.changed is False
+        assert "已是关" in r.message
+
+    @patch("model_switcher.model_supports_thinking", return_value=True)
+    def test_engine_error_reported(self, _cap, clean_config):
+        rag = MagicMock()
+        rag.set_think.side_effect = RuntimeError("boom")
+        r = ms.switch_think(True, rag_engine=rag)
+        assert r.ok is False
+        assert "RAG 引擎设置失败" in r.message
+
+    @patch("model_switcher.model_supports_thinking", return_value=True)
+    def test_engines_without_set_think_ignored(self, _cap, clean_config):
+        r = ms.switch_think(True, rag_engine=object(), react_engine=object())
+        assert r.ok is True
+
+    def test_skip_capability_check_flag(self, clean_config):
+        with patch("model_switcher.model_supports_thinking") as mock_cap:
+            r = ms.switch_think(True, check_capability=False)
+            assert r.ok is True
+            mock_cap.assert_not_called()

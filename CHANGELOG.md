@@ -31,8 +31,12 @@
   `qwen3.5:4b` 与"性能档" `qwen3.5:9b` 之间切换。
 - 新增 `LLM_THINK` 配置（默认 `false`）：关闭 qwen3.5 等模型的隐式思考模式。ReAct 的
   Thought/Action 协议本身就是显式推理，再叠加思维链只会拖慢每一步；本机实测同一问题
-  qwen3.5:4b 从 31s（682 token，其中 1845 字思考）降到 2.8s（65 token）。需要深度推理
-  时可设 `LLM_THINK=true`（仅支持思考模式的模型，否则 Ollama 会报错）。
+  qwen3.5:4b 从 31s（682 token，其中 1845 字思考）降到 2.8s（65 token）。
+- 思考模式可运行时开关：CLI 新增 `/think`（查看）与 `/think on|off`；Web 对话页新增
+  「思考模式」复选框。切换同步 RAG 引擎与 ReAct Agent，无需重启。开启前会通过
+  Ollama `/api/show` 校验当前模型是否具备 thinking 能力，不支持的模型（如
+  qwen2.5-coder）会被拒绝并提示切换模型，避免此后每次请求都收到 400 错误；切换
+  模型时保留当前思考开关状态。
 - 文档新增「模型选择指南」（README 与 `docs/tutorials/07-best-practices.md`）：按机器
   内存与使用场景（与 IDE 并行 / 专注模式 / 低配 / 工作站 / 格式化输出）给出推荐模型、
   实测驻留内存与吞吐、三种切换方式，以及与 IDE 共存的内存实践；并说明

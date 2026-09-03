@@ -159,10 +159,13 @@ export LLM_MODEL=qwen3.5:9b
 # 运行中热切换（CLI）
 /model list
 /model qwen3.5:9b
+# 运行中开关思考模式（CLI）
+/think on
+/think off
 ```
 
 **与 IDE 共存的内存实践**
-- 项目默认关闭思考模式（`LLM_THINK=false`）：同一问题 qwen3.5:4b 从 31s 降到 2.8s；需要深度推理时再 `LLM_THINK=true`。
+- 项目默认关闭思考模式（`LLM_THINK=false`）：同一问题 qwen3.5:4b 从 31s 降到 2.8s；需要深度推理时可运行中开启——CLI `/think on`（`/think off` 关闭、`/think` 查看），Web 对话页勾选「思考模式」；仅支持思考的模型（qwen3.5 等）可开启，不支持时会被拒绝并提示。
 - 桌面应用默认不在启动时预热模型（`warm_up_on_startup: false`），Ollama 会在首次请求时按需加载、闲置 5 分钟后释放；可设 `OLLAMA_KEEP_ALIVE=2m` 更快归还内存。
 - 上下文按模型自动推导（4B→16K，7~9B→8K，12B+→4K）；每 +16K 约多占 0.6GB，长文档任务可临时 `LLM_NUM_CTX=32768`。
 - 切换模型时项目会主动释放旧模型；若用 `ollama run` 手动加载过其他模型，用 `/model` 查看并 `ollama stop <name>` 释放。

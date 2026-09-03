@@ -123,6 +123,18 @@ def set_llm_model(model: str) -> int:
         pass
     return LLM_NUM_CTX
 
+
+def set_llm_think(enabled: bool) -> bool:
+    """运行时开关思考模式（供 CLI ``/think on|off`` 与 Web 复选框使用）。
+
+    仅更新模块级 ``LLM_THINK`` 与环境变量；已创建的引擎需另行调用各自的
+    ``set_think``（见 model_switcher.switch_think）。返回新值。
+    """
+    global LLM_THINK
+    LLM_THINK = bool(enabled)
+    os.environ["LLM_THINK"] = "true" if LLM_THINK else "false"
+    return LLM_THINK
+
 # ==================== 向量数据库配置 ====================
 VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")
 

@@ -376,6 +376,8 @@ python query_interface.py --data ./data
 /model             显示当前模型（是否已加载、驻留大小、num_ctx、思考模式）
 /model list        列出本机已安装模型
 /model <name>      运行时热切换模型，旧模型立即释放（如 /model qwen3.5:9b）
+/think             显示思考模式状态（默认关，响应快）
+/think on|off      运行时开关思考模式（需模型支持，如 qwen3.5；不支持时会提示）
 ```
 
 ---

@@ -116,13 +116,22 @@ class RAGEngine:
             except Exception as e:
                 print(f"⚠️ 文件元数据管理器初始化失败: {e}")
 
-    def _setup_llm(self, model: Optional[str] = None, num_ctx: Optional[int] = None):
-        """配置 Ollama LLM（初始化与运行时热切换共用）。"""
+    def _setup_llm(
+        self,
+        model: Optional[str] = None,
+        num_ctx: Optional[int] = None,
+        think: Optional[bool] = None,
+    ):
+        """配置 Ollama LLM（初始化与运行时热切换/思考开关共用）。"""
         self.llm_model = model or LLM_MODEL
         self.llm_num_ctx = num_ctx or (
             LLM_NUM_CTX if model is None else _resolve_num_ctx(self.llm_model)
         )
-        print(f"🤖 加载 LLM 模型: {self.llm_model} (num_ctx={self.llm_num_ctx})")
+        if think is None:
+            # 首次初始化读 config；后续切换模型时保留当前开关状态
+            think = getattr(self, "llm_think", LLM_THINK)
+        self.llm_think = bool(think)
+        print(f"🤖 加载 LLM 模型: {self.llm_model} (num_ctx={self.llm_num_ctx}, think={self.llm_think})")
         Settings.llm = Ollama(
             model=self.llm_model,
             base_url=OLLAMA_BASE_URL,
@@ -133,8 +142,17 @@ class RAGEngine:
             context_window=self.llm_num_ctx,
             additional_kwargs={"num_ctx": self.llm_num_ctx},
             # 默认关闭思考模式：RAG 综合/相关性判定无需长思维链，显著缩短响应。
-            thinking=LLM_THINK,
+            thinking=self.llm_think,
         )
+
+    def set_think(self, enabled: bool) -> bool:
+        """运行时开关思考模式（供 CLI ``/think`` 与 Web 复选框使用）。
+
+        重建 ``Settings.llm`` 与缓存的 query_engine（原因同 ``set_model``）。
+        """
+        self._setup_llm(model=self.llm_model, num_ctx=self.llm_num_ctx, think=bool(enabled))
+        self._setup_query_engine()
+        return self.llm_think
 
     def set_model(self, model: str) -> int:
         """运行时切换 LLM（供 CLI ``/model <name>`` 与 Web 下拉使用）。
@@ -596,6 +614,7 @@ class RAGEngine:
             "vector_db_path": VECTOR_DB_PATH,
             "llm_model": self.llm_model,
             "llm_num_ctx": self.llm_num_ctx,
+            "llm_think": self.llm_think,
             "embed_model": EMBED_MODEL,
             "chunk_size": CHUNK_SIZE,
             "chunk_overlap": CHUNK_OVERLAP,

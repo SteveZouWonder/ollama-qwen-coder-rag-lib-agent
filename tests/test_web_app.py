@@ -464,3 +464,30 @@ class TestModelHandlers:
         assert result.startswith("✅")
         assert "`qwen3.5:9b`" in status
         svc.switch_model.assert_called_once_with("qwen3.5:9b")
+
+
+class TestThinkHandler:
+    def _status(self, think):
+        return {"model": "qwen3.5:4b", "num_ctx": 16384, "think": think, "loaded": False,
+                "size_bytes": 0, "loaded_models": []}
+
+    def test_toggle_on_ok(self):
+        svc = make_service_mock()
+        svc.set_think.return_value = {"ok": True, "enabled": True, "changed": True, "message": "思考模式已开启"}
+        svc.current_model.return_value = self._status(True)
+        h = build_handlers(svc)
+        result, status, value = h["on_toggle_think"](True)
+        assert result.startswith("✅")
+        assert "思考模式 开" in status
+        assert value is True
+        svc.set_think.assert_called_once_with(True)
+
+    def test_toggle_on_rejected_bounces_back(self):
+        svc = make_service_mock()
+        svc.set_think.return_value = {"ok": False, "enabled": False, "changed": False, "message": "不支持思考模式"}
+        svc.current_model.return_value = self._status(False)
+        h = build_handlers(svc)
+        result, status, value = h["on_toggle_think"](True)
+        assert result.startswith("❌")
+        assert "思考模式 关" in status
+        assert value is False

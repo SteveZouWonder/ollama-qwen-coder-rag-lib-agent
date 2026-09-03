@@ -4,6 +4,7 @@
 服务层是 Web 界面唯一与核心引擎交互的层。通过依赖注入把各引擎替换为
 MagicMock/桩对象，在不启动真实 Ollama/ChromaDB 的前提下覆盖全部分支。
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -752,6 +753,15 @@ class _FakeSwitcher:
         self.switch_calls.append((model, rag_engine, react_engine))
         return self.result
 
+    def switch_think(self, enabled, rag_engine=None, react_engine=None):
+        if "think" in self.raise_on:
+            raise RuntimeError("down")
+        self.think_calls = getattr(self, "think_calls", [])
+        self.think_calls.append((enabled, rag_engine, react_engine))
+        return self.think_result if hasattr(self, "think_result") else SimpleNamespace(
+            ok=True, enabled=enabled, changed=True, message="思考模式已开启" if enabled else "思考模式已关闭"
+        )
+
 
 class TestModelManagement:
     def test_list_models(self):
@@ -811,3 +821,35 @@ class TestModelManagement:
         out = svc.switch_model("qwen3.5:9b")
         assert out["ok"] is False
         assert "切换失败" in out["message"]
+
+
+class TestThinkToggle:
+    def test_set_think_before_rag_created_passes_none(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out == {"ok": True, "enabled": True, "changed": True, "message": "思考模式已开启"}
+        assert sw.think_calls == [(True, None, None)]
+        assert svc._rag_engine is None
+
+    def test_set_think_after_rag_created_syncs_engine(self):
+        sw = _FakeSwitcher()
+        svc = make_service(model_switcher_factory=lambda: sw)
+        rag = svc.rag_engine
+        svc.set_think(False)
+        assert sw.think_calls[0] == (False, rag, None)
+
+    def test_set_think_rejected(self):
+        sw = _FakeSwitcher()
+        sw.think_result = SimpleNamespace(ok=False, enabled=False, changed=False, message="不支持思考模式")
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out["ok"] is False and out["enabled"] is False
+        assert "不支持" in out["message"]
+
+    def test_set_think_exception(self):
+        sw = _FakeSwitcher(raise_on={"think"})
+        svc = make_service(model_switcher_factory=lambda: sw)
+        out = svc.set_think(True)
+        assert out["ok"] is False
+        assert "设置失败" in out["message"]

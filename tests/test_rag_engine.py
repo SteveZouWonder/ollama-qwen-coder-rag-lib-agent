@@ -622,6 +622,33 @@ class TestRAGEngineSetModel:
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
+    def test_set_think_rebuilds_llm_and_keeps_model(self, mock_chroma, mock_embed, mock_llm):
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 1
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        engine = RAGEngine()
+        engine.index = MagicMock()
+        engine.index.as_query_engine.return_value = "qe2"
+
+        assert engine.set_think(True) is True
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs["thinking"] is True
+        assert kwargs["model"] == "qwen3.5:4b"
+        assert kwargs["context_window"] == 16384
+        assert engine.query_engine == "qe2"
+        assert engine.get_stats()["llm_think"] is True
+
+        # 切换模型时保留思考开关状态
+        engine.set_model("qwen3.5:9b")
+        assert mock_llm.call_args.kwargs["thinking"] is True
+        assert engine.llm_think is True
+
+        assert engine.set_think(False) is False
+        assert mock_llm.call_args.kwargs["thinking"] is False
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
     def test_set_model_rejects_empty(self, mock_chroma, mock_embed, mock_llm):
         mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()

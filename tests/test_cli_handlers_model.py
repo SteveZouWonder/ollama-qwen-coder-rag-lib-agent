@@ -93,3 +93,55 @@ class TestHandleModelSwitch:
         out = _printed(mock_console)
         assert "[red]" in out
         assert "未安装" in out
+
+
+def _parsed_think(arg=""):
+    raw = f"/think {arg}".strip()
+    return ParsedCommand("think", raw, arg)
+
+
+class TestHandleThink:
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    @patch("model_switcher.current_model_info")
+    def test_show_status(self, mock_info, mock_console, _rec):
+        mock_info.return_value = {"model": "qwen3.5:4b", "num_ctx": 16384, "think": False,
+                                  "loaded": False, "size_bytes": 0, "loaded_models": []}
+        assert qi.handle_think(_ctx(), _parsed_think("")) is True
+        out = _printed(mock_console)
+        assert "思考模式: 关" in out
+        assert "/think on" in out
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    @patch("model_switcher.switch_think")
+    def test_invalid_arg(self, mock_switch, mock_console, _rec):
+        qi.handle_think(_ctx(), _parsed_think("maybe"))
+        assert "无法识别参数" in _printed(mock_console)
+        mock_switch.assert_not_called()
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    @patch("model_switcher.switch_think")
+    def test_enable_passes_ctx_engines(self, mock_switch, mock_console, _rec):
+        mock_switch.return_value = SimpleNamespace(ok=True, enabled=True, changed=True, message="思考模式已开启")
+        ctx = _ctx()
+        qi.handle_think(ctx, _parsed_think("on"))
+        mock_switch.assert_called_once_with(True, rag_engine=ctx.rag_engine, react_engine=ctx.react_engine)
+        assert "[green]思考模式已开启" in _printed(mock_console)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    @patch("model_switcher.switch_think")
+    def test_disable_chinese_word(self, mock_switch, mock_console, _rec):
+        mock_switch.return_value = SimpleNamespace(ok=True, enabled=False, changed=True, message="思考模式已关闭")
+        qi.handle_think(_ctx(), _parsed_think("关"))
+        assert mock_switch.call_args[0][0] is False
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    @patch("model_switcher.switch_think")
+    def test_rejected_printed_red(self, mock_switch, mock_console, _rec):
+        mock_switch.return_value = SimpleNamespace(ok=False, enabled=False, changed=False, message="不支持思考模式")
+        qi.handle_think(_ctx(), _parsed_think("on"))
+        assert "[red]" in _printed(mock_console)

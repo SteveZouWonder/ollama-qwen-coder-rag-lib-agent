@@ -119,6 +119,7 @@ class StateAnalyzer:
             "/history": "查看命令历史",
             "/clear": "清空会话历史",
             "/model": "查看当前模型信息或热切换模型（/model <name>）",
+            "/think": "查看或开关思考模式（/think on|off）",
             "/tutorial": "显示使用教程",
             "/help": "显示帮助信息",
             "/tools": "查看可用工具",

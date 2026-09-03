@@ -400,6 +400,14 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         result = service.switch_model(model)
         return format_switch_result(result), on_model_status()
 
+    def on_toggle_think(enabled: bool) -> Tuple[str, str, bool]:
+        """开关思考模式；返回 (结果, 刷新后的状态行, 复选框应显示的实际值)。
+
+        若当前模型不支持 thinking，服务层会拒绝开启，此时把复选框回弹为实际状态。
+        """
+        result = service.set_think(bool(enabled))
+        return format_switch_result(result), on_model_status(), bool(result.get("enabled"))
+
     # ---------- 阶段三：工具命令面 ----------
 
     def on_web_search(query: str) -> str:
@@ -489,6 +497,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_model_status": on_model_status,
         "on_model_choices": on_model_choices,
         "on_switch_model": on_switch_model,
+        "on_toggle_think": on_toggle_think,
         "on_web_search": on_web_search,
         "on_web_extract": on_web_extract,
         "on_web_cache_status": on_web_cache_status,
@@ -538,9 +547,19 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                 )
                 model_switch_btn = gr.Button("切换模型", scale=1)
                 model_refresh_btn = gr.Button("刷新列表", scale=1)
+                # 思考模式：默认关（响应快）；开启需模型支持，不支持时自动回弹
+                think_cb = gr.Checkbox(
+                    value=bool(service.current_model().get("think")),
+                    label="思考模式（慢，适合复杂推理）",
+                    scale=2,
+                )
             model_switch_result = gr.Markdown()
             model_switch_btn.click(
                 handlers["on_switch_model"], model_dd, [model_switch_result, model_status]
+            )
+            think_cb.input(
+                handlers["on_toggle_think"], think_cb,
+                [model_switch_result, model_status, think_cb],
             )
 
             def _refresh_model_dropdown():

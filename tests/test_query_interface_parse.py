@@ -72,6 +72,14 @@ class TestParseCommandNoArg:
         assert r.cmd_type == "model"
         assert r.arg == "list"
 
+    def test_think_variants(self):
+        assert parse_command("/think").cmd_type == "think"
+        assert parse_command("/think").arg == ""
+        r = parse_command("/think on")
+        assert r.cmd_type == "think" and r.arg == "on"
+        r = parse_command("/think off")
+        assert r.cmd_type == "think" and r.arg == "off"
+
 
 class TestParseCommandWithArg:
     """测试带参数命令"""

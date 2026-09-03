@@ -743,3 +743,18 @@ class TestSetModelAndThink:
         body = mock_post.call_args.kwargs["json"]
         assert body["model"] == "qwen3.5:9b"
         assert body["options"]["num_ctx"] == 8192
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
+    def test_set_think_affects_next_request(self, mock_post, mock_history_cls):
+        mock_history_cls.return_value = MagicMock(
+            **{"get_messages.return_value": [{"role": "user", "content": "hi"}]}
+        )
+        mock_post.return_value = MagicMock(**{"json.return_value": {"message": {"content": "ok"}}})
+        engine = ReActEngine(model="qwen3.5:4b")
+        assert engine.set_think(True) is True
+        engine._call_model()
+        assert mock_post.call_args.kwargs["json"]["think"] is True
+        assert engine.set_think(False) is False
+        engine._call_model()
+        assert mock_post.call_args.kwargs["json"]["think"] is False
