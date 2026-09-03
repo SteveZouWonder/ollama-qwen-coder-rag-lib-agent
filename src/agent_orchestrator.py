@@ -1,7 +1,7 @@
 """
 Agent编排器 - 协调多个Agent的交互和执行
 """
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 import logging
 from agents import BaseAgent
 from agents.agent_types import CollaborationMode, OrchestratorConfig, AgentConfig
@@ -123,13 +123,20 @@ class AgentOrchestrator:
             agent.register_message_handler("coordination", agent_message_handler)
             self.message_bus.subscribe(agent.agent_id, agent_message_handler)
     
-    def process_request(self, request: str, mode: CollaborationMode = None) -> Dict[str, Any]:
+    def process_request(
+        self,
+        request: str,
+        mode: CollaborationMode = None,
+        progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
         """
         处理用户请求
         
         Args:
             request: 用户请求
             mode: 协作模式，如果为None则使用默认模式
+            progress: 可选进度回调，透传给 ``MasterAgent.coordinate_task``，
+                用于实时展示"分解 → 调度 → 执行 → 整合"各阶段。
             
         Returns:
             Dict[str, Any]: 处理结果
@@ -140,7 +147,10 @@ class AgentOrchestrator:
         self.logger.info(f"Processing request with mode: {mode}")
         
         try:
-            result = self.master_agent.coordinate_task(request, mode)
+            if progress is not None:
+                result = self.master_agent.coordinate_task(request, mode, progress=progress)
+            else:
+                result = self.master_agent.coordinate_task(request, mode)
             return result
         except Exception as e:
             self.logger.error(f"Request processing failed: {e}")

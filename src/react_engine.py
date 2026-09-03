@@ -408,7 +408,8 @@ class ReActEngine:
         if not clean_messages:
             return "[错误] 消息列表为空"
 
-        # 启动进度更新线程
+        # 启动进度更新线程。心跳事件标记 transient=True：它们只表示"仍在推理"，
+        # 消费方（如 Web UI）应原地刷新当前状态而不是逐条追加，避免刷屏。
         stop_progress = threading.Event()
         def update_progress():
             dots = 0
@@ -419,6 +420,7 @@ class ReActEngine:
                         "step": "?",
                         "total": "?",
                         "phase": "thinking",
+                        "transient": True,
                         "message": f"模型推理中{dot_str}"
                     })
                 dots += 1

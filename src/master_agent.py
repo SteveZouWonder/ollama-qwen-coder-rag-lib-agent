@@ -1,7 +1,7 @@
 """
 MasterAgent - 主控Agent，负责任务分解和协调
 """
-from typing import List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional
 import time
 from agents import BaseAgent
 from agents.agent_types import AgentTask, AgentResult, AgentType, CollaborationMode
@@ -98,21 +98,46 @@ class MasterAgent(BaseAgent):
                 error_message=str(e)
             )
     
-    def coordinate_task(self, request: str, mode: CollaborationMode) -> Dict[str, Any]:
+    @staticmethod
+    def _emit(progress: Optional[Callable[[Dict[str, Any]], None]],
+              stage: str, message: str, **extra: Any) -> None:
+        """安全地发出一条协作进度事件；回调为空或抛错都不影响主流程。"""
+        if progress is None:
+            return
+        try:
+            event = {"stage": stage, "message": message}
+            event.update(extra)
+            progress(event)
+        except Exception:  # noqa: BLE001 - 进度回调失败不应中断协作
+            pass
+
+    def coordinate_task(
+        self,
+        request: str,
+        mode: CollaborationMode,
+        progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
         """
         协调任务的完整流程
         
         Args:
             request: 用户请求
             mode: 协作模式
+            progress: 可选进度回调，接收 ``{"stage", "message", ...}``。
+                stage 取值：``decompose`` | ``decomposed`` | ``schedule`` |
+                ``execute`` | ``task_done`` | ``integrate``。用于 CLI/Web
+                实时展示"分解 → 调度 → 执行 → 整合"各阶段，而不是让用户
+                面对一条静态的"执行中"。
             
         Returns:
             Dict[str, Any]: 协调结果
         """
         self.logger.info(f"Coordinating task with mode: {mode}")
+        emit = lambda stage, msg, **kw: self._emit(progress, stage, msg, **kw)  # noqa: E731
         
         try:
             # 1. 任务分解
+            emit("decompose", "🧩 分解任务（模型推理）...")
             subtasks = self.task_decomposer.decompose(request, self.specialized_agents)
             
             if not subtasks:
@@ -123,8 +148,10 @@ class MasterAgent(BaseAgent):
                 }
             
             self.logger.info(f"Decomposed into {len(subtasks)} subtasks")
+            emit("decomposed", f"✅ 已分解为 {len(subtasks)} 个子任务", count=len(subtasks))
             
             # 2. 任务调度
+            emit("schedule", "📋 调度子任务到专业 Agent...")
             if mode == CollaborationMode.PARALLEL:
                 task_assignments = self.task_scheduler.schedule_parallel(
                     subtasks, self.specialized_agents
@@ -136,13 +163,20 @@ class MasterAgent(BaseAgent):
                 # 顺序执行
                 task_assignments = {}
                 results = []
+                total = sum(len(step) for step in schedule_steps)
+                idx = 0
                 for step in schedule_steps:
                     for task_id, agent in step.items():
+                        idx += 1
                         task = next(t for t in subtasks if t.task_id == task_id)
+                        emit("execute", f"⚙️ 执行子任务 {idx}/{total}：{agent.agent_id}",
+                             current=idx, total=total, agent_id=agent.agent_id)
                         result = agent.execute_task_with_timeout(task)
                         results.append(result)
+                        self._emit_task_done(progress, idx, total, result)
                 
                 # 整合结果
+                emit("integrate", "🧷 整合各 Agent 结果...")
                 integrated_result = self.result_integrator.integrate_sequential(results)
                 return integrated_result
             
@@ -155,11 +189,16 @@ class MasterAgent(BaseAgent):
                     
                     # 竞争执行
                     results = []
-                    for agent in assigned_agents:
+                    total = len(assigned_agents)
+                    for idx, agent in enumerate(assigned_agents, 1):
+                        emit("execute", f"⚙️ 竞争执行 {idx}/{total}：{agent.agent_id}",
+                             current=idx, total=total, agent_id=agent.agent_id)
                         result = agent.execute_task_with_timeout(task)
                         results.append(result)
+                        self._emit_task_done(progress, idx, total, result)
                     
                     # 整合结果
+                    emit("integrate", "🧷 整合各 Agent 结果...")
                     integrated_result = self.result_integrator.integrate_competitive(results)
                     return integrated_result
                 else:
@@ -176,10 +215,13 @@ class MasterAgent(BaseAgent):
             
             # 3. 执行任务
             results = []
-            for task_id, agent in task_assignments.items():
+            total = len(task_assignments)
+            for idx, (task_id, agent) in enumerate(task_assignments.items(), 1):
                 task = next(t for t in subtasks if t.task_id == task_id)
                 
                 self.task_scheduler.mark_task_running(task_id)
+                emit("execute", f"⚙️ 执行子任务 {idx}/{total}：{agent.agent_id}",
+                     current=idx, total=total, agent_id=agent.agent_id)
                 
                 try:
                     result = agent.execute_task_with_timeout(task)
@@ -189,6 +231,7 @@ class MasterAgent(BaseAgent):
                         self.task_scheduler.mark_task_completed(task_id, result)
                     else:
                         self.task_scheduler.mark_task_failed(task_id, result.error_message)
+                    self._emit_task_done(progress, idx, total, result)
                 
                 except Exception as e:
                     self.logger.error(f"Task execution failed: {e}")
@@ -204,8 +247,10 @@ class MasterAgent(BaseAgent):
                         error_message=str(e)
                     )
                     results.append(error_result)
+                    self._emit_task_done(progress, idx, total, error_result)
             
             # 4. 整合结果
+            emit("integrate", "🧷 整合各 Agent 结果...")
             if mode == CollaborationMode.PARALLEL:
                 integrated_result = self.result_integrator.integrate_parallel(results)
             else:
@@ -221,6 +266,18 @@ class MasterAgent(BaseAgent):
                 "summary": "Task coordination failed"
             }
     
+    def _emit_task_done(self, progress, idx: int, total: int, result: AgentResult) -> None:
+        """上报单个子任务完成/失败。"""
+        ok = bool(getattr(result, "success", False))
+        agent_id = getattr(result, "agent_id", "?")
+        marker = "✅" if ok else "❌"
+        detail = "" if ok else f"：{getattr(result, 'error_message', '') or '失败'}"
+        self._emit(
+            progress, "task_done",
+            f"{marker} 子任务 {idx}/{total} 完成（{agent_id}）{detail}",
+            current=idx, total=total, agent_id=agent_id, success=ok,
+        )
+
     def _handle_coordination(self, task: AgentTask) -> AgentResult:
         """处理协调任务"""
         request = task.input_data.get("request", "")

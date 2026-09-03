@@ -273,10 +273,128 @@ class TestAgentChat:
         svc._active_react = engine
         assert svc.stop_agent() is True
         assert engine.stopped is True
+        assert svc.is_cancelled() is True
 
     def test_stop_agent_when_idle(self):
         svc = make_service()
         assert svc.stop_agent() is False
+        assert svc.is_cancelled() is False
+
+    def test_active_react_cleared_after_stream(self):
+        svc = make_service()
+        list(svc.agent_chat_stream("x"))
+        assert svc._active_react is None
+        assert svc.is_running() is False
+
+
+# ==================== 桥接：心跳 / 取消 / 生命周期 ====================
+
+class TestBridge:
+    def test_heartbeat_emitted_while_worker_blocks(self):
+        """后台无新事件超过心跳间隔时，产出 heartbeat（含 elapsed）。"""
+        import threading
+
+        release = threading.Event()
+
+        class SlowRAG(FakeRAG):
+            def query_with_sources(self, question, progress_callback=None):
+                release.wait(timeout=5)
+                return super().query_with_sources(question, progress_callback)
+
+        svc = make_service(rag=SlowRAG())
+        svc.heartbeat_interval = 0.05
+        gen = svc.rag_query_stream("q", enable_web_search=False)
+        seen = []
+        for evt in gen:
+            seen.append(evt)
+            if evt.kind == "heartbeat":
+                assert isinstance(evt.data.get("elapsed"), float)
+                release.set()
+        kinds = [e.kind for e in seen]
+        assert "heartbeat" in kinds
+        assert kinds[-1] == "answer"
+        assert svc.is_running() is False
+
+    def test_stop_current_yields_cancelled_and_stops_forwarding(self):
+        import threading
+
+        release = threading.Event()
+
+        class BlockingRAG(FakeRAG):
+            def query_with_sources(self, question, progress_callback=None):
+                release.wait(timeout=5)
+                return super().query_with_sources(question, progress_callback)
+
+        svc = make_service(rag=BlockingRAG())
+        svc.heartbeat_interval = 0.05
+        gen = svc.rag_query_stream("q", enable_web_search=False)
+        seen = []
+        for evt in gen:
+            seen.append(evt)
+            if evt.kind == "heartbeat":
+                assert svc.is_running() is True
+                assert svc.stop_current() is True
+        release.set()
+        assert seen[-1].kind == "cancelled"
+        assert not any(e.kind == "answer" for e in seen)
+        assert svc.is_running() is False
+
+    def test_pipeline_cancelled_exception_maps_to_cancelled_event(self, monkeypatch):
+        import rag_pipeline
+
+        def fake_answer_question(*args, **kwargs):
+            raise rag_pipeline.PipelineCancelled("用户已停止")
+
+        monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer_question)
+        svc = make_service()
+        events = list(svc.rag_query_stream("q"))
+        assert events[-1].kind == "cancelled"
+
+    def test_should_stop_probe_passed_to_pipeline(self, monkeypatch):
+        import rag_pipeline
+
+        captured = {}
+
+        def fake_answer_question(engine, question, **kwargs):
+            captured["should_stop"] = kwargs.get("should_stop")
+            return {"kind": "answer", "answer": "a", "kb_sources": [], "web_sources": [], "meta": None}
+
+        monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer_question)
+        svc = make_service()
+        list(svc.rag_query_stream("q"))
+        assert callable(captured["should_stop"])
+        assert captured["should_stop"]() is False
+
+    def test_generator_close_sets_cancel_and_resets_running(self):
+        """消费方关闭生成器（Gradio cancels）时置位取消并复位 running。"""
+        import threading
+
+        release = threading.Event()
+
+        class BlockingRAG(FakeRAG):
+            def query_with_sources(self, question, progress_callback=None):
+                release.wait(timeout=5)
+                return super().query_with_sources(question, progress_callback)
+
+        svc = make_service(rag=BlockingRAG())
+        svc.heartbeat_interval = 0.05
+        gen = svc.rag_query_stream("q", enable_web_search=False)
+        first = next(gen)
+        assert first.kind in ("progress", "heartbeat")
+        assert svc.is_running() is True
+        gen.close()
+        release.set()
+        assert svc.is_cancelled() is True
+        assert svc.is_running() is False
+
+    def test_new_run_does_not_revive_old_cancelled_task(self):
+        """旧任务被取消后启动新任务，旧任务的取消信号保持置位。"""
+        svc = make_service()
+        old_cancel = svc._cancel_event
+        old_cancel.set()
+        list(svc.rag_query_stream("q", enable_web_search=False))
+        assert old_cancel.is_set() is True
+        assert svc.is_cancelled() is False
 
 
 # ==================== 多 Agent ====================
@@ -321,6 +439,60 @@ class TestMultiAgent:
         svc = make_service(orchestrator_factory=lambda: NoShutdown())
         result = svc.multi_agent_run("x")
         assert result["success"] is True
+
+    def test_run_does_not_pass_progress_kwarg(self):
+        """阻塞版不传 progress，兼容只接受 (request, mode) 的编排器。"""
+        orch = MagicMock()
+        orch.process_request.return_value = {"success": True}
+        svc = make_service(orchestrator_factory=lambda: orch)
+        svc.multi_agent_run("x", mode="parallel")
+        orch.process_request.assert_called_once_with("x", "parallel")
+
+
+class TestMultiAgentStream:
+    def test_empty_request(self):
+        svc = make_service()
+        events = list(svc.multi_agent_stream("  "))
+        assert events == [StreamEvent("error", "请求不能为空")]
+
+    def test_progress_events_then_answer(self):
+        orch = MagicMock()
+
+        def fake_process(request, mode, progress=None):
+            progress({"stage": "decompose", "message": "🧩 分解任务"})
+            progress({"stage": "execute", "message": "⚙️ 执行 1/1", "current": 1, "total": 1})
+            progress({"stage": "integrate", "message": "🧷 整合"})
+            return {"success": True, "summary": "协作完成", "results": []}
+
+        orch.process_request.side_effect = fake_process
+        svc = make_service(orchestrator_factory=lambda: orch)
+        events = list(svc.multi_agent_stream("任务", mode="hierarchy"))
+        kinds = [e.kind for e in events]
+        assert kinds.count("progress") == 3
+        assert kinds[-1] == "answer"
+        assert events[-1].message == "协作完成"
+        assert events[-1].data["success"] is True
+        # 进度事件透传原始 stage/current/total，供 UI 去重
+        exec_evt = [e for e in events if e.kind == "progress"][1]
+        assert exec_evt.data["stage"] == "execute"
+        assert exec_evt.data["current"] == 1
+        orch.shutdown.assert_called_once()
+
+    def test_process_request_raises_becomes_failed_answer(self):
+        orch = MagicMock()
+        orch.process_request.side_effect = RuntimeError("nope")
+        svc = make_service(orchestrator_factory=lambda: orch)
+        events = list(svc.multi_agent_stream("x"))
+        assert events[-1].kind == "answer"
+        assert events[-1].data["success"] is False
+        assert "nope" in events[-1].data["error"]
+
+    def test_running_flag_reset(self):
+        orch = MagicMock()
+        orch.process_request.return_value = {"success": True}
+        svc = make_service(orchestrator_factory=lambda: orch)
+        list(svc.multi_agent_stream("x"))
+        assert svc.is_running() is False
 
 
 # ==================== 知识库管理 ====================

@@ -20,11 +20,15 @@
 
     {"stage": <str>, "message": <str>, ...额外字段}
 
-``stage`` 取值：``meta_overview`` | ``web_search_start`` | ``web_query`` |
-``web_query_empty`` | ``web_search_done`` | ``web_search_empty`` |
+``stage`` 取值：``meta_overview`` | ``web_plan`` | ``web_search_start`` |
+``web_query`` | ``web_query_empty`` | ``web_search_done`` | ``web_search_empty`` |
 ``web_search_failed`` | ``enrich_start`` | ``enrich_page_failed`` |
 ``enrich_done`` | ``kb_retrieving`` | ``kb_empty`` | ``kb_fallback_search`` |
 ``synthesizing`` | ``model_thinking`` | ``kb_uninitialized`` 等。
+
+取消：``answer_question`` 接受可选 ``should_stop`` 回调（返回 True 表示用户
+已请求停止）。编排层在每个阶段边界检查它，命中则抛出 ``PipelineCancelled``；
+正在进行中的单次 LLM/网络调用无法被打断，但不会再进入下一阶段。
 """
 from __future__ import annotations
 
@@ -38,6 +42,13 @@ logger = logging.getLogger(__name__)
 # 可选进度回调类型：接收一个结构化事件 dict。
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 
+# 可选取消探针：返回 True 表示应尽快停止。
+StopCheck = Optional[Callable[[], bool]]
+
+
+class PipelineCancelled(Exception):
+    """用户请求停止，编排在阶段边界主动中止。"""
+
 
 def _emit(cb: ProgressCallback, stage: str, message: str = "", **extra: Any) -> None:
     """安全地向进度回调发送一个事件；回调为空或抛错都不影响主流程。"""
@@ -50,6 +61,18 @@ def _emit(cb: ProgressCallback, stage: str, message: str = "", **extra: Any) -> 
         cb(event)
     except Exception as e:  # noqa: BLE001 - 进度回调失败不应中断主流程
         logger.debug(f"progress callback error: {e}")
+
+
+def _check_stop(should_stop: StopCheck) -> None:
+    """若取消探针返回 True 则抛出 ``PipelineCancelled``；探针异常视为未取消。"""
+    if should_stop is None:
+        return
+    try:
+        cancelled = bool(should_stop())
+    except Exception:  # noqa: BLE001
+        cancelled = False
+    if cancelled:
+        raise PipelineCancelled("用户已停止")
 
 
 # ==================== LLM 基础调用 ====================
@@ -139,8 +162,12 @@ def _is_mostly_ascii(text: str) -> bool:
     return cjk == 0
 
 
-def plan_web_search(question: str) -> dict:
+def plan_web_search(question: str, progress: ProgressCallback = None) -> dict:
     """用 LLM 判断问题是否需要联网搜索，并生成优化后的搜索查询。
+
+    这是整条链路的第一次模型调用：若模型尚未驻留内存，还会叠加加载时间；
+    开启思考模式时更慢。因此在调用前先发 ``web_plan`` 进度事件，避免用户
+    在这一步只能看到静态的"正在处理"而误以为卡死。
 
     Returns:
         ``{"needs_search": bool, "queries": [str, ...]}``；queries 已去重。
@@ -173,6 +200,7 @@ def plan_web_search(question: str) -> dict:
         f"问题：{question}"
     )
 
+    _emit(progress, "web_plan", "🧭 规划搜索策略（判断是否需要联网、生成查询词）...")
     try:
         from llama_index.core import Settings
         raw = str(Settings.llm.complete(prompt)).strip()
@@ -727,18 +755,28 @@ def format_kb_context(sources: list) -> str:
 
 # ==================== 网络搜索增强编排 ====================
 
-def augment_with_web_search(question: str, progress: ProgressCallback = None) -> str:
+def augment_with_web_search(
+    question: str,
+    progress: ProgressCallback = None,
+    should_stop: StopCheck = None,
+) -> str:
     """按需执行 LLM 规划的网络搜索，返回搜索结果文本（无则空串）。"""
     try:
-        plan = plan_web_search(question)
+        plan = plan_web_search(question, progress=progress)
+        _check_stop(should_stop)
         if plan.get("needs_search") and plan.get("queries"):
             _emit(progress, "web_search_start", "🌐 检测到需要最新信息，正在网络搜索...")
             result = run_web_search(plan["queries"], progress=progress)
+            _check_stop(should_stop)
             if result:
                 _emit(progress, "web_search_done", "✅ 网络搜索完成")
                 # 传入原始问题，使 enrich 按"摘要与问题的匹配度"选页抓正文
                 return enrich_with_page_content(result, question=question, progress=progress)
             _emit(progress, "web_search_empty", "⚠️ 所有搜索查询均未返回有效结果，继续使用知识库")
+        else:
+            _emit(progress, "web_plan_skip", "💡 判断无需联网，直接使用知识库/模型回答")
+    except PipelineCancelled:
+        raise
     except Exception as e:  # noqa: BLE001
         _emit(progress, "web_search_failed", f"⚠️ 网络搜索失败，继续使用知识库: {e}")
     return ""
@@ -754,6 +792,7 @@ def generate_answer(
     show_progress: bool = True,
     progress: ProgressCallback = None,
     rag_progress_callback: ProgressCallback = None,
+    should_stop: StopCheck = None,
 ) -> dict:
     """根据知识库状态生成回答（知识库/网络分区标注、综合总结）。
 
@@ -765,11 +804,13 @@ def generate_answer(
         show_progress: 是否把 RAG 检索进度透传给 ``rag_progress_callback``。
         progress: 编排级进度回调（网络回退、综合、思考等阶段）。
         rag_progress_callback: 直接透传给 ``query_with_sources`` 的进度回调。
+        should_stop: 取消探针，阶段边界命中即抛 ``PipelineCancelled``。
 
     Returns:
         ``{"answer": str, "sources": [...]}``。sources 仅含知识库来源。
     """
     kb_initialized = rag_engine.query_engine is not None
+    _check_stop(should_stop)
 
     # 按相关度精简网络上下文：只保留与问题最相关的摘要 + 精选正文，最大化信噪比，
     # 避免全部结果+全文的噪音淹没有效信息、导致 LLM 抓不住重点或误判无答案。
@@ -780,18 +821,19 @@ def generate_answer(
         if not web_search_result:
             _emit(progress, "kb_uninitialized", "💡 知识库为空，直接使用模型回答（可能不含最新信息）")
         prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
-        _emit(progress, "model_thinking", "模型思考中...")
+        _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
         answer = llm_direct_answer(prompt)
         if web_search_result:
             answer = "⚠️ 以下回答基于网络搜索与模型知识，非你的知识库内容：\n\n" + answer
         return {"answer": answer, "sources": []}
 
-    # 检索知识库
-    _emit(progress, "kb_retrieving", "检索知识库...")
+    # 检索知识库（LlamaIndex 的 query 会一次完成"向量检索 + 初步生成"，含模型推理）
+    _emit(progress, "kb_retrieving", "📖 检索知识库并生成初步回答（含模型推理）...")
     if show_progress and rag_progress_callback is not None:
         result = rag_engine.query_with_sources(question, progress_callback=rag_progress_callback)
     else:
         result = rag_engine.query_with_sources(question)
+    _check_stop(should_stop)
 
     # 相关性过滤：剔除低分噪音片段（检索阈值 0.3 会带回语义几乎无关的片段）。
     raw_sources = result.get("sources") or []
@@ -813,10 +855,11 @@ def generate_answer(
     # 这些片段是否真能帮助回答问题；判为无关则视为未命中，避免把 0.45 这类勉强
     # 过阈值但话题不搭的噪音（如问"售价"却召回 Cloudflare 配置）当作依据展示。
     if kb_hit:
-        _emit(progress, "kb_relevance_check", "校验知识库片段相关性...")
+        _emit(progress, "kb_relevance_check", "🔎 校验知识库片段相关性（模型判定）...")
         if not judge_kb_relevance(original_question, relevant_sources):
             _emit(progress, "kb_irrelevant", "🧹 知识库片段与问题无关，已忽略")
             kb_hit = False
+        _check_stop(should_stop)
 
     # 知识库命中：以（过滤后的）知识库为主。
     if kb_hit:
@@ -830,9 +873,9 @@ def generate_answer(
         kb_context = format_kb_context(relevant_sources)
         prompt = synthesize_prompt(original_question, kb_context, web_context)
         if web_search_result:
-            _emit(progress, "synthesizing", "综合知识库与网络信息...")
+            _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答...")
         else:
-            _emit(progress, "synthesizing", "基于知识库综合回答...")
+            _emit(progress, "synthesizing", "✍️ 基于知识库综合回答...")
         answer = llm_direct_answer(prompt)
         return {"answer": answer, "sources": relevant_sources}
 
@@ -841,13 +884,14 @@ def generate_answer(
     if not web_search_result:
         _emit(progress, "kb_fallback_search", "🌐 正在网络搜索补充信息...")
         web_search_result = simple_web_search(original_question)
+        _check_stop(should_stop)
         if web_search_result:
             _emit(progress, "web_search_done", "✅ 网络搜索完成")
             # 回退搜索的结果同样精简后再入 prompt
             web_context = compact_web_context(web_search_result, original_question)
 
     prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
-    _emit(progress, "model_thinking", "模型思考中...")
+    _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
     answer = llm_direct_answer(prompt)
     if web_search_result:
         answer = "⚠️ 知识库中无相关内容，以下回答基于网络搜索，非你的知识库内容：\n\n" + answer
@@ -867,6 +911,7 @@ def answer_question(
     show_progress: bool = True,
     progress: ProgressCallback = None,
     rag_progress_callback: ProgressCallback = None,
+    should_stop: StopCheck = None,
 ) -> dict:
     """完整的知识库问答编排入口，CLI 与 Web 共享。
 
@@ -881,6 +926,7 @@ def answer_question(
         show_progress: 是否透传 RAG 检索进度。
         progress: 编排级进度回调。
         rag_progress_callback: 透传给 query_with_sources 的进度回调。
+        should_stop: 取消探针；用户请求停止时在阶段边界抛 ``PipelineCancelled``。
 
     Returns:
         统一结构：
@@ -888,6 +934,7 @@ def answer_question(
            "web_sources": [...], "meta": {...}|None}``
     """
     question = (question or "").strip()
+    _check_stop(should_stop)
 
     # 元/概览类问题：直接返回知识库概览，不检索不联网
     if is_meta_query(question):
@@ -907,7 +954,9 @@ def answer_question(
     # 网络搜索增强（LLM 驱动的通用查询规划）
     web_search_result = ""
     if enable_web_search:
-        web_search_result = augment_with_web_search(question, progress=progress)
+        web_search_result = augment_with_web_search(
+            question, progress=progress, should_stop=should_stop
+        )
     web_sources = parse_web_sources(web_search_result) if web_search_result else []
 
     result = generate_answer(
@@ -918,6 +967,7 @@ def answer_question(
         show_progress=show_progress,
         progress=progress,
         rag_progress_callback=rag_progress_callback,
+        should_stop=should_stop,
     )
 
     return {
