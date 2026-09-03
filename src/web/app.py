@@ -795,6 +795,12 @@ APP_CSS = """
 .chat-status { min-height: 1.8em; opacity: 0.9; }
 .chat-hint { align-items: center; padding: 6px 10px; border-radius: 8px;
              background: var(--color-accent-soft, rgba(255, 196, 0, 0.12)); }
+/* 对话区：标题「对话」与右上角按钮固定不随滚轮滚动。
+   Gradio 未设固定 height 时会让整个 .block 以 overflow:auto 滚动，而标签/按钮是相对
+   .block 绝对定位的，于是一起滚走。这里让 .block 不滚、只让内部消息区滚动。 */
+#chatbot { overflow: hidden !important; display: flex !important; flex-direction: column; }
+#chatbot > .wrapper { flex: 1 1 auto; min-height: 0; }
+#chatbot .bubble-wrap, #chatbot .panel-wrap { overflow-y: auto; min-height: 0; }
 """
 
 
@@ -877,6 +883,7 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
             # 超过 max_height 后在内部滚动；空态用 placeholder 提示，可拖拽右下角调高。
             chatbot = gr.Chatbot(
                 label="对话",
+                elem_id="chatbot",
                 height=None,
                 min_height=96,
                 max_height=560,
