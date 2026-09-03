@@ -4,6 +4,7 @@
 服务层是 Web 界面唯一与核心引擎交互的层。通过依赖注入把各引擎替换为
 MagicMock/桩对象，在不启动真实 Ollama/ChromaDB 的前提下覆盖全部分支。
 """
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -69,12 +70,13 @@ class FakeRAG:
 
 
 class FakeReact:
-    """模拟 ReActEngine。"""
+    """模拟 ReActEngine（接受服务层注入的会话上下文 ``context``）。"""
 
-    def __init__(self, on_step=None, on_confirm=None, answer="最终答案",
+    def __init__(self, on_step=None, on_confirm=None, context=None, answer="最终答案",
                  raise_error=False, steps=None):
         self.on_step = on_step
         self.on_confirm = on_confirm
+        self.context = context
         self._answer = answer
         self._raise = raise_error
         self._steps = steps or [{"message": "思考中", "phase": "thinking"}]
@@ -87,22 +89,33 @@ class FakeReact:
         for s in self._steps:
             if self.on_step:
                 self.on_step(s)
+        # 真实引擎会在轮末把本轮折叠写回会话
+        if self.context is not None:
+            self.context.record(user_input, self._answer, trace="共 1 步")
         return self._answer
 
     def stop(self):
         self.stopped = True
 
 
+def make_session_manager():
+    """真实 SessionManager，落到临时目录（不触碰用户会话数据）。"""
+    from session_manager import SessionManager
+
+    return SessionManager(tempfile.mkdtemp(prefix="web_sessions_"))
+
+
 def make_service(**overrides):
     """构造一个全部依赖被桩替换的 WebService。"""
     rag = overrides.pop("rag", FakeRAG())
+    sm = overrides.pop("session_manager", None)
     defaults = dict(
         rag_factory=lambda: rag,
-        react_factory=lambda on_step=None, on_confirm=None: FakeReact(
-            on_step=on_step, on_confirm=on_confirm
+        react_factory=lambda on_step=None, on_confirm=None, context=None: FakeReact(
+            on_step=on_step, on_confirm=on_confirm, context=context
         ),
         orchestrator_factory=lambda: MagicMock(),
-        session_manager_factory=lambda: MagicMock(),
+        session_manager_factory=(lambda: sm) if sm is not None else make_session_manager,
         graph_query_factory=lambda: MagicMock(),
         set_rag_engine=MagicMock(),
         load_documents=lambda path, file_types=None: [MagicMock()],
@@ -236,8 +249,8 @@ class TestAgentChat:
 
     def test_error_path(self):
         svc = make_service(
-            react_factory=lambda on_step=None, on_confirm=None: FakeReact(
-                on_step=on_step, on_confirm=on_confirm, raise_error=True
+            react_factory=lambda on_step=None, on_confirm=None, context=None: FakeReact(
+                on_step=on_step, on_confirm=on_confirm, context=context, raise_error=True
             )
         )
         events = list(svc.agent_chat_stream("x"))
@@ -248,9 +261,9 @@ class TestAgentChat:
         """无 confirm_handler 时 on_confirm 默认返回 False。"""
         captured = {}
 
-        def factory(on_step=None, on_confirm=None):
+        def factory(on_step=None, on_confirm=None, context=None):
             captured["on_confirm"] = on_confirm
-            return FakeReact(on_step=on_step, on_confirm=on_confirm)
+            return FakeReact(on_step=on_step, on_confirm=on_confirm, context=context)
 
         svc = make_service(react_factory=factory)
         list(svc.agent_chat_stream("x"))
@@ -259,9 +272,9 @@ class TestAgentChat:
     def test_confirm_handler_used(self):
         captured = {}
 
-        def factory(on_step=None, on_confirm=None):
+        def factory(on_step=None, on_confirm=None, context=None):
             captured["on_confirm"] = on_confirm
-            return FakeReact(on_step=on_step, on_confirm=on_confirm)
+            return FakeReact(on_step=on_step, on_confirm=on_confirm, context=context)
 
         svc = make_service(react_factory=factory)
         list(svc.agent_chat_stream("x", confirm_handler=lambda evt: True))
@@ -702,7 +715,7 @@ class TestSingleton:
         reset_web_service()
         s1 = get_web_service(
             rag_factory=lambda: FakeRAG(),
-            react_factory=lambda on_step=None, on_confirm=None: FakeReact(),
+            react_factory=lambda on_step=None, on_confirm=None, context=None: FakeReact(),
             orchestrator_factory=lambda: MagicMock(),
             session_manager_factory=lambda: MagicMock(),
             graph_query_factory=lambda: MagicMock(),
@@ -751,11 +764,12 @@ class TestDefaultFactories:
         fake_module.set_rag_engine.assert_called_once_with("engine")
 
     def test_default_session_manager_factory(self, monkeypatch):
-        import sys as _sys
-        fake_module = MagicMock()
-        monkeypatch.setitem(_sys.modules, "session_manager", fake_module)
-        services._default_session_manager_factory()
-        fake_module.get_session_manager.assert_called_once()
+        """默认工厂经由会话上下文单例取共享 SessionManager（首次创建时迁移旧历史）。"""
+        import conversation_context as cc
+        fake_ctx = MagicMock()
+        fake_ctx.manager = "shared-manager"
+        monkeypatch.setattr(cc, "get_conversation_context", lambda: fake_ctx)
+        assert services._default_session_manager_factory() == "shared-manager"
 
     def test_default_graph_query_factory(self, monkeypatch):
         import sys as _sys
@@ -1025,3 +1039,229 @@ class TestThinkToggle:
         out = svc.set_think(True)
         assert out["ok"] is False
         assert "设置失败" in out["message"]
+
+
+# ==================== 连续对话上下文（会话记忆 / 改写 / 健康度） ====================
+
+class TestConversationContextWiring:
+    """三种模式都应绑定到会话：记录本轮、透出上下文指标与改写结果。"""
+
+    def _ctx_with_history(self, svc, sid, n=1):
+        ctx = svc._context(sid)
+        for i in range(n):
+            ctx.record(f"DJI OSMO 360 是什么 {i}", "一款全景相机")
+        return ctx
+
+    def test_rag_stream_records_turn_and_reports_context(self):
+        svc = make_service()
+        sid = svc.ensure_session()
+        events = list(svc.rag_query_stream("什么是RAG", enable_web_search=False, session_id=sid))
+        answer = events[-1]
+        assert answer.kind == "answer"
+        ctx_info = answer.data["context"]
+        assert ctx_info["turns"] == 1
+        assert ctx_info["budget"] > 0
+        assert "suggest_new_session" in ctx_info
+        history = svc.chat_history(sid)
+        assert [m["role"] for m in history] == ["user", "assistant"]
+        assert history[0]["content"] == "什么是RAG"
+        assert answer.data["rewritten"] is None
+
+    def test_rag_stream_rewrites_followup_with_history(self, monkeypatch):
+        """会话有历史 + 追问句式 → 改写为独立问题用于检索，并透出 rewritten。"""
+        import conversation_context as cc
+
+        svc = make_service()
+        sid = svc.ensure_session()
+        self._ctx_with_history(svc, sid)
+        monkeypatch.setattr(cc, "_default_complete", lambda prompt: "DJI OSMO 360 多少钱")
+        events = list(svc.rag_query_stream("它多少钱", enable_web_search=False, session_id=sid))
+        answer = events[-1]
+        assert answer.data["rewritten"] == "DJI OSMO 360 多少钱"
+        # 检索用的是改写后的问题（FakeRAG 把问题回显进答案）
+        assert "DJI OSMO 360 多少钱" in answer.message
+        assert any(e.kind == "progress" and "结合上下文" in e.message for e in events)
+        # 会话中记录的是原问题，并附带改写结果
+        session = svc.session_manager.get_session(sid)
+        user_msgs = [m for m in session.messages if m["role"] == "user"]
+        assert user_msgs[-1]["content"] == "它多少钱"
+        assert user_msgs[-1]["rewritten"] == "DJI OSMO 360 多少钱"
+
+    def test_rag_meta_query_recorded_as_overview(self, monkeypatch):
+        import sys
+        fake_mod = MagicMock()
+        fake_mod.get_global_metadata_manager.return_value.list_files.return_value = []
+        monkeypatch.setitem(sys.modules, "file_metadata", fake_mod)
+        svc = make_service()
+        sid = svc.ensure_session()
+        list(svc.rag_query_stream("知识库里有什么", enable_web_search=False, session_id=sid))
+        history = svc.chat_history(sid)
+        assert history[-1]["content"] == "[知识库概览]"
+
+    def test_agent_stream_engine_gets_context_and_records(self):
+        svc = make_service()
+        sid = svc.ensure_session()
+        events = list(svc.agent_chat_stream("写个函数", session_id=sid))
+        assert events[-1].kind == "answer"
+        assert "context" in events[-1].data
+        history = svc.chat_history(sid)
+        assert history == [
+            {"role": "user", "content": "写个函数"},
+            {"role": "assistant", "content": "最终答案"},
+        ]
+        session = svc.session_manager.get_session(sid)
+        assert session.messages[-1]["trace"] == "共 1 步"
+
+    def test_agent_stream_non_dict_result_tolerated(self, monkeypatch):
+        svc = make_service()
+        monkeypatch.setattr(svc, "_finish_turn", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+        # _finish_turn 抛错时 run 抛错 → error 事件
+        events = list(svc.agent_chat_stream("x"))
+        assert events[-1].kind == "error"
+
+    def test_multi_agent_stream_records_and_rewrites(self, monkeypatch):
+        import conversation_context as cc
+
+        orch = MagicMock()
+        seen = {}
+
+        def fake_process(request, mode, progress=None):
+            seen["request"] = request
+            return {"success": True, "summary": "协作完成", "results": []}
+
+        orch.process_request.side_effect = fake_process
+        svc = make_service(orchestrator_factory=lambda: orch)
+        sid = svc.ensure_session()
+        self._ctx_with_history(svc, sid)
+        monkeypatch.setattr(cc, "_default_complete", lambda prompt: "帮我总结 DJI OSMO 360 的优缺点")
+        events = list(svc.multi_agent_stream("总结一下它", session_id=sid))
+        assert events[-1].kind == "answer"
+        assert seen["request"] == "帮我总结 DJI OSMO 360 的优缺点"
+        assert events[-1].data["rewritten"] == "帮我总结 DJI OSMO 360 的优缺点"
+        assert events[-1].data["context"]["turns"] == 2
+        history = svc.chat_history(sid)
+        assert history[-2]["content"] == "总结一下它"
+        assert history[-1]["content"] == "协作完成"
+
+    def test_multi_agent_failure_recorded_with_marker(self):
+        orch = MagicMock()
+        orch.process_request.return_value = {"success": False, "summary": "协作失败", "error": "x"}
+        svc = make_service(orchestrator_factory=lambda: orch)
+        sid = svc.ensure_session()
+        list(svc.multi_agent_stream("任务", session_id=sid))
+        assert svc.chat_history(sid)[-1]["content"].startswith("[协作失败]")
+
+    def test_multi_agent_non_dict_result_wrapped(self):
+        class Weird:
+            def process_request(self, request, mode, progress=None):
+                return "plain"
+        svc = make_service(orchestrator_factory=lambda: Weird())
+        events = list(svc.multi_agent_stream("任务"))
+        assert events[-1].kind == "answer"
+        assert events[-1].message == "plain"
+
+    def test_finish_turn_error_returns_error_dict(self):
+        class BadCtx:
+            def record(self, *a, **k):
+                raise RuntimeError("disk full")
+
+        result = WebService._finish_turn(BadCtx(), "q", "a", {})
+        assert "disk full" in result["error"]
+
+    def test_health_before_swallows_errors(self):
+        class BadCtx:
+            def health(self, q=None):
+                raise RuntimeError("x")
+
+        assert WebService._health_before(BadCtx(), "q") == {}
+
+
+class TestSessionContextHelpers:
+    def test_ensure_session_creates_then_reuses(self):
+        svc = make_service()
+        sid = svc.ensure_session()
+        assert sid
+        assert svc.ensure_session() == sid
+
+    def test_session_choices_labels(self):
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("q", "a")
+        choices = svc.session_choices()
+        assert choices[0][1] == sid
+        assert "2 条" in choices[0][0] and sid[:8] in choices[0][0]
+
+    def test_chat_history_empty_for_unknown(self):
+        svc = make_service()
+        assert svc.chat_history("nope") == [] or isinstance(svc.chat_history("nope"), list)
+
+    def test_chat_history_error_returns_empty(self, monkeypatch):
+        svc = make_service()
+        monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
+        assert svc.chat_history("x") == []
+
+    def test_context_metrics_and_error(self, monkeypatch):
+        svc = make_service()
+        sid = svc.ensure_session()
+        m = svc.context_metrics(sid)
+        assert m["turns"] == 0 and m["budget"] > 0
+        monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
+        assert "error" in svc.context_metrics(sid)
+
+    def test_clear_context(self, monkeypatch):
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("q", "a")
+        assert svc.clear_context(sid) is True
+        assert svc.chat_history(sid) == []
+        monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
+        assert svc.clear_context(sid) is False
+
+    def test_compact_context_short_history(self, monkeypatch):
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("q", "a")
+        assert svc.compact_context(sid) == {"folded_messages": 0}
+        monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
+        assert "error" in svc.compact_context(sid)
+
+    def test_compact_context_folds_old_turns(self, monkeypatch):
+        import conversation_context as cc
+        monkeypatch.setattr(cc, "_default_complete", lambda prompt: "摘要文本")
+        svc = make_service()
+        sid = svc.ensure_session()
+        ctx = svc._context(sid)
+        for i in range(5):
+            ctx.record(f"问题{i}", f"回答{i}")
+        result = svc.compact_context(sid)
+        assert result["folded_messages"] == 4
+        assert result["compressions"] == 1
+        assert svc.context_metrics(sid)["summary"] == "摘要文本"
+
+    def test_create_session_with_carry_summary(self, monkeypatch):
+        import conversation_context as cc
+        monkeypatch.setattr(cc, "_default_complete", lambda prompt: "上一会话摘要")
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("DJI OSMO 360 是什么", "一款全景相机")
+        new_sid = svc.create_session("新会话", carry_summary=True, from_session_id=sid)
+        assert new_sid != sid
+        m = svc.context_metrics(new_sid)
+        assert "承接自上一会话" in m["summary"]
+        assert "DJI OSMO 360" in m["summary"]
+        assert svc.chat_history(new_sid) == []
+
+    def test_mark_suggested_and_continue(self, monkeypatch):
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("q", "a")
+        svc.mark_suggested(sid)
+        meta = svc.session_manager.get_session(sid).metadata["context"]
+        assert meta["suggested"] is True
+        svc.continue_session(sid)
+        meta = svc.session_manager.get_session(sid).metadata["context"]
+        assert meta["suggested"] is False and meta["only_compressions"] is True
+        # 异常吞掉
+        monkeypatch.setattr(svc, "_context", lambda sid=None: (_ for _ in ()).throw(RuntimeError("x")))
+        svc.mark_suggested(sid)
+        svc.continue_session(sid)

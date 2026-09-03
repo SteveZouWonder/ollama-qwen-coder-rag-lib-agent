@@ -329,7 +329,7 @@ ollama-qwen-coder-rag-lib/
 ├── react_engine.py        # ReAct 推理引擎（qwen3.5:4b，支持运行时热切换）
 ├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
-├── chat_history.py        # 对话历史持久化
+├── conversation_context.py # 连续对话上下文（会话记忆、token 预算、滚动压缩、追问改写）
 ├── query_interface.py     # 统一 CLI 入口
 ├── knowledge_to_skills.py # 知识库到Skill智能转化引擎
 ├── knowledge_snapshot.py  # 知识库快照系统

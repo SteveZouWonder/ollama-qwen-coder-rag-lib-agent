@@ -381,13 +381,22 @@ def _rag_answer(msg="答案", **data):
 
 
 class TestChatStream:
-    """``on_chat_stream`` yield 四元组 (answer, status, process, sources)。"""
+    """``on_chat_stream`` yield 五元组 (history, status, process, sources, hint)。
+
+    ``history`` 为 Chatbot（messages 格式）的完整多轮列表：既有会话历史 + 本轮
+    用户消息，完成后追加助手回答。
+    """
 
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 4, f"应为四元组: {item!r}"
+            assert len(item) == 5, f"应为五元组: {item!r}"
+            assert isinstance(item[0], list)
         return out
+
+    @staticmethod
+    def _last_assistant(history):
+        return history[-1]["content"] if history and history[-1]["role"] == "assistant" else None
 
     def test_empty_message(self):
         h = build_handlers(make_service_mock())
@@ -405,20 +414,29 @@ class TestChatStream:
 
     def test_rag_first_yield_is_status_with_elapsed(self):
         svc = make_service_mock()
+        svc.chat_history.return_value = [
+            {"role": "user", "content": "旧问"}, {"role": "assistant", "content": "旧答"},
+        ]
         svc.rag_query_stream.return_value = iter([
             StreamEvent("progress", "检索知识库...", {"stage": "kb_retrieving"}),
             _rag_answer("答案"),
         ])
         h = build_handlers(svc)
-        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
-        # 第一条即为带耗时的状态行，而非静态"正在处理"
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索", True, False, "sid1"))
+        # 第一条即为带耗时的状态行，历史 = 既有 2 条 + 本轮用户消息
         assert out[0][1].startswith("⏳")
         assert "已用时" in out[0][1]
-        # 最终一条：答案 + 完成状态 + 已完成的处理过程
-        answer, status, process, _ = out[-1]
-        assert answer == "答案"
+        assert [m["content"] for m in out[0][0]] == ["旧问", "旧答", "问题"]
+        # 最终一条：追加助手回答 + 完成状态 + 已完成的处理过程
+        history, status, process, _, hint = out[-1]
+        assert self._last_assistant(history) == "答案"
+        assert len(history) == 4
         assert status.startswith("✅ 完成")
         assert "检索知识库" in process and "已完成" in process
+        assert hint == ""
+        # 会话 id 透传给服务层
+        _, kwargs = svc.rag_query_stream.call_args
+        assert kwargs["session_id"] == "sid1"
 
     def test_rag_model_not_loaded_hint(self):
         svc = make_service_mock()
@@ -437,7 +455,15 @@ class TestChatStream:
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
         assert "准备中" in out[0][1]
-        assert out[-1][0] == "ok"
+        assert self._last_assistant(out[-1][0]) == "ok"
+
+    def test_history_load_failure_tolerated(self):
+        svc = make_service_mock()
+        svc.chat_history.side_effect = RuntimeError("no session")
+        svc.rag_query_stream.return_value = iter([_rag_answer("ok")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
+        assert out[0][0] == [{"role": "user", "content": "问题"}]
 
     def test_rag_progress_then_answer_with_sources(self):
         svc = make_service_mock()
@@ -451,10 +477,48 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        assert any("网络搜索中" in process for _, _, process, _ in out)
-        answer, _, _, sources = out[-1]
-        assert answer == "最终"
+        assert any("网络搜索中" in process for _, _, process, _, _ in out)
+        history, _, _, sources, _ = out[-1]
+        assert self._last_assistant(history) == "最终"
         assert "f.md" in sources and "http://x" in sources
+
+    def test_rag_rewritten_question_shown_and_context_status(self):
+        """追问被改写：回答前注明"已理解为"，状态行追加上下文用量与压缩次数。"""
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "🔗 结合上下文理解问题…", {"stage": "context_rewrite"}),
+            _rag_answer(
+                "2999 元",
+                rewritten="DJI OSMO 360 多少钱",
+                context={"history_tokens": 3200, "budget": 4800, "compressions": 1,
+                         "suggest_new_session": False, "reasons": []},
+            ),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("它多少钱", "RAG 检索"))
+        history, status, process, _, hint = out[-1]
+        content = self._last_assistant(history)
+        assert content.startswith("> 🔗 已理解为：DJI OSMO 360 多少钱")
+        assert content.endswith("2999 元")
+        assert "上下文 3.2K / 4.8K" in status and "已压缩 1 次" in status
+        assert "结合上下文理解问题" in process
+        assert hint == ""
+        svc.mark_suggested.assert_not_called()
+
+    def test_rag_health_suggests_new_session_once(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            _rag_answer(
+                "ok",
+                context={"history_tokens": 4500, "budget": 4800, "compressions": 2,
+                         "suggest_new_session": True, "reasons": ["compressions"]},
+            ),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False, "sid9"))
+        hint = out[-1][4]
+        assert hint.startswith("💡") and "已压缩 2 次" in hint and "建议新建会话" in hint
+        svc.mark_suggested.assert_called_once_with("sid9")
 
     def test_rag_heartbeat_refreshes_status(self):
         svc = make_service_mock()
@@ -479,15 +543,15 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("知识库里有什么", "RAG 检索"))
-        assert "知识库概览" in out[-1][0]
+        assert "知识库概览" in self._last_assistant(out[-1][0])
 
     def test_rag_error(self):
         svc = make_service_mock()
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        answer, status, _, _ = out[-1]
-        assert "检索炸了" in answer
+        history, status, _, _, _ = out[-1]
+        assert "检索炸了" in self._last_assistant(history)
         assert status.startswith("❌")
 
     def test_rag_cancelled(self):
@@ -498,9 +562,11 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        _, status, process, _ = out[-1]
+        history, status, process, _, _ = out[-1]
         assert "已停止" in status
         assert "规划搜索" in process
+        # 未产出回答：历史只到用户消息
+        assert history[-1]["role"] == "user"
 
     def test_rag_no_answer_event(self):
         svc = make_service_mock()
@@ -515,20 +581,22 @@ class TestChatStream:
             StreamEvent("step", "第一步", {"phase": "thinking"}),
             StreamEvent("step", "模型推理中.", {"phase": "thinking", "transient": True}),
             StreamEvent("step", "模型推理中..", {"phase": "thinking", "transient": True}),
-            StreamEvent("answer", "完成"),
+            StreamEvent("answer", "完成", {"step_log": [], "context": {"history_tokens": 10, "budget": 100}}),
         ])
         h = build_handlers(svc)
-        out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True))
-        assert any("第一步" in process for _, _, process, _ in out)
+        out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True, "sid2"))
+        assert any("第一步" in process for _, _, process, _, _ in out)
         # 心跳出现在状态行，但不进入执行过程列表
-        assert any("模型推理中" in status for _, status, _, _ in out)
-        assert not any("模型推理中" in process for _, _, process, _ in out)
-        answer, status, process, _ = out[-1]
-        assert answer == "完成"
+        assert any("模型推理中" in status for _, status, _, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _, _ in out)
+        history, status, process, _, _ = out[-1]
+        assert self._last_assistant(history) == "完成"
         assert "执行过程" in process
-        # auto_confirm=True 时传入确认处理器
+        assert "上下文 10 / 100" in status
+        # auto_confirm=True 时传入确认处理器；会话 id 透传
         _, kwargs = svc.agent_chat_stream.call_args
         assert kwargs["confirm_handler"] is not None
+        assert kwargs["session_id"] == "sid2"
 
     def test_single_agent_default_rejects_confirm(self):
         svc = make_service_mock()
@@ -537,21 +605,24 @@ class TestChatStream:
         self._collect(h["on_chat_stream"]("做事", "单 Agent"))
         _, kwargs = svc.agent_chat_stream.call_args
         assert kwargs["confirm_handler"] is None
+        assert kwargs["session_id"] is None
 
     def test_multi_agent_stream(self):
         svc = make_service_mock()
         svc.multi_agent_stream.return_value = iter([
             StreamEvent("progress", "🧩 分解任务", {"stage": "decompose"}),
             StreamEvent("progress", "⚙️ 执行子任务 1/2", {"stage": "execute", "current": 1, "total": 2}),
-            StreamEvent("answer", "协作完成", {"success": True, "summary": "协作完成"}),
+            StreamEvent("answer", "协作完成", {"success": True, "summary": "协作完成",
+                                              "rewritten": "帮我总结 X"}),
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
         # 中间能看到分解/执行阶段
-        assert any("分解任务" in process for _, _, process, _ in out)
-        assert any("执行子任务" in process for _, _, process, _ in out)
-        answer, status, process, _ = out[-1]
-        assert "协作完成" in answer
+        assert any("分解任务" in process for _, _, process, _, _ in out)
+        assert any("执行子任务" in process for _, _, process, _, _ in out)
+        history, status, process, _, _ = out[-1]
+        content = self._last_assistant(history)
+        assert "协作完成" in content and "已理解为：帮我总结 X" in content
         assert status.startswith("✅")
         assert "协作过程" in process
         svc.multi_agent_run.assert_not_called()
@@ -561,7 +632,102 @@ class TestChatStream:
         svc.multi_agent_stream.return_value = iter([StreamEvent("answer", "x", None)])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
-        assert "协作失败" in out[-1][0]
+        assert "协作失败" in self._last_assistant(out[-1][0])
+
+
+class TestSessionHandlers:
+    """对话页会话控件处理器（每个标签页绑定自己的会话）。"""
+
+    def test_session_init(self):
+        svc = make_service_mock()
+        svc.ensure_session.return_value = "sid1"
+        svc.session_choices.return_value = [("会话A（2 条）· sid1", "sid1")]
+        svc.chat_history.return_value = [{"role": "user", "content": "q"}]
+        svc.context_metrics.return_value = {"turns": 1, "history_tokens": 20, "budget": 4915, "compressions": 0}
+        h = build_handlers(svc)
+        choices, sid, history, ctx_md = h["on_session_init"]()
+        assert sid == "sid1" and choices[0][1] == "sid1"
+        assert history[0]["content"] == "q"
+        assert "1 轮" in ctx_md and "4.9K" in ctx_md
+
+    def test_session_select_and_empty(self):
+        svc = make_service_mock()
+        svc.chat_history.return_value = []
+        svc.context_metrics.return_value = {"turns": 0, "history_tokens": 0, "budget": 100}
+        h = build_handlers(svc)
+        assert h["on_session_select"]("")[0] == ""
+        sid, history, ctx_md, hint = h["on_session_select"](" sid2 ")
+        assert sid == "sid2" and history == [] and hint == ""
+        assert "0 轮" in ctx_md
+
+    def test_context_status_error_tolerated(self):
+        svc = make_service_mock()
+        svc.chat_history.return_value = []
+        svc.context_metrics.side_effect = RuntimeError("x")
+        h = build_handlers(svc)
+        assert h["on_session_select"]("s")[2] == ""
+
+    def test_new_session_with_carry(self):
+        svc = make_service_mock()
+        svc.create_session.return_value = "new1"
+        svc.session_choices.return_value = [("x", "new1")]
+        svc.chat_history.return_value = []
+        svc.context_metrics.return_value = {"turns": 0, "history_tokens": 60, "budget": 100,
+                                            "summary": "（承接自上一会话）要点"}
+        h = build_handlers(svc)
+        choices, sid, history, ctx_md, hint = h["on_new_session"](True, "old1")
+        assert sid == "new1" and hint == ""
+        svc.create_session.assert_called_once_with(None, carry_summary=True, from_session_id="old1")
+        assert "承接自上一会话" in ctx_md
+
+    def test_clear_context(self):
+        svc = make_service_mock()
+        svc.clear_context.return_value = True
+        svc.chat_history.return_value = []
+        svc.context_metrics.return_value = {}
+        h = build_handlers(svc)
+        history, msg, ctx_md, hint = h["on_clear_context"]("sid")
+        assert history == [] and "已清空" in msg and hint == ""
+        svc.clear_context.return_value = False
+        assert "没有可清空" in h["on_clear_context"]("")[1]
+
+    def test_compact_context_variants(self):
+        svc = make_service_mock()
+        svc.context_metrics.return_value = {}
+        h = build_handlers(svc)
+        svc.compact_context.return_value = {"error": "boom"}
+        assert "压缩失败" in h["on_compact_context"]("s")[0]
+        svc.compact_context.return_value = {"folded_messages": 0}
+        assert "无需压缩" in h["on_compact_context"]("s")[0]
+        svc.compact_context.return_value = {"folded_messages": 4, "compressions": 2}
+        msg, _ = h["on_compact_context"]("s")
+        assert "折叠 4 条" in msg and "第 2 次" in msg
+
+    def test_continue_session(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_continue_session"]("sid") == ""
+        svc.continue_session.assert_called_once_with("sid")
+
+
+class TestContextFormatting:
+    def test_format_context_metrics_empty_and_error(self):
+        assert app.format_context_metrics({}) == ""
+        assert "不可用" in app.format_context_metrics({"error": "x"})
+
+    def test_format_context_metrics_with_summary(self):
+        md = app.format_context_metrics({
+            "turns": 3, "history_tokens": 3200, "budget": 4800, "compressions": 1,
+            "summary": "很长的摘要" * 40,
+        })
+        assert "3 轮" in md and "3.2K / 4.8K" in md and "已压缩 1 次" in md
+        assert "📝 摘要" in md and md.endswith("…")
+
+    def test_with_context_status(self):
+        assert app.with_context_status("✅ 完成", None) == "✅ 完成"
+        assert app.with_context_status("✅ 完成", {"error": "x"}) == "✅ 完成"
+        out = app.with_context_status("✅ 完成", {"history_tokens": 500, "budget": 4915, "compressions": 0})
+        assert out == "✅ 完成 · 上下文 500 / 4.9K"
 
 
 class TestStopHandler:

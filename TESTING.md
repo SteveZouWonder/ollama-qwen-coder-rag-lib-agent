@@ -35,7 +35,7 @@ pytest tests/ -n auto --no-cov
 ```
 ```bash
 # 批次1：核心模块和工具
-pytest tests/multi_agent/ tests/test_agent_tools_*.py tests/test_chat_history.py \
+pytest tests/multi_agent/ tests/test_agent_tools_*.py tests/test_conversation_context.py \
        tests/test_code_analyzer.py tests/test_config.py tests/test_content_security.py \
        tests/test_database_tools.py -v
 

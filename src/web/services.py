@@ -15,7 +15,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 
 # ==================== 引擎工厂（可在测试中替换/注入）====================
@@ -33,11 +33,14 @@ def _default_rag_factory():
     return engine
 
 
-def _default_react_factory(on_step=None, on_confirm=None):
-    """创建一个 ReActEngine（模型取自 config.LLM_MODEL，热切换后自动跟随）。"""
+def _default_react_factory(on_step=None, on_confirm=None, context=None):
+    """创建一个 ReActEngine（模型取自 config.LLM_MODEL，热切换后自动跟随）。
+
+    ``context`` 为本次对话绑定的会话上下文（每个浏览器标签页有自己的会话）。
+    """
     from react_engine import ReActEngine
 
-    return ReActEngine(on_step=on_step, on_confirm=on_confirm)
+    return ReActEngine(on_step=on_step, on_confirm=on_confirm, context=context)
 
 
 def _default_model_switcher():
@@ -63,9 +66,14 @@ def _default_set_rag_engine(engine) -> None:
 
 
 def _default_session_manager_factory():
-    from session_manager import get_session_manager
+    """返回进程内共享的 SessionManager。
 
-    return get_session_manager()
+    经由会话上下文单例获取：首次创建时会把旧的 ``~/.code_agent_history.json``
+    一次性迁入默认会话（与 CLI 启动行为一致）。
+    """
+    from conversation_context import get_conversation_context
+
+    return get_conversation_context().manager
 
 
 def _default_graph_query_factory():
@@ -362,10 +370,44 @@ class WebService:
             return {"ok": False, "enabled": False, "changed": False,
                     "message": f"设置失败: {exc}"}
 
+    # ---------- 会话上下文（三种模式共用）----------
+
+    def _context(self, session_id: Optional[str] = None):
+        """构造绑定到指定会话（为空则当前会话）的 ConversationContext。"""
+        from conversation_context import ConversationContext
+
+        return ConversationContext(self.session_manager, session_id=session_id or None)
+
+    @staticmethod
+    def _health_before(ctx, question: str) -> Dict[str, Any]:
+        """提问前的健康度快照（用于判断空闲/话题漂移）；失败返回空 dict。"""
+        try:
+            return ctx.health(question)
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _finish_turn(
+        ctx, question: str, answer: str, pre: Dict[str, Any], *,
+        trace: Optional[str] = None, rewritten: Optional[str] = None,
+        progress=None, record: bool = True,
+    ) -> Dict[str, Any]:
+        """记录本轮（可选）并返回合并后的上下文健康度/指标，供 UI 状态行与提示。"""
+        from conversation_context import merge_health
+
+        try:
+            if record:
+                ctx.record(question, answer, trace=trace, rewritten=rewritten, progress=progress)
+            post = ctx.health()
+            return merge_health(pre, post)
+        except Exception as exc:  # noqa: BLE001 - 落库/统计失败不影响返回
+            return {"error": str(exc)}
+
     # ---------- RAG 检索 ----------
 
     def rag_query_stream(
-        self, question: str, enable_web_search: bool = True
+        self, question: str, enable_web_search: bool = True,
+        session_id: Optional[str] = None,
     ) -> Iterator[StreamEvent]:
         """流式 RAG 检索，与 CLI 的 ``/ask`` 行为一致。
 
@@ -373,8 +415,12 @@ class WebService:
         导致同一问题两端答案质量差异极大。现改为调用共享层
         ``rag_pipeline.answer_question``，从而获得：元/概览问题直答、LLM 驱动
         的网络搜索规划、多查询合并、页面正文增强、知识库/网络双区综合、0 命中
-        网络回退。编排级进度与 RAG 检索进度统一桥接为 ``StreamEvent``；对话完成
-        后自动写入当前会话（record_conversation），与 CLI 持久化行为对齐。
+        网络回退。编排级进度与 RAG 检索进度统一桥接为 ``StreamEvent``。
+
+        连续对话：传入 ``session_id``（每个浏览器标签页自己的会话）后，追问会
+        结合会话历史改写为独立问题（``answer`` 事件 ``data["rewritten"]``），
+        综合回答带最近几轮上下文；对话完成后写入该会话并按需自动压缩，
+        ``data["context"]`` 携带上下文指标与"建议新会话"判定。
         """
         question = (question or "").strip()
         if not question:
@@ -388,7 +434,9 @@ class WebService:
                 # 元/概览事件带结构化数据（files/stats），透传给 UI 展示。
                 q.put(StreamEvent("progress", evt.get("message", ""), evt))
 
-            return rag_pipeline.answer_question(
+            ctx = self._context(session_id)
+            pre = self._health_before(ctx, question)
+            result = rag_pipeline.answer_question(
                 self.rag_engine,
                 question,
                 enable_web_search=enable_web_search,
@@ -396,7 +444,16 @@ class WebService:
                 progress=progress_cb,
                 rag_progress_callback=progress_cb,
                 should_stop=cancel.is_set,
+                context=ctx,
             )
+            # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
+            # 在后台线程内完成，压缩期间心跳仍可刷新 UI。
+            recorded = "[知识库概览]" if result.get("kind") == "meta" else result.get("answer", "")
+            result["context"] = self._finish_turn(
+                ctx, question, recorded, pre,
+                rewritten=result.get("rewritten"), progress=progress_cb,
+            )
+            return result
 
         def on_finish(result_holder, error_holder):
             if "error" in error_holder:
@@ -410,14 +467,6 @@ class WebService:
 
             result = result_holder.get("result", {}) or {}
             answer = result.get("answer", "")
-
-            # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
-            try:
-                recorded = "[知识库概览]" if result.get("kind") == "meta" else answer
-                rag_pipeline.record_conversation(question, recorded)
-            except Exception:  # noqa: BLE001 - 落库失败不影响返回
-                pass
-
             yield StreamEvent(
                 "answer",
                 answer,
@@ -426,6 +475,8 @@ class WebService:
                     "sources": result.get("kb_sources", []),
                     "web_sources": result.get("web_sources", []),
                     "meta": result.get("meta"),
+                    "rewritten": result.get("rewritten"),
+                    "context": result.get("context") or {},
                 },
             )
 
@@ -455,9 +506,14 @@ class WebService:
     # ---------- 单 Agent（ReAct）----------
 
     def agent_chat_stream(
-        self, user_input: str, confirm_handler: Optional[Callable] = None
+        self, user_input: str, confirm_handler: Optional[Callable] = None,
+        session_id: Optional[str] = None,
     ) -> Iterator[StreamEvent]:
-        """流式单 Agent 对话，把 ``on_step`` 桥接为 ``step`` 事件流。"""
+        """流式单 Agent 对话，把 ``on_step`` 桥接为 ``step`` 事件流。
+
+        引擎绑定到 ``session_id`` 对应的会话上下文：开局读取滚动摘要 + 最近几轮，
+        结束后由引擎自行把本轮折叠写回会话（任务 + 最终答案 + 一句执行摘要）。
+        """
         user_input = (user_input or "").strip()
         if not user_input:
             yield StreamEvent("error", "输入不能为空")
@@ -478,27 +534,33 @@ class WebService:
                     return False
                 return bool(confirm_handler(evt))
 
-            engine = self._react_factory(on_step=on_step, on_confirm=on_confirm)
+            ctx = self._context(session_id)
+            pre = self._health_before(ctx, user_input)
+            engine = self._react_factory(on_step=on_step, on_confirm=on_confirm, context=ctx)
             engine_holder["engine"] = engine
             self._active_react = engine
-            return engine.chat(user_input)
+            answer = engine.chat(user_input)
+            # 引擎已在 chat() 结束时把本轮折叠写回会话，这里只汇总健康度
+            return {
+                "answer": answer,
+                "context": self._finish_turn(ctx, user_input, answer, pre, record=False),
+            }
 
         def on_finish(result_holder, error_holder):
             engine = engine_holder.get("engine")
             if "error" in error_holder:
                 yield StreamEvent("error", f"Agent 执行失败: {error_holder['error']}")
                 return
-            answer = result_holder.get("result", "")
-            # 对话落库（与 CLI handle_agent 一致）
-            try:
-                import rag_pipeline
-                rag_pipeline.record_conversation(user_input, answer)
-            except Exception:  # noqa: BLE001
-                pass
+            result = result_holder.get("result") or {}
+            if not isinstance(result, dict):
+                result = {"answer": str(result), "context": {}}
             yield StreamEvent(
                 "answer",
-                answer,
-                {"step_log": getattr(engine, "step_log", [])},
+                result.get("answer", ""),
+                {
+                    "step_log": getattr(engine, "step_log", []),
+                    "context": result.get("context") or {},
+                },
             )
 
         try:
@@ -545,13 +607,18 @@ class WebService:
         return self._run_orchestrator(request, mode)
 
     def multi_agent_stream(
-        self, request: str, mode: Optional[str] = None
+        self, request: str, mode: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Iterator[StreamEvent]:
         """流式多 Agent 协作：把"分解 → 调度 → 执行 → 整合"各阶段桥接为
         ``progress`` 事件，最后产出 ``answer``（``data`` 为整合结果 dict）。
 
         此前 Web 端只能显示一条静态"执行中"，多 Agent 往往要跑数分钟，用户
         完全不知道进行到哪一步。
+
+        连续对话：疑似追问的请求先结合会话历史改写为独立请求（不做工具记忆），
+        协作结束后把"请求 + 整合摘要"记入会话；``data["rewritten"]`` /
+        ``data["context"]`` 与 RAG 模式一致。
         """
         request = (request or "").strip()
         if not request:
@@ -562,7 +629,26 @@ class WebService:
             def progress_cb(evt: Dict[str, Any]):
                 q.put(StreamEvent("progress", evt.get("message", ""), evt))
 
-            return self._run_orchestrator(request, mode, progress=progress_cb)
+            ctx = self._context(session_id)
+            pre = self._health_before(ctx, request)
+            effective, rewritten = request, None
+            try:
+                rw = ctx.rewrite_question(request, progress=progress_cb)
+                if rw.get("changed"):
+                    effective = rw["question"]
+                    rewritten = effective
+            except Exception:  # noqa: BLE001 - 改写失败沿用原请求
+                pass
+            result = self._run_orchestrator(effective, mode, progress=progress_cb)
+            if not isinstance(result, dict):
+                result = {"success": False, "summary": str(result)}
+            summary = str(result.get("summary", ""))
+            recorded = summary if result.get("success") else f"[协作失败] {summary}"
+            result["rewritten"] = rewritten
+            result["context"] = self._finish_turn(
+                ctx, request, recorded, pre, rewritten=rewritten, progress=progress_cb,
+            )
+            return result
 
         def on_finish(result_holder, error_holder):
             if "error" in error_holder:
@@ -657,8 +743,19 @@ class WebService:
             )
         return result
 
-    def create_session(self, title: Optional[str] = None) -> str:
-        """新建会话并切换过去，返回其 id。"""
+    def create_session(
+        self, title: Optional[str] = None, carry_summary: bool = False,
+        from_session_id: Optional[str] = None,
+    ) -> str:
+        """新建会话并切换过去，返回其 id。
+
+        ``carry_summary`` 为真时，把 ``from_session_id``（为空则当前会话）的
+        滚动摘要作为新会话的首条背景，使新会话仍"记得"上一会话的要点。
+        """
+        if carry_summary:
+            ctx = self._context(from_session_id)
+            session = ctx.new_session(title=title or None, carry_summary=True)
+            return session.session_id
         session = self.session_manager.create_session(title=title or None)
         return session.session_id
 
@@ -666,6 +763,67 @@ class WebService:
         if not session_id:
             return False
         return bool(self.session_manager.switch_session(session_id))
+
+    # ---------- 连续对话上下文（供对话页会话控件使用）----------
+
+    def ensure_session(self) -> str:
+        """返回当前会话 id；没有则新建。用于浏览器标签页初始化自己的会话绑定。"""
+        current = self.session_manager.get_current_session()
+        if current is None:
+            current = self.session_manager.create_session()
+        return current.session_id
+
+    def session_choices(self) -> List[Tuple[str, str]]:
+        """会话下拉选项 ``[(label, session_id), ...]``，按更新时间倒序。"""
+        out: List[Tuple[str, str]] = []
+        for s in self.session_manager.list_sessions():
+            n = len([m for m in getattr(s, "messages", []) if isinstance(m, dict)])
+            out.append((f"{s.title}（{n} 条）· {s.session_id[:8]}", s.session_id))
+        return out
+
+    def chat_history(self, session_id: Optional[str] = None) -> List[Dict[str, str]]:
+        """会话内的对话消息（``[{role, content}, ...]``），供 Chatbot 多轮展示。"""
+        try:
+            msgs = self._context(session_id).all_messages()
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"role": m.get("role", "user"), "content": str(m.get("content", ""))} for m in msgs]
+
+    def context_metrics(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """上下文指标：轮数 / 估算 token / 预算 / 压缩次数 / 摘要预览。"""
+        try:
+            return self._context(session_id).metrics()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def clear_context(self, session_id: Optional[str] = None) -> bool:
+        """清空指定会话的对话上下文（消息 + 滚动摘要），会话本身保留。"""
+        try:
+            return bool(self._context(session_id).clear())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def compact_context(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """手动压缩指定会话的历史上下文。"""
+        try:
+            result = self._context(session_id).compact()
+            return result or {"folded_messages": 0}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def mark_suggested(self, session_id: Optional[str] = None) -> None:
+        """UI 已展示"建议新会话"提示。"""
+        try:
+            self._context(session_id).mark_suggested()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def continue_session(self, session_id: Optional[str] = None) -> None:
+        """用户选择继续当前会话：压缩次数再 +2 才再次提示。"""
+        try:
+            self._context(session_id).continue_current()
+        except Exception:  # noqa: BLE001
+            pass
 
     def search_sessions(self, query: str) -> List[Dict[str, Any]]:
         query = (query or "").strip()

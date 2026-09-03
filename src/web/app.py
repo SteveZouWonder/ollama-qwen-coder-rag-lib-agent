@@ -12,6 +12,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .services import WebService, get_web_service
 
+try:  # 上下文状态/提示的纯格式化函数（核心层提供，前端只接线）
+    from conversation_context import format_context_status, format_suggest_hint, format_tokens
+except ImportError:  # pragma: no cover - 以 src.* 方式导入时的兜底
+    from src.conversation_context import (  # type: ignore
+        format_context_status, format_suggest_hint, format_tokens,
+    )
+
 
 # ==================== 进度跟踪（可测试）====================
 
@@ -259,6 +266,32 @@ def format_sessions(sessions: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_context_metrics(m: Dict[str, Any]) -> str:
+    """把上下文指标渲染为一小段 Markdown（对话页会话控件下方显示）。"""
+    if not m:
+        return ""
+    if m.get("error"):
+        return f"_上下文信息不可用：{m['error']}_"
+    line = (
+        f"🧠 上下文：{m.get('turns', 0)} 轮 · "
+        f"{format_tokens(m.get('history_tokens', 0))} / {format_tokens(m.get('budget', 0))} tokens"
+    )
+    comp = int(m.get("compressions", 0) or 0)
+    if comp:
+        line += f" · 已压缩 {comp} 次"
+    summary = (m.get("summary") or "").strip()
+    if summary:
+        preview = summary if len(summary) <= 120 else summary[:120] + "…"
+        line += f"\n\n> 📝 摘要：{preview}"
+    return line
+
+
+def with_context_status(status: str, ctx: Optional[Dict[str, Any]]) -> str:
+    """在状态行末尾追加 ``上下文 3.2K / 4.8K · 已压缩 1 次``。"""
+    extra = format_context_status(ctx) if isinstance(ctx, dict) and not ctx.get("error") else ""
+    return f"{status} · {extra}" if extra else status
+
+
 def format_graph_result(result: Dict[str, Any]) -> str:
     """把知识图谱查询结果渲染为 Markdown 文本。"""
     entities = result.get("entities", [])
@@ -355,94 +388,138 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         hint = "🧠 思考模式已开（响应较慢）" if info.get("think") else ""
         return activity, hint
 
+    def _load_history(session_id: str) -> List[Dict[str, str]]:
+        try:
+            history = service.chat_history(session_id or None)
+        except Exception:  # noqa: BLE001
+            history = []
+        return list(history) if isinstance(history, list) else []
+
+    def _context_status(session_id: str) -> str:
+        try:
+            return format_context_metrics(service.context_metrics(session_id or None))
+        except Exception:  # noqa: BLE001
+            return ""
+
     def on_chat_stream(
         message: str,
         mode: str,
         enable_web: bool = True,
         auto_confirm: bool = False,
+        session_id: str = "",
     ):
         """流式对话入口（供 Gradio 使用）。
 
-        yield 四元组 ``(answer_md, status_md, process_md, sources_md)``：
+        yield 五元组 ``(history, status_md, process_md, sources_md, hint_md)``：
 
+        - ``history``：Chatbot（messages 格式）的完整多轮消息列表——会话内既有
+          历史 + 本轮用户消息，完成后追加助手回答；
         - ``status_md``：一行状态，始终显示"当前在做什么 + 已用时"，完成/出错/
-          停止时换成对应结论；
+          停止时换成对应结论，完成后追加 ``上下文 3.2K / 4.8K · 已压缩 N 次``；
         - ``process_md``：按阶段累积的处理过程列表（心跳与计数类事件原地刷新，
-          不刷屏）；
-        - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细。
+          不刷屏；含"结合上下文理解问题""压缩历史上下文"等上下文事件）；
+        - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细；
+        - ``hint_md``：健康度建议（如"对话较长，建议新建会话"），空串表示无提示。
 
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
-        因此即便底层某一步是长时间阻塞的模型调用，状态行也会每秒刷新已用时。
+        并绑定到 ``session_id``（每个浏览器标签页自己的会话）。
         """
         message = (message or "").strip()
+        session_id = (session_id or "").strip()
+        history = _load_history(session_id)
         if not message:
-            yield "", "_请输入内容_", "", ""
+            yield history, "_请输入内容_", "", "", ""
             return
 
         if service.is_running() is True:
-            yield "", "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", ""
+            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", ""
             return
 
         activity, hint = _startup_hint()
         tracker = ProgressTracker(hint=hint)
         tracker.current = activity
 
+        history = history + [{"role": "user", "content": message}]
+
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield "", tracker.render_status(), "", ""
+        yield history, tracker.render_status(), "", "", ""
 
         if mode == "多 Agent 协作":
-            stream = service.multi_agent_stream(message)
+            stream = service.multi_agent_stream(message, session_id=session_id or None)
             title = "协作过程"
         elif mode == "单 Agent":
             confirm_handler = (lambda evt: True) if auto_confirm else None
-            stream = service.agent_chat_stream(message, confirm_handler=confirm_handler)
+            stream = service.agent_chat_stream(
+                message, confirm_handler=confirm_handler, session_id=session_id or None
+            )
             title = "执行过程"
         else:
-            stream = service.rag_query_stream(message, enable_web_search=enable_web)
+            stream = service.rag_query_stream(
+                message, enable_web_search=enable_web, session_id=session_id or None
+            )
             title = "处理过程"
 
         final = None
         for evt in stream:
             if evt.kind in ("progress", "step"):
                 tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield "", tracker.render_status(), tracker.render_steps(title), ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", ""
             elif evt.kind == "heartbeat":
-                yield "", tracker.render_status(), tracker.render_steps(title), ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", ""
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
-                yield "", tracker.render_status("cancelled"), tracker.render_steps(title, done=True), ""
+                yield (
+                    history, tracker.render_status("cancelled"),
+                    tracker.render_steps(title, done=True), "", "",
+                )
                 return
             elif evt.kind == "error":
                 yield (
-                    f"[错误] {evt.message}",
+                    history + [{"role": "assistant", "content": f"[错误] {evt.message}"}],
                     tracker.render_status("error"),
                     tracker.render_steps(title, done=True),
+                    "",
                     "",
                 )
                 return
 
         steps_md = tracker.render_steps(title, done=True)
         if final is None:
-            yield "", tracker.render_status("error", "未获得回答"), steps_md, ""
+            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", ""
             return
 
-        status = tracker.render_status("done")
+        data = final.data if isinstance(final.data, dict) else {}
+        ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+        status = with_context_status(tracker.render_status("done"), ctx)
+
+        # 健康度提示：每会话只提示一次（展示后即标记）
+        hint_md = format_suggest_hint(ctx)
+        if hint_md:
+            service.mark_suggested(session_id or None)
+
+        # 追问被改写为独立问题时，在回答前注明"已理解为"
+        prefix = ""
+        rewritten = data.get("rewritten")
+        if rewritten:
+            prefix = f"> 🔗 已理解为：{rewritten}\n\n"
+
         if mode == "多 Agent 协作":
-            result = final.data if isinstance(final.data, dict) else {}
-            yield format_multi_agent_result(result), status, steps_md, ""
+            content = prefix + format_multi_agent_result(data)
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
             return
 
         if mode == "单 Agent":
-            yield final.message, status, steps_md, ""
+            content = prefix + (final.message or "")
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
             return
 
-        data = final.data or {}
         if data.get("kind") == "meta":
-            yield format_meta_overview(data.get("meta") or {}), status, steps_md, ""
+            content = format_meta_overview(data.get("meta") or {})
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md
             return
         yield (
-            final.message,
+            history + [{"role": "assistant", "content": prefix + (final.message or "")}],
             status,
             steps_md,
             format_rag_side(
@@ -451,7 +528,56 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                     "web_sources": data.get("web_sources", []),
                 }
             ),
+            hint_md,
         )
+
+    # ---------- 对话页会话控件（每个标签页绑定自己的会话）----------
+
+    def on_session_init() -> Tuple[List[Tuple[str, str]], str, List[Dict[str, str]], str]:
+        """页面加载：返回 (会话下拉选项, 本标签页会话 id, 该会话历史, 上下文状态)。"""
+        sid = service.ensure_session()
+        return service.session_choices(), sid, _load_history(sid), _context_status(sid)
+
+    def on_session_select(session_id: str) -> Tuple[str, List[Dict[str, str]], str, str]:
+        """下拉切换会话：返回 (会话 id, 历史, 上下文状态, 清空的提示)。"""
+        sid = (session_id or "").strip()
+        if not sid:
+            return "", [], "", ""
+        return sid, _load_history(sid), _context_status(sid), ""
+
+    def on_new_session(
+        carry_summary: bool, from_session_id: str
+    ) -> Tuple[List[Tuple[str, str]], str, List[Dict[str, str]], str, str]:
+        """新建会话（可选携带摘要）：返回 (下拉选项, 新会话 id, 历史, 上下文状态, 清空的提示)。"""
+        sid = service.create_session(
+            None, carry_summary=bool(carry_summary),
+            from_session_id=(from_session_id or "").strip() or None,
+        )
+        return service.session_choices(), sid, _load_history(sid), _context_status(sid), ""
+
+    def on_clear_context(session_id: str) -> Tuple[List[Dict[str, str]], str, str, str]:
+        """清空当前会话上下文：返回 (历史, 状态行文案, 上下文状态, 清空的提示)。"""
+        sid = (session_id or "").strip() or None
+        ok = service.clear_context(sid)
+        msg = "🧹 已清空当前会话上下文" if ok else "当前没有可清空的会话"
+        return _load_history(sid or ""), msg, _context_status(sid or ""), ""
+
+    def on_compact_context(session_id: str) -> Tuple[str, str]:
+        """手动压缩：返回 (状态行文案, 上下文状态)。"""
+        sid = (session_id or "").strip() or None
+        result = service.compact_context(sid)
+        if result.get("error"):
+            msg = f"❌ 压缩失败：{result['error']}"
+        elif not result.get("folded_messages"):
+            msg = "当前历史较短，无需压缩"
+        else:
+            msg = f"🗜️ 已压缩：折叠 {result['folded_messages']} 条消息（第 {result.get('compressions', '?')} 次）"
+        return msg, _context_status(sid or "")
+
+    def on_continue_session(session_id: str) -> str:
+        """用户选择继续当前会话：关闭提示，压缩次数再 +2 才再提示。"""
+        service.continue_session((session_id or "").strip() or None)
+        return ""
 
     def on_upload(file_paths: Optional[List[str]]) -> Tuple[str, str]:
         msg = service.add_documents(file_paths or [])
@@ -615,6 +741,12 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     return {
         "on_chat": on_chat,
         "on_chat_stream": on_chat_stream,
+        "on_session_init": on_session_init,
+        "on_session_select": on_session_select,
+        "on_new_session": on_new_session,
+        "on_clear_context": on_clear_context,
+        "on_compact_context": on_compact_context,
+        "on_continue_session": on_continue_session,
         "on_upload": on_upload,
         "on_refresh_stats": on_refresh_stats,
         "on_clear_index": on_clear_index,
@@ -661,6 +793,8 @@ APP_CSS = """
 .chat-actions { justify-content: flex-end !important; gap: 8px; }
 .chat-actions > * { flex-grow: 0 !important; }
 .chat-status { min-height: 1.8em; opacity: 0.9; }
+.chat-hint { align-items: center; padding: 6px 10px; border-radius: 8px;
+             background: var(--color-accent-soft, rgba(255, 196, 0, 0.12)); }
 """
 
 
@@ -710,6 +844,19 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
 
             model_refresh_btn.click(_refresh_model_dropdown, None, model_dd)
 
+            # ---- 会话控件：每个浏览器标签页用 gr.State 绑定自己的会话 ----
+            session_state = gr.State("")
+            with gr.Row():
+                session_dd = gr.Dropdown(
+                    choices=[], value=None, label="会话（切换后加载该会话的多轮历史）",
+                    scale=6, allow_custom_value=True,
+                )
+                carry_cb = gr.Checkbox(value=False, label="携带摘要", scale=1)
+                new_session_btn = gr.Button("新建会话", scale=1)
+                clear_ctx_btn = gr.Button("清空上下文", scale=1)
+                compact_btn = gr.Button("压缩历史", scale=1)
+            context_box = gr.Markdown(elem_classes=["chat-status"])
+
             mode = gr.Radio(
                 ["RAG 检索", "单 Agent", "多 Agent 协作"],
                 value="RAG 检索",
@@ -724,11 +871,15 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                     value=False,
                     label="自动确认危险命令（单 Agent 模式，等价 CLI --yes）",
                 )
+
+            # ---- 多轮对话展示（Gradio 6 的 Chatbot 即 messages 格式）----
+            chatbot = gr.Chatbot(label="对话", height=420)
+
             # ---- 输入区：输入框在上，操作按钮在其下方右对齐 ----
             # 此前输入框与两个按钮同排，按钮顶部对齐到输入框的 label 行，视觉错位。
             with gr.Group():
                 msg_box = gr.Textbox(
-                    placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）",
+                    placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行；支持追问，如“它多少钱”）",
                     show_label=False,
                     lines=1,
                     max_lines=6,
@@ -738,9 +889,12 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                     stop_btn = gr.Button("停止", scale=0, min_width=96, interactive=False)
                     send_btn = gr.Button("发送", scale=0, min_width=120, variant="primary")
 
-            # ---- 输出区：状态行 → 回答 → 处理过程 → 引用来源 ----
+            # ---- 输出区：状态行 → 健康度提示 → 处理过程 → 引用来源 ----
             status_box = gr.Markdown(elem_classes=["chat-status"])
-            answer_box = gr.Markdown(label="回答", min_height=80)
+            with gr.Row(visible=False, elem_classes=["chat-hint"]) as hint_row:
+                hint_box = gr.Markdown(scale=6)
+                hint_new_btn = gr.Button("新建会话", scale=1, size="sm")
+                hint_continue_btn = gr.Button("继续当前会话", scale=1, size="sm")
             with gr.Accordion("处理过程", open=True):
                 process_box = gr.Markdown()
             with gr.Accordion("引用来源 / 结果明细", open=False):
@@ -748,7 +902,14 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
 
             # 待发送消息暂存：先把输入框清空并锁定按钮，再用暂存值发起对话
             pending_msg = gr.State("")
-            _chat_outputs = [answer_box, status_box, process_box, sources_box]
+            _chat_outputs = [chatbot, status_box, process_box, sources_box, hint_box, hint_row]
+
+            def _chat_stream_ui(message, mode_v, web_v, confirm_v, sid):
+                """把处理器的五元组映射为组件更新（提示非空时显示提示行）。"""
+                for history, status, process, sources, hint in handlers["on_chat_stream"](
+                    message, mode_v, web_v, confirm_v, sid
+                ):
+                    yield history, status, process, sources, hint, gr.update(visible=bool(hint))
 
             def _begin(message: str):
                 """点击发送：暂存消息、清空输入框、禁用发送、启用停止。"""
@@ -759,27 +920,78 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                     gr.update(interactive=True),
                 )
 
-            def _end():
-                """任务结束/停止后：恢复发送、禁用停止。"""
-                return gr.update(interactive=True), gr.update(interactive=False)
+            def _end(sid):
+                """任务结束/停止后：恢复发送、禁用停止、刷新上下文状态与会话列表。"""
+                return (
+                    gr.update(interactive=True),
+                    gr.update(interactive=False),
+                    handlers["on_session_select"](sid)[2],
+                    gr.update(choices=service.session_choices(), value=sid or None),
+                )
 
             _begin_outputs = [pending_msg, msg_box, send_btn, stop_btn]
-            _chat_inputs = [pending_msg, mode, enable_web, auto_confirm]
+            _chat_inputs = [pending_msg, mode, enable_web, auto_confirm, session_state]
+            _end_outputs = [send_btn, stop_btn, context_box, session_dd]
 
             send_chain = send_btn.click(_begin, msg_box, _begin_outputs).then(
-                handlers["on_chat_stream"], _chat_inputs, _chat_outputs
+                _chat_stream_ui, _chat_inputs, _chat_outputs
             )
-            send_chain.then(_end, None, [send_btn, stop_btn])
+            send_chain.then(_end, session_state, _end_outputs)
             submit_chain = msg_box.submit(_begin, msg_box, _begin_outputs).then(
-                handlers["on_chat_stream"], _chat_inputs, _chat_outputs
+                _chat_stream_ui, _chat_inputs, _chat_outputs
             )
-            submit_chain.then(_end, None, [send_btn, stop_btn])
+            submit_chain.then(_end, session_state, _end_outputs)
 
             # 停止：通知服务层取消（三种模式通用），同时让 Gradio 中断正在推送的流
             stop_btn.click(
                 handlers["on_stop"], None, status_box,
                 cancels=[send_chain, submit_chain],
-            ).then(_end, None, [send_btn, stop_btn])
+            ).then(_end, session_state, _end_outputs)
+
+            # ---- 会话控件事件 ----
+            def _session_init():
+                choices, sid, history, ctx_md = handlers["on_session_init"]()
+                return gr.update(choices=choices, value=sid), sid, history, ctx_md
+
+            app.load(_session_init, None, [session_dd, session_state, chatbot, context_box])
+
+            def _session_select(sid):
+                new_sid, history, ctx_md, hint = handlers["on_session_select"](sid)
+                return new_sid, history, ctx_md, hint, gr.update(visible=False)
+
+            session_dd.input(
+                _session_select, session_dd,
+                [session_state, chatbot, context_box, hint_box, hint_row],
+            )
+
+            def _new_session(carry, sid):
+                choices, new_sid, history, ctx_md, hint = handlers["on_new_session"](carry, sid)
+                return (
+                    gr.update(choices=choices, value=new_sid), new_sid, history, ctx_md,
+                    hint, gr.update(visible=False), "✨ 已新建会话" + ("（已携带摘要）" if carry else ""),
+                )
+
+            _new_outputs = [session_dd, session_state, chatbot, context_box, hint_box, hint_row, status_box]
+            new_session_btn.click(_new_session, [carry_cb, session_state], _new_outputs)
+            hint_new_btn.click(_new_session, [carry_cb, session_state], _new_outputs)
+
+            def _clear_ctx(sid):
+                history, msg, ctx_md, hint = handlers["on_clear_context"](sid)
+                return history, msg, ctx_md, hint, gr.update(visible=False)
+
+            clear_ctx_btn.click(
+                _clear_ctx, session_state,
+                [chatbot, status_box, context_box, hint_box, hint_row],
+            )
+            compact_btn.click(
+                handlers["on_compact_context"], session_state, [status_box, context_box]
+            )
+
+            def _continue(sid):
+                handlers["on_continue_session"](sid)
+                return "", gr.update(visible=False)
+
+            hint_continue_btn.click(_continue, session_state, [hint_box, hint_row])
 
         with gr.Tab("知识库"):
             stats_box = gr.Markdown(format_stats(service.get_stats()))
