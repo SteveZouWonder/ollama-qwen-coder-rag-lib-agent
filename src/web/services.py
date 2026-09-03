@@ -726,19 +726,37 @@ class WebService:
 
     # ---------- 会话管理 ----------
 
+    @staticmethod
+    def _fmt_time(value: Any) -> str:
+        """把 datetime 渲染为 ``2026-09-03 15:12``；非 datetime 返回空串。"""
+        strftime = getattr(value, "strftime", None)
+        if not callable(strftime):
+            return ""
+        try:
+            return strftime("%Y-%m-%d %H:%M")
+        except Exception:  # noqa: BLE001
+            return ""
+
     def list_sessions(self) -> List[Dict[str, Any]]:
-        """返回会话摘要列表。"""
+        """返回会话摘要列表（含状态、更新时间、首条提问预览，按更新时间倒序）。"""
         sessions = self.session_manager.list_sessions()
         current = self.session_manager.get_current_session()
         current_id = current.session_id if current else None
         result = []
         for s in sessions:
+            msgs = [m for m in getattr(s, "messages", []) if isinstance(m, dict)]
+            first_user = next((m.get("content", "") for m in msgs if m.get("role") == "user"), "")
+            status = getattr(getattr(s, "status", None), "value", "") or ""
             result.append(
                 {
                     "session_id": s.session_id,
                     "title": s.title,
                     "messages": len(getattr(s, "messages", [])),
                     "is_current": s.session_id == current_id,
+                    "status": status if isinstance(status, str) else "",
+                    "updated_at": self._fmt_time(getattr(s, "updated_at", None)),
+                    "created_at": self._fmt_time(getattr(s, "created_at", None)),
+                    "preview": str(first_user)[:40],
                 }
             )
         return result
@@ -1098,18 +1116,32 @@ class WebService:
             return {"error": str(exc)}
 
     def delete_session(self, session_id: str) -> str:
-        """删除指定会话（等价 /session-delete）。"""
+        """删除指定会话（等价 /session-delete）。与 CLI 一致：不允许删除当前会话。"""
         session_id = (session_id or "").strip()
         if not session_id:
-            return "[提示] 请指定会话 ID"
+            return "[提示] 请先选择要删除的会话"
         try:
+            current = self.session_manager.get_current_session()
+            if current is not None and getattr(current, "session_id", None) == session_id:
+                return "[提示] 不能删除当前会话，请先切换到其他会话"
             deleter = getattr(self.session_manager, "delete_session", None)
             if not callable(deleter):
                 return "[错误] 当前会话管理器不支持删除"
             ok = deleter(session_id)
-            return f"[成功] 已删除会话 {session_id[:8]}" if ok else f"[错误] 删除失败: {session_id[:8]}"
+            return f"[成功] 已删除会话 {session_id[:8]}" if ok else f"[错误] 会话不存在: {session_id[:8]}"
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 删除会话失败: {exc}"
+
+    def archive_session(self, session_id: str) -> str:
+        """归档指定会话（等价 /session-archive）。"""
+        session_id = (session_id or "").strip()
+        if not session_id:
+            return "[提示] 请先选择要归档的会话"
+        try:
+            ok = bool(self.session_manager.archive_session(session_id))
+            return f"[成功] 已归档会话 {session_id[:8]}" if ok else f"[错误] 会话不存在: {session_id[:8]}"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 归档会话失败: {exc}"
 
 
 # ==================== 模块级单例 ====================

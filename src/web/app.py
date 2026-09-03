@@ -251,18 +251,39 @@ def format_multi_agent_result(result: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+_SESSION_STATUS_ICON = {"active": "🟢 活跃", "archived": "📦 已归档", "deleted": "🗑️ 已删除"}
+
+
+def _md_cell(text: Any) -> str:
+    """表格单元格转义：去掉换行与竖线，避免破坏 Markdown 表格。"""
+    return str(text or "").replace("\n", " ").replace("|", "／").strip()
+
+
 def format_sessions(sessions: List[Dict[str, Any]]) -> str:
-    """把会话列表渲染为 Markdown 文本。"""
+    """把会话列表渲染为 Markdown 表格（当前会话以 ▶ 与加粗标出）。"""
     if not sessions:
-        return "_暂无会话_"
-    lines = ["### 会话列表", ""]
+        return "### 💬 会话列表\n\n_暂无会话。在「对话」页提问会自动创建，或在下方新建。_"
+    current = sum(1 for s in sessions if s.get("is_current"))
+    lines = [
+        f"### 💬 会话列表（共 {len(sessions)} 个）",
+        "",
+        "| | 标题 | 状态 | 消息 | 最近更新 | 首条提问 | ID |",
+        "|:-:|---|---|--:|---|---|---|",
+    ]
     for s in sessions:
-        marker = "▶ " if s.get("is_current") else "  "
+        is_cur = bool(s.get("is_current"))
+        title = _md_cell(s.get("title") or "未命名")
+        if is_cur:
+            title = f"**{title}**"
+        status = _SESSION_STATUS_ICON.get(s.get("status") or "", s.get("status") or "—")
+        preview = _md_cell(s.get("preview") or "")
+        preview = f"_{preview}_" if preview else "—"
         lines.append(
-            f"{marker}`{s.get('session_id', '')[:8]}` "
-            f"{s.get('title', '未命名')} "
-            f"（{s.get('messages', 0)} 条消息）"
+            f"| {'▶' if is_cur else ''} | {title} | {status} | {s.get('messages', 0)} | "
+            f"{_md_cell(s.get('updated_at')) or '—'} | {preview} | `{(s.get('session_id') or '')[:8]}` |"
         )
+    if current:
+        lines += ["", "_▶ 为当前会话（CLI 与新开的对话页默认使用）。_"]
     return "\n".join(lines)
 
 
@@ -593,27 +614,57 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_list_sessions() -> str:
         return format_sessions(service.list_sessions())
 
-    def on_create_session(title: str) -> Tuple[str, str]:
-        sid = service.create_session(title)
-        return f"已创建会话 {sid[:8]}", format_sessions(service.list_sessions())
+    def _session_page_state(msg: str) -> Tuple[str, str, List[Tuple[str, str]], Optional[str]]:
+        """会话页统一返回：(结果文案, 会话列表 Markdown, 下拉选项, 下拉当前值)。"""
+        sessions = service.list_sessions()
+        current = next((s["session_id"] for s in sessions if s.get("is_current")), None)
+        return msg, format_sessions(sessions), service.session_choices(), current
 
-    def on_switch_session(session_id: str) -> Tuple[str, str]:
+    def on_sessions_refresh() -> Tuple[str, str, List[Tuple[str, str]], Optional[str]]:
+        """刷新会话页（列表 + 下拉）。"""
+        return _session_page_state("")
+
+    def on_create_session(title: str, carry_summary: bool = False):
+        """新建会话（可携带当前会话摘要）并切换过去。"""
+        sid = service.create_session((title or "").strip() or None, carry_summary=bool(carry_summary))
+        note = "（已携带上一会话摘要）" if carry_summary else ""
+        return _session_page_state(f"✅ 已创建并切换到会话 `{sid[:8]}`{note}")
+
+    def on_switch_session(session_id: str):
         """切换到指定会话（等价 CLI /session-switch）。"""
         session_id = (session_id or "").strip()
         if not session_id:
-            return "_请输入会话 ID_", format_sessions(service.list_sessions())
+            return _session_page_state("_请先在下拉框选择会话_")
         ok = service.switch_session(session_id)
-        msg = f"已切换到会话 {session_id[:8]}" if ok else f"切换失败：未找到会话 {session_id[:8]}"
-        return msg, format_sessions(service.list_sessions())
+        msg = f"✅ 已切换到会话 `{session_id[:8]}`" if ok else f"❌ 切换失败：未找到会话 `{session_id[:8]}`"
+        return _session_page_state(msg)
+
+    def _fmt_result(text: str) -> str:
+        """把服务层 ``[成功]/[提示]/[错误]`` 前缀换成图标。"""
+        for prefix, icon in (("[成功]", "✅"), ("[提示]", "💡"), ("[错误]", "❌")):
+            if text.startswith(prefix):
+                return icon + text[len(prefix):]
+        return text
+
+    def on_delete_session(session_id: str):
+        """删除指定会话（等价 CLI /session-delete；不允许删除当前会话）。"""
+        return _session_page_state(_fmt_result(service.delete_session(session_id)))
+
+    def on_archive_session(session_id: str):
+        """归档指定会话（等价 CLI /session-archive）。"""
+        return _session_page_state(_fmt_result(service.archive_session(session_id)))
 
     def on_search_sessions(query: str) -> str:
         """按关键词搜索会话（等价 CLI /session-search）。"""
+        query = (query or "").strip()
+        if not query:
+            return ""
         results = service.search_sessions(query)
         if not results:
-            return "_未找到匹配的会话_"
-        lines = ["### 搜索结果", ""]
+            return f"### 🔍 搜索结果\n\n_未找到包含「{query}」的会话_"
+        lines = [f"### 🔍 搜索结果（{len(results)} 个包含「{query}」）", ""]
         for s in results:
-            lines.append(f"- `{s.get('session_id', '')[:8]}` {s.get('title', '未命名')}")
+            lines.append(f"- **{s.get('title', '未命名')}** `{s.get('session_id', '')[:8]}`")
         return "\n".join(lines)
 
     def on_rebuild_index(data_path: str) -> Tuple[str, str]:
@@ -752,8 +803,11 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_clear_index": on_clear_index,
         "on_rebuild_index": on_rebuild_index,
         "on_list_sessions": on_list_sessions,
+        "on_sessions_refresh": on_sessions_refresh,
         "on_create_session": on_create_session,
         "on_switch_session": on_switch_session,
+        "on_delete_session": on_delete_session,
+        "on_archive_session": on_archive_session,
         "on_search_sessions": on_search_sessions,
         "on_query_graph": on_query_graph,
         "on_graph_summary": on_graph_summary,
@@ -801,6 +855,10 @@ APP_CSS = """
 #chatbot { overflow: hidden !important; display: flex !important; flex-direction: column; }
 #chatbot > .wrapper { flex: 1 1 auto; min-height: 0; }
 #chatbot .bubble-wrap, #chatbot .panel-wrap { overflow-y: auto; min-height: 0; }
+/* 会话页：表格撑满宽度，标题列可换行、其余列不换行 */
+.session-list table { width: 100%; table-layout: auto; }
+.session-list th, .session-list td { white-space: nowrap; }
+.session-list td:nth-child(2), .session-list td:nth-child(6) { white-space: normal; }
 """
 
 
@@ -1031,29 +1089,48 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
             )
 
         with gr.Tab("会话"):
-            sessions_box = gr.Markdown()
+            # 会话管理：表格列表 + 下拉选中后 切换 / 归档 / 删除 + 新建（可携带摘要）+ 搜索。
+            # 与 CLI 的 /session-* 命令面对齐；删除同样禁止删当前会话。
+            _s_msg, _s_list, _s_choices, _s_current = handlers["on_sessions_refresh"]()
+            sessions_box = gr.Markdown(_s_list, elem_classes=["session-list"])
+            session_result = gr.Markdown(elem_classes=["chat-status"])
             with gr.Row():
-                new_title = gr.Textbox(placeholder="会话标题（可选）", label="新建会话")
-                new_btn = gr.Button("新建")
-                list_btn = gr.Button("刷新列表")
-            new_result = gr.Markdown()
-            new_btn.click(
-                handlers["on_create_session"], new_title, [new_result, sessions_box]
-            )
-            list_btn.click(handlers["on_list_sessions"], None, sessions_box)
-            gr.Markdown("---")
+                manage_dd = gr.Dropdown(
+                    choices=_s_choices, value=_s_current, label="选择会话",
+                    scale=6, allow_custom_value=True,
+                )
+                switch_btn = gr.Button("切换", scale=1, variant="primary")
+                archive_btn = gr.Button("归档", scale=1)
+                delete_btn = gr.Button("删除", scale=1, variant="stop")
+                list_btn = gr.Button("刷新", scale=1)
             with gr.Row():
-                switch_id = gr.Textbox(placeholder="会话 ID...", scale=6, label="切换会话")
-                switch_btn = gr.Button("切换", scale=1)
-            switch_result = gr.Markdown()
-            switch_btn.click(
-                handlers["on_switch_session"], switch_id, [switch_result, sessions_box]
-            )
+                new_title = gr.Textbox(placeholder="会话标题（可选，留空按时间命名）", label="新建会话", scale=5)
+                new_carry_cb = gr.Checkbox(value=False, label="携带当前会话摘要", scale=2)
+                new_btn = gr.Button("新建并切换", scale=1)
             with gr.Row():
-                search_kw = gr.Textbox(placeholder="搜索关键词...", scale=6, label="搜索会话")
+                search_kw = gr.Textbox(placeholder="按标题或消息内容搜索…", scale=6, label="搜索会话")
                 search_btn = gr.Button("搜索", scale=1)
             search_result = gr.Markdown()
+
+            _session_outputs = [session_result, sessions_box, manage_dd]
+
+            def _wrap_session(fn):
+                """把 (文案, 列表, 选项, 当前值) 映射为组件更新（下拉需 gr.update）。"""
+                def inner(*args):
+                    msg, table, choices, current = fn(*args)
+                    return msg, table, gr.update(choices=choices, value=current)
+                inner.__name__ = fn.__name__  # 保持 API 端点名可读（/on_switch_session 等）
+                return inner
+
+            switch_btn.click(_wrap_session(handlers["on_switch_session"]), manage_dd, _session_outputs)
+            archive_btn.click(_wrap_session(handlers["on_archive_session"]), manage_dd, _session_outputs)
+            delete_btn.click(_wrap_session(handlers["on_delete_session"]), manage_dd, _session_outputs)
+            list_btn.click(_wrap_session(handlers["on_sessions_refresh"]), None, _session_outputs)
+            new_btn.click(
+                _wrap_session(handlers["on_create_session"]), [new_title, new_carry_cb], _session_outputs
+            )
             search_btn.click(handlers["on_search_sessions"], search_kw, search_result)
+            search_kw.submit(handlers["on_search_sessions"], search_kw, search_result)
 
         with gr.Tab("知识图谱"):
             entity_box = gr.Textbox(placeholder="输入实体名...", label="查询实体")

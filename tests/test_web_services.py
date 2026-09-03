@@ -625,6 +625,57 @@ class TestSessions:
         assert result[0]["messages"] == 2
         assert result[1]["is_current"] is False
 
+    def test_list_sessions_rich_fields(self):
+        """真实 SessionManager：状态/更新时间/首条提问预览。"""
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("DJI OSMO 360 多少钱", "2999")
+        item = svc.list_sessions()[0]
+        assert item["is_current"] is True
+        assert item["status"] == "active"
+        assert len(item["updated_at"]) == 16 and item["created_at"]
+        assert item["preview"] == "DJI OSMO 360 多少钱"
+        assert item["messages"] == 2
+
+    def test_fmt_time_tolerates_non_datetime(self):
+        assert WebService._fmt_time(None) == ""
+        assert WebService._fmt_time("2026") == ""
+        bad = MagicMock()
+        bad.strftime.side_effect = ValueError("x")
+        assert WebService._fmt_time(bad) == ""
+
+    def test_delete_session_rules(self):
+        svc = make_service()
+        cur = svc.ensure_session()
+        other = svc.session_manager.create_session("其他")
+        svc.session_manager.switch_session(cur)
+        assert "请先选择" in svc.delete_session("")
+        assert "不能删除当前会话" in svc.delete_session(cur)
+        assert "已删除" in svc.delete_session(other.session_id)
+        assert "会话不存在" in svc.delete_session("missing")
+        assert svc.session_manager.get_session(other.session_id) is None
+
+    def test_delete_session_errors(self):
+        sm = MagicMock(spec=["get_current_session", "list_sessions"])
+        sm.get_current_session.return_value = None
+        svc = make_service(session_manager=sm)
+        assert "不支持删除" in svc.delete_session("x")
+        sm2 = MagicMock()
+        sm2.get_current_session.side_effect = RuntimeError("boom")
+        svc2 = make_service(session_manager=sm2)
+        assert "删除会话失败" in svc2.delete_session("x")
+
+    def test_archive_session(self):
+        svc = make_service()
+        sid = svc.ensure_session()
+        assert "请先选择" in svc.archive_session("")
+        assert "已归档" in svc.archive_session(sid)
+        assert svc.list_sessions()[0]["status"] == "archived"
+        assert "会话不存在" in svc.archive_session("missing")
+        sm = MagicMock()
+        sm.archive_session.side_effect = RuntimeError("boom")
+        assert "归档会话失败" in make_service(session_manager=sm).archive_session("x")
+
     def test_list_sessions_no_current(self):
         sm = MagicMock()
         sm.list_sessions.return_value = [_fake_session("id1", "t")]

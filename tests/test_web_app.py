@@ -92,16 +92,30 @@ class TestFormatMultiAgent:
 
 class TestFormatSessions:
     def test_empty(self):
-        assert format_sessions([]) == "_暂无会话_"
+        out = format_sessions([])
+        assert "会话列表" in out and "暂无会话" in out
 
     def test_current_marker(self):
         out = format_sessions([
-            {"session_id": "abcdefgh12345", "title": "会话A", "messages": 3, "is_current": True},
-            {"session_id": "zzz", "title": "会话B", "messages": 0, "is_current": False},
+            {"session_id": "abcdefgh12345", "title": "会话A", "messages": 3, "is_current": True,
+             "status": "active", "updated_at": "2026-09-03 15:12", "preview": "DJI 多少钱|换行\n测试"},
+            {"session_id": "zzz", "title": "会话B", "messages": 0, "is_current": False, "status": "archived"},
         ])
-        assert "▶" in out
-        assert "会话A" in out
-        assert "会话B" in out
+        assert "共 2 个" in out
+        # Markdown 表格：表头 + 分隔行 + 2 行数据
+        rows = [ln for ln in out.splitlines() if ln.startswith("|")]
+        assert len(rows) == 4
+        assert "| ▶ | **会话A** | 🟢 活跃 | 3 | 2026-09-03 15:12 |" in rows[2]
+        assert "`abcdefgh`" in rows[2]
+        # 预览中的竖线/换行被转义，不破坏表格
+        assert "DJI 多少钱／换行 测试" in rows[2]
+        assert "|  | 会话B | 📦 已归档 | 0 | — | — | `zzz` |" == rows[3]
+        assert "▶ 为当前会话" in out
+
+    def test_unknown_status_and_no_current(self):
+        out = format_sessions([{"session_id": "id1", "title": "T", "messages": 1, "status": "weird"}])
+        assert "| weird |" in out
+        assert "▶ 为当前会话" not in out
 
 
 class TestFormatGraph:
@@ -244,10 +258,49 @@ class TestHandlers:
     def test_on_create_session(self):
         svc = make_service_mock()
         svc.create_session.return_value = "newid123"
-        svc.list_sessions.return_value = []
+        svc.list_sessions.return_value = [{"session_id": "newid123", "title": "标题", "messages": 0, "is_current": True}]
+        svc.session_choices.return_value = [("标题（0 条）· newid123", "newid123")]
         h = build_handlers(svc)
-        msg, sessions = h["on_create_session"]("标题")
-        assert "newid123"[:8] in msg
+        msg, sessions, choices, current = h["on_create_session"]("标题", True)
+        assert "newid123"[:8] in msg and "携带" in msg
+        assert current == "newid123" and choices[0][1] == "newid123"
+        svc.create_session.assert_called_once_with("标题", carry_summary=True)
+        h["on_create_session"]("", False)
+        svc.create_session.assert_called_with(None, carry_summary=False)
+
+    def test_session_page_handlers(self):
+        svc = make_service_mock()
+        svc.list_sessions.return_value = [{"session_id": "id1", "title": "T", "messages": 0, "is_current": False}]
+        svc.session_choices.return_value = [("T", "id1")]
+        h = build_handlers(svc)
+        # 刷新
+        msg, table, choices, current = h["on_sessions_refresh"]()
+        assert msg == "" and "T" in table and current is None
+        # 切换
+        svc.switch_session.return_value = True
+        assert "已切换" in h["on_switch_session"]("id1")[0]
+        svc.switch_session.return_value = False
+        assert "切换失败" in h["on_switch_session"]("id1")[0]
+        assert "请先" in h["on_switch_session"]("")[0]
+        # 删除 / 归档：服务层前缀换成图标
+        svc.delete_session.return_value = "[提示] 不能删除当前会话，请先切换到其他会话"
+        assert h["on_delete_session"]("id1")[0].startswith("💡")
+        svc.delete_session.return_value = "[成功] 已删除会话 id1"
+        assert h["on_delete_session"]("id1")[0].startswith("✅")
+        svc.archive_session.return_value = "[错误] 会话不存在: x"
+        assert h["on_archive_session"]("x")[0].startswith("❌")
+        svc.archive_session.return_value = "plain"
+        assert h["on_archive_session"]("x")[0] == "plain"
+
+    def test_on_search_sessions(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_search_sessions"]("  ") == ""
+        svc.search_sessions.return_value = []
+        assert "未找到" in h["on_search_sessions"]("x")
+        svc.search_sessions.return_value = [{"session_id": "abcdefgh1", "title": "命中"}]
+        out = h["on_search_sessions"]("x")
+        assert "1 个" in out and "**命中**" in out and "`abcdefgh`" in out
 
     def test_on_query_graph(self):
         svc = make_service_mock()

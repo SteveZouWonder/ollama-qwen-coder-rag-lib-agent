@@ -7,6 +7,21 @@ import pytest
 from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """测试结束后按原始环境重新加载 config，消除 reload(config) 的跨测试污染。
+
+    本文件多处用 ``importlib.reload(config)`` 验证环境变量覆盖（如 CHUNK_SIZE=512）；
+    ``clean_env`` 只恢复环境变量、不恢复模块状态，若同一 xdist worker 随后运行
+    ``test_rag_engine``（每个用例后 reload rag_engine 重新绑定 CHUNK_SIZE），就会读到
+    512 而随机失败。autouse fixture 在 ``clean_env`` 恢复环境之后再 reload 一次。
+    """
+    yield
+    import importlib
+    import config
+    importlib.reload(config)
+
+
 class TestConfigDefaults:
     """测试默认值（无环境变量时）"""
 
