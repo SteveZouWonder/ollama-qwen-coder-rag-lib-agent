@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
+from urllib.parse import urlparse
 
 # 导入被测试的模块
 from web_search.search_engine import (
@@ -25,6 +26,21 @@ class TestBaiduSearchEngine:
                 self.text = t
                 self.headers = {"Location": loc} if loc else {}
         return _R(text, location)
+
+    @pytest.mark.parametrize("location,expected", [
+        ("https://wappass.baidu.com/static/captcha/tuxing.html", True),
+        ("http://WAPPASS.BAIDU.COM/", True),
+        ("https://www.baidu.com/static/captcha/index.html", True),
+        ("https://baidu.com/captcha", True),
+        ("", False),
+        ("https://www.baidu.com/s?wd=x", False),
+        # 子串出现在其他域的查询串/路径里不应误判
+        ("https://evil.example/?next=wappass.baidu.com", False),
+        ("https://evil.example/captcha", False),
+        ("https://notbaidu.com/captcha", False),
+    ])
+    def test_is_captcha_redirect(self, location, expected):
+        assert BaiduSearchEngine._is_captcha_redirect(location) is expected
 
     def test_source_name_and_available(self):
         e = BaiduSearchEngine()
@@ -168,12 +184,12 @@ class TestChineseSearchImprovements:
     def test_wikipedia_zh_for_chinese_query(self):
         wiki = WikipediaSearchEngine()
         api, lang = wiki._api_base_for_query("北京")
-        assert "zh.wikipedia.org" in api and lang == "zh"
+        assert urlparse(api).hostname == "zh.wikipedia.org" and lang == "zh"
 
     def test_wikipedia_en_for_english_query(self):
         wiki = WikipediaSearchEngine()
         api, lang = wiki._api_base_for_query("Beijing")
-        assert "en.wikipedia.org" in api and lang == "en"
+        assert urlparse(api).hostname == "en.wikipedia.org" and lang == "en"
 
     @pytest.mark.asyncio
     async def test_ddg_passes_region_backend(self, monkeypatch):
@@ -262,11 +278,11 @@ class TestChineseSearchImprovements:
         manager.engines["e1"] = _E1()
         manager.engines["e2"] = _E2()
         merged = await manager.search_aggregated("q", sources=["e1", "e2"], max_results=10)
-        urls = {r.url for r in merged}
-        assert "https://a.com" in urls
-        assert "https://c.com" in urls
+        hosts = [urlparse(r.url).hostname for r in merged]
+        assert hosts.count("a.com") == 1
+        assert hosts.count("c.com") == 1
         # b.com 只保留一个
-        assert len([r for r in merged if "b.com" in r.url]) == 1
+        assert hosts.count("b.com") == 1
 
 
 class TestSearchResult:

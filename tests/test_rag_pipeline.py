@@ -361,8 +361,7 @@ class TestHelpers:
                             types.SimpleNamespace(web_content_extract=fake_extract))
         out = rag_pipeline.enrich_with_page_content(text, question="dji osmo 360 最新售价")
         # 相关页被抓取，无关页（低于阈值）被跳过
-        assert "https://a.com" in fetched
-        assert "https://z.com" not in fetched
+        assert fetched == ["https://a.com"]
         assert "相关页面详细信息" in out
 
     def test_enrich_fallback_without_question(self, monkeypatch):
@@ -374,7 +373,7 @@ class TestHelpers:
                             types.SimpleNamespace(
                                 web_content_extract=lambda u, timeout=10: (fetched.append(u), "正文")[1]))
         rag_pipeline.enrich_with_page_content(text, question="")
-        assert "https://a.com" in fetched
+        assert fetched == ["https://a.com"]
 
     def test_strip_json_fence(self):
         assert rag_pipeline._strip_json_fence('```json\n{"a":1}\n```') == '{"a":1}'

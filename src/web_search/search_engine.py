@@ -379,13 +379,35 @@ class BaiduSearchEngine(SearchEngine):
 
         # 验证码/反爬检测：百度会 302 跳到 wappass.baidu.com/static/captcha
         location = resp.headers.get("Location", "") if hasattr(resp, "headers") else ""
-        if "wappass.baidu.com" in location or "captcha" in location:
+        if self._is_captcha_redirect(location):
             self.logger.warning("百度触发验证码，跳过本次结果")
             return []
 
         results = self._parse(resp, query)
         self.logger.info(f"百度搜索完成: 查询='{query}', 结果数={len(results)}")
         return results
+
+    @staticmethod
+    def _is_captcha_redirect(location: str) -> bool:
+        """判断 302 Location 是否指向百度验证码页。
+
+        按解析后的主机名与路径判断，而非对整段 URL 做子串匹配，避免把
+        ``https://evil.example/?x=wappass.baidu.com`` 之类误判，也让判断语义清晰。
+        """
+        if not location:
+            return False
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(location)
+        except ValueError:
+            return False
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+        if host == "wappass.baidu.com":
+            return True
+        # 同域下的验证码页（如 /static/captcha/...）
+        return (host == "baidu.com" or host.endswith(".baidu.com")) and "captcha" in path
 
     def _parse(self, resp, query: str) -> List[SearchResult]:
         """解析百度 JSON 响应为 SearchResult 列表。"""
