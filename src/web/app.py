@@ -873,7 +873,16 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                 )
 
             # ---- 多轮对话展示（Gradio 6 的 Chatbot 即 messages 格式）----
-            chatbot = gr.Chatbot(label="对话", height=420)
+            # 不设固定 height（默认 400px 会让空会话留一大片空白）：随消息自动扩展，
+            # 超过 max_height 后在内部滚动；空态用 placeholder 提示，可拖拽右下角调高。
+            chatbot = gr.Chatbot(
+                label="对话",
+                height=None,
+                min_height=96,
+                max_height=560,
+                resizable=True,
+                placeholder="_还没有消息。输入问题开始对话，支持追问（如“它多少钱”）。_",
+            )
 
             # ---- 输入区：输入框在上，操作按钮在其下方右对齐 ----
             # 此前输入框与两个按钮同排，按钮顶部对齐到输入框的 label 行，视觉错位。
