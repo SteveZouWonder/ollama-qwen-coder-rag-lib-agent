@@ -54,12 +54,37 @@ def _emit(cb: ProgressCallback, stage: str, message: str = "", **extra: Any) -> 
 
 # ==================== LLM 基础调用 ====================
 
+
+def _get_synthesis_llm():
+    """获取用于"综合回答/相关性判定"的 LLM。
+
+    自 单模型架构 起，全程只使用用户所选的唯一模型（全局 Settings.llm）：综合/
+    判定与 Agent/代码任务共用同一模型，避免多模型同时驻留显存导致卡顿。该模型的
+    上下文窗口已在创建时按规格自动设为安全值（见 config.resolve_num_ctx）。
+
+    返回 None 表示"用全局 Settings.llm"，保留此函数与 _complete 的既有契约。
+    """
+    return None
+
+
+def reset_synthesis_llm() -> None:
+    """兼容保留（单模型架构下无独立综合模型缓存，此处为空操作）。"""
+    return None
+
+
+def _complete(prompt: str) -> str:
+    """用全局唯一模型执行一次补全。"""
+    llm = _get_synthesis_llm()
+    if llm is None:
+        from llama_index.core import Settings
+        llm = Settings.llm
+    return str(llm.complete(prompt))
+
+
 def llm_direct_answer(prompt: str) -> str:
     """用 LLM 直接回答（不经过知识库检索）。失败时返回错误说明。"""
     try:
-        from llama_index.core import Settings
-        resp = Settings.llm.complete(prompt)
-        return str(resp)
+        return _complete(prompt)
     except Exception as e:  # noqa: BLE001
         return f"回答失败：{e}"
 
@@ -256,14 +281,158 @@ def _extract_urls(search_result: str, limit: int) -> list:
     return urls
 
 
-# 增强参数：提取前 N 个高排名结果页正文，每页保留的字符数。
+def _tokenize(text: str) -> list:
+    """轻量分词：中文逐字、英文/数字按词。用于中文友好的匹配度计算。
+
+    与 search_engine._tokenize 保持一致的思路（此处独立实现避免跨模块依赖）。
+    """
+    if not text:
+        return []
+    tokens = []
+    for m in re.finditer(r"[a-zA-Z0-9]+", text.lower()):
+        tokens.append(m.group())
+    for ch in text:
+        if "\u4e00" <= ch <= "\u9fff":
+            tokens.append(ch)
+    return tokens
+
+
+def _match_score(question: str, text: str) -> float:
+    """计算 text（标题+摘要）与 question 的匹配度：问题 token 的命中覆盖率。"""
+    q = set(_tokenize(question))
+    if not q:
+        return 0.0
+    hit = q & set(_tokenize(text))
+    return len(hit) / len(q)
+
+
+# 送入综合 prompt 的网络上下文精简参数
+_CONTEXT_MAX_ITEMS = 5          # 最多保留的相关条目数
+_CONTEXT_SNIPPET_CHARS = 300    # 每条摘要保留字符
+_CONTEXT_PAGE_CHARS = 1500      # 每页正文保留字符
+_CONTEXT_MAX_PAGES = 2          # 最多保留的正文页数
+
+
+def compact_web_context(search_result: str, question: str) -> str:
+    """把冗长的搜索结果按与问题的相关度精简，供综合 prompt 使用。
+
+    背景：直接把"全部 10 条摘要 + 3 页全文"塞进 prompt 会引入大量噪音（选配件
+    价格、英文营销文案、无关正文），淹没有效信息，导致本地 LLM 抓不住重点甚至
+    误判"没有答案"。实测表明：同一 LLM 在**干净精简**的上下文下能准确作答。
+
+    因此这里按匹配度排序，只保留最相关的前若干条摘要 + 少量高相关页正文，并对
+    每部分截断，最大化信噪比。question 为空或解析失败时退化为原文截断。
+    """
+    if not search_result:
+        return ""
+    if not question:
+        return search_result[:4000]
+
+    # 分离"搜索结果"区与"相关页面详细信息"（正文）区
+    marker = "=== 相关页面详细信息 ==="
+    head, _, body = search_result.partition(marker)
+
+    items = _parse_search_items(head)
+    if not items:
+        return search_result[:4000]
+
+    scored = []
+    for it in items:
+        score = _match_score(question, f"{it.get('title','')} {it.get('snippet','')}")
+        scored.append((score, it))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    lines = ["【相关网页摘要】（按相关度排序）"]
+    for i, (score, it) in enumerate(scored[:_CONTEXT_MAX_ITEMS], 1):
+        title = (it.get("title") or "").strip()
+        snippet = (it.get("snippet") or "").strip()[:_CONTEXT_SNIPPET_CHARS]
+        url = it.get("url", "")
+        lines.append(f"{i}. {title}\n   摘要: {snippet}\n   来源: {url}")
+
+    # 正文区：按页拆分，保留前 N 页（enrich 已按相关度选过页，这里再截断长度）
+    if body.strip():
+        pages = [p for p in re.split(r"--- 页面 \d+:", body) if p.strip()]
+        if pages:
+            lines.append("\n【高相关页面正文摘录】")
+            for p in pages[:_CONTEXT_MAX_PAGES]:
+                lines.append(p.strip()[:_CONTEXT_PAGE_CHARS])
+
+    return "\n".join(lines)
+
+
+def _parse_search_items(search_result: str) -> list:
+    """把 format_results 的文本解析为结构化条目 [{title, url, snippet}]。
+
+    识别 ``N. 标题`` / ``URL: ...`` / ``摘要: ...`` 结构；摘要缺失时用其余行拼接。
+    """
+    items = []
+    current = None
+    for line in search_result.splitlines():
+        m_title = re.match(r"^\s*\d+\.\s+(.*)$", line)
+        if m_title:
+            if current:
+                items.append(current)
+            current = {"title": m_title.group(1).strip(), "url": "", "snippet": ""}
+            continue
+        if current is None:
+            continue
+        m_url = re.match(r"^\s*URL:\s*(\S+)", line)
+        if m_url:
+            current["url"] = m_url.group(1)
+            continue
+        m_abs = re.match(r"^\s*摘要[:：]\s*(.*)$", line)
+        if m_abs:
+            current["snippet"] += " " + m_abs.group(1).strip()
+            continue
+        # 其余行（如 来源: ...）也纳入摘要，增加匹配信号
+        stripped = line.strip()
+        if stripped and not stripped.startswith("URL:") and not stripped.startswith("来源"):
+            current["snippet"] += " " + stripped
+    if current:
+        items.append(current)
+    return items
+
+
+# 增强参数：抓取正文的最大页数、每页保留字符数、以及"值得抓取"的匹配度阈值。
 _ENRICH_MAX_PAGES = 3
-_ENRICH_PER_PAGE_CHARS = 2000
+_ENRICH_PER_PAGE_CHARS = 3000
+# 匹配度低于此阈值的结果不抓正文（避免对弱相关页面浪费请求/引入噪音）。
+_ENRICH_MATCH_THRESHOLD = 0.34
 
 
-def enrich_with_page_content(search_result: str, progress: ProgressCallback = None) -> str:
-    """对搜索结果做可选增强：提取前若干个高排名结果页正文并追加。"""
-    urls = _extract_urls(search_result, _ENRICH_MAX_PAGES)
+def enrich_with_page_content(
+    search_result: str, question: str = "", progress: ProgressCallback = None
+) -> str:
+    """按"摘要与问题的匹配度"选页抓取正文并追加，提升回答准确性。
+
+    改进说明：此前无脑抓取搜索结果里排名最前的 3 个 URL 正文，不管它们是否
+    真的与问题相关，既可能抓到弱相关页（引入噪音），又浪费请求。现改为：
+    1. 把搜索结果解析成 (标题, URL, 摘要) 结构；
+    2. 用问题 token 与"标题+摘要"计算匹配度（中文友好）；
+    3. 按匹配度降序，只对匹配度 >= 阈值的前 N 页抓正文（供 LLM 拿到完整上下文，
+       而非仅靠零散摘要——摘要里常混有原价/优惠额/到手价等多个数字，易致误读）。
+
+    当 ``question`` 为空（无法计算匹配度）时，退化为原先的"取前 N 个 URL"策略。
+    """
+    items = _parse_search_items(search_result)
+
+    # 计算每个条目的匹配度并排序（有 question 时）
+    if question and items:
+        scored = []
+        for it in items:
+            if not it.get("url"):
+                continue
+            score = _match_score(question, f"{it.get('title','')} {it.get('snippet','')}")
+            scored.append((score, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # 阈值过滤；若全部低于阈值，则保底取匹配度最高的 1 个（仍比纯排名靠谱）
+        picked = [it for s, it in scored if s >= _ENRICH_MATCH_THRESHOLD][:_ENRICH_MAX_PAGES]
+        if not picked and scored:
+            picked = [scored[0][1]]
+        urls = [it["url"] for it in picked]
+    else:
+        urls = _extract_urls(search_result, _ENRICH_MAX_PAGES)
+
     if not urls:
         return search_result
 
@@ -273,7 +442,7 @@ def enrich_with_page_content(search_result: str, progress: ProgressCallback = No
         _emit(progress, "enrich_page_failed", f"⚠️ 无法导入内容提取工具: {e}")
         return search_result
 
-    _emit(progress, "enrich_start", "📄 正在提取相关页面内容...")
+    _emit(progress, "enrich_start", f"📄 正在提取 {len(urls)} 个高相关页面正文...")
     blocks = []
     for idx, url in enumerate(urls, 1):
         try:
@@ -417,8 +586,7 @@ def judge_kb_relevance(question: str, sources: list) -> bool:
     )
 
     try:
-        from llama_index.core import Settings
-        raw = str(Settings.llm.complete(prompt)).strip().lower()
+        raw = _complete(prompt).strip().lower()
         # 解析：包含 irrelevant 判为不相关；否则默认相关（保守）
         if "irrelevant" in raw or "不相关" in raw or "无关" in raw:
             return False
@@ -505,29 +673,43 @@ def build_meta_overview(rag_engine) -> dict:
 # ==================== 知识库/网络分区综合 ====================
 
 def synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
-    """组装"知识库/网络分区标注"的结构化 prompt，要求 LLM 区分来源并综合总结。"""
+    """组装带"准确回答方法论"的结构化 prompt。
+
+    此前 prompt 只要求"区分来源、综合总结"，缺乏对**语义准确性**的引导，导致
+    LLM 从含多个数字/限定语的上下文里挑错信息（例如把"直降 1177 元"当成售价，
+    而实际售价是 2999 元起）。这类错误对所有"带限定语的事实"（价格、版本号、
+    时间、规格、人物职务等）都普遍存在。
+
+    因此在 prompt 中注入通用的"准确回答方法论"：先理解问题真正问的是什么、
+    只用能直接支撑答案的信息、忠实引用不脑补、对数字/指标标注其限定条件、
+    来源冲突或不明确时如实说明。这是**语义理解层面**的改进，而非针对某一类
+    问题的补丁。
+    """
     parts = [
-        "你是一个严谨的问答助手。请根据下面两类来源回答问题，并遵守规则：",
-        "1. 【知识库检索内容】来自用户的本地知识库，是权威且优先的依据；",
-        "2. 【网络搜索补充】来自互联网，仅作补充参考，可能不准确；",
-        "3. 回答中必须明确区分：哪些结论来自知识库、哪些来自网络；",
-        "4. 若两类来源冲突，以知识库为准并指出差异；",
-        "5. 若知识库内容不足以回答，明确说明，再用网络信息补充。",
+        "你是严谨、忠实于来源的中文问答助手。基于下面资料回答问题，遵守：",
+        "1. 先弄清问题真正问的是什么（哪个对象的哪个属性），只答这一点，不要答非所问。",
+        "2. 忠实提取：只用资料里的信息，找到就答、不要脑补；来源没有才说「无法确定」，"
+        "绝不编造数值。",
+        "3. 注意区分易混概念，尤其数字：售价 vs 优惠额/降价额（如「直降1177」是优惠"
+        "而非售价）、原价 vs 到手价、标准版 vs 套装版、不同地区/时间；给数字要带限定条件。",
+        "4. 若有多个取值，先给最能代表问题的主答案（如问售价优先给官方起售价），再分条"
+        "列出其他版本/渠道的取值并解释差异原因，让回答丰富清楚，不要一句话带过。",
+        "5. 【知识库检索内容】优先于【网络搜索补充】；两者冲突以知识库为准并指出差异。",
         "",
-        f"【问题】\n{question}",
+        f"## 问题\n{question}",
         "",
     ]
     if kb_context:
-        parts.append(f"【知识库检索内容】（本地文档，优先依据）\n{kb_context}")
+        parts.append(f"## 知识库检索内容（本地文档，优先）\n{kb_context}")
     else:
-        parts.append("【知识库检索内容】\n（无相关内容）")
+        parts.append("## 知识库检索内容\n（无相关内容）")
     parts.append("")
     if web_context:
-        parts.append(f"【网络搜索补充】（互联网，仅供参考）\n{web_context}")
+        parts.append(f"## 网络搜索补充（互联网，仅供参考）\n{web_context}")
     else:
-        parts.append("【网络搜索补充】\n（无）")
+        parts.append("## 网络搜索补充\n（无）")
     parts.append("")
-    parts.append("请给出综合回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
+    parts.append("请给出准确、必要处展开的回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
     return "\n".join(parts)
 
 
@@ -554,7 +736,8 @@ def augment_with_web_search(question: str, progress: ProgressCallback = None) ->
             result = run_web_search(plan["queries"], progress=progress)
             if result:
                 _emit(progress, "web_search_done", "✅ 网络搜索完成")
-                return enrich_with_page_content(result, progress=progress)
+                # 传入原始问题，使 enrich 按"摘要与问题的匹配度"选页抓正文
+                return enrich_with_page_content(result, question=question, progress=progress)
             _emit(progress, "web_search_empty", "⚠️ 所有搜索查询均未返回有效结果，继续使用知识库")
     except Exception as e:  # noqa: BLE001
         _emit(progress, "web_search_failed", f"⚠️ 网络搜索失败，继续使用知识库: {e}")
@@ -588,11 +771,15 @@ def generate_answer(
     """
     kb_initialized = rag_engine.query_engine is not None
 
+    # 按相关度精简网络上下文：只保留与问题最相关的摘要 + 精选正文，最大化信噪比，
+    # 避免全部结果+全文的噪音淹没有效信息、导致 LLM 抓不住重点或误判无答案。
+    web_context = compact_web_context(web_search_result, original_question) if web_search_result else ""
+
     # 知识库未初始化：只能用网络/模型自身知识，明确声明来源
     if not kb_initialized:
         if not web_search_result:
             _emit(progress, "kb_uninitialized", "💡 知识库为空，直接使用模型回答（可能不含最新信息）")
-        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
+        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
         _emit(progress, "model_thinking", "模型思考中...")
         answer = llm_direct_answer(prompt)
         if web_search_result:
@@ -641,7 +828,7 @@ def generate_answer(
         # 否则（过滤掉了噪音，或需要综合网络补充）基于"仅相关片段"重新综合，
         # 避免 LlamaIndex 原始回答里混入被过滤掉的噪音内容。
         kb_context = format_kb_context(relevant_sources)
-        prompt = synthesize_prompt(original_question, kb_context, web_search_result)
+        prompt = synthesize_prompt(original_question, kb_context, web_context)
         if web_search_result:
             _emit(progress, "synthesizing", "综合知识库与网络信息...")
         else:
@@ -656,8 +843,10 @@ def generate_answer(
         web_search_result = simple_web_search(original_question)
         if web_search_result:
             _emit(progress, "web_search_done", "✅ 网络搜索完成")
+            # 回退搜索的结果同样精简后再入 prompt
+            web_context = compact_web_context(web_search_result, original_question)
 
-    prompt = synthesize_prompt(original_question, kb_context="", web_context=web_search_result)
+    prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
     _emit(progress, "model_thinking", "模型思考中...")
     answer = llm_direct_answer(prompt)
     if web_search_result:

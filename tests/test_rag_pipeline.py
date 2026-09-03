@@ -7,6 +7,8 @@ Ollama/ChromaDB 的前提下，用桩引擎与打桩的 LLM/网络工具覆盖�
 """
 from unittest.mock import MagicMock
 
+import pytest
+
 import rag_pipeline
 
 
@@ -178,6 +180,12 @@ class TestAnswerQuestion:
 # ==================== LLM 相关性判定 ====================
 
 class TestJudgeKbRelevance:
+    @pytest.fixture(autouse=True)
+    def _force_default_llm(self, monkeypatch):
+        # 单模型架构下综合/判定始终走全局 Settings.llm（测试里被打桩）。
+        monkeypatch.setattr(rag_pipeline, "_get_synthesis_llm",
+                            lambda: None, raising=False)
+
     def test_empty_sources(self):
         assert rag_pipeline.judge_kb_relevance("q", []) is False
 
@@ -229,6 +237,32 @@ class TestJudgeKbRelevance:
         ) is True
 
 
+# ==================== 单模型架构：综合/判定复用全局模型 ====================
+
+class TestSynthesisModel:
+    """单模型架构下，综合/判定不再有独立模型，始终复用全局 Settings.llm。"""
+
+    def test_get_synthesis_llm_always_none(self):
+        """_get_synthesis_llm 恒返回 None（表示用全局 Settings.llm）。"""
+        assert rag_pipeline._get_synthesis_llm() is None
+
+    def test_reset_is_noop(self):
+        """reset_synthesis_llm 为兼容保留的空操作，调用后仍返回 None。"""
+        rag_pipeline.reset_synthesis_llm()
+        assert rag_pipeline._get_synthesis_llm() is None
+
+    def test_complete_uses_global_llm(self, monkeypatch):
+        """_complete 应使用全局 Settings.llm 执行补全。"""
+        import sys, types
+
+        class _LLM:
+            def complete(self, prompt):
+                return "global-answer"
+        monkeypatch.setitem(sys.modules, "llama_index.core",
+                            types.SimpleNamespace(Settings=types.SimpleNamespace(llm=_LLM())))
+        assert rag_pipeline._complete("hi") == "global-answer"
+
+
 # ==================== 纯函数 ====================
 
 class TestHelpers:
@@ -247,6 +281,100 @@ class TestHelpers:
     def test_synthesize_prompt_contains_sections(self):
         p = rag_pipeline.synthesize_prompt("问题", "KB内容", "网络内容")
         assert "知识库检索内容" in p and "网络搜索补充" in p and "问题" in p
+
+    def test_synthesize_prompt_has_accuracy_methodology(self):
+        """综合 prompt 应包含通用准确回答方法论的关键指令。"""
+        p = rag_pipeline.synthesize_prompt("现在dji osmo 360售价", "", "直降1177元")
+        # 意图理解、忠实提取、数字带限定语、冲突处理
+        assert "理解意图" in p or "真正问的是什么" in p
+        assert "忠实提取" in p or "不要脑补" in p or "不要臆测" in p
+        # 关键：区分优惠额与售价的通用指令
+        assert "优惠额" in p or "降价额" in p or "到手价" in p
+        assert "无法确定" in p  # 不确定时如实说明
+
+    def test_synthesize_prompt_multi_value_enrichment(self):
+        """多个取值时应要求丰富展开并解释差异原因。"""
+        p = rag_pipeline.synthesize_prompt("售价", "", "多个价格")
+        assert "解释" in p and "差异" in p  # 解释差异原因
+        assert "分条" in p or "分点" in p  # 结构化组织
+        assert "限定条件" in p  # 每条标注条件
+
+    def test_compact_web_context_ranks_and_trims(self):
+        """精简上下文应按匹配度排序、保留最相关条目。"""
+        text = (
+            "搜索结果 (3 条):\n"
+            "1. 无关 Cloudflare 配置\n   URL: https://z.com\n   摘要: http_status 404 兜底\n"
+            "2. dji osmo 360 售价2999\n   URL: https://a.com\n   摘要: 标准套装售价 2999 元起\n"
+            "3. 其它\n   URL: https://c.com\n   摘要: 随便\n"
+        )
+        out = rag_pipeline.compact_web_context(text, "dji osmo 360 最新售价")
+        # 相关条目应排在前面
+        assert out.index("2999") < out.index("Cloudflare")
+        assert "相关网页摘要" in out
+
+    def test_compact_web_context_empty_question(self):
+        # 无 question 时退化为截断原文
+        out = rag_pipeline.compact_web_context("一些文本", "")
+        assert out == "一些文本"
+
+    def test_compact_web_context_empty(self):
+        assert rag_pipeline.compact_web_context("", "q") == ""
+
+    def test_parse_search_items(self):
+        text = (
+            "搜索结果 (2 条):\n"
+            "1. 大疆 Osmo 360 售价2999元\n"
+            "   URL: https://a.com\n"
+            "   来源: baidu\n"
+            "   摘要: 标准套装售价 2999 元\n"
+            "2. 活动直降1177\n"
+            "   URL: https://b.com\n"
+            "   摘要: 至高直降 1177 元\n"
+        )
+        items = rag_pipeline._parse_search_items(text)
+        assert len(items) == 2
+        assert items[0]["url"] == "https://a.com"
+        assert "2999" in items[0]["snippet"]
+        assert items[1]["url"] == "https://b.com"
+
+    def test_match_score(self):
+        # 问题 token 命中越多分越高
+        s_hi = rag_pipeline._match_score("dji osmo 360 售价", "dji osmo 360 标准套装售价 2999")
+        s_lo = rag_pipeline._match_score("dji osmo 360 售价", "Cloudflare 内网穿透配置")
+        assert s_hi > s_lo
+        assert rag_pipeline._match_score("", "任意") == 0.0
+
+    def test_enrich_picks_high_match_pages(self, monkeypatch):
+        """enrich 应按匹配度选页：相关页(a.com)被抓、无关页(z.com)被跳过。"""
+        text = (
+            "1. dji osmo 360 售价\n   URL: https://a.com\n   摘要: dji osmo 360 售价 2999 元\n"
+            "2. 无关内容\n   URL: https://z.com\n   摘要: Cloudflare 内网穿透 http_status 404\n"
+        )
+        fetched = []
+
+        def fake_extract(url, timeout=10):
+            fetched.append(url)
+            return f"正文内容 {url}"
+
+        import sys, types
+        monkeypatch.setitem(sys.modules, "agent_tools",
+                            types.SimpleNamespace(web_content_extract=fake_extract))
+        out = rag_pipeline.enrich_with_page_content(text, question="dji osmo 360 最新售价")
+        # 相关页被抓取，无关页（低于阈值）被跳过
+        assert "https://a.com" in fetched
+        assert "https://z.com" not in fetched
+        assert "相关页面详细信息" in out
+
+    def test_enrich_fallback_without_question(self, monkeypatch):
+        """无 question 时退化为取前 N 个 URL（保持向后兼容）。"""
+        text = "1. t\n   URL: https://a.com\n   摘要: x\n"
+        fetched = []
+        import sys, types
+        monkeypatch.setitem(sys.modules, "agent_tools",
+                            types.SimpleNamespace(
+                                web_content_extract=lambda u, timeout=10: (fetched.append(u), "正文")[1]))
+        rag_pipeline.enrich_with_page_content(text, question="")
+        assert "https://a.com" in fetched
 
     def test_strip_json_fence(self):
         assert rag_pipeline._strip_json_fence('```json\n{"a":1}\n```') == '{"a":1}'

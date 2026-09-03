@@ -31,11 +31,17 @@ OLLAMA_INSTALL_SH = "https://ollama.com/install.sh"
 OLLAMA_DOWNLOAD_PAGE = "https://ollama.com/download"
 OLLAMA_WINDOWS_INSTALLER = "https://ollama.com/download/OllamaSetup.exe"
 
-# 默认需要的模型（与 config/app_config.json 保持一致）
-DEFAULT_REQUIRED_MODELS = [
-    "qwen2.5-coder:7b",
-    "nomic-embed-text:latest",
-]
+# 默认需要的模型：全局唯一 LLM（config.LLM_MODEL）+ Embedding 模型。
+# 与单模型架构一致，只需拉取用户所选的那一个 LLM。config 不可用时回退默认值。
+def _default_required_models() -> List[str]:
+    try:
+        from config import LLM_MODEL, EMBED_MODEL
+        return [LLM_MODEL, EMBED_MODEL]
+    except Exception:  # noqa: BLE001
+        return ["qwen3.5:4b", "nomic-embed-text:latest"]
+
+
+DEFAULT_REQUIRED_MODELS = _default_required_models()
 
 
 # ---------------------------------------------------------------------------

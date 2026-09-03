@@ -59,13 +59,19 @@ CONFIG_FILE = config_dir() / "app_config.json"
 LOG_FILE = logs_dir() / "app.log"
 STATUS_FILE = logs_dir() / "status.log"
 
+def _default_warm_up_models():
+    """预热模型列表：全局唯一 LLM（config.LLM_MODEL）+ Embedding，与单模型架构一致。"""
+    try:
+        from config import LLM_MODEL, EMBED_MODEL
+        return [LLM_MODEL, EMBED_MODEL]
+    except Exception:  # noqa: BLE001
+        return ["qwen3.5:4b", "nomic-embed-text:latest"]
+
+
 DEFAULT_CONFIG = {
     "autostart": False,
     "warm_up_on_startup": True,
-    "warm_up_models": [
-        "qwen2.5-coder:7b",
-        "nomic-embed-text:latest"
-    ],
+    "warm_up_models": _default_warm_up_models(),
     "ollama_base_url": "http://localhost:11434",
     "check_interval": 300  # 5分钟
 }

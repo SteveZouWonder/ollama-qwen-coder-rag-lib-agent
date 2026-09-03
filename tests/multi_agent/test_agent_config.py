@@ -26,7 +26,7 @@ class TestAgentConfigManager:
         master_config = config.master_agent_config
         assert master_config.agent_type == AgentType.MASTER
         assert master_config.agent_id == "master_agent"
-        assert master_config.model == "qwen2.5-coder:7b"
+        assert master_config.model == "qwen3.5:4b"
         assert "task_decomposition" in master_config.capabilities
     
     def test_default_config_specialized_agents(self):
@@ -209,7 +209,7 @@ class TestAgentConfigManager:
         """测试创建自定义配置使用默认参数"""
         config = AgentConfigManager.create_custom_config()
         
-        assert config.master_agent_config.model == "qwen2.5-coder:7b"
+        assert config.master_agent_config.model == "qwen3.5:4b"
         assert config.max_parallel_tasks == 5
         assert config.default_collaboration_mode == CollaborationMode.HIERARCHY
     

@@ -546,7 +546,7 @@ class TestRAGEngineAgentTools:
         engine = RAGEngine()
         result = engine.get_stats_tool()
         assert "42" in result
-        assert "qwen2.5-coder:7b" in result
+        assert "qwen3.5:4b" in result
 
 
 class TestRAGEngineStats:
@@ -563,7 +563,7 @@ class TestRAGEngineStats:
         engine = RAGEngine()
         stats = engine.get_stats()
         assert stats["total_documents"] == 10
-        assert stats["llm_model"] == "qwen2.5-coder:7b"
+        assert stats["llm_model"] == "qwen3.5:4b"
         assert stats["chunk_size"] == 1024
 
 

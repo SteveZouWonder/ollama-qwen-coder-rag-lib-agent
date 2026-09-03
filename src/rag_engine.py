@@ -35,6 +35,7 @@ import chromadb
 from config import (
     OLLAMA_BASE_URL,
     LLM_MODEL,
+    LLM_NUM_CTX,
     EMBED_MODEL,
     VECTOR_DB_PATH,
     INDEX_DIR,
@@ -115,12 +116,16 @@ class RAGEngine:
 
     def _setup_llm(self):
         """配置 Ollama LLM"""
-        print(f"🤖 加载 LLM 模型: {LLM_MODEL}")
+        print(f"🤖 加载 LLM 模型: {LLM_MODEL} (num_ctx={LLM_NUM_CTX})")
         Settings.llm = Ollama(
             model=LLM_MODEL,
             base_url=OLLAMA_BASE_URL,
             request_timeout=120.0,
             temperature=0.1,
+            # 显式限制上下文窗口，避免 Ollama 按模型默认的超大上下文（如 256K）
+            # 分配 KV cache 撑爆显存、卸载到 CPU 导致卡顿。值按模型自动推导。
+            context_window=LLM_NUM_CTX,
+            additional_kwargs={"num_ctx": LLM_NUM_CTX},
         )
 
     def _setup_embedding(self):

@@ -8,6 +8,16 @@ from pathlib import Path
 from agents.agent_types import AgentConfig, OrchestratorConfig, AgentType, CollaborationMode
 
 
+def _default_model() -> str:
+    """全局唯一 LLM（config.LLM_MODEL）。多 Agent 各角色默认共用同一模型，
+    避免同时驻留多个模型撑爆显存。config 不可用时回退到通用小模型。"""
+    try:
+        from config import LLM_MODEL
+        return LLM_MODEL
+    except Exception:  # noqa: BLE001
+        return "qwen3.5:4b"
+
+
 class AgentConfigManager:
     """Agent配置管理器"""
     
@@ -25,7 +35,7 @@ class AgentConfigManager:
         master_config = AgentConfig(
             agent_id="master_agent",
             agent_type=AgentType.MASTER,
-            model="qwen2.5-coder:7b",
+            model=_default_model(),
             host="http://localhost:11434",
             capabilities=["task_decomposition", "task_scheduling", "result_integration", "coordination"],
             specialized_tools=[],
@@ -40,7 +50,7 @@ class AgentConfigManager:
             AgentConfig(
                 agent_id="code_agent_1",
                 agent_type=AgentType.CODE,
-                model="qwen2.5-coder:7b",
+                model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["code_generation", "code_refactoring", "bug_fixing", "code_review", "file_operations"],
                 specialized_tools=["code_analyzer", "refactoring_tool", "performance_profiler"],
@@ -52,7 +62,7 @@ class AgentConfigManager:
             AgentConfig(
                 agent_id="rag_agent_1",
                 agent_type=AgentType.RAG,
-                model="qwen2.5-coder:7b",
+                model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["knowledge_retrieval", "document_search", "knowledge_extraction", "literature_review"],
                 specialized_tools=["advanced_search", "knowledge_graph", "document_comparison"],
@@ -64,7 +74,7 @@ class AgentConfigManager:
             AgentConfig(
                 agent_id="test_agent_1",
                 agent_type=AgentType.TEST,
-                model="qwen2.5-coder:7b",
+                model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["testing", "test_generation", "coverage_analysis", "quality_assessment"],
                 specialized_tools=["test_generator", "coverage_analyzer", "mock_tool"],
@@ -76,7 +86,7 @@ class AgentConfigManager:
             AgentConfig(
                 agent_id="doc_agent_1",
                 agent_type=AgentType.DOC,
-                model="qwen2.5-coder:7b",
+                model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["documentation", "api_documentation", "technical_writing", "user_guide"],
                 specialized_tools=["doc_generator", "format_converter", "doc_validator"],
@@ -88,7 +98,7 @@ class AgentConfigManager:
             AgentConfig(
                 agent_id="audit_agent_1",
                 agent_type=AgentType.AUDIT,
-                model="qwen2.5-coder:7b",
+                model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["audit", "security_check", "compliance_verification", "performance_audit"],
                 specialized_tools=["security_scanner", "code_quality_tool", "dependency_checker"],
@@ -149,7 +159,7 @@ class AgentConfigManager:
         master_config = AgentConfig(
             agent_id=master_config_data.get("agent_id", "master_agent"),
             agent_type=AgentType(master_config_data.get("agent_type", "master")),
-            model=master_config_data.get("model", "qwen2.5-coder:7b"),
+            model=master_config_data.get("model", _default_model()),
             host=master_config_data.get("host", "http://localhost:11434"),
             capabilities=master_config_data.get("capabilities", []),
             specialized_tools=master_config_data.get("specialized_tools", []),
@@ -165,7 +175,7 @@ class AgentConfigManager:
             agent_config = AgentConfig(
                 agent_id=agent_config_data.get("agent_id"),
                 agent_type=AgentType(agent_config_data.get("agent_type")),
-                model=agent_config_data.get("model", "qwen2.5-coder:7b"),
+                model=agent_config_data.get("model", _default_model()),
                 host=agent_config_data.get("host", "http://localhost:11434"),
                 capabilities=agent_config_data.get("capabilities", []),
                 specialized_tools=agent_config_data.get("specialized_tools", []),
@@ -218,7 +228,7 @@ class AgentConfigManager:
     
     @staticmethod
     def create_custom_config(
-        model: str = "qwen2.5-coder:7b",
+        model: Optional[str] = None,
         host: str = "http://localhost:11434",
         max_parallel_tasks: int = 5,
         default_mode: str = "hierarchy"
@@ -227,7 +237,7 @@ class AgentConfigManager:
         创建自定义配置
         
         Args:
-            model: 模型名称
+            model: 模型名称（None 时使用全局唯一 LLM，即 config.LLM_MODEL）
             host: 模型服务地址
             max_parallel_tasks: 最大并行任务数
             default_mode: 默认协作模式
@@ -235,6 +245,8 @@ class AgentConfigManager:
         Returns:
             OrchestratorConfig: 自定义配置
         """
+        if model is None:
+            model = _default_model()
         config = AgentConfigManager.get_default_config()
         
         # 更新模型配置

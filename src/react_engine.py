@@ -180,6 +180,12 @@ class ReActEngine:
                  on_step: Callable = None, on_confirm: Callable = None):
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
+        # 按所选模型自动推导安全的上下文窗口，避免大默认上下文撑爆显存导致卡顿。
+        try:
+            from config import resolve_num_ctx
+            self.num_ctx = resolve_num_ctx(self.model)
+        except Exception:  # noqa: BLE001
+            self.num_ctx = 8192
         self.history = ChatHistory(Config.HISTORY_FILE, Config.MAX_HISTORY)
         self._init_system()
         self._stop_event = threading.Event()
@@ -402,7 +408,7 @@ class ReActEngine:
                     "stream": False,
                     "options": {
                         "temperature": 0.3,
-                        "num_ctx": 8192,
+                        "num_ctx": self.num_ctx,
                         "num_predict": 4096
                     }
                 },

@@ -31,7 +31,7 @@ class TestConfigDefaults:
 
     def test_llm_model_default(self, clean_env):
         from config import LLM_MODEL
-        assert LLM_MODEL == "qwen2.5-coder:7b"
+        assert LLM_MODEL == "qwen3.5:4b"
 
     def test_embed_model_default(self, clean_env):
         from config import EMBED_MODEL
@@ -300,3 +300,53 @@ class TestProgressConfig:
         assert config.ESTIMATE_TIME is True
         assert config.SHOW_STATS is False
         assert config.VERBOSE_MODE is False
+
+
+class TestResolveNumCtx:
+    """按模型规格自动推导上下文窗口（num_ctx）。"""
+
+    def test_small_model_large_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen3.5:4b") == 16384
+        assert resolve_num_ctx("qwen3.5:1.5b") == 16384
+
+    def test_mid_model_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen2.5-coder:7b") == 8192
+        assert resolve_num_ctx("qwen3.5:8b") == 8192
+        assert resolve_num_ctx("qwen3.5:9b") == 8192
+
+    def test_large_model_small_ctx(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("qwen2.5:14b") == 4096
+        assert resolve_num_ctx("some-13b-model") == 4096
+
+    def test_unknown_model_defaults_large(self, clean_env):
+        from config import resolve_num_ctx
+        assert resolve_num_ctx("mystery-model") == 16384
+        assert resolve_num_ctx("") == 16384
+
+    def test_env_override(self, monkeypatch, clean_env):
+        monkeypatch.setenv("LLM_NUM_CTX", "2048")
+        from config import resolve_num_ctx
+        # 覆盖对任何模型都生效
+        assert resolve_num_ctx("qwen3.5:9b") == 2048
+        assert resolve_num_ctx("qwen3.5:4b") == 2048
+
+    def test_env_override_invalid_ignored(self, monkeypatch, clean_env):
+        monkeypatch.setenv("LLM_NUM_CTX", "not-a-number")
+        from config import resolve_num_ctx
+        # 非法值忽略，回退按模型推导
+        assert resolve_num_ctx("qwen3.5:4b") == 16384
+
+    def test_llm_num_ctx_module_value(self, monkeypatch, clean_env):
+        import importlib
+        import config
+        monkeypatch.setenv("LLM_MODEL", "qwen3.5:9b")
+        importlib.reload(config)
+        try:
+            assert config.LLM_NUM_CTX == 8192
+        finally:
+            # 恢复干净的模块级 config，避免污染后续依赖 config.LLM_MODEL 的测试
+            monkeypatch.delenv("LLM_MODEL", raising=False)
+            importlib.reload(config)

@@ -43,9 +43,42 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==================== Ollama 模型配置 ====================
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-# 统一使用 qwen2.5-coder:7b
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-coder:7b")
+
+# 全局唯一 LLM：用户只需选这一个模型，它同时用于 ReAct Agent、代码任务、
+# RAG 综合回答与相关性判定。全程只驻留单一模型，避免多模型同时占用显存导致
+# 卡顿（尤其中端统一内存机器）。默认 qwen3.5:4b（通用理解 + 中文归纳强、显存省）；
+# 可用 CLI `--model` 或 LLM_MODEL 环境变量覆盖。
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:4b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text:latest")
+
+
+def resolve_num_ctx(model: str) -> int:
+    """按模型规格自动推导安全且够用的上下文窗口（num_ctx），用户零配置。
+
+    许多模型（如 qwen3.5 系列）默认上下文高达 256K，Ollama 会据此分配 KV cache
+    撑爆显存并卸载到 CPU，导致推理近乎卡死。此处按参数量给出在中端机上仍能全 GPU
+    驻留、且对 RAG/Agent 任务够用的上下文：参数量越大，权重占显存越多、留给 KV
+    cache 的预算越小，num_ctx 越保守。可用 LLM_NUM_CTX 环境变量强制覆盖。
+    """
+    override = os.getenv("LLM_NUM_CTX")
+    if override and override.strip():
+        try:
+            return int(override)
+        except ValueError:
+            pass
+    name = (model or "").lower()
+    # 12B~14B：权重最重，上下文最保守
+    if any(t in name for t in (":14b", ":13b", ":12b", "-14b", "-13b", "-12b")):
+        return 4096
+    # 7B~9B：中等权重
+    if any(t in name for t in (":9b", ":8b", ":7b", "-9b", "-8b", "-7b")):
+        return 8192
+    # 4B 及以下：显存宽裕，可给较大上下文
+    return 16384
+
+
+# 全局唯一 LLM 的上下文窗口，按所选模型自动推导（零配置），可用 LLM_NUM_CTX 覆盖。
+LLM_NUM_CTX = resolve_num_ctx(LLM_MODEL)
 
 # ==================== 向量数据库配置 ====================
 VECTOR_DB_PATH = str(INDEX_DIR / "chroma_db")
