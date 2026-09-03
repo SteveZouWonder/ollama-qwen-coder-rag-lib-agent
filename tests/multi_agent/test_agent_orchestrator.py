@@ -354,3 +354,34 @@ class TestAgentOrchestrator:
         # 测试使用有效的模式
         result = orchestrator.process_request("测试任务", CollaborationMode.PARALLEL)
         assert result is not None
+
+
+class TestOrchestratorProgressPassthrough:
+    def test_process_request_forwards_progress(self):
+        from unittest.mock import MagicMock
+        from agent_config import AgentConfigManager
+        from agent_orchestrator import AgentOrchestrator
+        from agents.agent_types import CollaborationMode
+
+        orchestrator = AgentOrchestrator(AgentConfigManager.get_default_config())
+        orchestrator.master_agent = MagicMock()
+        orchestrator.master_agent.coordinate_task.return_value = {"success": True}
+        cb = lambda e: None  # noqa: E731
+        orchestrator.process_request("任务", CollaborationMode.HIERARCHY, progress=cb)
+        orchestrator.master_agent.coordinate_task.assert_called_once_with(
+            "任务", CollaborationMode.HIERARCHY, progress=cb
+        )
+
+    def test_process_request_without_progress_keeps_legacy_signature(self):
+        from unittest.mock import MagicMock
+        from agent_config import AgentConfigManager
+        from agent_orchestrator import AgentOrchestrator
+        from agents.agent_types import CollaborationMode
+
+        orchestrator = AgentOrchestrator(AgentConfigManager.get_default_config())
+        orchestrator.master_agent = MagicMock()
+        orchestrator.master_agent.coordinate_task.return_value = {"success": True}
+        orchestrator.process_request("任务", CollaborationMode.HIERARCHY)
+        orchestrator.master_agent.coordinate_task.assert_called_once_with(
+            "任务", CollaborationMode.HIERARCHY
+        )

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 
@@ -99,9 +100,14 @@ _DONE = object()  # 内部结束哨兵
 class StreamEvent:
     """服务层向 UI 层输出的统一流式事件。
 
-    - ``kind``：``progress`` | ``answer`` | ``step`` | ``error`` | ``done``
+    - ``kind``：``progress`` | ``answer`` | ``step`` | ``error`` | ``done`` |
+      ``heartbeat`` | ``cancelled``
     - ``message``：人类可读文本
     - ``data``：附加结构化数据（如 sources 列表、step_log 等）
+
+    ``heartbeat`` 在后台任务长时间无新事件时按固定间隔发出（``data`` 含
+    ``elapsed`` 秒数），让 UI 能刷新"已用时"，消除"卡死"错觉。
+    ``cancelled`` 表示用户主动停止，任务未产出最终结果。
     """
 
     __slots__ = ("kind", "message", "data")
@@ -158,6 +164,117 @@ class WebService:
         self._session_manager = None
         self._graph_query = None
         self._active_react: Optional[Any] = None
+        # 跨模式取消：RAG / 单 Agent / 多 Agent 三种模式共用同一套取消机制
+        # （``_cancel_event`` 指向当前运行的取消信号，每次运行独立创建）。
+        # ``_running`` 标记当前是否有对话任务在跑（UI 据此决定是否接受新请求）。
+        self._cancel_event = threading.Event()
+        self._running = False
+        # 心跳间隔（秒）：后台任务超过该时长无新事件时，向 UI 发一次 heartbeat。
+        self.heartbeat_interval: float = 1.0
+
+    # ---------- 任务生命周期 / 取消 ----------
+
+    def is_running(self) -> bool:
+        """当前是否有对话任务（任一模式）正在执行。"""
+        return bool(self._running)
+
+    def is_cancelled(self) -> bool:
+        """当前任务是否已收到停止信号。"""
+        return self._cancel_event.is_set()
+
+    def stop_current(self) -> bool:
+        """停止当前正在运行的对话任务（任一模式）。
+
+        - 置位当前运行的取消信号：RAG 编排在阶段边界看到后中止，桥接生成器
+          立刻停止转发并产出 ``cancelled`` 事件。
+        - 若单 Agent 引擎在跑，同时调用其 ``stop()``。
+
+        返回是否有任务被通知停止。
+        """
+        notified = False
+        if self._active_react is not None:
+            try:
+                self._active_react.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            notified = True
+        if self._running:
+            notified = True
+        if notified:
+            self._cancel_event.set()
+        return notified
+
+    def _bridge(
+        self,
+        run: Callable[["queue.Queue", threading.Event], Any],
+        on_finish: Callable[[Dict[str, Any], Dict[str, BaseException]], Iterator[StreamEvent]],
+    ) -> Iterator[StreamEvent]:
+        """把"后台线程 + 回调"桥接为带心跳与取消的事件流（三种模式共用）。
+
+        Args:
+            run: 在后台线程中执行的函数，接收 ``(q, cancel)``：事件队列 ``q``
+                用于回调投递 ``StreamEvent``，``cancel`` 为本次运行的取消信号
+                （``threading.Event``）；返回值存入 ``result_holder["result"]``。
+            on_finish: 后台正常结束（未取消）后调用，参数为
+                ``(result_holder, error_holder)``，产出收尾事件（answer/error）。
+
+        行为：
+        - 队列 ``get`` 带超时，超时即产出 ``heartbeat``（含 ``elapsed``）。
+        - 每次循环检查取消信号；命中则产出 ``cancelled`` 并停止转发（后台
+          线程为 daemon，继续跑完当前阻塞调用后自行退出，其结果被丢弃）。
+        - 生成器被消费方关闭（Gradio ``cancels`` 触发 GeneratorExit）时同样
+          置位取消信号，让编排层尽快停止。
+        """
+        q: "queue.Queue" = queue.Queue()
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, BaseException] = {}
+
+        # 每次运行使用独立的取消信号：被取消但仍在后台收尾的旧任务不会因为
+        # 新任务开始（重置信号）而"复活"继续跑完后续阶段。
+        cancel = threading.Event()
+        self._cancel_event = cancel
+
+        def worker():
+            try:
+                result_holder["result"] = run(q, cancel)
+            except BaseException as exc:  # noqa: BLE001
+                error_holder["error"] = exc
+            finally:
+                q.put(_DONE)
+
+        self._running = True
+        started = time.monotonic()
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        cancelled = False
+        try:
+            while True:
+                if cancel.is_set():
+                    cancelled = True
+                    yield StreamEvent("cancelled", "已停止", {"elapsed": time.monotonic() - started})
+                    break
+                try:
+                    item = q.get(timeout=self.heartbeat_interval)
+                except queue.Empty:
+                    yield StreamEvent("heartbeat", "", {"elapsed": time.monotonic() - started})
+                    continue
+                if item is _DONE:
+                    break
+                yield item
+            if not cancelled:
+                yield from on_finish(result_holder, error_holder)
+        except GeneratorExit:
+            # 消费方主动关闭（如 Gradio cancels）：通知后台尽快停止
+            cancel.set()
+            if self._active_react is not None:
+                try:
+                    self._active_react.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        finally:
+            self._running = False
 
     # ---------- 惰性单例 ----------
 
@@ -266,62 +383,53 @@ class WebService:
 
         import rag_pipeline
 
-        q: "queue.Queue" = queue.Queue()
-        result_holder: Dict[str, Any] = {}
-        error_holder: Dict[str, BaseException] = {}
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def progress_cb(evt: Dict[str, Any]):
+                # 元/概览事件带结构化数据（files/stats），透传给 UI 展示。
+                q.put(StreamEvent("progress", evt.get("message", ""), evt))
 
-        def progress_cb(evt: Dict[str, Any]):
-            # 元/概览事件带结构化数据（files/stats），透传给 UI 展示。
-            q.put(StreamEvent("progress", evt.get("message", ""), evt))
+            return rag_pipeline.answer_question(
+                self.rag_engine,
+                question,
+                enable_web_search=enable_web_search,
+                show_progress=True,
+                progress=progress_cb,
+                rag_progress_callback=progress_cb,
+                should_stop=cancel.is_set,
+            )
 
-        def worker():
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                exc = error_holder["error"]
+                cancelled_cls = getattr(rag_pipeline, "PipelineCancelled", ())
+                if cancelled_cls and isinstance(exc, cancelled_cls):
+                    yield StreamEvent("cancelled", "已停止")
+                    return
+                yield StreamEvent("error", f"检索失败: {exc}")
+                return
+
+            result = result_holder.get("result", {}) or {}
+            answer = result.get("answer", "")
+
+            # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
             try:
-                result_holder["result"] = rag_pipeline.answer_question(
-                    self.rag_engine,
-                    question,
-                    enable_web_search=enable_web_search,
-                    show_progress=True,
-                    progress=progress_cb,
-                    rag_progress_callback=progress_cb,
-                )
-            except BaseException as exc:  # noqa: BLE001
-                error_holder["error"] = exc
-            finally:
-                q.put(_DONE)
+                recorded = "[知识库概览]" if result.get("kind") == "meta" else answer
+                rag_pipeline.record_conversation(question, recorded)
+            except Exception:  # noqa: BLE001 - 落库失败不影响返回
+                pass
 
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
+            yield StreamEvent(
+                "answer",
+                answer,
+                {
+                    "kind": result.get("kind", "answer"),
+                    "sources": result.get("kb_sources", []),
+                    "web_sources": result.get("web_sources", []),
+                    "meta": result.get("meta"),
+                },
+            )
 
-        while True:
-            item = q.get()
-            if item is _DONE:
-                break
-            yield item
-
-        if "error" in error_holder:
-            yield StreamEvent("error", f"检索失败: {error_holder['error']}")
-            return
-
-        result = result_holder.get("result", {}) or {}
-        answer = result.get("answer", "")
-
-        # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
-        try:
-            recorded = "[知识库概览]" if result.get("kind") == "meta" else answer
-            rag_pipeline.record_conversation(question, recorded)
-        except Exception:  # noqa: BLE001 - 落库失败不影响返回
-            pass
-
-        yield StreamEvent(
-            "answer",
-            answer,
-            {
-                "kind": result.get("kind", "answer"),
-                "sources": result.get("kb_sources", []),
-                "web_sources": result.get("web_sources", []),
-                "meta": result.get("meta"),
-            },
-        )
+        yield from self._bridge(run, on_finish)
 
     def rag_query(self, question: str, enable_web_search: bool = True) -> Dict[str, Any]:
         """非流式 RAG 检索，返回 ``{answer, sources, web_sources, kind, meta}``。"""
@@ -358,43 +466,29 @@ class WebService:
         # 确保知识库工具就绪
         _ = self.rag_engine
 
-        q: "queue.Queue" = queue.Queue()
-        result_holder: Dict[str, Any] = {}
-        error_holder: Dict[str, BaseException] = {}
+        engine_holder: Dict[str, Any] = {}
 
-        def on_step(evt: Dict[str, Any]):
-            q.put(StreamEvent("step", evt.get("message", ""), evt))
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def on_step(evt: Dict[str, Any]):
+                q.put(StreamEvent("step", evt.get("message", ""), evt))
 
-        def on_confirm(evt: Dict[str, Any]) -> bool:
-            if confirm_handler is None:
-                # 无确认处理器时，默认拒绝危险操作，保证安全。
-                return False
-            return bool(confirm_handler(evt))
+            def on_confirm(evt: Dict[str, Any]) -> bool:
+                if confirm_handler is None:
+                    # 无确认处理器时，默认拒绝危险操作，保证安全。
+                    return False
+                return bool(confirm_handler(evt))
 
-        engine = self._react_factory(on_step=on_step, on_confirm=on_confirm)
-        self._active_react = engine
+            engine = self._react_factory(on_step=on_step, on_confirm=on_confirm)
+            engine_holder["engine"] = engine
+            self._active_react = engine
+            return engine.chat(user_input)
 
-        def worker():
-            try:
-                result_holder["answer"] = engine.chat(user_input)
-            except BaseException as exc:  # noqa: BLE001
-                error_holder["error"] = exc
-            finally:
-                q.put(_DONE)
-
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-
-        while True:
-            item = q.get()
-            if item is _DONE:
-                break
-            yield item
-
-        if "error" in error_holder:
-            yield StreamEvent("error", f"Agent 执行失败: {error_holder['error']}")
-        else:
-            answer = result_holder.get("answer", "")
+        def on_finish(result_holder, error_holder):
+            engine = engine_holder.get("engine")
+            if "error" in error_holder:
+                yield StreamEvent("error", f"Agent 执行失败: {error_holder['error']}")
+                return
+            answer = result_holder.get("result", "")
             # 对话落库（与 CLI handle_agent 一致）
             try:
                 import rag_pipeline
@@ -406,23 +500,20 @@ class WebService:
                 answer,
                 {"step_log": getattr(engine, "step_log", [])},
             )
-        self._active_react = None
+
+        try:
+            yield from self._bridge(run, on_finish)
+        finally:
+            self._active_react = None
 
     def stop_agent(self) -> bool:
-        """中断当前正在运行的 Agent，返回是否成功发出中断信号。"""
-        if self._active_react is not None:
-            self._active_react.stop()
-            return True
-        return False
+        """中断当前正在运行的对话任务（任一模式）。兼容旧名，等价 ``stop_current``。"""
+        return self.stop_current()
 
     # ---------- 多 Agent 协作 ----------
 
-    def multi_agent_run(self, request: str, mode: Optional[str] = None) -> Dict[str, Any]:
-        """执行多 Agent 协作，返回整合结果 dict。"""
-        request = (request or "").strip()
-        if not request:
-            return {"success": False, "error": "请求不能为空", "summary": "请求为空"}
-
+    def _run_orchestrator(self, request: str, mode: Optional[str], progress=None) -> Dict[str, Any]:
+        """创建编排器执行一次协作请求，结束后释放；异常转为失败 dict。"""
         # 确保知识库引擎已注入全局注册表：RAGAgent 承接通用任务时会复用
         # rag_pipeline.answer_question，需要全局 rag_engine 才能真正检索。
         try:
@@ -433,6 +524,8 @@ class WebService:
         resolved = self._resolve_mode(mode)
         orchestrator = self._orchestrator_factory()
         try:
+            if progress is not None:
+                return orchestrator.process_request(request, resolved, progress=progress)
             return orchestrator.process_request(request, resolved)
         except BaseException as exc:  # noqa: BLE001
             return {"success": False, "error": str(exc), "summary": "协作执行失败"}
@@ -443,6 +536,42 @@ class WebService:
                     shutdown()
                 except Exception:
                     pass
+
+    def multi_agent_run(self, request: str, mode: Optional[str] = None) -> Dict[str, Any]:
+        """执行多 Agent 协作（阻塞），返回整合结果 dict。"""
+        request = (request or "").strip()
+        if not request:
+            return {"success": False, "error": "请求不能为空", "summary": "请求为空"}
+        return self._run_orchestrator(request, mode)
+
+    def multi_agent_stream(
+        self, request: str, mode: Optional[str] = None
+    ) -> Iterator[StreamEvent]:
+        """流式多 Agent 协作：把"分解 → 调度 → 执行 → 整合"各阶段桥接为
+        ``progress`` 事件，最后产出 ``answer``（``data`` 为整合结果 dict）。
+
+        此前 Web 端只能显示一条静态"执行中"，多 Agent 往往要跑数分钟，用户
+        完全不知道进行到哪一步。
+        """
+        request = (request or "").strip()
+        if not request:
+            yield StreamEvent("error", "请求不能为空")
+            return
+
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def progress_cb(evt: Dict[str, Any]):
+                q.put(StreamEvent("progress", evt.get("message", ""), evt))
+
+            return self._run_orchestrator(request, mode, progress=progress_cb)
+
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                yield StreamEvent("error", f"协作执行失败: {error_holder['error']}")
+                return
+            result = result_holder.get("result") or {}
+            yield StreamEvent("answer", str(result.get("summary", "")), result)
+
+        yield from self._bridge(run, on_finish)
 
     # ---------- 知识库管理 ----------
 

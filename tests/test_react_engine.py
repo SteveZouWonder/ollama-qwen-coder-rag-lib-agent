@@ -145,6 +145,30 @@ class TestCallModel:
 
     @patch("react_engine.ChatHistory")
     @patch("react_engine.requests.post")
+    def test_call_model_heartbeat_marked_transient(self, mock_post, mock_history_cls):
+        """推理心跳事件应带 transient=True，供 UI 原地刷新而非逐条追加。"""
+        import time as _time
+
+        mock_history = MagicMock()
+        mock_history.get_messages.return_value = [{"role": "user", "content": "hi"}]
+        mock_history_cls.return_value = mock_history
+
+        def slow_post(*args, **kwargs):
+            _time.sleep(0.7)  # 跨过至少一次 0.5s 心跳
+            resp = MagicMock()
+            resp.json.return_value = {"message": {"content": "ok"}}
+            return resp
+
+        mock_post.side_effect = slow_post
+        events = []
+        engine = ReActEngine(on_step=lambda e: events.append(e))
+        assert engine._call_model() == "ok"
+        heartbeats = [e for e in events if e.get("message", "").startswith("模型推理中")]
+        assert heartbeats
+        assert all(e.get("transient") is True for e in heartbeats)
+
+    @patch("react_engine.ChatHistory")
+    @patch("react_engine.requests.post")
     def test_call_model_connection_error(self, mock_post, mock_history_cls):
         mock_history = MagicMock()
         mock_history.get_messages.return_value = [{"role": "user", "content": "hi"}]

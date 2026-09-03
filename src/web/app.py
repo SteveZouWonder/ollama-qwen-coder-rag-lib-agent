@@ -7,9 +7,100 @@ gradio，可独立做单元测试；真正调用 gradio 的 ``build_app`` / ``la
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .services import WebService, get_web_service
+
+
+# ==================== 进度跟踪（可测试）====================
+
+def format_elapsed(seconds: float) -> str:
+    """把秒数渲染为"12 秒" / "1 分 05 秒"。"""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes, sec = divmod(seconds, 60)
+    return f"{minutes} 分 {sec:02d} 秒"
+
+
+class ProgressTracker:
+    """聚合一次对话任务的进度事件，渲染为"状态行 + 处理过程列表"。
+
+    解决的问题：此前 Web 端只把进度事件逐条追加进一个 Markdown，导致：
+    - 单 Agent 每 0.5s 的"模型推理中..."心跳刷屏；
+    - RAG 的"评分文档 1/5 … 5/5"占满列表；
+    - 没有耗时，用户分不清"慢"还是"卡死"。
+
+    规则：
+    - ``transient`` 事件（如推理心跳）只更新"当前活动"文案，不进入步骤列表；
+    - 带 ``current``/``total`` 计数且与上一条同 ``stage``/``phase`` 的事件
+      原地替换上一行（进度条式刷新）；
+    - 其余事件按顺序追加。
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, hint: str = ""):
+        self._clock = clock
+        self._start = clock()
+        self.steps: List[str] = []
+        self.current: str = ""
+        self.hint = hint  # 附加提示（如"思考模式已开，响应较慢"）
+        self._last_key: Optional[str] = None
+        self._last_counter = False
+
+    # ---- 事件接入 ----
+
+    def add(self, message: str, data: Optional[Dict[str, Any]] = None) -> None:
+        message = (message or "").strip()
+        if not message:
+            return
+        data = data or {}
+        if data.get("transient"):
+            self.current = message
+            return
+        key = data.get("stage") or data.get("phase")
+        counter = "current" in data and "total" in data
+        if (
+            counter
+            and self._last_counter
+            and key
+            and key == self._last_key
+            and self.steps
+        ):
+            self.steps[-1] = message
+        else:
+            self.steps.append(message)
+        self._last_key = key
+        self._last_counter = counter
+        self.current = message
+
+    def elapsed(self) -> float:
+        return self._clock() - self._start
+
+    # ---- 渲染 ----
+
+    def render_status(self, state: str = "running", detail: str = "") -> str:
+        """渲染一行状态：``running`` / ``done`` / ``error`` / ``cancelled``。"""
+        took = format_elapsed(self.elapsed())
+        if state == "done":
+            return f"✅ 完成 · 用时 {took}"
+        if state == "cancelled":
+            return f"⏹️ 已停止 · 用时 {took}"
+        if state == "error":
+            return f"❌ 出错 · 用时 {took}" + (f" · {detail}" if detail else "")
+        activity = self.current or "准备中..."
+        line = f"⏳ {activity} · 已用时 {took}"
+        if self.hint:
+            line += f" · {self.hint}"
+        return line
+
+    def render_steps(self, title: str = "处理过程", done: bool = False) -> str:
+        if not self.steps:
+            return ""
+        head = f"**{title}**" + ("（已完成）" if done else "")
+        lines = [head, ""]
+        lines.extend(f"{i}. {s}" for i, s in enumerate(self.steps, 1))
+        return "\n".join(lines)
 
 
 # ==================== 纯格式化辅助（可测试）====================
@@ -246,79 +337,120 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             return format_meta_overview(result.get("meta") or {}), ""
         return result["answer"], format_rag_side(result)
 
+    def _startup_hint() -> Tuple[str, str]:
+        """根据当前模型状态生成 (首条活动文案, 常驻提示)。
+
+        首次提问时模型尚未驻留内存，Ollama 需要先加载（4B 量化模型通常 10-30 秒）；
+        思考模式开启时每次推理明显更慢。把这两点显式告诉用户，避免误判卡死。
+        """
+        try:
+            info = service.current_model()
+        except Exception:  # noqa: BLE001
+            info = None
+        if not isinstance(info, dict):
+            return "准备中...", ""
+        activity = "准备中..."
+        if not info.get("loaded") and not info.get("error"):
+            activity = f"📥 首次加载模型 `{info.get('model', '?')}`（通常需 10-30 秒）..."
+        hint = "🧠 思考模式已开（响应较慢）" if info.get("think") else ""
+        return activity, hint
+
     def on_chat_stream(
         message: str,
         mode: str,
         enable_web: bool = True,
         auto_confirm: bool = False,
     ):
-        """流式对话入口（供 Gradio 使用）：点击后立即反馈"处理中"，随后逐步更新。
+        """流式对话入口（供 Gradio 使用）。
 
-        此前 ``on_chat`` 是同步阻塞函数：开启联网搜索的 RAG（或 Agent 任务）
-        往往需数十秒，期间界面无任何反馈，用户误以为"点了没效果"。改为
-        generator 后，Gradio 会先渲染占位提示与实时进度，最后替换为完整结果。
+        yield 四元组 ``(answer_md, status_md, process_md, sources_md)``：
 
-        yield ``(answer_markdown, side_markdown)`` 二元组，与 ``on_chat`` 输出
-        契约一致。
+        - ``status_md``：一行状态，始终显示"当前在做什么 + 已用时"，完成/出错/
+          停止时换成对应结论；
+        - ``process_md``：按阶段累积的处理过程列表（心跳与计数类事件原地刷新，
+          不刷屏）；
+        - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细。
+
+        三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
+        因此即便底层某一步是长时间阻塞的模型调用，状态行也会每秒刷新已用时。
         """
         message = (message or "").strip()
         if not message:
-            yield "", "_请输入内容_"
+            yield "", "_请输入内容_", "", ""
             return
 
+        if service.is_running() is True:
+            yield "", "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", ""
+            return
+
+        activity, hint = _startup_hint()
+        tracker = ProgressTracker(hint=hint)
+        tracker.current = activity
+
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield "", "⏳ 正在处理，请稍候…"
+        yield "", tracker.render_status(), "", ""
 
         if mode == "多 Agent 协作":
-            yield "", "⏳ 多 Agent 协作执行中…（分解 → 调度 → 执行 → 整合）"
-            result = service.multi_agent_run(message)
-            yield "", format_multi_agent_result(result)
+            stream = service.multi_agent_stream(message)
+            title = "协作过程"
+        elif mode == "单 Agent":
+            confirm_handler = (lambda evt: True) if auto_confirm else None
+            stream = service.agent_chat_stream(message, confirm_handler=confirm_handler)
+            title = "执行过程"
+        else:
+            stream = service.rag_query_stream(message, enable_web_search=enable_web)
+            title = "处理过程"
+
+        final = None
+        for evt in stream:
+            if evt.kind in ("progress", "step"):
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield "", tracker.render_status(), tracker.render_steps(title), ""
+            elif evt.kind == "heartbeat":
+                yield "", tracker.render_status(), tracker.render_steps(title), ""
+            elif evt.kind == "answer":
+                final = evt
+            elif evt.kind == "cancelled":
+                yield "", tracker.render_status("cancelled"), tracker.render_steps(title, done=True), ""
+                return
+            elif evt.kind == "error":
+                yield (
+                    f"[错误] {evt.message}",
+                    tracker.render_status("error"),
+                    tracker.render_steps(title, done=True),
+                    "",
+                )
+                return
+
+        steps_md = tracker.render_steps(title, done=True)
+        if final is None:
+            yield "", tracker.render_status("error", "未获得回答"), steps_md, ""
+            return
+
+        status = tracker.render_status("done")
+        if mode == "多 Agent 协作":
+            result = final.data if isinstance(final.data, dict) else {}
+            yield format_multi_agent_result(result), status, steps_md, ""
             return
 
         if mode == "单 Agent":
-            answer = ""
-            steps: List[str] = []
-            confirm_handler = (lambda evt: True) if auto_confirm else None
-            for evt in service.agent_chat_stream(message, confirm_handler=confirm_handler):
-                if evt.kind == "step":
-                    steps.append(f"- {evt.message}")
-                    yield "", "### 执行过程（进行中）\n" + "\n".join(steps)
-                elif evt.kind == "answer":
-                    answer = evt.message
-                elif evt.kind == "error":
-                    yield "", f"[错误] {evt.message}"
-                    return
-            side = "### 执行过程\n" + "\n".join(steps) if steps else ""
-            yield answer, side
+            yield final.message, status, steps_md, ""
             return
 
-        # 默认 RAG 模式：消费流式事件，实时展示进度（网络搜索/综合/思考等）
-        progress_lines: List[str] = []
-        final = None
-        for evt in service.rag_query_stream(message, enable_web_search=enable_web):
-            if evt.kind == "progress":
-                msg = (evt.message or "").strip()
-                if msg:
-                    progress_lines.append(f"- {msg}")
-                    yield "", "### 处理进度\n" + "\n".join(progress_lines[-12:])
-            elif evt.kind == "answer":
-                final = evt.data or {}
-                final["answer"] = evt.message
-            elif evt.kind == "error":
-                yield "", f"[错误] {evt.message}"
-                return
-
-        if final is None:
-            yield "", "_未获得回答_"
+        data = final.data or {}
+        if data.get("kind") == "meta":
+            yield format_meta_overview(data.get("meta") or {}), status, steps_md, ""
             return
-        if final.get("kind") == "meta":
-            yield format_meta_overview(final.get("meta") or {}), ""
-            return
-        yield final.get("answer", ""), format_rag_side(
-            {
-                "sources": final.get("sources", []),
-                "web_sources": final.get("web_sources", []),
-            }
+        yield (
+            final.message,
+            status,
+            steps_md,
+            format_rag_side(
+                {
+                    "sources": data.get("sources", []),
+                    "web_sources": data.get("web_sources", []),
+                }
+            ),
         )
 
     def on_upload(file_paths: Optional[List[str]]) -> Tuple[str, str]:
@@ -377,7 +509,8 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         return "\n".join(lines)
 
     def on_stop() -> str:
-        return "已发送停止信号" if service.stop_agent() else "当前没有运行中的任务"
+        """停止当前任务（任一模式）。返回写入状态行的文案。"""
+        return "⏹️ 已发送停止信号，正在中止…" if service.stop_agent() else "当前没有运行中的任务"
 
     # ---------- 模型管理（热切换）----------
 
@@ -522,6 +655,15 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
 # ==================== Gradio 装配（不做单元测试）====================
 
+# 对话页样式：操作按钮靠右排列、状态行固定高度避免抖动。
+# Gradio 6 起 css 需在 launch() 传入，而非 Blocks()。
+APP_CSS = """
+.chat-actions { justify-content: flex-end !important; gap: 8px; }
+.chat-actions > * { flex-grow: 0 !important; }
+.chat-status { min-height: 1.8em; opacity: 0.9; }
+"""
+
+
 def build_app(service: Optional[WebService] = None):  # pragma: no cover
     """组装 Gradio Blocks 应用。"""
     import gradio as gr
@@ -582,21 +724,62 @@ def build_app(service: Optional[WebService] = None):  # pragma: no cover
                     value=False,
                     label="自动确认危险命令（单 Agent 模式，等价 CLI --yes）",
                 )
-            answer_box = gr.Markdown(label="回答")
-            side_box = gr.Markdown(label="附加信息")
-            with gr.Row():
-                msg_box = gr.Textbox(placeholder="输入你的问题...", scale=8, label="输入")
-                send_btn = gr.Button("发送", scale=1, variant="primary")
-                stop_btn = gr.Button("停止", scale=1)
-            _chat_inputs = [msg_box, mode, enable_web, auto_confirm]
-            # 使用流式处理器：点击后立即反馈"处理中"并实时更新进度
-            send_btn.click(
-                handlers["on_chat_stream"], _chat_inputs, [answer_box, side_box]
+            # ---- 输入区：输入框在上，操作按钮在其下方右对齐 ----
+            # 此前输入框与两个按钮同排，按钮顶部对齐到输入框的 label 行，视觉错位。
+            with gr.Group():
+                msg_box = gr.Textbox(
+                    placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）",
+                    show_label=False,
+                    lines=1,
+                    max_lines=6,
+                    autofocus=True,
+                )
+                with gr.Row(elem_classes=["chat-actions"]):
+                    stop_btn = gr.Button("停止", scale=0, min_width=96, interactive=False)
+                    send_btn = gr.Button("发送", scale=0, min_width=120, variant="primary")
+
+            # ---- 输出区：状态行 → 回答 → 处理过程 → 引用来源 ----
+            status_box = gr.Markdown(elem_classes=["chat-status"])
+            answer_box = gr.Markdown(label="回答", min_height=80)
+            with gr.Accordion("处理过程", open=True):
+                process_box = gr.Markdown()
+            with gr.Accordion("引用来源 / 结果明细", open=False):
+                sources_box = gr.Markdown()
+
+            # 待发送消息暂存：先把输入框清空并锁定按钮，再用暂存值发起对话
+            pending_msg = gr.State("")
+            _chat_outputs = [answer_box, status_box, process_box, sources_box]
+
+            def _begin(message: str):
+                """点击发送：暂存消息、清空输入框、禁用发送、启用停止。"""
+                return (
+                    message,
+                    "",
+                    gr.update(interactive=False),
+                    gr.update(interactive=True),
+                )
+
+            def _end():
+                """任务结束/停止后：恢复发送、禁用停止。"""
+                return gr.update(interactive=True), gr.update(interactive=False)
+
+            _begin_outputs = [pending_msg, msg_box, send_btn, stop_btn]
+            _chat_inputs = [pending_msg, mode, enable_web, auto_confirm]
+
+            send_chain = send_btn.click(_begin, msg_box, _begin_outputs).then(
+                handlers["on_chat_stream"], _chat_inputs, _chat_outputs
             )
-            msg_box.submit(
-                handlers["on_chat_stream"], _chat_inputs, [answer_box, side_box]
+            send_chain.then(_end, None, [send_btn, stop_btn])
+            submit_chain = msg_box.submit(_begin, msg_box, _begin_outputs).then(
+                handlers["on_chat_stream"], _chat_inputs, _chat_outputs
             )
-            stop_btn.click(handlers["on_stop"], None, side_box)
+            submit_chain.then(_end, None, [send_btn, stop_btn])
+
+            # 停止：通知服务层取消（三种模式通用），同时让 Gradio 中断正在推送的流
+            stop_btn.click(
+                handlers["on_stop"], None, status_box,
+                cancels=[send_chain, submit_chain],
+            ).then(_end, None, [send_btn, stop_btn])
 
         with gr.Tab("知识库"):
             stats_box = gr.Markdown(format_stats(service.get_stats()))
@@ -805,6 +988,7 @@ def launch(
         server_port=server_port,
         share=share,
         theme=gr.themes.Soft(),
+        css=APP_CSS,
         prevent_thread_lock=True,
         **kwargs,
     )

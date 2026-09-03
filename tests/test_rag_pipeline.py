@@ -427,3 +427,108 @@ class TestHelpers:
         # 只保留中文查询
         assert all(not rag_pipeline._is_mostly_ascii(q) for q in plan["queries"])
         assert any("售价" in q for q in plan["queries"])
+
+
+# ==================== 进度可见性与取消 ====================
+
+class TestProgressVisibilityAndCancel:
+    """Web 端"只看到正在处理"的根因：链路首个模型调用（搜索规划）前没有任何
+    进度事件。现在应在调用前发出 ``web_plan``；同时支持 ``should_stop`` 取消。"""
+
+    @staticmethod
+    def _patch_llm(monkeypatch, reply: str):
+        import types
+
+        class _FakeLLM:
+            def complete(self, prompt):
+                return reply
+
+        monkeypatch.setitem(
+            __import__("sys").modules, "llama_index.core",
+            types.SimpleNamespace(Settings=types.SimpleNamespace(llm=_FakeLLM())),
+        )
+
+    def test_plan_web_search_emits_before_llm_call(self, monkeypatch):
+        import json as _json
+
+        events = []
+        self._patch_llm(monkeypatch, _json.dumps({"needs_search": False, "queries": []}))
+        rag_pipeline.plan_web_search("什么是递归", progress=lambda e: events.append(e))
+        assert events and events[0]["stage"] == "web_plan"
+
+    def test_augment_reports_skip_when_no_search_needed(self, monkeypatch):
+        import json as _json
+
+        events = []
+        self._patch_llm(monkeypatch, _json.dumps({"needs_search": False, "queries": []}))
+        out = rag_pipeline.augment_with_web_search("什么是递归", progress=lambda e: events.append(e))
+        assert out == ""
+        stages = [e["stage"] for e in events]
+        assert stages == ["web_plan", "web_plan_skip"]
+
+    def test_web_plan_is_first_event_in_full_pipeline(self, monkeypatch):
+        import json as _json
+
+        events = []
+        self._patch_llm(monkeypatch, _json.dumps({"needs_search": False, "queries": []}))
+        rag_pipeline.answer_question(
+            FakeRAG(), "问题", enable_web_search=True,
+            progress=lambda e: events.append(e),
+        )
+        assert events[0]["stage"] == "web_plan"
+
+    def test_should_stop_before_start_raises(self):
+        with pytest.raises(rag_pipeline.PipelineCancelled):
+            rag_pipeline.answer_question(
+                FakeRAG(), "问题", enable_web_search=False, should_stop=lambda: True,
+            )
+
+    def test_should_stop_after_retrieval_aborts_before_synthesis(self, monkeypatch):
+        """检索完成后用户停止：不应再进入相关性判定/综合等模型调用。"""
+        calls = {"llm": 0}
+
+        def fake_direct(prompt):
+            calls["llm"] += 1
+            return "x"
+
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", fake_direct)
+        monkeypatch.setattr(rag_pipeline, "judge_kb_relevance", lambda q, s: (_ for _ in ()).throw(AssertionError("不应调用")))
+
+        state = {"retrieved": False}
+
+        class RAG(FakeRAG):
+            def query_with_sources(self, question, progress_callback=None):
+                state["retrieved"] = True
+                return {"answer": "a", "sources": [{"content": "c", "file": "f", "score": 0.9}]}
+
+        with pytest.raises(rag_pipeline.PipelineCancelled):
+            rag_pipeline.answer_question(
+                RAG(), "问题", enable_web_search=False,
+                should_stop=lambda: state["retrieved"],
+            )
+        assert calls["llm"] == 0
+
+    def test_should_stop_probe_error_is_ignored(self):
+        def bad_probe():
+            raise RuntimeError("probe boom")
+
+        result = rag_pipeline.answer_question(
+            FakeRAG(), "问题", enable_web_search=False, should_stop=bad_probe,
+        )
+        assert result["kind"] == "answer"
+
+    def test_cancel_during_web_search_propagates(self, monkeypatch):
+        import json as _json
+
+        self._patch_llm(monkeypatch, _json.dumps({"needs_search": True, "queries": ["q"]}))
+        monkeypatch.setattr(rag_pipeline, "run_web_search", lambda queries, progress=None: "结果")
+        state = {"planned": False}
+
+        def probe():
+            # 规划完成（第一次检查）后置位
+            was = state["planned"]
+            state["planned"] = True
+            return was
+
+        with pytest.raises(rag_pipeline.PipelineCancelled):
+            rag_pipeline.augment_with_web_search("最新新闻", should_stop=probe)

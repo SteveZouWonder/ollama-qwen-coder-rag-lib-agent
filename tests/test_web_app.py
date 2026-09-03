@@ -8,7 +8,9 @@ from unittest.mock import MagicMock
 
 from web import app
 from web.app import (
+    ProgressTracker,
     build_handlers,
+    format_elapsed,
     format_graph_result,
     format_multi_agent_result,
     format_sessions,
@@ -140,6 +142,10 @@ class TestFormatGraph:
 
 def make_service_mock():
     svc = MagicMock()
+    # 流式对话入口会先询问是否已有任务在跑；MagicMock 默认返回真值，需显式置 False
+    svc.is_running.return_value = False
+    # current_model 返回非 dict 时按"无状态提示"处理
+    svc.current_model.return_value = {"model": "qwen", "loaded": True, "think": False}
     return svc
 
 
@@ -265,41 +271,206 @@ class TestHandlers:
         assert "没有运行中" in h["on_stop"]()
 
 
+# ==================== 进度跟踪器 ====================
+
+class FakeClock:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+class TestFormatElapsed:
+    def test_seconds(self):
+        assert format_elapsed(0) == "0 秒"
+        assert format_elapsed(42.7) == "42 秒"
+
+    def test_minutes(self):
+        assert format_elapsed(65) == "1 分 05 秒"
+        assert format_elapsed(600) == "10 分 00 秒"
+
+    def test_negative_clamped(self):
+        assert format_elapsed(-3) == "0 秒"
+
+
+class TestProgressTracker:
+    def test_initial_status_shows_placeholder_and_elapsed(self):
+        clock = FakeClock()
+        t = ProgressTracker(clock=clock)
+        clock.t = 12
+        s = t.render_status()
+        assert "准备中" in s
+        assert "12 秒" in s
+        assert t.render_steps() == ""
+
+    def test_hint_appended_while_running_only(self):
+        t = ProgressTracker(clock=FakeClock(), hint="思考模式已开")
+        assert "思考模式已开" in t.render_status()
+        assert "思考模式已开" not in t.render_status("done")
+
+    def test_regular_events_append(self):
+        t = ProgressTracker(clock=FakeClock())
+        t.add("A", {"stage": "x"})
+        t.add("B", {"stage": "y"})
+        assert t.steps == ["A", "B"]
+        assert t.current == "B"
+        md = t.render_steps("处理过程")
+        assert "1. A" in md and "2. B" in md
+
+    def test_transient_events_do_not_append(self):
+        """单 Agent 的 0.5s 推理心跳只刷新当前活动，不刷屏。"""
+        t = ProgressTracker(clock=FakeClock())
+        t.add("Step 1: 模型推理中...", {"phase": "thinking"})
+        for i in range(10):
+            t.add(f"模型推理中{'.' * (i % 4)}", {"phase": "thinking", "transient": True})
+        assert t.steps == ["Step 1: 模型推理中..."]
+        assert t.current.startswith("模型推理中")
+        assert "模型推理中" in t.render_status()
+
+    def test_counter_events_replace_last_line(self):
+        """评分文档 1/5 … 5/5 原地刷新为一行。"""
+        t = ProgressTracker(clock=FakeClock())
+        t.add("检索知识库", {"stage": "kb_retrieving"})
+        for i in range(1, 6):
+            t.add(f"评分文档 {i}/5", {"phase": "scoring", "current": i, "total": 5})
+        assert t.steps == ["检索知识库", "评分文档 5/5"]
+
+    def test_counter_events_with_different_key_append(self):
+        t = ProgressTracker(clock=FakeClock())
+        t.add("执行子任务 1/2", {"stage": "execute", "current": 1, "total": 2})
+        t.add("子任务 1/2 完成", {"stage": "task_done", "current": 1, "total": 2})
+        t.add("执行子任务 2/2", {"stage": "execute", "current": 2, "total": 2})
+        assert len(t.steps) == 3
+
+    def test_same_key_without_counter_appends(self):
+        """两条不同的搜索查询（同 stage、无计数）都应保留。"""
+        t = ProgressTracker(clock=FakeClock())
+        t.add("🔍 搜索查询: A", {"stage": "web_query", "query": "A"})
+        t.add("🔍 搜索查询: B", {"stage": "web_query", "query": "B"})
+        assert t.steps == ["🔍 搜索查询: A", "🔍 搜索查询: B"]
+
+    def test_empty_message_ignored(self):
+        t = ProgressTracker(clock=FakeClock())
+        t.add("", {"stage": "x"})
+        t.add("   ")
+        assert t.steps == []
+
+    def test_terminal_states(self):
+        clock = FakeClock()
+        t = ProgressTracker(clock=clock)
+        clock.t = 70
+        assert t.render_status("done") == "✅ 完成 · 用时 1 分 10 秒"
+        assert "已停止" in t.render_status("cancelled")
+        err = t.render_status("error", "未获得回答")
+        assert "出错" in err and "未获得回答" in err
+
+    def test_render_steps_done_marker(self):
+        t = ProgressTracker(clock=FakeClock())
+        t.add("A")
+        assert "（已完成）" in t.render_steps("处理过程", done=True)
+        assert "（已完成）" not in t.render_steps("处理过程")
+
+
 # ==================== 流式对话处理器（点击后立即反馈）====================
 
+def _rag_answer(msg="答案", **data):
+    base = {"kind": "answer", "sources": [], "web_sources": []}
+    base.update(data)
+    return StreamEvent("answer", msg, base)
+
+
 class TestChatStream:
+    """``on_chat_stream`` yield 四元组 (answer, status, process, sources)。"""
+
     def _collect(self, gen):
-        return list(gen)
+        out = list(gen)
+        for item in out:
+            assert len(item) == 4, f"应为四元组: {item!r}"
+        return out
 
     def test_empty_message(self):
         h = build_handlers(make_service_mock())
         out = self._collect(h["on_chat_stream"]("  ", "RAG 检索"))
-        assert out[-1][1] and "请输入内容" in out[-1][1]
+        assert "请输入内容" in out[-1][1]
 
-    def test_rag_first_yield_is_processing(self):
+    def test_busy_service_rejects_new_request(self):
+        svc = make_service_mock()
+        svc.is_running.return_value = True
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
+        assert len(out) == 1
+        assert "已有任务在运行" in out[0][1]
+        svc.rag_query_stream.assert_not_called()
+
+    def test_rag_first_yield_is_status_with_elapsed(self):
         svc = make_service_mock()
         svc.rag_query_stream.return_value = iter([
-            StreamEvent("progress", "检索知识库..."),
-            StreamEvent("answer", "答案", {"kind": "answer", "sources": [], "web_sources": []}),
+            StreamEvent("progress", "检索知识库...", {"stage": "kb_retrieving"}),
+            _rag_answer("答案"),
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
-        # 第一条应为"处理中"占位
-        assert "正在处理" in out[0][1]
-        # 最终一条应为答案
-        assert out[-1][0] == "答案"
+        # 第一条即为带耗时的状态行，而非静态"正在处理"
+        assert out[0][1].startswith("⏳")
+        assert "已用时" in out[0][1]
+        # 最终一条：答案 + 完成状态 + 已完成的处理过程
+        answer, status, process, _ = out[-1]
+        assert answer == "答案"
+        assert status.startswith("✅ 完成")
+        assert "检索知识库" in process and "已完成" in process
 
-    def test_rag_progress_then_answer(self):
+    def test_rag_model_not_loaded_hint(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = {"model": "qwen3.5:4b", "loaded": False, "think": True}
+        svc.rag_query_stream.return_value = iter([_rag_answer("ok")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
+        first_status = out[0][1]
+        assert "首次加载模型" in first_status and "qwen3.5:4b" in first_status
+        assert "思考模式已开" in first_status
+
+    def test_rag_current_model_not_dict_is_tolerated(self):
+        svc = make_service_mock()
+        svc.current_model.return_value = MagicMock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("ok")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("问题", "RAG 检索"))
+        assert "准备中" in out[0][1]
+        assert out[-1][0] == "ok"
+
+    def test_rag_progress_then_answer_with_sources(self):
         svc = make_service_mock()
         svc.rag_query_stream.return_value = iter([
-            StreamEvent("progress", "🌐 网络搜索中"),
-            StreamEvent("answer", "最终", {"kind": "answer", "sources": [], "web_sources": []}),
+            StreamEvent("progress", "🌐 网络搜索中", {"stage": "web_search_start"}),
+            _rag_answer(
+                "最终",
+                sources=[{"file": "f.md", "score": 0.9, "content": "c"}],
+                web_sources=[{"title": "T", "url": "http://x"}],
+            ),
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        # 中间应出现进度
-        assert any("网络搜索中" in side for _, side in out)
-        assert out[-1][0] == "最终"
+        assert any("网络搜索中" in process for _, _, process, _ in out)
+        answer, _, _, sources = out[-1]
+        assert answer == "最终"
+        assert "f.md" in sources and "http://x" in sources
+
+    def test_rag_heartbeat_refreshes_status(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "规划搜索", {"stage": "web_plan"}),
+            StreamEvent("heartbeat", "", {"elapsed": 3.0}),
+            StreamEvent("heartbeat", "", {"elapsed": 4.0}),
+            _rag_answer("ok"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
+        # 首条状态 + 进度 + 两次心跳 + 最终 = 5 次 yield
+        assert len(out) == 5
+        # 心跳只刷新状态行，处理过程不新增条目
+        assert out[2][2] == out[3][2]
+        assert "规划搜索" in out[2][1]
 
     def test_rag_meta_query(self):
         svc = make_service_mock()
@@ -315,27 +486,96 @@ class TestChatStream:
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        assert "检索炸了" in out[-1][1]
+        answer, status, _, _ = out[-1]
+        assert "检索炸了" in answer
+        assert status.startswith("❌")
+
+    def test_rag_cancelled(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "规划搜索", {"stage": "web_plan"}),
+            StreamEvent("cancelled", "已停止"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
+        _, status, process, _ = out[-1]
+        assert "已停止" in status
+        assert "规划搜索" in process
+
+    def test_rag_no_answer_event(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([StreamEvent("progress", "p")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
+        assert "未获得回答" in out[-1][1]
 
     def test_single_agent_stream(self):
         svc = make_service_mock()
         svc.agent_chat_stream.return_value = iter([
-            StreamEvent("step", "第一步"),
+            StreamEvent("step", "第一步", {"phase": "thinking"}),
+            StreamEvent("step", "模型推理中.", {"phase": "thinking", "transient": True}),
+            StreamEvent("step", "模型推理中..", {"phase": "thinking", "transient": True}),
             StreamEvent("answer", "完成"),
         ])
         h = build_handlers(svc)
-        out = self._collect(h["on_chat_stream"]("做事", "单 Agent"))
-        assert any("第一步" in side for _, side in out)
-        assert out[-1][0] == "完成"
+        out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True))
+        assert any("第一步" in process for _, _, process, _ in out)
+        # 心跳出现在状态行，但不进入执行过程列表
+        assert any("模型推理中" in status for _, status, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _ in out)
+        answer, status, process, _ = out[-1]
+        assert answer == "完成"
+        assert "执行过程" in process
+        # auto_confirm=True 时传入确认处理器
+        _, kwargs = svc.agent_chat_stream.call_args
+        assert kwargs["confirm_handler"] is not None
+
+    def test_single_agent_default_rejects_confirm(self):
+        svc = make_service_mock()
+        svc.agent_chat_stream.return_value = iter([StreamEvent("answer", "x")])
+        h = build_handlers(svc)
+        self._collect(h["on_chat_stream"]("做事", "单 Agent"))
+        _, kwargs = svc.agent_chat_stream.call_args
+        assert kwargs["confirm_handler"] is None
 
     def test_multi_agent_stream(self):
         svc = make_service_mock()
-        svc.multi_agent_run.return_value = {"success": True, "summary": "协作完成"}
+        svc.multi_agent_stream.return_value = iter([
+            StreamEvent("progress", "🧩 分解任务", {"stage": "decompose"}),
+            StreamEvent("progress", "⚙️ 执行子任务 1/2", {"stage": "execute", "current": 1, "total": 2}),
+            StreamEvent("answer", "协作完成", {"success": True, "summary": "协作完成"}),
+        ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
-        # 先有"执行中"占位，最后是结果
-        assert any("协作" in side for _, side in out)
-        assert "协作完成" in out[-1][1]
+        # 中间能看到分解/执行阶段
+        assert any("分解任务" in process for _, _, process, _ in out)
+        assert any("执行子任务" in process for _, _, process, _ in out)
+        answer, status, process, _ = out[-1]
+        assert "协作完成" in answer
+        assert status.startswith("✅")
+        assert "协作过程" in process
+        svc.multi_agent_run.assert_not_called()
+
+    def test_multi_agent_answer_without_dict(self):
+        svc = make_service_mock()
+        svc.multi_agent_stream.return_value = iter([StreamEvent("answer", "x", None)])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
+        assert "协作失败" in out[-1][0]
+
+
+class TestStopHandler:
+    def test_on_stop_active(self):
+        svc = make_service_mock()
+        svc.stop_agent.return_value = True
+        h = build_handlers(svc)
+        assert "停止信号" in h["on_stop"]()
+
+    def test_on_stop_idle(self):
+        svc = make_service_mock()
+        svc.stop_agent.return_value = False
+        h = build_handlers(svc)
+        assert "没有运行中" in h["on_stop"]()
 
 
 # ==================== 优雅退出 ====================
