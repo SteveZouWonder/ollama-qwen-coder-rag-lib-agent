@@ -1,6 +1,6 @@
-# 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
+# F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 状态：待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号：F8 · 状态：待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
 > 启动提示词见 [AGENT_MODES_OPTIMIZATION_PROMPT.md](AGENT_MODES_OPTIMIZATION_PROMPT.md)
 
 ## 0. 背景（已核实的代码事实，实施时勿重复调研）

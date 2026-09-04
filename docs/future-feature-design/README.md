@@ -1,432 +1,71 @@
-# 未来功能设计文档
+# 未来功能设计
 
-本目录包含项目未来功能的设计文档和实现方案。
+本目录只保留**尚未实现**的需求。功能完成后，设计文档迁移到
+[`../implemented-features/`](../implemented-features/) 并补「实现记录」，本文件同步删减。
 
-## 功能列表
+## 待实现
 
-### F1: OCR 图片/图表提取功能 ✅ 已完成
+### F8: 三种对话模式优化（RAG / 单 Agent / 多 Agent）
 
-**状态**: ✅ 已实现 (2026-06-11)
-
-**目录**: [../implemented-features/f1-ocr-extrace/](../implemented-features/f1-ocr-extrace/)
-
-**描述**: 为 RAG 知识库系统添加 OCR（光学字符识别）能力，支持从文档中提取图片和图表的文本内容，使系统能够处理扫描版 PDF、图片文档和包含图表的文档。
-
-**核心特性**:
-- ✅ 支持扫描版 PDF OCR
-- ✅ 支持图片文件（PNG、JPG、JPEG、GIF、BMP、TIFF）
-- ✅ 中英文混合识别
-- ✅ 智能缓存避免重复处理
-- ✅ 异步并行处理提升性能
-
-**技术选型**:
-- OCR 引擎: PaddleOCR（主要）+ Tesseract（备用）
-- 图像处理: OpenCV + Pillow
-- PDF 处理: PyMuPDF (fitz)
-- 深度学习框架: PaddlePaddle
-
-**性能目标**:
-- ✅ 单张图片处理时间 <3 秒
-- ✅ 中文识别准确率 >90%
-- ✅ 英文识别准确率 >95%
-
-**实施周期**: 3-4 周 (已完成)
+**状态**: 📋 需求已定稿，待实现（2026-09-03） · 分支 `feat/agent-modes-optimization`
 
 **文档**:
-- [README.md](../implemented-features/f1-ocr-extrace/README.md) - 功能总览
-- [OVERVIEW.md](../implemented-features/f1-ocr-extrace/OVERVIEW.md) - 技术选型与方案
-- [ARCHITECTURE.md](../implemented-features/f1-ocr-extrace/ARCHITECTURE.md) - 系统架构设计
-- [IMPLEMENTATION.md](../implemented-features/f1-ocr-extrace/IMPLEMENTATION.md) - 实现指南
-- [TESTING.md](../implemented-features/f1-ocr-extrace/TESTING.md) - 测试策略
+- [AGENT_MODES_OPTIMIZATION.md](AGENT_MODES_OPTIMIZATION.md) - 需求、已核实代码事实、验收标准、LLM 提示词草案
+- [AGENT_MODES_OPTIMIZATION_PROMPT.md](AGENT_MODES_OPTIMIZATION_PROMPT.md) - 交给 Agent 的启动提示词
 
-**实现详情**:
-- 实现模块: `ocr_processor/` (base.py, paddle_ocr.py, tesseract_ocr.py, image_extractor.py, preprocessor.py, cache.py)
-- 集成文件: `document_loader.py`, `config.py`
-- 测试文件: `tests/test_ocr_*.py`, `tests/test_document_loader_ocr.py`
-- 脚本更新: 安装脚本和环境检查脚本已更新以支持 OCR 依赖
+**范围**（按 P0 → P3 顺序）:
+- **P0 多 Agent**：4 个硬编码桩 Agent 改为委托 ReActEngine 真实执行；LLM 任务分解 / 结果整合 / 竞争评审；真并行与超时；结构化来源；CLI `/multi`
+- **P1 单 Agent**：系统提示分层（内置 ≤1.5K token + 项目附加）；协议容错重试；步数耗尽强制总结；重复调用检测；本轮上下文预算折叠；知识库工具对齐 RAG 编排；安全分级与写路径边界
+- **P2 RAG**：逐片段 rerank（LLM 默认 / cross-encoder 可选）；复合问题分解与多跳；带编号引用的综合与思维链透出；BM25 hybrid 召回；失败回退提示
+- **P3 路由**：自然语言输入的意图判定（规则 + LLM 兜底），CLI `/auto`、Web「自动」模式
 
 ---
 
-### F2: 多Agent协作系统 ✅ 已完成
+## 残留小项（无独立设计文档，按需排期）
 
-**状态**: ✅ 已实现 (2026-06-11)
+以下为已归档功能遗留的少量待办，每项工作量小，可单独立 issue 或在相关改动中顺带完成。
 
-**目录**: [../implemented-features/f2-multiple-agent/](../implemented-features/f2-multiple-agent/)
-
-**描述**: 构建多Agent协作系统，通过专业化Agent和灵活的协作模式，提升复杂任务处理能力。系统包含 CodeAgent、RAGAgent、TestAgent、DocAgent、AuditAgent 等专业Agent，支持层级协作、并行协作、顺序协作、竞争协作等多种协作模式。
-
-**核心特性**:
-- ✅ 5+ 种专业 Agent（代码、知识库、测试、文档、审计）
-- ✅ 4+ 种协作模式（层级、并行、顺序、竞争）
-- ✅ 智能任务分解与调度
-- ✅ Agent 编排与监控
-- ✅ 结果自动整合
-
-**技术架构**:
-- ✅ AgentOrchestrator: Agent 编排器
-- ✅ MasterAgent: 主控 Agent
-- ✅ MessageBus: 消息总线
-- ✅ TaskDecomposer: 任务分解器
-- ✅ TaskScheduler: 任务调度器
-- ✅ ResultIntegrator: 结果整合器
-
-**性能目标**:
-- ✅ 复杂任务处理时间减少 30%+
-- ✅ 并行任务加速比 >2x
-- ✅ 系统响应时间 <5s
-- ✅ Agent 调度成功率 >95%
-
-**实施周期**: 5-6 周 (已完成)
-
-**文档**:
-- [README.md](../implemented-features/f2-multiple-agent/README.md) - 功能总览
-- [DESIGN.md](../implemented-features/f2-multiple-agent/DESIGN.md) - 详细设计
-- [DEVELOPMENT_GUIDE.md](../implemented-features/f2-multiple-agent/DEVELOPMENT_GUIDE.md) - 开发指南
-- [IMPLEMENTATION_GUIDE.md](../implemented-features/f2-multiple-agent/IMPLEMENTATION_GUIDE.md) - 实现指南
-- [API_REFERENCE.md](../implemented-features/f2-multiple-agent/API_REFERENCE.md) - API参考
-- [SUMMARY.md](../implemented-features/f2-multiple-agent/SUMMARY.md) - 设计总结
-
-**实现详情**:
-- 实现模块: `agents/` (base_agent.py, code_agent.py, rag_agent.py, test_agent.py, doc_agent.py, audit_agent.py)
-- 实现模块: `collaboration/` (message_bus.py, result_integrator.py, task_decomposer.py, task_scheduler.py)
-- 实现模块: `agent_orchestrator.py`, `agent_registry.py`, `agent_config.py`, `master_agent.py`
-- CLI 集成: `/multi` 命令支持多Agent协作
+| 项 | 来源 | 说明 |
+|---|---|---|
+| 启动时检查新版本并提示 | F5 桌面打包 | 调 GitHub Releases API 比对当前 `APP_VERSION`，托盘 / Web「系统」页提示下载链接。**不做**应用内自更新（需正式签名与公证，成本不匹配） |
+| macOS / Linux 开机自启 | F5 桌面打包 | `AppConfig.autostart` 配置项已存在但未生效；补 launchd plist / XDG `autostart/*.desktop`。Windows 已由 Inno Setup 可选任务覆盖 |
+| `bootstrap.py` 补 Tesseract 检测提示 | F5 桌面打包 | 当前仅引导 Ollama；OCR 依赖缺失时给出安装提示（不自动安装） |
+| Web「系统」页配置可编辑 | F7 Web UI | `TOP_K` / `SIMILARITY_CUTOFF` / `CHUNK_SIZE` 等写回 `.env`，重启生效；当前为只读概览 |
+| 代码感知分块（可选） | F6 能力增强 F5.2 | 代码文件入库时按函数 / 类边界切分，替代通用 `SentenceSplitter`。作为 F8 P2 的可选子项评估，不单独立项 |
 
 ---
 
-### F3: 文件管理和会话管理优化 ✅ 已完成
+## 已归档（已实现）
 
-**状态**: ✅ 已实现 (2026-06-12)
+| 编号 | 功能 | 目录 |
+|---|---|---|
+| F1 | OCR 图片/图表提取 | [f1-ocr-extrace/](../implemented-features/f1-ocr-extrace/) |
+| F2 | 多 Agent 协作系统（骨架） | [f2-multiple-agent/](../implemented-features/f2-multiple-agent/) — 真实化改造见 F8 P0 |
+| F3 | 文件管理与会话管理 | [f3-file-session-management/](../implemented-features/f3-file-session-management/) |
+| F4 | 智能命令推荐 | [f4-command-recommender/](../implemented-features/f4-command-recommender/) |
+| F5 | 跨平台桌面应用打包与发布 | [f5-desktop-packaging/](../implemented-features/f5-desktop-packaging/) |
+| F6 | 系统能力增强（Agent 工具集） | [f6-capability-tools/](../implemented-features/f6-capability-tools/) |
+| F7 | Web 界面（Gradio） | [f7-web-ui/](../implemented-features/f7-web-ui/) |
 
-**目录**: [../implemented-features/f3-file-session-management/](../implemented-features/f3-file-session-management/)
+## 已明确不做
 
-**描述**: 实现智能文件管理和多会话管理系统，优化文件上传验证、存储管理，提供灵活的对话组织能力，显著提升用户体验和系统性能。
-
-**文件管理特性**:
-- ✅ 文件验证器：大小限制、类型控制、去重
-- ✅ 文件元数据管理：分类、统计、自动清理
-- ✅ 智能OCR优化：质量评估、缓存、批量处理
-- ✅ 文件管理CLI命令：5个新命令
-
-**会话管理特性**:
-- ✅ 多会话管理：创建、切换、归档、删除
-- ✅ 历史压缩：智能压缩、去重、分块
-- ✅ 会话搜索：标题搜索、消息搜索
-- ✅ 会话管理CLI命令：9个新命令
-
-**性能目标**:
-- ✅ 存储空间优化: 40-60%
-- ✅ 处理速度提升: 30-50%
-- ✅ 历史存储优化: 70-90%
-- ✅ 测试覆盖率: 100%
-
-**实施周期**: 1天 (已完成)
-
-**文档**:
-- [文件管理和会话管理功能文档](../implemented-features/f3-file-session-management/FEATURES_FILE_AND_SESSION_MANAGEMENT.md) - 功能详解
-- [优化方案文档](../implemented-features/f3-file-session-management/OPTIMIZATION_PROPOSAL.md) - 设计方案
-- [v4.1.0实施总结](../general/v4.1.0_IMPLEMENTATION_SUMMARY.md) - 实施总结
-
-**实现详情**:
-- 实现模块: `file_validator.py`, `file_metadata.py`
-- 实现模块: `session_manager.py`, `history_compressor.py`
-- 更新模块: `config.py`, `document_loader.py`, `query_interface.py`
-- 测试文件: `tests/test_file_validator.py`, `tests/test_session_manager.py`
-- CLI命令: 14个新命令（文件管理5个 + 会话管理9个）
+| 项 | 原因 |
+|---|---|
+| 时间序列分析、学习路径推荐 / 复习计划 | 与"文档 + 代码助手"定位无关 |
+| 独立代码语义搜索索引（faiss）、MySQL / PostgreSQL 支持、技术文档版本对比 | 与现有能力重叠或场景不足 |
+| 应用内自动更新、macOS `.pkg`、deb / rpm、Docker 镜像、应用商店发布 | 现有 dmg / Inno / AppImage + GitHub Release 已满足分发；其余成本不匹配 |
+| 插件系统、云同步 | 云同步违背本地优先；插件系统暂无需求 |
 
 ---
-
-### F5: 系统能力增强设计 📋 需求分析阶段
-
-**状态**: 📋 需求分析阶段 (2026-06-15)
-
-**目录**: [./SYSTEM_CAPABILITY_ENHANCEMENT.md](./SYSTEM_CAPABILITY_ENHANCEMENT.md)
-
-**描述**: 基于 Qwen2.5-Coder:7B 模型特性和系统要求的系统能力扩展方案。充分发挥代码模型优势，在保持本地优先和隐私保护的前提下，分阶段增强系统的代码处理、知识管理、网络访问和数据处理能力。
-
-**核心特性**:
-- � **网络搜索能力**（核心功能 - DuckDuckGo、GitHub、arXiv）
-- �📋 AST 语法树搜索（深度代码结构分析）
-- 📋 代码语义搜索（基于功能描述的代码检索）
-- 📋 代码质量分析工具（自动化审查和安全检查）
-- 📋 Git 仓库深度集成（智能版本控制）
-- 📋 本地知识图谱构建（增强推理能力）
-- 📋 知识点关联网络（系统化知识管理）
-- 📋 技术文档智能查询（官方文档解析）
-- 📋 本地数据库查询工具（数据分析支持）
-- 📋 时间序列分析（监控和预测能力）
-
-**技术原则**:
-- 📋 模型适配：充分发挥 Qwen2.5-Coder 代码优势
-- 📋 本地优先：核心功能完全本地化
-- 📋 资源可控：适应 8-16GB 内存限制
-- 📋 渐进增强：分阶段实施，每阶段都有明确价值
-
-**技术选型**:
-- 代码分析: ast, jedi, regex, pylint, bandit, radon
-- 知识图谱: networkx, pyvis, rdflib
-- 语义搜索: sentence-transformers, faiss-cpu
-- Git 集成: gitpython, PyGithub
-- 网络搜索: duckduckgo-search, beautifulsoup4, trafilatura
-- 数据处理: sqlalchemy, pandas, matplotlib
-- 时间序列: statsmodels, prophet, scikit-learn
-
-**性能目标**:
-- 📋 搜索响应时间 <2 秒
-- 📋 分析处理速度 >50 文件/秒
-- 📋 内存占用增加 <200MB（总计）
-- 📋 功能准确率 >80-90%
-- 📋 启动时间影响 <2 秒
-
-**实施周期**: 8-12 周（待定）
-
-**文档**:
-- [系统能力增强设计文档](./SYSTEM_CAPABILITY_ENHANCEMENT.md) - 完整设计方案
-
-**实施计划**:
-- 📋 阶段一（2-3周）：代码能力增强（AST 搜索、语义搜索、代码质量、Git 集成）
-- 📋 阶段二（2-3周）：知识能力增强（知识图谱、关联网络）
-- 📋 阶段三（1-2周）：网络能力补充（轻量级搜索、文档查询）
-- 📋 阶段四（1-2周）：数据处理能力（数据库工具、时间序列）
-
----
-
-### F4: 跨平台桌面应用发布流程设计 🚧 待实施
-
-**状态**: 🚧 设计阶段 (2026-06-12)
-
-**目录**: [./CROSS_PLATFORM_DESKTOP_APP_DESIGN.md](./CROSS_PLATFORM_DESKTOP_APP_DESIGN.md)
-
-**描述**: 将智能文档+代码助手打包成跨平台桌面应用，支持 macOS、Windows 和 Linux 三大平台，实现一键安装、系统托盘常驻、自启动功能和自动更新机制。
-
-**核心特性**:
-- 🚧 跨平台支持（macOS、Windows、Linux）
-- 🚧 一键安装包（.pkg、.exe、.deb/.rpm）
-- 🚧 系统托盘常驻
-- 🚧 自启动功能（launchd、注册表、systemd）
-- 🚧 自动更新机制
-- 🚧 依赖管理（Python、Ollama、Tesseract）
-
-**技术选型**:
-- 打包工具: PyInstaller（主要）+ Nuitka（备选）
-- macOS: packagesbuild/pkgbuild、launchd
-- Windows: Inno Setup/NSIS、注册表
-- Linux: FPM、systemd、Docker（可选）
-- 系统托盘: pystray + PIL
-
-**性能目标**:
-- 🚧 应用启动时间 <10 秒
-- 🚧 安装包体积 <500 MB
-- 🚧 内存占用 <2 GB（空闲状态）
-- 🚧 跨平台一致性 >95%
-
-**实施周期**: 4-6 周 (待定)
-
-**文档**:
-- [跨平台桌面应用发布流程设计](./CROSS_PLATFORM_DESKTOP_APP_DESIGN.md) - 完整设计方案
-
-**实现详情**:
-- 待实施: `packaging/` 目录结构
-- 待实施: `desktop_app.py` 桌面应用入口
-- 待实施: PyInstaller 配置文件（main.spec、desktop.spec）
-- 待实施: 平台特定脚本和配置
-- 待实施: 构建脚本（build_all.sh、build_macos.sh、build_windows.bat、build_linux.sh）
-
----
-
-### F6: 三种对话模式优化（RAG / 单 Agent / 多 Agent）📋 待实现
-
-**状态**: 📋 需求已定稿，待实现 (2026-09-03)，分支 `feat/agent-modes-optimization`
-
-**文档**:
-- [AGENT_MODES_OPTIMIZATION.md](./AGENT_MODES_OPTIMIZATION.md) - 需求、已核实代码事实、验收标准、LLM 提示词草案
-- [AGENT_MODES_OPTIMIZATION_PROMPT.md](./AGENT_MODES_OPTIMIZATION_PROMPT.md) - 交给 Agent 的启动提示词（省 token 版）
-
-**描述**: 以提升任务质量、回答准确度与智能程度为目标，按 P0→P3 优化：
-- P0 多 Agent：4 个硬编码桩 Agent 改为委托 ReActEngine 真实执行；LLM 任务分解 / 结果整合 / 竞争评审；真并行与超时；结构化来源；CLI `/multi`
-- P1 单 Agent：系统提示分层（内置 ≤1.5K token + 项目附加）；协议容错重试；步数耗尽强制总结；重复调用检测；本轮上下文预算折叠；知识库工具对齐 RAG 编排；安全分级与写路径边界
-- P2 RAG：逐片段 rerank（LLM 默认 / cross-encoder 可选）；复合问题分解与多跳；带编号引用的综合与思维链透出；BM25 hybrid 召回；失败回退提示
-- P3 路由：自然语言输入的意图判定（规则 + LLM 兜底），CLI `/auto`、Web「自动」模式
-
----
-
-## 实施优先级
-
-### 已完成功能 ✅
-
-#### F1: OCR 图片/图表提取功能
-- **状态**: ✅ 已完成 (2026-06-11)
-- **优先级**: 高优先级 (推荐优先实施)
-- **实施结果**: 成功实现
-- **用户价值**: 高 - 扩展了文档类型支持
-
-#### F2: 多Agent协作系统
-- **状态**: ✅ 已完成 (2026-06-11)
-- **优先级**: 中优先级 (提升系统能力)
-- **实施结果**: 成功实现
-- **用户价值**: 高 - 提升复杂任务处理能力
-
-#### F3: 文件管理和会话管理优化
-- **状态**: ✅ 已完成 (2026-06-12)
-- **优先级**: 高优先级 (用户体验优化)
-- **实施结果**: 成功实现
-- **用户价值**: 高 - 提升文件处理效率和对话管理能力
-
-### 待规划功能
-
-#### F5: 系统能力增强设计
-- **状态**: 📋 需求分析阶段 (2026-06-15)
-- **优先级**: 高优先级（核心能力扩展）
-- **用户价值**: 高 - 充分发挥模型优势，提升系统能力
-- **设计文档**: [SYSTEM_CAPABILITY_ENHANCEMENT.md](./SYSTEM_CAPABILITY_ENHANCEMENT.md)
-
-#### F4: 跨平台桌面应用发布流程设计
-- **状态**: 🚧 设计阶段 (2026-06-12)
-- **优先级**: 中优先级 (用户体验提升)
-- **用户价值**: 高 - 提升易用性和可访问性
-- **设计文档**: [CROSS_PLATFORM_DESKTOP_APP_DESIGN.md](./CROSS_PLATFORM_DESKTOP_APP_DESIGN.md)
-
----
-
-如有新的功能需求，请按照下方的贡献指南提交设计文档。
-
-## 实施历史
-
-### Phase 1: OCR 功能开发 ✅ 已完成
-**时间**: 2026-06-11
-
-**实施内容**:
-- ✅ 核心模块开发 (ocr_processor/)
-- ✅ 系统集成 (document_loader.py, config.py)
-- ✅ 单元测试 (106 个测试，核心模块覆盖率 90-95%)
-- ✅ 文档更新 (README.md, TUTORIAL.md)
-- ✅ 脚本更新 (安装和环境检查脚本)
-
-**性能验证**:
-- ✅ 单张图片处理时间 <3 秒
-- ✅ 中文识别准确率 >90%
-- ✅ 英文识别准确率 >95%
-- ✅ 缓存机制正常工作
-
-### Phase 2: 多Agent系统开发 ✅ 已完成
-**时间**: 2026-06-11
-
-**实施内容**:
-- ✅ 核心架构 (collaboration/, agent_orchestrator.py)
-- ✅ 专业Agent (agents/code_agent.py, rag_agent.py, test_agent.py, doc_agent.py, audit_agent.py)
-- ✅ 协作模式 (4+ 种协作模式)
-- ✅ CLI 集成 (/multi 命令)
-- ✅ 系统测试 (测试通过)
-
-**性能验证**:
-- ✅ 复杂任务处理时间减少 30%+
-- ✅ 并行任务加速比 >2x
-- ✅ 系统响应时间 <5s
-- ✅ Agent 调度成功率 >95%
-
-### Phase 3: 系统集成与文档 ✅ 已完成
-**时间**: 2026-06-11
-
-**实施内容**:
-- ✅ 功能集成测试
-- ✅ 性能测试与优化
-- ✅ 文档完善 (README.md, TUTORIAL.md)
-- ✅ 脚本更新 (支持OCR功能检查和安装)
-- ✅ 设计文档归档
-
-### Phase 4: 文件管理和会话管理优化 ✅ 已完成
-**时间**: 2026-06-12
-
-**实施内容**:
-- ✅ 文件验证器实现 (file_validator.py)
-- ✅ 文件元数据管理 (file_metadata.py)
-- ✅ 会话管理器实现 (session_manager.py)
-- ✅ 历史压缩器实现 (history_compressor.py)
-- ✅ 配置更新 (config.py)
-- ✅ 文档加载器集成 (document_loader.py)
-- ✅ CLI命令集成 (14个新命令)
-- ✅ 单元测试 (66个测试，100%覆盖率)
-- ✅ 文档更新 (README.md, CHANGELOG.md, 教程文档)
-- ✅ 功能文档 (FEATURES_FILE_AND_SESSION_MANAGEMENT.md, v4.1.0_IMPLEMENTATION_SUMMARY.md)
-
-**性能验证**:
-- ✅ 存储空间优化: 40-60%
-- ✅ 处理速度提升: 30-50%
-- ✅ 历史存储优化: 70-90%
-- ✅ 测试覆盖率: 100%
-
-## 实施路线图 (历史)
-
-```
-Month 1: OCR 功能开发 ✅ 已完成
-  ├─ Week 1-2: 核心模块开发 ✅
-  ├─ Week 3: 系统集成 ✅
-  └─ Week 4: 测试与优化 ✅
-
-Month 2: 多Agent系统开发 ✅ 已完成
-  ├─ Week 1-2: 基础架构 ✅
-  ├─ Week 3-4: 核心组件 ✅
-  └─ Week 5-6: 专业Agent与集成 ✅
-
-Month 3: 集成测试与部署 ✅ 已完成
-  ├─ Week 1: 功能集成测试 ✅
-  ├─ Week 2: 性能测试与优化 ✅
-  └─ Week 3-4: 文档完善与部署 ✅
-
-Day 4: 文件管理和会话管理优化 ✅ 已完成
-  ├─ 文件验证器实现 ✅
-  ├─ 文件元数据管理 ✅
-  ├─ 会话管理器实现 ✅
-  ├─ 历史压缩器实现 ✅
-  ├─ 系统集成和测试 ✅
-  └─ 文档更新 ✅
-
-待规划: 跨平台桌面应用发布 🚧 设计阶段
-  ├─ 项目结构重组 🚧
-  ├─ PyInstaller 配置 🚧
-  ├─ 平台特定实现 🚧
-  ├─ 系统托盘集成 🚧
-  ├─ 自启动功能 🚧
-  └─ 自动更新机制 🚧
-```
 
 ## 贡献指南
 
-### 添加新功能设计
+新增需求时：
 
-如需添加新的未来功能设计：
-
-1. **创建功能目录**: `docs/future-feature-design/f{编号}-{功能名称}/`
-2. **编写设计文档**:
-   - README.md - 功能概述
-   - OVERVIEW.md - 技术选型
-   - ARCHITECTURE.md - 架构设计
-   - IMPLEMENTATION.md - 实现指南
-   - TESTING.md - 测试策略
-3. **更新本文档**: 在功能列表中添加新功能说明
-4. **提交审核**: 通过 Pull Request 提交审核
-
-### 文档规范
-
-- 使用 Markdown 格式
-- 包含清晰的架构图和流程图
-- 提供完整的代码示例
-- 注明性能目标和验收标准
-- 包含风险评估和应对策略
-
-## 审核流程
-
-1. **设计评审**: 技术团队评审设计方案的可行性
-2. **架构评审**: 架构师评审系统架构的合理性
-3. **安全评审**: 安全团队评估潜在安全风险
-4. **性能评审**: 性能团队评估性能影响
-5. **最终批准**: 项目负责人批准后进入开发阶段
-
-## 联系方式
-
-如有疑问或建议，请通过项目 Issue 跟踪系统反馈。
+1. 在本目录新建 `F{编号}_{主题}.md`（或按 F8 的做法拆成"需求 + 启动提示词"两份），编号顺延。
+2. 文档至少包含：背景与已核实的代码事实（带 `文件:行号`）、需求分项、验收标准。
+3. 在本文件「待实现」区加一条目；完成后迁移到 `implemented-features/f{编号}-{主题}/`，补 README 与实现记录，并从「待实现」删除。
 
 ---
 
-**最后更新**: 2026-06-12 (添加 F4 跨平台桌面应用设计)
-**维护者**: Devin AI
+**最后更新**: 2026-09-04（归档 F5/F6/F7，收拢残留小项，明确不做项）

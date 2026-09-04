@@ -255,6 +255,16 @@
 - 托盘"打开 Web UI"改为轮询等待服务端口就绪后再打开浏览器（此前固定等待 2 秒），
   避免在打包首启（需先做 Ollama 引导与索引加载）时打开空白/无法连接的页面。
 
+### 文档
+- 清理 `docs/future-feature-design/`：已落地的「跨平台桌面应用打包」「系统能力增强
+  （Agent 工具集）」「Web 界面」三份设计文档迁移到 `docs/implemented-features/`
+  （重编号为 F5 / F6 / F7，解决与 `f4-command-recommender` 的编号冲突），各自新增
+  README 记录与原设计的差异及子项取舍；目录 README 重写为只含待实现项（F8 三种对话
+  模式优化 + 残留小项）、已归档索引与「已明确不做」清单（时间序列分析、学习路径、
+  独立代码语义索引、MySQL / PostgreSQL、应用内自动更新、.pkg / deb / rpm / Docker、
+  应用商店、插件系统、云同步）。`docs/README.md` 与 `docs/general/PROJECT_ROADMAP.md`
+  同步对齐现状。
+
 ## [v0.0.13] - 2026-07-20
 
 ### 新增

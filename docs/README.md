@@ -46,18 +46,17 @@
 - [综合修复报告](history/COMPREHENSIVE_FIX_REPORT.md)
 
 ### 🚀 未来特性设计 (future-feature-design/)
-- [系统能力增强设计](future-feature-design/SYSTEM_CAPABILITY_ENHANCEMENT.md) 📋 需求分析
-- [跨平台桌面应用发布流程设计](future-feature-design/CROSS_PLATFORM_DESKTOP_APP_DESIGN.md) 🚧 设计阶段
-- [Web 界面（Gradio）设计方案](future-feature-design/WEB_UI_GRADIO_DESIGN.md) ✅ 已完成（v2 布局重设计）
-- OCR提取功能设计 ✅ 已完成
-- 多Agent系统设计 ✅ 已完成
-- 文件管理和会话管理优化 ✅ 已完成
+- [待实现需求索引与残留小项](future-feature-design/README.md)
+- [F8 三种对话模式优化（RAG / 单 Agent / 多 Agent）](future-feature-design/AGENT_MODES_OPTIMIZATION.md) 📋 待实现
 
 ### 🎯 功能实现文档 (implemented-features/)
-- [OCR提取功能实现](implemented-features/f1-ocr-extrace/) ✅ v4.0.0
-- [多Agent系统实现](implemented-features/f2-multiple-agent/) ✅ v4.0.0
-- [文件管理和会话管理实现](implemented-features/f3-file-session-management/) ⭐ v4.1.0
-- [智能命令推荐系统实现](implemented-features/f4-command-recommender/) ⭐ v4.2.0
+- [F1 OCR提取功能](implemented-features/f1-ocr-extrace/) ✅
+- [F2 多Agent系统（骨架）](implemented-features/f2-multiple-agent/) ✅
+- [F3 文件管理和会话管理](implemented-features/f3-file-session-management/) ✅
+- [F4 智能命令推荐系统](implemented-features/f4-command-recommender/) ✅
+- [F5 跨平台桌面应用打包与发布](implemented-features/f5-desktop-packaging/) ✅
+- [F6 系统能力增强（Agent 工具集）](implemented-features/f6-capability-tools/) ✅
+- [F7 Web 界面（Gradio）](implemented-features/f7-web-ui/) ✅
 
 ##  相关链接
 

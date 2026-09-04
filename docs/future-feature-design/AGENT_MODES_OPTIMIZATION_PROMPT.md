@@ -1,4 +1,4 @@
-# 启动提示词：三种对话模式优化（P0-P3）
+# F8 启动提示词：三种对话模式优化（P0-P3）
 
 > 用法：新开任务时把「提示词正文」整段贴给 Agent。需求细节与代码事实都在
 > `docs/future-feature-design/AGENT_MODES_OPTIMIZATION.md`（下称 REQ），Agent 应先读它，**不要重复调研已核实事实**。
