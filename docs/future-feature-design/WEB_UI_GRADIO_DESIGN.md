@@ -1,6 +1,7 @@
 # Web 界面（Gradio）设计方案
 
-> 状态：📋 设计阶段
+> 状态：✅ 已实现（v0.0.12 首版；后续重设计为「侧栏导航 + 主区 + 右侧面板」并支持多主题色，
+> 实际结构见文末「实现记录」）
 > 目标：为 Cerebro 增加一个基于 **Gradio** 的本地 Web 界面，作为可分发产品，
 > 降低非技术用户的使用门槛，并可视化 Agent 执行过程。
 > 关联需求：详见本文件"背景与动机"。
@@ -356,3 +357,22 @@ Web 界面是**新增的第三种入口**，与 CLI、桌面托盘并存：
 - CLI（`query_interface.py`）仍是功能最全、面向高级用户的入口。
 - 桌面托盘（`desktop_app.py`）增加"打开 Web 界面"入口。
 - Web（本方案）面向非技术用户与需要可视化的场景。
+
+
+---
+
+## 实现记录（与本设计的差异）
+
+| 设计 | 实现 |
+|---|---|
+| 顶层 4 个 Tab | 左侧栏 5 个一级页面（对话 / 知识库 / 知识图谱 / 工具 / 系统），页内二级用 `gr.Tabs`；会话列表只在左侧栏一处 |
+| `web/tabs/*.py` + `state.py` | `web/ui/{layout,chat,knowledge,graph,tools,system,common}.py`；每标签页会话绑定用 `gr.State`；主题在 `web/theme.py` |
+| `gr.Dataframe` 展示来源 | 来源仍用 Markdown（便于引用片段）；文件 / 快照 / 摘要 / 模型 / 工具清单用 `gr.Dataframe` |
+| 阻塞式 `on_confirm` 弹窗 | 服务层 `_ask_confirm` 推送 `confirm` 事件并挂起，对话页显示「允许 / 拒绝」审批卡片，`resolve_confirm` 唤醒；勾选"自动确认"等价 `--yes` |
+| 多 Agent 模式选择 | 对话页多 Agent 模式下显示协作模式下拉（自动 / 层级 / 并行 / 顺序 / 竞争） |
+| pyvis 图谱可视化 | 改用 **Plotly（离线）**：`graph_builder.subgraph_for_view`（类型 / 置信度 / 度数 Top-N / 聚焦实体 N 跳）+ `layout_positions`（spring 布局，按节点集合与维度缓存）→ `web/app.py::build_graph_figure`（3D / 2D，节点按类型着色、按度数定大小，悬停显示来源文档与关系类型，2D 可选边标签，可单测）→ `gr.Plot`；概览合并为指标卡片。CLI `/graph-summary`、`/graph-export`（`write_html(include_plotlyjs=True)` 自包含 HTML + `webbrowser.open`）。打包 spec 收集 plotly 子模块与数据文件 |
+| 文件删除 | `RAGEngine.remove_file`：按 `file_path` 取 chunk 的 `document_id` → `index.delete_ref_doc(delete_from_docstore=True)`（失败回退直接删向量）→ `graph_builder.remove_document(basename)`（库中另有同名 basename 文件则跳过并提示）→ `FileMetadataManager.remove_file`；不删磁盘文件。Web 表格末列「⋯」（HTML 列，`select` 任意单元格 = 选中行）+ 右侧操作条 + `Confirm` 预览；CLI `/file-delete` |
+| 快照恢复 | `KnowledgeSnapshotManager.snapshot_info / restore_apply(append\|replace) / prune_preview / prune`；恢复走 `_bridge` 流式进度；Web 快照「⋯」操作条 + 「清理自动快照…」；CLI `/snapshot-info|delete|prune`、`/snapshot-restore --apply [--replace]`（不带 `--apply` 仍生成脚本） |
+| 系统状态面板 | 「系统」页：模型热切换与思考模式、运行环境配置概览、工作目录、工具清单、帮助 |
+| 主题 | 6 套主题色运行时切换：为每套主题覆写 Gradio 全部依赖主色的语义变量（挂在 `body[data-cb-theme]`），localStorage 持久化，`<head>` 脚本提前应用避免闪烁 |
+| 打包 | `packaging/cerebro.spec` 对 gradio / gradio_client `collect_all`，`requirements-build.txt` 加入 gradio |

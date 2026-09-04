@@ -345,9 +345,16 @@ TUTORIAL_TEXT = """
 文件管理命令：
   /file-list           列出知识库中的所有文件
   /file-info <path>    查看文件详细信息
+  /file-delete <path>  从知识库删除文件（不删磁盘文件，需确认）
   /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重
+  /file-deduplicate    手动触发去重（只移除登记，不删向量）
   /file-stats          显示文件统计信息
+
+知识库快照命令：
+  /snapshot-list / /snapshot-create        列出 / 手动创建快照
+  /snapshot-info <id>                      快照详情（文档清单与文件是否仍存在）
+  /snapshot-restore <id> [--apply [--replace]]  生成恢复脚本 / 直接恢复（追加或替换）
+  /snapshot-delete <id> | /snapshot-prune [N]   删除快照 / 清理自动快照仅保留最近 N 个
 
 会话管理命令：
   /session-new [title]        创建新会话
@@ -379,6 +386,8 @@ Git 命令：
   /graph-query type:<类型>    列出某类型实体（如 type:tool）
   /graph-query neighbors:<实体>  查询邻居  | path:<A>-><B> 查路径 | similar:<实体> 查相似
   /graph-build <文本|@文件>   构建知识图谱
+  /graph-summary              图谱概览（节点/边/类型分布）
+  /graph-export [路径] [--3d|--2d] [--focus 实体]  导出交互式 HTML 图谱并在浏览器打开
 """
 
 def show_tutorial():
@@ -592,20 +601,31 @@ def print_help():
   /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
   /think             显示思考模式状态（默认关，响应快）
   /think on|off      运行时开关思考模式（开启需模型支持，如 qwen3.5）
-  /reset             重置 Agent 对话上下文
+  /context           查看当前会话上下文（轮数/估算 token/预算/压缩次数/摘要）
+  /compact           手动压缩当前会话历史（最旧轮次折叠进滚动摘要）
+  /reset             清空当前会话上下文（消息与滚动摘要，三种模式共用）
   /exit 或 /quit     退出程序
+
+连续对话：/ask、自然语言输入与 /agent 都会记住当前会话的上下文，可直接追问
+（如"它多少钱"）；历史超出预算时自动压缩，对话过长会提示新建会话。
 
 知识库管理命令（新功能）：
   /generate-skills   将知识库内容转化为Skills
   /snapshot-list    查看所有知识库快照
   /snapshot-create  手动创建知识库快照
-  /snapshot-restore <id>  恢复指定快照的知识库
+  /snapshot-info <id>     查看快照详情（文档清单、文件是否仍存在、模型配置）
+  /snapshot-restore <id>  生成恢复脚本；加 --apply 直接恢复（追加），--apply --replace 先清空再恢复
+  /snapshot-delete <id>   删除指定快照（需确认）
+  /snapshot-prune [N]     清理自动快照，仅保留最近 N 个（默认 10，手动快照不受影响）
   /knowledge-summary  查看知识库文档摘要
 
 知识图谱管理命令（新功能）：
   /graph-query <文本>       按实体名模糊查询（默认）
   /graph-query type:<类型>  列出某类型实体；另支持 neighbors:/path:/similar: 前缀
   /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
+  /graph-summary            图谱概览（节点/边/类型分布）
+  /graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops 1|2]
+                            导出自包含的交互式 HTML 图谱并在浏览器打开
 
 数据库管理命令（新功能）：
   /db-connect <type> <database>  连接数据库
@@ -618,12 +638,13 @@ def print_help():
 文件管理命令（新功能）：
   /file-list           列出知识库中的所有文件
   /file-info <path>    查看文件详细信息
+  /file-delete <path>  从知识库删除文件（向量片段 + 图谱来源 + 元数据，不删磁盘文件，需确认）
   /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重
+  /file-deduplicate    手动触发去重（只移除重复登记，不删向量；彻底删除请用 /file-delete）
   /file-stats          显示文件统计信息
 
 会话管理命令（新功能）：
-  /session-new [title]        创建新会话
+  /session-new [title]        创建新会话（加 --carry 可把当前会话摘要带入新会话）
   /session-list               列出所有会话
   /session-switch <id>        切换到指定会话
   /session-archive <id>       归档会话
@@ -631,7 +652,7 @@ def print_help():
   /session-info <id>          查看会话详情
   /session-search <query>     搜索会话
   /session-current            显示当前会话信息
-  /session-compress           压缩当前会话历史
+  /session-compress           压缩当前会话历史（等同 /compact）
 
 网络搜索命令（新功能）：
   /web-search <query>         网络搜索（支持 DuckDuckGo）
@@ -810,6 +831,10 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("summary", user_input)
     if user_input == "/reset":
         return ParsedCommand("reset", user_input)
+    if user_input == "/context":
+        return ParsedCommand("context", user_input)
+    if user_input == "/compact":
+        return ParsedCommand("compact", user_input)
     if user_input == "/pwd":
         return ParsedCommand("pwd", user_input)
     if user_input == "/model":
@@ -846,6 +871,12 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("snapshot_create", user_input, arg)
     if cmd == "/snapshot-restore":
         return ParsedCommand("snapshot_restore", user_input, arg)
+    if cmd == "/snapshot-info":
+        return ParsedCommand("snapshot_info", user_input, arg)
+    if cmd == "/snapshot-delete":
+        return ParsedCommand("snapshot_delete", user_input, arg)
+    if cmd == "/snapshot-prune":
+        return ParsedCommand("snapshot_prune", user_input, arg)
     if cmd == "/knowledge-summary":
         return ParsedCommand("knowledge_summary", user_input, arg)
     
@@ -854,6 +885,10 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("graph_query", user_input, arg)
     if cmd == "/graph-build":
         return ParsedCommand("graph_build", user_input, arg)
+    if cmd == "/graph-summary":
+        return ParsedCommand("graph_summary", user_input, arg)
+    if cmd == "/graph-export":
+        return ParsedCommand("graph_export", user_input, arg)
     
     # 数据库管理命令
     if cmd == "/db-connect":
@@ -880,6 +915,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("file_deduplicate", user_input, arg)
     if cmd == "/file-stats":
         return ParsedCommand("file_stats", user_input, arg)
+    if cmd == "/file-delete":
+        return ParsedCommand("file_delete", user_input, arg)
 
     # 会话管理命令
     if cmd == "/session-new":
@@ -944,14 +981,16 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
 
     # 纯命令，不走任何引擎
     if cmd_type in ("help", "tutorial", "tools", "stats", "sources",
-                     "clear", "history", "summary", "reset",
+                     "clear", "history", "summary", "reset", "context", "compact",
                      "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
-                     "snapshot_restore", "knowledge_summary",
-                     "graph_query", "graph_build",
+                     "snapshot_restore", "snapshot_info", "snapshot_delete", "snapshot_prune",
+                     "knowledge_summary",
+                     "graph_query", "graph_build", "graph_summary", "graph_export",
                      "db_connect", "db_query", "db_execute",
                      "db_create_table", "db_insert", "db_schema",
                      "file_list", "file_info", "file_cleanup", "file_deduplicate", "file_stats",
+                     "file_delete",
                      "session_new", "session_list", "session_switch", "session_archive",
                      "session_delete", "session_info", "session_search", "session_current",
                      "session_compress", "web_search", "web_cache", "web_extract",
@@ -1040,9 +1079,41 @@ def record_command_execution(cmd_type: str, args: str = "", result: str = "", er
         logger.error(f"记录命令失败: {e}")
 
 
-def record_conversation(user_content: str, assistant_content: str):
-    """将一轮对话写入"当前会话"，委托共享层 rag_pipeline.record_conversation。"""
-    rag_pipeline.record_conversation(user_content, assistant_content)
+def record_conversation(user_content: str, assistant_content: str, **kwargs):
+    """将一轮对话写入"当前会话"，委托共享层 rag_pipeline.record_conversation。
+
+    可选 ``rewritten`` / ``trace`` / ``progress`` 透传给会话上下文层（自动压缩时
+    的进度事件经 ``progress`` 渲染到终端）。
+    """
+    rag_pipeline.record_conversation(user_content, assistant_content, **kwargs)
+
+
+def _conversation():
+    """进程内共享的会话上下文（跟随"当前会话"）。"""
+    from conversation_context import get_conversation_context
+    return get_conversation_context()
+
+
+def _print_health_hint(pre: dict, question: str = ""):
+    """回答后按上下文健康度打印一行 dim 提示（每会话只提示一次）。"""
+    try:
+        from conversation_context import merge_health, format_suggest_hint
+        conv = _conversation()
+        health = merge_health(pre or {}, conv.health())
+        hint = format_suggest_hint(health)
+        if hint:
+            console.print(f"[dim]{hint}，输入 /session-new（可加 --carry 携带摘要）[/dim]")
+            conv.mark_suggested()
+    except Exception as e:  # noqa: BLE001 - 提示失败不影响主流程
+        logger.debug(f"health hint failed: {e}")
+
+
+def _health_before(question: str) -> dict:
+    """提问前的健康度快照（用于判断空闲/话题漂移）。"""
+    try:
+        return _conversation().health(question)
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # ==================== 共享 RAG 编排层的 CLI 适配 ====================
@@ -1095,9 +1166,12 @@ def _cli_ask_progress(event: dict):
         "kb_empty": "yellow",
         "kb_fallback_search": "cyan",
         "kb_uninitialized": "yellow",
+        "context_rewrite": "cyan",
+        "context_rewritten": "cyan",
     }
     style = style_map.get(stage, "dim")
-    if stage in ("kb_retrieving", "synthesizing", "model_thinking"):
+    if stage in ("kb_retrieving", "synthesizing", "model_thinking",
+                 "context_compress", "context_compressed"):
         # 这些"进行中"提示走安静的 dim 行，避免打断 status
         console.print(f"[dim]{msg}[/dim]")
     elif msg:
@@ -1235,8 +1309,13 @@ def handle_summary(ctx, parsed):
 
 
 def handle_reset(ctx, parsed):
-    react_engine.clear_history()
-    console.print("🔄 Agent 对话上下文已重置", style="green")
+    """清空当前会话的对话上下文（消息 + 滚动摘要），三种模式共用。"""
+    engine = ctx.react_engine if ctx and ctx.react_engine is not None else react_engine
+    ok = engine.clear_history() if engine is not None else _conversation().clear()
+    if ok:
+        console.print("🔄 当前会话上下文已清空（消息与滚动摘要）", style="green")
+    else:
+        console.print("[dim]当前没有可清空的会话上下文[/dim]")
     record_command_execution("reset")
     return True
 
@@ -1421,11 +1500,15 @@ def handle_ask(ctx, parsed):
     核心编排逻辑已下沉到共享层 ``rag_pipeline.answer_question``（CLI 与 Web
     共用）；本函数只负责 CLI 特有的内联文件入库、Rich 进度/来源渲染。
     """
+    return _run_ask(ctx, parsed.arg, cmd_name="ask")
+
+
+def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
+    """``/ask`` 与自然语言输入共用的知识库问答实现（带会话上下文）。"""
     global last_rag_sources, last_web_sources
     import re
 
-    question = parsed.arg
-    original_question = parsed.arg  # 用于命令记录，避免把搜索结果正文塞进历史
+    original_question = question  # 用于命令记录，避免把搜索结果正文塞进历史
 
     # 元/概览类问题会在 answer_question 内部识别并通过 meta_overview 事件渲染。
     # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）——CLI 独有。
@@ -1434,6 +1517,15 @@ def handle_ask(ctx, parsed):
         file_path_match = re.search(file_pattern, question)
         if file_path_match:
             question = _ingest_inline_file(file_path_match.group(), question)
+
+    # 连续对话：提问前先做健康度快照（空闲/话题漂移），并把会话上下文交给编排层
+    # 用于追问改写与综合 prompt 注入。
+    pre_health = _health_before(original_question)
+    try:
+        conv = _conversation()
+    except Exception as e:  # noqa: BLE001 - 会话不可用时退化为无记忆问答
+        logger.warning(f"会话上下文不可用: {e}")
+        conv = None
 
     # 调用共享编排层：网络搜索规划、双区综合、0 命中回退、元查询直答一体化。
     rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
@@ -1444,6 +1536,7 @@ def handle_ask(ctx, parsed):
         show_progress=Config.SHOW_PROGRESS,
         progress=_cli_ask_progress,
         rag_progress_callback=rag_progress,
+        context=conv,
     )
 
     # 元查询：概览已在 _cli_ask_progress 中渲染，这里只记录并返回。
@@ -1452,11 +1545,13 @@ def handle_ask(ctx, parsed):
         last_web_sources = []
         ctx.last_rag_sources = last_rag_sources
         ctx.last_web_sources = last_web_sources
-        record_command_execution("ask", original_question)
-        record_conversation(original_question, "[知识库概览]")
+        record_command_execution(cmd_name, original_question)
+        record_conversation(original_question, "[知识库概览]", progress=_cli_ask_progress)
         return True
 
     console.print("\n🤖 回答:", style="bold blue")
+    if result.get("rewritten"):
+        console.print(f"[cyan]🔗 已理解为：{result['rewritten']}[/cyan]")
     _render_answer(result["answer"])
 
     last_rag_sources = result.get("kb_sources", [])
@@ -1473,8 +1568,12 @@ def handle_ask(ctx, parsed):
     if last_rag_sources or last_web_sources:
         console.print("[dim]输入 /sources 查看完整来源明细[/dim]")
 
-    record_command_execution("ask", original_question)
-    record_conversation(original_question, result.get("answer", ""))
+    record_command_execution(cmd_name, original_question)
+    record_conversation(
+        original_question, result.get("answer", ""),
+        rewritten=result.get("rewritten"), progress=_cli_ask_progress,
+    )
+    _print_health_hint(pre_health, original_question)
     return True
 
 
@@ -1535,6 +1634,7 @@ def _answer_question(question: str, original_question: str, web_search_result: s
 def handle_agent(ctx, parsed):
     task = parsed.arg
     answer = ""
+    pre_health = _health_before(task)
     try:
         answer = react_engine.chat(task)
     except KeyboardInterrupt:
@@ -1557,33 +1657,25 @@ def handle_agent(ctx, parsed):
 
     if len(react_engine.step_log) > 1:
         console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
-    record_conversation(task, answer)
+    # ReAct 引擎已在 chat() 结束时把本轮（任务 + 最终答案 + 执行摘要）写回会话
     record_command_execution("agent", task)
+    _print_health_hint(pre_health, task)
     return True
 
 
 def handle_natural(ctx, parsed):
-    global last_rag_sources
-    if rag_engine.query_engine is not None:
-        with console.status("[bold green]检索知识库..."):
-            result = rag_engine.query_with_sources(parsed.arg)
-        console.print("\n🤖 回答:", style="bold blue")
-        _render_answer(result["answer"])
-        last_rag_sources = result["sources"]
-        ctx.last_rag_sources = last_rag_sources
-        if last_rag_sources:
-            console.print(f"\n📎 基于 {len(last_rag_sources)} 个相关片段生成", style="dim")
-            console.print("[dim]输入 /sources 查看详细来源 | /agent 切换 Agent 模式[/dim]")
-        record_command_execution("natural", parsed.arg)
-        return True
+    """自然语言输入：与 ``/ask`` 走同一条带会话上下文的问答链路。
 
-    console.print(
-        "[yellow]知识库未初始化。请选择:[/yellow]\n"
-        "  1. 输入 /agent <任务> 使用 Agent 模式（代码操作）\n"
-        "  2. 使用 --data <路径> 启动以构建知识库\n"
-        "  3. 输入 /add <文件> 添加文档到知识库"
-    )
-    return False
+    此前直接裸调 ``query_with_sources``、不记录会话、无联网增强，且知识库
+    未初始化时只能提示；现统一到 ``_run_ask``（知识库为空时由编排层自动
+    回退到网络/模型回答），追问同样能结合上下文理解。
+    """
+    if rag_engine is not None and rag_engine.query_engine is None:
+        console.print(
+            "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
+            "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
+        )
+    return _run_ask(ctx, parsed.arg, cmd_name="natural")
 
 
 def handle_unknown_cmd(ctx, parsed):
@@ -1778,9 +1870,14 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-    if args.no_history:
-        react_engine.clear_history()
-        console.print("[yellow]已清空历史，以全新会话开始[/yellow]")
+    # 会话上下文：首次获取时会把旧的 ~/.code_agent_history.json 一次性迁入默认会话
+    try:
+        conv = _conversation()
+        if args.no_history:
+            conv.new_session()
+            console.print("[yellow]已新建空会话，以全新上下文开始[/yellow]")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]⚠️ 会话上下文初始化失败（将无记忆运行）: {e}[/dim]")
 
     # ==================== 单次模式 ====================
     if args.query:

@@ -70,6 +70,12 @@ for pkg in (
     # "No such file or directory: '.../justext/stoplists'"（虽会回退到 bs4，
     # 但会污染日志并降低提取质量），故用 collect_all 一并收集其数据文件。
     "justext",
+    # Web UI（托盘「打开 Web UI」/ `--web`）依赖 Gradio 的静态前端（templates/frontend）
+    # 与主题/组件数据文件，必须 collect_all 完整收集，否则打包后 Web 页面 404。
+    "gradio",
+    "gradio_client",
+    "safehttpx",
+    "groovy",
 ):
     try:
         d, b, h = collect_all(pkg)
@@ -114,6 +120,16 @@ for sub in SRC_DIR.iterdir():
             hiddenimports += collect_submodules(sub.name)
         except Exception as exc:  # noqa: BLE001
             print(f"[spec] collect_submodules 跳过 {sub.name}: {exc}")
+
+# plotly：知识图谱 3D/2D 可视化。plotly.js 与 validators 以数据文件形式存在
+# （package_data/plotly.min.js、validators/*.json），只收子模块会导致打包后
+# `fig.write_html(include_plotlyjs=True)` 找不到 JS，故子模块 + 数据文件一并收集。
+for pkg in ("plotly", "_plotly_utils"):
+    try:
+        hiddenimports += collect_submodules(pkg)
+        datas += collect_data_files(pkg)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[spec] 收集 {pkg} 跳过: {exc}")
 
 # 部分 tokenizer / 配置数据
 for pkg in ("tiktoken_ext", "tiktoken"):

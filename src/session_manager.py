@@ -244,6 +244,12 @@ class SessionManager:
             return None
         return self.sessions.get(self.current_session_id)
 
+    def get_session(self, session_id: str) -> Optional[ChatSession]:
+        """按 ID 获取会话（不改变"当前会话"指针）；不存在返回 None。"""
+        if not session_id:
+            return None
+        return self.sessions.get(session_id)
+
     def list_sessions(self, status: SessionStatus = None, tags: List[str] = None) -> List[ChatSession]:
         """
         列出会话

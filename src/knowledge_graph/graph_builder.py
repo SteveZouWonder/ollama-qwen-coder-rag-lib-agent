@@ -78,6 +78,8 @@ class KnowledgeGraphBuilder:
 
         self.entity_extractor = get_entity_extractor()
         self._node_id_counter = 0
+        # 可视化布局缓存：(节点集合哈希, 维度) -> {node_id: (x, y[, z])}
+        self._layout_cache: Dict[tuple, Dict[str, tuple]] = {}
 
         # 持久化配置
         self.auto_persist = auto_persist
@@ -165,6 +167,7 @@ class KnowledgeGraphBuilder:
                             self.graph[source_id][target_id]['documents'].append(doc_id)
             
             self.logger.info(f"文档 {doc_id} 已添加到知识图谱")
+            self._layout_cache.clear()
             self._autosave()
             return True
             
@@ -191,6 +194,7 @@ class KnowledgeGraphBuilder:
 
         # 先在内存中清空重建；成功后统一持久化一次，避免中途多次写盘。
         self.graph.clear()
+        self._layout_cache.clear()
 
         prev_auto = self.auto_persist
         self.auto_persist = False  # 抑制逐文档 autosave
@@ -433,6 +437,7 @@ class KnowledgeGraphBuilder:
             
             # 清空现有图谱
             self.graph.clear()
+            self._layout_cache.clear()
             
             # 添加节点
             for node_data in graph_data.get('nodes', []):
@@ -451,6 +456,183 @@ class KnowledgeGraphBuilder:
             self.logger.error(f"加载图谱失败: {e}")
             return False
     
+    def remove_document(self, doc_id: str) -> Dict[str, int]:
+        """从图谱中移除某文档的贡献（文档删除时保持图谱与向量库一致）。
+
+        遍历所有节点/边，把 ``doc_id`` 从其 ``documents`` 列表中移除；列表因此
+        变空的边与节点一并删除（节点删除会级联删除其关联边）。有变更时自动持久化。
+
+        Returns:
+            ``{"nodes_removed", "edges_removed", "nodes_updated", "edges_updated"}``
+        """
+        result = {"nodes_removed": 0, "edges_removed": 0, "nodes_updated": 0, "edges_updated": 0}
+        if self.graph is None or not doc_id:
+            return result
+
+        doc_id = str(doc_id)
+        # 先处理边：documents 去掉 doc_id，为空则删边
+        edges_to_remove = []
+        for u, v, data in self.graph.edges(data=True):
+            docs = data.get("documents")
+            if isinstance(docs, list) and doc_id in docs:
+                remaining = [d for d in docs if d != doc_id]
+                if remaining:
+                    data["documents"] = remaining
+                    result["edges_updated"] += 1
+                else:
+                    edges_to_remove.append((u, v))
+        for u, v in edges_to_remove:
+            if self.graph.has_edge(u, v):
+                self.graph.remove_edge(u, v)
+                result["edges_removed"] += 1
+
+        # 再处理节点：documents 去掉 doc_id，为空则删节点（级联删除残余关联边）
+        nodes_to_remove = []
+        for node_id, data in self.graph.nodes(data=True):
+            docs = data.get("documents")
+            if isinstance(docs, list) and doc_id in docs:
+                remaining = [d for d in docs if d != doc_id]
+                if remaining:
+                    data["documents"] = remaining
+                    result["nodes_updated"] += 1
+                else:
+                    nodes_to_remove.append(node_id)
+        for node_id in nodes_to_remove:
+            if node_id in self.graph:
+                result["edges_removed"] += self.graph.degree(node_id)
+                self.graph.remove_node(node_id)
+                result["nodes_removed"] += 1
+
+        if any(result.values()):
+            self.logger.info(f"文档 {doc_id} 已从知识图谱移除: {result}")
+            self._layout_cache.clear()
+            self._autosave()
+        return result
+
+    # ==================== 可视化：子图抽取与布局 ====================
+
+    def subgraph_for_view(
+        self,
+        types: Optional[List[str]] = None,
+        min_confidence: float = 0.0,
+        max_nodes: int = 500,
+        focus: Optional[str] = None,
+        hops: int = 1,
+    ) -> Dict[str, Any]:
+        """抽取用于可视化的子图（节点/边列表）。
+
+        筛选顺序：实体类型 → 最小置信度 → 聚焦实体的 N 跳邻域（可选）→ 按度数
+        取前 ``max_nodes`` 个节点；边只保留两端都在所选节点集合内的。
+
+        Returns:
+            ``{"nodes": [{id, text, entity_type, confidence, degree, documents}],
+            "edges": [{source, target, relation_type, confidence, documents}],
+            "total_nodes", "total_edges", "truncated"}``
+        """
+        empty = {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0, "truncated": False}
+        if self.graph is None or self.graph.number_of_nodes() == 0:
+            return empty
+
+        g = self.graph
+        type_set = {str(t).strip().lower() for t in (types or []) if str(t).strip()} or None
+        try:
+            min_conf = float(min_confidence or 0.0)
+        except (TypeError, ValueError):
+            min_conf = 0.0
+
+        candidates = []
+        for node_id, data in g.nodes(data=True):
+            if type_set and str(data.get("entity_type", "other")).lower() not in type_set:
+                continue
+            try:
+                conf = float(data.get("confidence", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            if conf < min_conf:
+                continue
+            candidates.append(node_id)
+
+        focus_text = (focus or "").strip().lower()
+        if focus_text and candidates:
+            # 聚焦：匹配实体文本（精确优先，其次包含），取其 N 跳邻域（忽略方向）
+            cand_set = set(candidates)
+            exact = [n for n in candidates if str(g.nodes[n].get("text", "")).lower() == focus_text]
+            centers = exact or [
+                n for n in candidates if focus_text in str(g.nodes[n].get("text", "")).lower()
+            ]
+            if not centers:
+                return dict(empty, total_nodes=g.number_of_nodes(), total_edges=g.number_of_edges())
+            hops = max(1, min(int(hops or 1), 3))
+            undirected = g.to_undirected(as_view=True)
+            reach = set()
+            for c in centers:
+                reach.update(nx.single_source_shortest_path_length(undirected, c, cutoff=hops).keys())
+            candidates = [n for n in candidates if n in reach and n in cand_set]
+
+        degree = dict(g.degree(candidates))
+        candidates.sort(key=lambda n: (-degree.get(n, 0), str(n)))
+        try:
+            limit = max(1, int(max_nodes or 500))
+        except (TypeError, ValueError):
+            limit = 500
+        truncated = len(candidates) > limit
+        selected = candidates[:limit]
+        selected_set = set(selected)
+
+        nodes = []
+        for node_id in selected:
+            data = g.nodes[node_id]
+            nodes.append({
+                "id": node_id,
+                "text": str(data.get("text", node_id)),
+                "entity_type": str(data.get("entity_type", "other")),
+                "confidence": float(data.get("confidence", 1.0) or 0.0),
+                "degree": int(degree.get(node_id, 0)),
+                "documents": list(data.get("documents") or []),
+            })
+        edges = []
+        for u, v, data in g.edges(selected, data=True):
+            if u in selected_set and v in selected_set:
+                edges.append({
+                    "source": u,
+                    "target": v,
+                    "relation_type": str(data.get("relation_type", "related")),
+                    "confidence": float(data.get("confidence", 1.0) or 0.0),
+                    "documents": list(data.get("documents") or []),
+                })
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "total_nodes": g.number_of_nodes(),
+            "total_edges": g.number_of_edges(),
+            "truncated": truncated,
+        }
+
+    def layout_positions(self, node_ids: List[str], dim: int = 3) -> Dict[str, tuple]:
+        """为给定节点集合计算 spring 布局坐标（``dim`` = 2 或 3），按集合哈希缓存。
+
+        同一节点集合重复渲染（如只切换边标签开关）不必重新迭代布局；图谱变更
+        （add/remove/clear/load）时缓存清空。
+        """
+        if self.graph is None or not node_ids:
+            return {}
+        dim = 3 if int(dim or 3) >= 3 else 2
+        key = (hash(frozenset(node_ids)), dim)
+        cached = self._layout_cache.get(key)
+        if cached is not None:
+            return cached
+        sub = self.graph.subgraph([n for n in node_ids if n in self.graph])
+        try:
+            pos = nx.spring_layout(sub, dim=dim, seed=42)
+        except Exception as e:  # noqa: BLE001 - 布局失败时退化为随机布局
+            self.logger.warning(f"spring 布局失败，退化为随机布局: {e}")
+            pos = nx.random_layout(sub, dim=dim, seed=42)
+        result = {str(n): tuple(float(x) for x in xy) for n, xy in pos.items()}
+        if len(self._layout_cache) >= 8:
+            self._layout_cache.pop(next(iter(self._layout_cache)))
+        self._layout_cache[key] = result
+        return result
+
     def clear(self, persist: bool = False):
         """清空内存中的图谱。
 
@@ -461,6 +643,7 @@ class KnowledgeGraphBuilder:
         """
         if self.graph is not None:
             self.graph.clear()
+            self._layout_cache.clear()
             self.logger.info("知识图谱已清空（persist=%s）", persist)
             if persist:
                 self._autosave()

@@ -700,8 +700,13 @@ def build_meta_overview(rag_engine) -> dict:
 
 # ==================== 知识库/网络分区综合 ====================
 
-def synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
+def synthesize_prompt(
+    question: str, kb_context: str, web_context: str, history: str = ""
+) -> str:
     """组装带"准确回答方法论"的结构化 prompt。
+
+    ``history`` 为最近 2-3 轮对话的紧凑摘要（可为空）：连续对话中用于理解指代
+    与延续上下文，但明确要求"事实只以资料为准"，避免把历史回答当作依据。
 
     此前 prompt 只要求"区分来源、综合总结"，缺乏对**语义准确性**的引导，导致
     LLM 从含多个数字/限定语的上下文里挑错信息（例如把"直降 1177 元"当成售价，
@@ -724,9 +729,15 @@ def synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
         "列出其他版本/渠道的取值并解释差异原因，让回答丰富清楚，不要一句话带过。",
         "5. 【知识库检索内容】优先于【网络搜索补充】；两者冲突以知识库为准并指出差异。",
         "",
-        f"## 问题\n{question}",
-        "",
     ]
+    if history:
+        parts.append(
+            "## 对话上下文（最近几轮，仅用于理解指代与延续话题；事实请以下方资料为准）\n"
+            f"{history}"
+        )
+        parts.append("")
+    parts.append(f"## 问题\n{question}")
+    parts.append("")
     if kb_context:
         parts.append(f"## 知识库检索内容（本地文档，优先）\n{kb_context}")
     else:
@@ -793,6 +804,7 @@ def generate_answer(
     progress: ProgressCallback = None,
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
+    history_text: str = "",
 ) -> dict:
     """根据知识库状态生成回答（知识库/网络分区标注、综合总结）。
 
@@ -805,6 +817,7 @@ def generate_answer(
         progress: 编排级进度回调（网络回退、综合、思考等阶段）。
         rag_progress_callback: 直接透传给 ``query_with_sources`` 的进度回调。
         should_stop: 取消探针，阶段边界命中即抛 ``PipelineCancelled``。
+        history_text: 最近几轮对话的紧凑文本（连续对话时注入综合 prompt）。
 
     Returns:
         ``{"answer": str, "sources": [...]}``。sources 仅含知识库来源。
@@ -820,7 +833,7 @@ def generate_answer(
     if not kb_initialized:
         if not web_search_result:
             _emit(progress, "kb_uninitialized", "💡 知识库为空，直接使用模型回答（可能不含最新信息）")
-        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
+        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context, history=history_text)
         _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
         answer = llm_direct_answer(prompt)
         if web_search_result:
@@ -871,7 +884,7 @@ def generate_answer(
         # 否则（过滤掉了噪音，或需要综合网络补充）基于"仅相关片段"重新综合，
         # 避免 LlamaIndex 原始回答里混入被过滤掉的噪音内容。
         kb_context = format_kb_context(relevant_sources)
-        prompt = synthesize_prompt(original_question, kb_context, web_context)
+        prompt = synthesize_prompt(original_question, kb_context, web_context, history=history_text)
         if web_search_result:
             _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答...")
         else:
@@ -890,7 +903,7 @@ def generate_answer(
             # 回退搜索的结果同样精简后再入 prompt
             web_context = compact_web_context(web_search_result, original_question)
 
-    prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context)
+    prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context, history=history_text)
     _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
     answer = llm_direct_answer(prompt)
     if web_search_result:
@@ -912,12 +925,18 @@ def answer_question(
     progress: ProgressCallback = None,
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
+    context=None,
 ) -> dict:
     """完整的知识库问答编排入口，CLI 与 Web 共享。
 
     覆盖：元/概览问题直答、LLM 驱动网络搜索增强、知识库/网络双区综合、
     0 命中网络回退。**不包含**内联文件入库（该逻辑与交互强相关，保留在
     CLI 层，调用本函数前自行处理并传入改写后的 question）。
+
+    连续对话：传入 ``context``（``conversation_context.ConversationContext``）
+    后，若会话已有历史且问题疑似追问，会先用 LLM 把问题改写为独立问题，并以
+    改写后的问题做检索/联网/相关性判定/综合；综合 prompt 追加最近几轮摘要。
+    首轮或独立问题不产生任何额外开销。**本函数不写入会话**，由调用方记录。
 
     Args:
         rag_engine: 已初始化的 RAGEngine。
@@ -927,11 +946,13 @@ def answer_question(
         progress: 编排级进度回调。
         rag_progress_callback: 透传给 query_with_sources 的进度回调。
         should_stop: 取消探针；用户请求停止时在阶段边界抛 ``PipelineCancelled``。
+        context: 可选会话上下文，用于问题改写与历史注入。
 
     Returns:
         统一结构：
         ``{"kind": "meta"|"answer", "answer": str, "kb_sources": [...],
-           "web_sources": [...], "meta": {...}|None}``
+           "web_sources": [...], "meta": {...}|None, "rewritten": str|None}``
+        ``rewritten`` 为被改写后的独立问题（未改写时为 None）。
     """
     question = (question or "").strip()
     _check_stop(should_stop)
@@ -946,7 +967,23 @@ def answer_question(
             "kb_sources": [],
             "web_sources": [],
             "meta": overview,
+            "rewritten": None,
         }
+
+    # 连续对话：疑似追问时改写为独立问题；并取最近几轮紧凑文本供综合 prompt
+    effective = question
+    rewritten = None
+    history_text = ""
+    if context is not None:
+        try:
+            rw = context.rewrite_question(question, progress=progress)
+            if rw.get("changed"):
+                effective = rw["question"]
+                rewritten = effective
+            history_text = context.history_text(turns=3)
+        except Exception as e:  # noqa: BLE001 - 上下文层故障不影响作答
+            logger.warning(f"读取会话上下文失败，按无历史处理: {e}")
+        _check_stop(should_stop)
 
     if rag_engine.query_engine is None:
         _emit(progress, "kb_uninitialized", "⚠️ 知识库未初始化，将根据网络搜索/模型直接回答")
@@ -955,19 +992,20 @@ def answer_question(
     web_search_result = ""
     if enable_web_search:
         web_search_result = augment_with_web_search(
-            question, progress=progress, should_stop=should_stop
+            effective, progress=progress, should_stop=should_stop
         )
     web_sources = parse_web_sources(web_search_result) if web_search_result else []
 
     result = generate_answer(
         rag_engine,
-        question,
-        question,
+        effective,
+        effective,
         web_search_result,
         show_progress=show_progress,
         progress=progress,
         rag_progress_callback=rag_progress_callback,
         should_stop=should_stop,
+        history_text=history_text,
     )
 
     return {
@@ -976,27 +1014,33 @@ def answer_question(
         "kb_sources": result.get("sources", []),
         "web_sources": web_sources,
         "meta": None,
+        "rewritten": rewritten,
     }
 
 
 # ==================== 对话落库（会话持久化）====================
 
-def record_conversation(user_content: str, assistant_content: str) -> None:
-    """将一轮对话写入"当前会话"，作为对话历史的单一来源。
+def record_conversation(
+    user_content: str,
+    assistant_content: str,
+    *,
+    context=None,
+    trace: Optional[str] = None,
+    rewritten: Optional[str] = None,
+    progress: ProgressCallback = None,
+) -> None:
+    """将一轮对话写入会话（对话历史的单一来源），并按需触发自动压缩。
 
-    若当前没有会话则自动创建，使 CLI/Web 的 /ask、/agent 对话始终被持久化。
+    ``context`` 为空时使用进程内单例（跟随"当前会话"，无会话则自动创建），
+    使 CLI/Web 的 /ask、/agent、自然语言输入与多 Agent 对话始终被持久化。
     """
     try:
-        from session_manager import get_session_manager
-        manager = get_session_manager()
-        session = manager.get_current_session()
-        if session is None:
-            session = manager.create_session()
-            logger.info(f"自动创建会话用于记录对话: {session.session_id}")
-        if user_content:
-            session.add_message("user", user_content)
-        if assistant_content:
-            session.add_message("assistant", assistant_content)
-        manager.save_session(session)
+        if context is None:
+            from conversation_context import get_conversation_context
+            context = get_conversation_context()
+        context.record(
+            user_content, assistant_content,
+            trace=trace, rewritten=rewritten, progress=progress,
+        )
     except Exception as e:  # noqa: BLE001
         logger.error(f"记录对话到会话失败: {e}")

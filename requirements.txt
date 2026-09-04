@@ -47,6 +47,7 @@ prompt-toolkit
 
 # Web 界面（Gradio，Python 3.13 兼容）
 gradio
+plotly                    # 知识图谱 3D/2D 可视化（Web 图谱视图 + /graph-export 离线 HTML）
 
 # 测试工具
 pytest

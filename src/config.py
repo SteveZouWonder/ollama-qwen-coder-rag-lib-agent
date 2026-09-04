@@ -184,9 +184,10 @@ WEB_SEARCH_CACHE_TTL_HOURS = int(os.getenv("WEB_SEARCH_CACHE_TTL_HOURS", "24"))
 WEB_SEARCH_AGGREGATE = os.getenv("WEB_SEARCH_AGGREGATE", "true").lower() == "true"
 
 # ==================== Agent 配置 ====================
-# 打包运行时收纳到用户数据目录，源码运行时仍为 ~/.code_agent_history.json
+# 【已弃用】旧版 ReAct 专用的全局历史文件。对话历史现已统一存放在会话
+# （SESSION_STORAGE_PATH）中；该路径仅用于启动时把旧文件一次性迁移到默认会话。
 HISTORY_FILE = str(_home_file(".code_agent_history.json"))
-MAX_HISTORY = int(os.getenv("MAX_HISTORY", "100"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "100"))  # 已弃用：历史按 token 预算滚动压缩，不再按条数截断
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
 TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
@@ -224,6 +225,19 @@ AUTO_ARCHIVE_DAYS = int(os.getenv("AUTO_ARCHIVE_DAYS", "30"))
 # 历史压缩配置
 HISTORY_COMPRESSION_RATIO = float(os.getenv("HISTORY_COMPRESSION_RATIO", "0.5"))
 AUTO_COMPRESS_ENABLED = os.getenv("AUTO_COMPRESS_ENABLED", "true").lower() == "true"
+
+# ==================== 连续对话上下文配置 ====================
+# 对话历史（滚动摘要 + 最近几轮原文）允许占用的上下文窗口比例。默认 30%：
+# 其余留给系统提示、知识库片段/网络摘要与模型输出。可用环境变量覆盖。
+CONTEXT_HISTORY_RATIO = float(os.getenv("CONTEXT_HISTORY_RATIO", "0.30"))
+# 始终以原文保留的最近轮数（1 轮 = 一问一答），更早的轮次被折叠进滚动摘要。
+CONTEXT_RECENT_TURNS = int(os.getenv("CONTEXT_RECENT_TURNS", "3"))
+# 历史估算 token 超过预算的该比例即触发自动压缩。
+CONTEXT_COMPRESS_THRESHOLD = float(os.getenv("CONTEXT_COMPRESS_THRESHOLD", "0.70"))
+# "对话过长建议新会话"：累计压缩次数达到该值即建议；用户选择继续后再 +2 才再次提示。
+CONTEXT_SUGGEST_NEW_AFTER_COMPRESSIONS = int(os.getenv("CONTEXT_SUGGEST_NEW_AFTER_COMPRESSIONS", "2"))
+# 距上一条消息超过该小时数再提问，视为新话题建议新会话。
+CONTEXT_SUGGEST_IDLE_HOURS = float(os.getenv("CONTEXT_SUGGEST_IDLE_HOURS", "6"))
 
 # ==================== 安全策略 ====================
 READONLY_COMMANDS = (
