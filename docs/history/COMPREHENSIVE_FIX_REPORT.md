@@ -167,8 +167,8 @@ file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|T
    - OCR 依赖版本更新
 
 ### 文档
-9. **AGENT_FIX_SUMMARY.md**: Agent 功能认知修复报告
-10. **IMAGE_HANDLING_FIX.md**: 图片处理功能修复报告
+9. **AGENT_FIX_SUMMARY.md**: Agent 功能认知修复报告（已并入本报告并删除）
+10. **IMAGE_HANDLING_FIX.md**: 图片处理功能修复报告（已并入本报告并删除）
 
 ## 验证状态
 

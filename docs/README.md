@@ -1,75 +1,59 @@
 # 文档中心
 
-本目录包含项目的详细文档资源。
+```
+docs/
+├── tutorials/     【用户】  安装、功能、场景、桌面应用、故障排除、最佳实践
+├── features/      【功能】  每个功能一个目录：设计 + 实现记录 + 状态；索引与路线图
+├── development/   【开发者】CI/CD、测试设计、内容安全扫描器、文档维护流程
+├── history/       【归档】  一次性修复报告与实施总结（反映编写当日状态）
+└── assets/                  README 演示 GIF 与生成脚本
+```
 
-## 📚 文档分类
+## 📖 教程 (tutorials/)
 
-### 📖 教程文档 (tutorials/)
-- [项目概述和系统要求](tutorials/01-overview.md)
-- [安装和配置指南](tutorials/02-installation.md)
-- [实战场景示例](tutorials/03-scenarios.md)
-- [详细功能说明](tutorials/04-features.md)
-- [桌面应用使用指南](tutorials/05-desktop-app.md)
-- [故障排除指南](tutorials/06-troubleshooting.md)
-- [最佳实践指南](tutorials/07-best-practices.md)
+| 篇 | 内容 |
+|---|---|
+| [01 项目概述和系统要求](tutorials/01-overview.md) | 定位、架构、硬件与软件要求 |
+| [02 安装和配置指南](tutorials/02-installation.md) | Ollama 与模型、依赖安装、一键前置条件检查、环境变量 |
+| [03 实战场景示例](tutorials/03-scenarios.md) | 14 个场景：学术、开发、OCR、多 Agent、文件与会话管理等 |
+| [04 详细功能说明](tutorials/04-features.md) | RAG / Agent / 安全机制 / 文件与会话管理等 |
+| [05 桌面应用使用指南](tutorials/05-desktop-app.md) | 托盘、模型预热、状态监控、打包版 |
+| [06 故障排除指南](tutorials/06-troubleshooting.md) | 依赖冲突、ChromaDB、urllib3、OCR、性能 |
+| [07 最佳实践指南](tutorials/07-best-practices.md) | 知识库组织、提问技巧、安全使用 |
 
-### 🎨 设计文档 (design/)
-- [设计总结](design/DESIGN_SUMMARY.md)
-- [本地应用设计](design/LOCAL_APPLICATION_DESIGN.md)
-- [简单设计文档](design/SIMPLE_DESIGN.md)
+导航页：[TUTORIAL.md](../TUTORIAL.md)
 
-### ⚙️ 实现文档 (implementation/)
-- [实现指南](implementation/IMPLEMENTATION_GUIDE.md)
-- [实现计划](implementation/IMPLEMENTATION_PLAN.md)
-- [桌面应用文档](implementation/DESKTOP_APP_DOCUMENTATION.md)
+## 🎯 功能 (features/)
 
-### 🧪 测试文档 (testing/)
-- [测试设计文档](testing/TEST_DESIGN.md)
+- [功能索引](features/README.md) - 待实现 / 已实现 / 残留小项 / 明确不做
+- [路线图](features/ROADMAP.md) - 已完成领域、进行中、工程目标
 
-### 📋 一般文档 (general/)
-- [知识库优化实现总结](general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
-- [安全功能文档](general/SECURITY_DOCUMENTATION.md)
-- [使用场景详细指南](general/USE_CASES.md)
-- [快速开始检查](general/QUICK_START_CHECK.md)
-- [项目路线图](general/PROJECT_ROADMAP.md)
-- [v4.1.0实施总结](general/v4.1.0_IMPLEMENTATION_SUMMARY.md) ⭐ v4.1.0
+| 编号 | 功能 | 状态 |
+|---|---|---|
+| [F1](features/f1-ocr-extract/) | OCR 图片/图表提取 | ✅ |
+| [F2](features/f2-multiple-agent/) | 多 Agent 协作系统（骨架） | ✅ |
+| [F3](features/f3-file-session-management/) | 文件管理与会话管理 | ✅ |
+| [F4](features/f4-command-recommender/) | 智能命令推荐 | ✅ |
+| [F5](features/f5-desktop-packaging/) | 跨平台桌面应用打包与发布 | ✅ |
+| [F6](features/f6-capability-tools/) | 系统能力增强（Agent 工具集） | ✅ |
+| [F7](features/f7-web-ui/) | Web 界面（Gradio） | ✅ |
+| [F8](features/f8-agent-modes-optimization/) | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | 📋 待实现 |
 
-### 📜 历史文档 (history/)
-- [Agent功能认知修复](history/AGENT_FIX_SUMMARY.md)
-- [OCR配置完整修复](history/OCR_CONFIG_FIX_COMPLETE.md)
-- [图片处理修复](history/IMAGE_HANDLING_FIX.md)
-- [进度显示实现](history/PROGRESS_DISPLAY_IMPLEMENTATION_REPORT.md)
-- [教程重组总结](history/TUTORIAL_RESTRUCTURE_SUMMARY.md)
-- [文档重组总结](history/DOCUMENTATION_REORG_SUMMARY.md)
-- [文档更新报告](history/DOCUMENTATION_UPDATE_REPORT.md)
-- [警告问题修复](history/WARNING_FIX.md)
-- [综合修复报告](history/COMPREHENSIVE_FIX_REPORT.md)
+## 🔧 开发者 (development/)
 
-### 🚀 未来特性设计 (future-feature-design/)
-- [系统能力增强设计](future-feature-design/SYSTEM_CAPABILITY_ENHANCEMENT.md) 📋 需求分析
-- [跨平台桌面应用发布流程设计](future-feature-design/CROSS_PLATFORM_DESKTOP_APP_DESIGN.md) 🚧 设计阶段
-- [Web 界面（Gradio）设计方案](future-feature-design/WEB_UI_GRADIO_DESIGN.md) ✅ 已完成（v2 布局重设计）
-- OCR提取功能设计 ✅ 已完成
-- 多Agent系统设计 ✅ 已完成
-- 文件管理和会话管理优化 ✅ 已完成
+- [CI_CD.md](development/CI_CD.md) - GitHub Actions：CI 检查、PR 门禁、打 tag 自动发布
+- [TEST_DESIGN.md](development/TEST_DESIGN.md) - 测试 Mock 策略与可测性设计（初版，门禁现为 80%）
+- [CONTENT_SECURITY.md](development/CONTENT_SECURITY.md) - 内容安全扫描器 `content_security.py` 的 API 与集成
+- [DOCUMENTATION_WORKFLOW.md](development/DOCUMENTATION_WORKFLOW.md) - 代码变更后的文档更新与整理流程
 
-### 🎯 功能实现文档 (implemented-features/)
-- [OCR提取功能实现](implemented-features/f1-ocr-extrace/) ✅ v4.0.0
-- [多Agent系统实现](implemented-features/f2-multiple-agent/) ✅ v4.0.0
-- [文件管理和会话管理实现](implemented-features/f3-file-session-management/) ⭐ v4.1.0
-- [智能命令推荐系统实现](implemented-features/f4-command-recommender/) ⭐ v4.2.0
+## 📜 归档 (history/)
 
-##  相关链接
+见 [history/README.md](history/README.md)。
 
-- **项目主文档**: [README.md](../README.md)
-- **详细使用教程**: [TUTORIAL.md](../TUTORIAL.md)
+## 快速导航
 
-## 📖 文档导航
-
-如果您是：
-- **新用户** → 先阅读 [README.md](../README.md) 了解项目概览
-- **想要快速开始** → 查看 [TUTORIAL.md](../TUTORIAL.md#快速开始)
-- **遇到问题** → 查看 [TUTORIAL.md](../TUTORIAL.md#故障排除) 或 [警告问题修复](history/WARNING_FIX.md)
-- **想了解新功能** → 查看 [知识库优化实现总结](general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
-- **关注安全问题** → 查看 [安全功能文档](general/SECURITY_DOCUMENTATION.md)
-- **查看实际应用** → 查看 [使用场景详细指南](general/USE_CASES.md)
+- **新用户** → [README.md](../README.md) → [02 安装](tutorials/02-installation.md)
+- **遇到问题** → [06 故障排除](tutorials/06-troubleshooting.md)
+- **想了解新功能** → [CHANGELOG.md](../CHANGELOG.md)、[04 功能说明](tutorials/04-features.md)
+- **关注安全** → [04 · 安全机制](tutorials/04-features.md#5-安全机制)、[CONTENT_SECURITY.md](development/CONTENT_SECURITY.md)
+- **参与开发** → [功能索引](features/README.md)、[CI/CD](development/CI_CD.md)、[文档流程](development/DOCUMENTATION_WORKFLOW.md)

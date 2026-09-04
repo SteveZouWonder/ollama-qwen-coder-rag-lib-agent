@@ -255,6 +255,37 @@
 - 托盘"打开 Web UI"改为轮询等待服务端口就绪后再打开浏览器（此前固定等待 2 秒），
   避免在打包首启（需先做 Ollama 引导与索引加载）时打开空白/无法连接的页面。
 
+### 文档
+- 清理 `docs/future-feature-design/`：已落地的「跨平台桌面应用打包」「系统能力增强
+  （Agent 工具集）」「Web 界面」三份设计文档迁移到 `docs/implemented-features/`
+  （重编号为 F5 / F6 / F7，解决与 `f4-command-recommender` 的编号冲突），各自新增
+  README 记录与原设计的差异及子项取舍；目录 README 重写为只含待实现项（F8 三种对话
+  模式优化 + 残留小项）、已归档索引与「已明确不做」清单（时间序列分析、学习路径、
+  独立代码语义索引、MySQL / PostgreSQL、应用内自动更新、.pkg / deb / rpm / Docker、
+  应用商店、插件系统、云同步）。`docs/README.md` 与 `docs/general/PROJECT_ROADMAP.md`
+  同步对齐现状。
+- 清理 `docs/design/`、`docs/implementation/`、`docs/general/`、`docs/history/`：删除未被采纳
+  的桌面应用"多文件方案"设计与实现指南、与其他文档逐字重复的实现计划、已合并进综合报告的
+  两份修复报告、三份"文档搬运"记录、与 F4 重复的命令推荐实施总结、内容已并入故障排除教程的
+  `WARNING_FIX`，以及含 4 处不存在的 `/search` 命令且与 `tutorials/03-scenarios.md` 重叠的
+  `USE_CASES.md`；`design/` 与 `implementation/` 目录随之移除。被采纳的托盘方案 `SIMPLE_DESIGN`
+  迁入 F5 目录，`v4.1.0_IMPLEMENTATION_SUMMARY` 迁入 F3 目录，`KNOWLEDGE_OPTIMIZATION_SUMMARY`
+  归入 `history/`。修正 `QUICK_START_CHECK.md`（`scrpits` 拼写、Python 版本要求 3.13、重复
+  小节编号、过时的 `chromadb==0.4.22` 建议、启动命令改为 `launcher.py`）与
+  `SECURITY_DOCUMENTATION.md` 的 `src/`、`tests/` 路径；根 README、`docs/README.md`、教程页
+  中十余处指向 TUTORIAL.md 已不存在锚点或已移动文件的断链改为指向 `docs/tutorials/` 对应
+  章节；`history/README.md` 重写并补齐两份此前未被任何索引收录的系统提示优化报告。
+- `docs/` 目录按受众重组为四类：`tutorials/`（用户）、`features/`（功能：`implemented-features/`
+  与 `future-feature-design/` 合并，一个功能一个目录、状态写在各自 README，F8 需求与提示词进
+  `features/f8-agent-modes-optimization/`，路线图移入 `features/ROADMAP.md`）、`development/`
+  （开发者：`CI_CD.md`、`TEST_DESIGN.md`、内容安全扫描器文档 `CONTENT_SECURITY.md`、文档维护流程
+  `DOCUMENTATION_WORKFLOW.md`）、`history/`（归档）；移除 `general/`、`testing/` 目录与根目录散件。
+  `QUICK_START_CHECK.md` 的独有内容（一键检查、结果图例、依赖诊断、手动验证清单）并入
+  `tutorials/02-installation.md`「步骤 6」后删除，该教程的启动命令同步改为 `launcher.py`；
+  `TEST_DESIGN.md` 顶部标注现行 80% 门禁与测试清单以 `tests/` 为准；修正 `f1-ocr-extrace` 目录名
+  拼写为 `f1-ocr-extract`。`docs/README.md`、根 README 目录树与文档链接、文档流程中的目录约定
+  全部对齐新结构。
+
 ## [v0.0.13] - 2026-07-20
 
 ### 新增

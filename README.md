@@ -186,7 +186,7 @@ xattr -dr com.apple.quarantine /Applications/Cerebro.app
 .\scripts\check_prereqs.ps1
 ```
 
-如果检查通过，继续以下步骤。如果有问题，请参考 [详细使用教程](TUTORIAL.md#前置条件检查与配置)。
+如果检查通过，继续以下步骤。如果有问题，请参考 [安装和配置指南](docs/tutorials/02-installation.md) （含一键前置条件检查与手动验证清单）。
 
 ### 1. 环境准备
 
@@ -217,7 +217,7 @@ pip install -r requirements.txt
 # 使用 --no-cache-dir 选项
 pip install -r requirements.txt --no-cache-dir
 
-# 或查看详细文档：[依赖冲突故障排除](TUTORIAL.md#依赖冲突问题-resolution-too-deep)
+# 或查看详细文档：[依赖冲突故障排除](docs/tutorials/06-troubleshooting.md#依赖冲突问题-resolution-too-deep)
 ```
 
 **如果遇到ChromaDB遥测错误：**
@@ -225,7 +225,7 @@ pip install -r requirements.txt --no-cache-dir
 # 项目已自动禁用遥测，如仍遇到错误：
 export ANONYMIZED_TELEMETRY=False
 
-# 或查看详细文档：[ChromaDB遥测错误](TUTORIAL.md#问题5chromadb遥测错误)
+# 或查看详细文档：[ChromaDB遥测错误](docs/tutorials/06-troubleshooting.md#chromadb遥测错误)
 ```
 
 ### 3.1 启用智能命令推荐系统
@@ -373,13 +373,12 @@ ollama-qwen-coder-rag-lib/
 ├── index_storage/         # 索引持久化存储
 │   ├── chroma_db/         # ChromaDB 向量数据库
 │   └── llama_index/       # LlamaIndex 索引文件
-├── docs/                  # 文档目录
-│   ├── design/           # 设计文档
-│   ├── implementation/    # 实现文档
-│   ├── testing/          # 测试文档
-│   ├── general/          # 一般文档
-│   ├── future-feature-design/  # 未来特性设计
-│   └── tutorials/        # 教程文档
+├── docs/                  # 文档目录（索引见 docs/README.md）
+│   ├── tutorials/        # 用户教程
+│   ├── features/         # 功能设计与实现记录（f1–f8）、路线图
+│   ├── development/      # CI/CD、测试设计、内容安全、文档流程
+│   ├── history/          # 历史修复报告
+│   └── assets/           # 演示 GIF
 ├── scripts/               # 脚本文件
 │   ├── check_prereqs.sh   # 前置条件检查脚本
 │   ├── install_deps.sh    # 依赖安装脚本
@@ -827,7 +826,7 @@ engine = RAGEngine(enable_security=True)
 engine = RAGEngine(enable_security=False)
 ```
 
-详细安全说明请查看：[安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)
+详细安全说明请查看：[内容安全扫描器文档](docs/development/CONTENT_SECURITY.md)
 
 ---
 
@@ -1124,31 +1123,31 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 - **内容净化**: 自动移除或标记危险内容
 - **威胁分级**: 5级威胁分类，灵活应对不同风险
 
-详细实现说明请查看：[知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
+内容安全扫描器的详细说明请查看：[内容安全扫描器文档](docs/development/CONTENT_SECURITY.md)
 
 ---
 
 ## �📚 文档资源
 
-- **[详细使用教程](TUTORIAL.md)** - 完整的前置条件配置、安装指南、功能说明、故障排除
-- **[使用场景详细指南](docs/general/USE_CASES.md)** - 8大类别40+实战场景示例和最佳实践
-- **[快速开始检查](docs/general/QUICK_START_CHECK.md)** - 一键验证环境配置
-- **[警告问题修复说明](docs/general/WARNING_FIX.md)** - ChromaDB遥测错误和urllib3 OpenSSL警告的修复
-- **[测试设计文档](docs/testing/TEST_DESIGN.md)** - 单元测试设计和覆盖率说明（当前覆盖率87%）
-- **[知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)** - 知识库智能优化功能的完整实现说明
-- **[安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)** - 内容安全扫描器的详细使用指南
+- **[详细使用教程](TUTORIAL.md)** - 教程导航：安装配置、功能说明、实战场景、桌面应用、故障排除、最佳实践
+- **[实战场景示例](docs/tutorials/03-scenarios.md)** - 14 个实战场景（学术、开发、OCR、多 Agent、文件与会话管理等）
+- **[安装和配置指南](docs/tutorials/02-installation.md)** - 含一键前置条件检查（`scripts/check_prereqs.sh`）
+- **[故障排除指南](docs/tutorials/06-troubleshooting.md)** - 依赖冲突、ChromaDB 遥测错误、urllib3 OpenSSL 警告等
+- **[测试设计文档](docs/development/TEST_DESIGN.md)** - 测试 Mock 策略与可测性设计（覆盖率门禁 80%）
+- **[文档中心](docs/README.md)** - 功能实现文档、未来特性设计、CI/CD 与历史报告索引
+- **[内容安全扫描器文档](docs/development/CONTENT_SECURITY.md)** - `content_security.py` 的 API 与集成方式
 
 ### 快速链接
 
-- **使用场景** → [使用场景详细指南](docs/general/USE_CASES.md)
-- **安装问题** → [前置条件检查与配置](TUTORIAL.md#前置条件检查与配置)
-- **功能详解** → [详细功能说明](TUTORIAL.md#详细功能说明)
-- **安全配置** → [安全机制](TUTORIAL.md#安全机制)
-- **故障排除** → [故障排除](TUTORIAL.md#故障排除)
-- **依赖冲突** → [依赖冲突问题](TUTORIAL.md#依赖冲突问题-resolution-too-deep)
-- **警告问题** → [警告问题修复说明](docs/general/WARNING_FIX.md)
-- **知识库优化** → [知识库优化实现总结](docs/general/KNOWLEDGE_OPTIMIZATION_SUMMARY.md)
-- **安全防护** → [安全功能文档](docs/general/SECURITY_DOCUMENTATION.md)
+- **使用场景** → [实战场景示例](docs/tutorials/03-scenarios.md)
+- **安装问题** → [安装和配置指南](docs/tutorials/02-installation.md)
+- **功能详解** → [详细功能说明](docs/tutorials/04-features.md)
+- **安全配置** → [安全机制](docs/tutorials/04-features.md#5-安全机制)
+- **故障排除** → [故障排除指南](docs/tutorials/06-troubleshooting.md)
+- **依赖冲突** → [依赖冲突问题](docs/tutorials/06-troubleshooting.md#依赖冲突问题-resolution-too-deep)
+- **警告问题** → [ChromaDB / urllib3 警告](docs/tutorials/06-troubleshooting.md#chromadb相关问题)
+- **桌面应用** → [桌面应用使用指南](docs/tutorials/05-desktop-app.md)
+- **安全防护** → [内容安全扫描器文档](docs/development/CONTENT_SECURITY.md)
 
 ---
 
