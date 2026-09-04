@@ -48,11 +48,11 @@ class TestMasterAgent:
         assert code_agent in master.specialized_agents
         assert test_agent in master.specialized_agents
     
-    def test_master_agent_process_coordination_task(self):
-        """测试处理协调任务"""
-        master = MasterAgent()
+    def test_master_agent_process_coordination_task(self, fake_engine_factory):
+        """测试处理协调任务（CodeAgent 注入假引擎）"""
+        master = MasterAgent(config={"use_llm": False})
         
-        code_agent = CodeAgent()
+        code_agent = CodeAgent(config={"engine_factory": fake_engine_factory()})
         master.set_specialized_agents([code_agent])
         
         task = AgentTask(

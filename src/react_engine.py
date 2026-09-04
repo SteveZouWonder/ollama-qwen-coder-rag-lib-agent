@@ -17,8 +17,8 @@ from agent_tools import registry, CommandSafetyChecker
 
 def read_system_prompt_from_file():
     """
-    从 .devin/SYSTEM_PROMPT.md 读取系统提示
-    如果文件不存在，返回None，使用内置的默认提示
+    从 .devin/SYSTEM_PROMPT.md 读取项目附加规范
+    如果文件不存在，返回None
     """
     prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
     if os.path.exists(prompt_file):
@@ -30,10 +30,19 @@ def read_system_prompt_from_file():
             return None
     return None
 
-# 内置后备系统提示（fallback）。
-# 仅当 .devin/SYSTEM_PROMPT.md 读取失败时使用，因此保持精简：
-# 只保留驱动本地小模型（如 qwen3.5:4b）做 ReAct 工具调用所必需的内容。
-# 完整的开发规范/工作流/多 Agent 协作说明见 .devin/SYSTEM_PROMPT.md。
+
+# 项目附加规范的模式：builtin（只用内置模板）| append（内置 + 追加项目规范，默认）
+# | replace（项目规范整体替换内置模板，旧行为）。
+PROMPT_MODE_ENV = "CODE_AGENT_PROMPT_MODE"
+# 追加模式下项目规范的最大字符数（超出截断），避免挤占本轮推理预算。
+SYSTEM_PROMPT_EXTRA_MAX_CHARS = int(os.getenv("SYSTEM_PROMPT_EXTRA_MAX_CHARS", "4000"))
+
+
+def _prompt_mode() -> str:
+    mode = os.getenv(PROMPT_MODE_ENV, "append").strip().lower()
+    return mode if mode in ("builtin", "append", "replace") else "append"
+
+
 def _extract_json_object(text: str) -> Optional[str]:
     """
     从 `Action Input:` 之后的文本中提取第一个完整的 JSON 对象。
@@ -106,85 +115,82 @@ def _parse_action_input(raw: str) -> dict:
         return {}
 
 
-SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 CodeAgent，运行在 ReAct 工具调用框架中。
+SYSTEM_PROMPT_TEMPLATE = """你是代码助手 CodeAgent，运行在 ReAct 工具调用框架中。能力：代码生成/重构/审查/调试、测试、文件操作与搜索、个人知识库检索（RAG）、图片/PDF OCR、网络搜索。这些功能均已启用；工具失败时分析原因，不要声称功能不存在或"无法访问互联网"。
 
-你的能力：代码生成与重构、代码审查与调试、测试生成与执行、文件操作与搜索、
-个人知识库检索（RAG，数据持久化于 index_storage）、图片/扫描件 OCR 识别（默认 Tesseract）、
-网络搜索（ddgs，Wikipedia 备用）、多 Agent 协作。这些功能均已启用——
-若工具调用失败应分析原因（配置/依赖问题），不要声称功能不存在或"无法访问互联网"。
-
-=== 可用工具（只能调用以下列出的工具）===
+=== 可用工具（只能调用以下工具；参数名后带 ? 表示可选）===
 {tool_descriptions}
 
-=== ReAct 输出格式（严格遵守）===
-每一步输出一个 Thought，然后**要么**调用一个工具，**要么**给出最终答案：
-
-调用工具时，严格输出（Action 与 Action Input 必须成对，且后面不要有多余文字）：
-Thought: <你的推理>
+=== 输出协议（严格遵守）===
+每步先写 Thought，然后要么调用一个工具，要么给出最终答案：
+Thought: <推理>
 Action: <工具名>
 Action Input: <一行合法 JSON 对象>
+（停止输出，等待 Observation）
 
 任务完成时：
-Thought: <你的推理>
+Thought: <推理>
 Final Answer: <给用户的最终回答>
 
-=== 格式硬性规则 ===
-1. Action Input 必须是**合法 JSON**，键和字符串值都用双引号，且写在**一行内**。
-   - 正确：Action Input: {"path": "test.py"}
-   - 正确：Action Input: {}   （无参数时用空对象）
-   - 错误：Action Input: {path: test.py}        （缺少引号）
-   - 错误：Action Input: {'path': 'test.py'}     （用了单引号）
-2. 每次**只能调用一个工具**；调用工具后**立即停止输出**，等待 Observation，不要自己编造 Observation。
-3. 不要在同一次回复里既输出 Action 又输出 Final Answer。
-4. 写多行代码到文件时，把代码作为 JSON 字符串值，用 \\n 表示换行、\\" 转义引号，整体仍是一行 JSON。
-   若代码较长，优先拆成多次小步骤，避免单条 Action Input 过长。
+=== 格式规则 ===
+1. Action Input 必须是一行合法 JSON：键和字符串值用双引号；无参数写 {}。
+   错误示例：{path: test.py}、{'path': 'test.py'}、跨多行。
+2. 每次只调用一个工具，Action 之后不要再写解释或 Final Answer，也不要自己编造 Observation。
+3. 多行代码作为 JSON 字符串值，用 \\n 表示换行、\\" 转义引号；代码较长时拆成多次小步骤。
+4. 工具返回 [格式错误]/[用户拒绝]/[错误] 时，修正后重试一次；连续两次失败换方法或说明原因。
+5. 相同工具与参数不要重复调用；已有结果直接使用。
 
-=== 正确示例：读取并分析文件 ===
-Thought: 需要先读取文件内容
-Action: read_file
-Action Input: {"path": "src/app.py"}
-（停止，等待 Observation）
-
-=== 正确示例：写代码并验证 ===
-Thought: 先写入文件
+=== 示例 ===
+Thought: 先写入文件再运行验证
 Action: write_file
 Action Input: {"path": "src/util.py", "content": "def add(a, b):\\n    return a + b\\n"}
-（Observation 返回成功后，再用 execute_command 运行测试）
 
-=== 常见错误示例（不要这样做）===
-✗ 一次输出多个 Action
-✗ Action Input 跨多行或用单引号 / 无引号
-✗ Action 之后又写解释文字或 Final Answer
-✗ 自己编写 Observation 内容
-
-=== 工具选择速查 ===
-- 写代码 → write_file，然后 execute_command 运行验证
-- 看代码 → read_file
-- 搜代码 → search_files；确认当前目录 → get_current_dir
-- 列目录 → list_directory（分析项目结构时先列目录，不要把目录当文件读）
-- 文档/论文/笔记内容 → query_knowledge_base；添加文档 → add_to_knowledge_base（支持 PDF/图片/文本）
-- 用户给出图片/PDF 路径 → 先 add_to_knowledge_base，再 query_knowledge_base（查询时带上文件名提高精度）
-- 知识库状态 → get_knowledge_stats / check_knowledge_status
-- 最新信息/实时数据（版本、新闻、价格等）→ web_search；指定网址提取内容 → web_content_extract
+=== 工具速查 ===
+- 写代码 → write_file，再 execute_command 运行验证；看代码 → read_file；搜代码 → search_files
+- 列目录 → list_directory（不要把目录当文件读）；当前目录 → get_current_dir
+- 文档/论文/笔记内容 → query_knowledge_base；添加文档 → add_to_knowledge_base（PDF/图片/文本）
+- 用户给出图片/PDF 路径 → 先 add_to_knowledge_base 再 query_knowledge_base（带文件名）
+- 最新/实时信息（版本、新闻、价格）→ web_search；指定网址 → web_content_extract
+- 知识库无相关内容（返回 [知识库无相关内容]）→ 转 web_search
 
 === 安全规则 ===
 - 不执行危险命令（如 rm -rf /）；可能修改系统的命令先说明意图等待确认
-- 写文件前确认路径正确
+- 写文件前确认路径正确，只在项目目录内写文件
 
-回答保持简洁专业，代码块用 markdown。不需要工具时直接给出 Final Answer。
+回答简洁专业，代码块用 markdown。不需要工具时直接给出 Final Answer。
 """
 
 
-def build_system_prompt() -> str:
-    """运行时组装系统提示（优先 .devin/SYSTEM_PROMPT.md，其次内置模板）。
+def build_system_prompt(tools: Optional[set] = None, extra: Optional[str] = None,
+                        mode: Optional[str] = None) -> str:
+    """运行时组装分层系统提示：精简内置模板 + 可选项目附加规范。
 
-    系统提示不再落盘到历史文件：每次启动按当前工具表重新生成，避免旧提示
-    被持久化后与代码不同步。
+    Args:
+        tools: 允许的工具名集合（None 表示全部），工具速查只列出这些工具。
+        extra: 角色附加提示（多 Agent 子角色注入），追加在最后。
+        mode: ``builtin`` 只用内置模板；``append``（默认）内置模板后追加
+            ``.devin/SYSTEM_PROMPT.md``（截断到 ``SYSTEM_PROMPT_EXTRA_MAX_CHARS``）；
+            ``replace`` 用该文件整体替换内置模板（旧行为）。
+
+    系统提示不落盘：每次启动按当前工具表重新生成，避免与代码不同步。
     """
-    tool_desc = registry.get_descriptions()
-    custom_prompt = read_system_prompt_from_file()
-    template = custom_prompt if custom_prompt else SYSTEM_PROMPT_TEMPLATE
-    return template.replace("{tool_descriptions}", tool_desc)
+    mode = mode or _prompt_mode()
+    tool_desc = registry.get_descriptions(names=tools, compact=True)
+    custom_prompt = read_system_prompt_from_file() if mode != "builtin" else None
+
+    if mode == "replace" and custom_prompt:
+        prompt = custom_prompt.replace(
+            "{tool_descriptions}", registry.get_descriptions(names=tools))
+    else:
+        prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
+        if mode == "append" and custom_prompt:
+            project = custom_prompt.replace("{tool_descriptions}", "（见上方工具列表）").strip()
+            if len(project) > SYSTEM_PROMPT_EXTRA_MAX_CHARS:
+                project = project[:SYSTEM_PROMPT_EXTRA_MAX_CHARS] + "\n…（项目规范已截断）"
+            prompt = prompt.rstrip() + "\n\n=== 项目附加规范 ===\n" + project + "\n"
+
+    if extra and extra.strip():
+        prompt = prompt.rstrip() + "\n\n=== 角色说明 ===\n" + extra.strip() + "\n"
+    return prompt
 
 
 class ReActEngine:
@@ -198,9 +204,22 @@ class ReActEngine:
 
     def __init__(self, model: str = None, host: str = None,
                  on_step: Callable = None, on_confirm: Callable = None,
-                 context=None):
+                 context=None, allowed_tools: Optional[set] = None,
+                 system_prompt_extra: str = "", max_iterations: Optional[int] = None,
+                 prompt_mode: Optional[str] = None):
+        """
+        Args:
+            allowed_tools: 限定可用工具集（工具描述与可执行集合同时过滤）；
+                None 表示全部工具。多 Agent 子角色据此收窄能力。
+            system_prompt_extra: 角色附加提示，追加到系统提示末尾（≤200 token 为宜）。
+            max_iterations: 本实例的最大步数，默认 ``Config.MAX_ITERATIONS``。
+            prompt_mode: 覆盖 ``CODE_AGENT_PROMPT_MODE``（builtin|append|replace）。
+        """
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
+        self.allowed_tools: Optional[set] = set(allowed_tools) if allowed_tools is not None else None
+        self.system_prompt_extra = system_prompt_extra or ""
+        self.max_iterations = int(max_iterations) if max_iterations else int(Config.MAX_ITERATIONS)
         # 按所选模型自动推导安全的上下文窗口，避免大默认上下文撑爆显存导致卡顿。
         self.num_ctx = self._resolve_num_ctx(self.model)
         # 是否启用模型"思考模式"：ReAct 的 Thought/Action 协议本身就是显式推理，
@@ -212,7 +231,8 @@ class ReActEngine:
             self.think = False
         # 会话上下文（可注入；为空时惰性取进程内单例，跟随"当前会话"）
         self._context = context
-        self.system_prompt = build_system_prompt()
+        self.system_prompt = build_system_prompt(
+            tools=self.allowed_tools, extra=self.system_prompt_extra, mode=prompt_mode)
         # 本轮的内存工作消息列表（系统提示 + 历史上下文 + 本轮 ReAct 往返）
         self.messages: List[Dict] = []
         self._stop_event = threading.Event()
@@ -324,16 +344,17 @@ class ReActEngine:
         self.step_log = []
         self._load_context(user_input)
 
-        for step in range(1, Config.MAX_ITERATIONS + 1):
+        max_iter = self.max_iterations
+        for step in range(1, max_iter + 1):
             if self._stop_event.is_set():
                 return "[用户中断] 任务已停止。"
 
             if self.on_step:
                 self.on_step({
                     "step": step,
-                    "total": Config.MAX_ITERATIONS,
+                    "total": max_iter,
                     "phase": "thinking",
-                    "message": f"Step {step}/{Config.MAX_ITERATIONS}: 模型推理中..."
+                    "message": f"Step {step}/{max_iter}: 模型推理中..."
                 })
 
             response = self._call_model()
@@ -362,6 +383,16 @@ class ReActEngine:
                     "observation": "",
                     "confirmed": True
                 }
+
+                if self.allowed_tools is not None and tool_name not in self.allowed_tools:
+                    obs = (f"[错误] 工具 {tool_name} 不在当前允许的工具集内，"
+                           f"可用: {', '.join(sorted(self.allowed_tools))}")
+                    step_record["observation"] = obs
+                    step_record["confirmed"] = False
+                    self.step_log.append(step_record)
+                    self._push("assistant", response)
+                    self._push("user", "Observation: " + obs + "\n请改用允许的工具，或直接给出最终答案。")
+                    continue
 
                 if tool_name == "execute_command":
                     cmd = tool_input.get("command", "")

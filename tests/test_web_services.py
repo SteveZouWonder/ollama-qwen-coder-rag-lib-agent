@@ -471,7 +471,10 @@ class TestMultiAgentStream:
     def test_progress_events_then_answer(self):
         orch = MagicMock()
 
-        def fake_process(request, mode, progress=None):
+        seen = {}
+
+        def fake_process(request, mode, progress=None, context=None):
+            seen["context"] = context
             progress({"stage": "decompose", "message": "🧩 分解任务"})
             progress({"stage": "execute", "message": "⚙️ 执行 1/1", "current": 1, "total": 1})
             progress({"stage": "integrate", "message": "🧷 整合"})
@@ -483,8 +486,11 @@ class TestMultiAgentStream:
         kinds = [e.kind for e in events]
         assert kinds.count("progress") == 3
         assert kinds[-1] == "answer"
+        # 无 answer 字段时退回 summary
         assert events[-1].message == "协作完成"
         assert events[-1].data["success"] is True
+        # 会话上下文透传给编排器（RAGAgent 追问改写）
+        assert seen["context"] is not None
         # 进度事件透传原始 stage/current/total，供 UI 去重
         exec_evt = [e for e in events if e.kind == "progress"][1]
         assert exec_evt.data["stage"] == "execute"
@@ -1176,9 +1182,10 @@ class TestConversationContextWiring:
         orch = MagicMock()
         seen = {}
 
-        def fake_process(request, mode, progress=None):
+        def fake_process(request, mode, progress=None, context=None):
             seen["request"] = request
-            return {"success": True, "summary": "协作完成", "results": []}
+            return {"success": True, "summary": "执行了 1 个任务", "answer": "综合回答：优点是…",
+                    "results": []}
 
         orch.process_request.side_effect = fake_process
         svc = make_service(orchestrator_factory=lambda: orch)
@@ -1187,12 +1194,14 @@ class TestConversationContextWiring:
         monkeypatch.setattr(cc, "_default_complete", lambda prompt: "帮我总结 DJI OSMO 360 的优缺点")
         events = list(svc.multi_agent_stream("总结一下它", session_id=sid))
         assert events[-1].kind == "answer"
+        assert events[-1].message == "综合回答：优点是…"
         assert seen["request"] == "帮我总结 DJI OSMO 360 的优缺点"
         assert events[-1].data["rewritten"] == "帮我总结 DJI OSMO 360 的优缺点"
         assert events[-1].data["context"]["turns"] == 2
         history = svc.chat_history(sid)
         assert history[-2]["content"] == "总结一下它"
-        assert history[-1]["content"] == "协作完成"
+        # 会话记录综合回答 answer，而不是统计句 summary
+        assert history[-1]["content"] == "综合回答：优点是…"
 
     def test_multi_agent_failure_recorded_with_marker(self):
         orch = MagicMock()
@@ -1204,7 +1213,7 @@ class TestConversationContextWiring:
 
     def test_multi_agent_non_dict_result_wrapped(self):
         class Weird:
-            def process_request(self, request, mode, progress=None):
+            def process_request(self, request, mode, progress=None, context=None):
                 return "plain"
         svc = make_service(orchestrator_factory=lambda: Weird())
         events = list(svc.multi_agent_stream("任务"))

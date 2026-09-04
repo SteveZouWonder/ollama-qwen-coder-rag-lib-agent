@@ -31,9 +31,29 @@ class ToolRegistry:
             "safe": safe
         }
 
-    def get_descriptions(self) -> str:
+    def get_descriptions(self, names=None, compact: bool = False) -> str:
+        """生成工具说明文本。
+
+        Args:
+            names: 只包含这些工具（None 表示全部）。用于按 Agent 角色限定工具集。
+            compact: 紧凑格式——每个工具一行 ``name(参数, ...): 描述``，用于精简
+                内置系统提示，token 约为完整格式的 1/2。
+        """
+        selected = [
+            (n, info) for n, info in self.tools.items()
+            if names is None or n in names
+        ]
+        if compact:
+            lines = []
+            for name, info in selected:
+                params = []
+                for k, v in info["parameters"].items():
+                    params.append(k if "必填" in str(v) else f"{k}?")
+                tag = "" if info["safe"] else " [需确认]"
+                lines.append(f"- {name}({', '.join(params)}): {info['description']}{tag}")
+            return "\n".join(lines)
         lines = ["=== 可用工具 ==="]
-        for name, info in self.tools.items():
+        for name, info in selected:
             safe_tag = "[安全]" if info["safe"] else "[需确认]"
             lines.append("")
             lines.append(safe_tag + " 工具名: " + name)

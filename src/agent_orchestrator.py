@@ -76,16 +76,25 @@ class AgentOrchestrator:
             Optional[BaseAgent]: 创建的Agent实例
         """
         try:
+            # 把 AgentConfig 的 model/host/timeout/max_iterations/specialized_tools
+            # 真正传给实例（此前只传 config_data，这些字段形同虚设）。
+            runtime = dict(config.config_data or {})
+            runtime.setdefault("model", config.model)
+            runtime.setdefault("host", config.host)
+            runtime.setdefault("timeout", config.timeout)
+            runtime.setdefault("max_iterations", config.max_iterations)
+            if config.specialized_tools:
+                runtime.setdefault("allowed_tools", list(config.specialized_tools))
             if config.agent_type.value == "code":
-                return CodeAgent(agent_id=config.agent_id, config=config.config_data)
+                return CodeAgent(agent_id=config.agent_id, config=runtime)
             elif config.agent_type.value == "rag":
-                return RAGAgent(agent_id=config.agent_id, config=config.config_data)
+                return RAGAgent(agent_id=config.agent_id, config=runtime)
             elif config.agent_type.value == "test":
-                return TestAgent(agent_id=config.agent_id, config=config.config_data)
+                return TestAgent(agent_id=config.agent_id, config=runtime)
             elif config.agent_type.value == "doc":
-                return DocAgent(agent_id=config.agent_id, config=config.config_data)
+                return DocAgent(agent_id=config.agent_id, config=runtime)
             elif config.agent_type.value == "audit":
-                return AuditAgent(agent_id=config.agent_id, config=config.config_data)
+                return AuditAgent(agent_id=config.agent_id, config=runtime)
             else:
                 self.logger.warning(f"Unknown agent type: {config.agent_type}")
                 return None
@@ -128,6 +137,7 @@ class AgentOrchestrator:
         request: str,
         mode: CollaborationMode = None,
         progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        context=None,
     ) -> Dict[str, Any]:
         """
         处理用户请求
@@ -137,6 +147,7 @@ class AgentOrchestrator:
             mode: 协作模式，如果为None则使用默认模式
             progress: 可选进度回调，透传给 ``MasterAgent.coordinate_task``，
                 用于实时展示"分解 → 调度 → 执行 → 整合"各阶段。
+            context: 可选会话上下文，透传给 RAGAgent（追问改写 / 历史注入）。
             
         Returns:
             Dict[str, Any]: 处理结果
@@ -147,10 +158,12 @@ class AgentOrchestrator:
         self.logger.info(f"Processing request with mode: {mode}")
         
         try:
+            kwargs: Dict[str, Any] = {}
             if progress is not None:
-                result = self.master_agent.coordinate_task(request, mode, progress=progress)
-            else:
-                result = self.master_agent.coordinate_task(request, mode)
+                kwargs["progress"] = progress
+            if context is not None:
+                kwargs["context"] = context
+            result = self.master_agent.coordinate_task(request, mode, **kwargs)
             return result
         except Exception as e:
             self.logger.error(f"Request processing failed: {e}")

@@ -119,6 +119,9 @@ class AgentResult:
     execution_time: float
     error_message: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
+    # 结构化来源：``[{"kind": "kb"|"web", "file"/"title", "url", "score", ...}]``
+    # 由 RAGAgent 等填充，整合结果会合并所有子任务的来源供前端渲染。
+    sources: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         """转换为字典"""
@@ -130,7 +133,8 @@ class AgentResult:
             "metadata": self.metadata,
             "execution_time": self.execution_time,
             "error_message": self.error_message,
-            "timestamp": self.timestamp.isoformat()
+            "timestamp": self.timestamp.isoformat(),
+            "sources": list(self.sources or []),
         }
 
 

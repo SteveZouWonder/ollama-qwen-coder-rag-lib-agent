@@ -40,7 +40,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        统一 CLI 交互层                               │
-│         /ask /agent /multi-agent  /file /exec ...                     │
+│         /ask /agent /multi  /file /exec ...                           │
 │         智能命令推荐系统 (工作流+状态+历史混合推荐)                  │
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -517,42 +517,47 @@ Agent 会自动：
 # 进入交互式模式
 python query_interface.py
 
-# 然后使用 /multi 命令：
->>> /multi 实现用户认证系统，包括注册、登录、密码重置功能，并生成完整文档和测试 PARALLEL
+# 然后使用 /multi 命令（默认层级协作）：
+>>> /multi 写一个快速排序保存到 sort.py 并为它写测试
 
-# 或指定协作模式：
->>> /multi 重构 legacy.py，提高代码质量，添加测试，更新文档 SEQUENTIAL
-
->>> /multi 分析项目架构，CodeAgent分析代码，AuditAgent检查安全，DocAgent生成文档 HIERARCHY
+# 或用 --mode 指定协作模式：
+>>> /multi 重构 legacy.py，添加测试，更新文档 --mode parallel
+>>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
 ```
 
+Web 界面在对话页选「多 Agent 协作」，右侧下拉可选协作模式；「处理过程」实时显示分解 →
+调度 → 各 Agent 的 ReAct 步骤 → 整合，结果面板先给综合回答，再列各 Agent 摘要与来源。
+
 **支持的协作模式：**
-- `PARALLEL` - 并行执行多个独立任务
-- `SEQUENTIAL` - 按依赖顺序执行任务
-- `HIERARCHY` - 层级协作，任务分解和协调
-- `COMPETITIVE` - 多Agent竞争，选择最佳方案
+- `hierarchy`（默认）- 按依赖顺序逐个执行，下游子任务可看到上游产出
+- `parallel` - 无依赖的子任务真正并发（线程池，受 `max_parallel_tasks` 限制），有依赖的分波执行
+- `sequential` - 严格按依赖拓扑顺序执行
+- `competitive` - 同一任务并行交给所有能胜任的 Agent，由 LLM 评审选出最佳（失败回退最长成功输出）
 
-**专业Agent：**
-- `CodeAgent` - 代码专家（生成、重构、审查、调试）
-- `RAGAgent` - 知识库专家（检索、提取、综述）
-- `TestAgent` - 测试专家（生成、覆盖率分析、质量评估）
-- `DocAgent` - 文档专家（API文档、技术文档、用户指南）
-- `AuditAgent` - 审计专家（安全检查、合规验证、性能审计）
+**专业 Agent（Code / Test / Doc / Audit 各自委托一个受限工具集的 ReActEngine 真实执行）：**
+- `CodeAgent` - 代码专家：read_file / write_file / execute_command / list_directory / search_files / ast_search / analyze_project_structure / get_current_dir
+- `TestAgent` - 测试专家：read_file / write_file / execute_command / search_files / code_quality_check
+- `DocAgent` - 文档专家：read_file / write_file / list_directory / search_files / query_knowledge_base / web_search
+- `AuditAgent` - 审计专家（只读）：read_file / search_files / code_quality_check / ast_search / git_analyze / execute_command
+- `RAGAgent` - 知识库专家：复用 RAG 编排（相关性判定 + 联网回退），返回结构化来源
 
-**多Agent执行流程：**
+**多 Agent 执行流程：**
 ```
 MasterAgent 接收任务
     ↓
-TaskDecomposer 分解为子任务
+TaskDecomposer：一次 LLM 输出 JSON 子任务（类型 / 独立描述 / 依赖），失败回退关键词表
     ↓
-TaskScheduler 分配给专业Agent
+TaskScheduler 按能力分配给专业 Agent
     ↓
-专业Agent 并行/顺序执行
+专业 Agent 真实执行（ReActEngine / RAG 编排），按 timeout 超时，失败后恢复 IDLE
     ↓
-ResultIntegrator 整合结果
+ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（竞争模式 LLM 评审选优）
     ↓
-用户获得完整解决方案
+用户获得综合回答、各 Agent 摘要（步数 / 工具 / 未经验证标记）与来源
 ```
+
+> 子 Agent 若从未调用角色关键工具（如测试 Agent 没有真正写入 / 运行）却给出结论，结果会标记
+> 「⚠️ 未经验证」——小模型偶尔会口头宣称完成，请以该标记与磁盘产物为准。
 
 ---
 
@@ -562,7 +567,7 @@ ResultIntegrator 整合结果
 |------|------|------|
 | `/ask <问题>` | RAG | 直接查询知识库 |
 | `/agent <任务>` | Agent | 进入 ReAct 自动任务模式 |
-| `/multi <任务> <模式>` | MultiAgent | 多Agent协作系统 (PARALLEL/SEQUENTIAL/HIERARCHY/COMPETITIVE) |
+| `/multi <任务> [--mode m]` | MultiAgent | 多 Agent 协作（hierarchy / parallel / sequential / competitive） |
 | `/add <路径>` | RAG | 添加文档到知识库 |
 | `/stats` | RAG | 知识库统计 |
 | `/sources` | RAG | 显示上次回答来源 |
@@ -926,6 +931,10 @@ export LLM_THINK=false
 export LLM_NUM_CTX=16384
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
+# Agent 系统提示分层：builtin 只用精简内置模板；append（默认）在其后追加 .devin/SYSTEM_PROMPT.md
+# （截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS，默认 4000 字符）；replace 用该文件整体替换（旧行为）
+export CODE_AGENT_PROMPT_MODE=append
+export SYSTEM_PROMPT_EXTRA_MAX_CHARS=4000
 
 python query_interface.py --data ./data
 ```

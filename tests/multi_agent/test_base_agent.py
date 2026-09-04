@@ -274,7 +274,8 @@ class TestBaseAgent:
         
         assert result.success is False
         assert result.error_message == "Simulated failure"
-        assert agent.get_state() == AgentState.ERROR
+        # 失败后状态恢复为 IDLE（不再卡在 ERROR 导致该 Agent 永久不可调度）
+        assert agent.get_state() == AgentState.IDLE
         assert task.status == TaskStatus.FAILED
     
     def test_base_agent_execute_task_with_timeout_custom_timeout(self):

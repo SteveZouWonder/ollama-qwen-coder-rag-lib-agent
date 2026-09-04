@@ -637,7 +637,8 @@ class WebService:
 
     # ---------- 多 Agent 协作 ----------
 
-    def _run_orchestrator(self, request: str, mode: Optional[str], progress=None) -> Dict[str, Any]:
+    def _run_orchestrator(self, request: str, mode: Optional[str], progress=None,
+                          context=None) -> Dict[str, Any]:
         """创建编排器执行一次协作请求，结束后释放；异常转为失败 dict。"""
         # 确保知识库引擎已注入全局注册表：RAGAgent 承接通用任务时会复用
         # rag_pipeline.answer_question，需要全局 rag_engine 才能真正检索。
@@ -649,9 +650,12 @@ class WebService:
         resolved = self._resolve_mode(mode)
         orchestrator = self._orchestrator_factory()
         try:
+            kwargs: Dict[str, Any] = {}
             if progress is not None:
-                return orchestrator.process_request(request, resolved, progress=progress)
-            return orchestrator.process_request(request, resolved)
+                kwargs["progress"] = progress
+            if context is not None:
+                kwargs["context"] = context
+            return orchestrator.process_request(request, resolved, **kwargs)
         except BaseException as exc:  # noqa: BLE001
             return {"success": False, "error": str(exc), "summary": "协作执行失败"}
         finally:
@@ -717,11 +721,13 @@ class WebService:
                     rewritten = effective
             except Exception:  # noqa: BLE001 - 改写失败沿用原请求
                 pass
-            result = self._run_orchestrator(effective, mode, progress=progress_cb)
+            result = self._run_orchestrator(effective, mode, progress=progress_cb, context=ctx)
             if not isinstance(result, dict):
                 result = {"success": False, "summary": str(result)}
             summary = str(result.get("summary", ""))
-            recorded = summary if result.get("success") else f"[协作失败] {summary}"
+            # 会话记录面向用户的综合回答（answer），而不是统计句
+            answer = str(result.get("answer") or "").strip() or summary
+            recorded = answer if result.get("success") else f"[协作失败] {answer}"
             result["rewritten"] = rewritten
             result["context"] = self._finish_turn(
                 ctx, request, recorded, pre, rewritten=rewritten, progress=progress_cb,
@@ -733,7 +739,8 @@ class WebService:
                 yield StreamEvent("error", f"协作执行失败: {error_holder['error']}")
                 return
             result = result_holder.get("result") or {}
-            yield StreamEvent("answer", str(result.get("summary", "")), result)
+            message = str(result.get("answer") or "").strip() or str(result.get("summary", ""))
+            yield StreamEvent("answer", message, result)
 
         yield from self._bridge(run, on_finish)
 

@@ -250,28 +250,14 @@ def format_switch_result(result: Dict[str, Any]) -> str:
 
 
 def format_multi_agent_result(result: Dict[str, Any]) -> str:
-    """把多 Agent 协作结果渲染为 Markdown 文本。"""
-    if not result.get("success"):
-        err = result.get("error", "")
-        summary = result.get("summary", "协作失败")
-        return f"**❌ {summary}**\n\n{err}".strip()
+    """把多 Agent 协作结果渲染为 Markdown 文本（与 CLI ``/multi`` 共用渲染器）。
 
-    lines = [f"**✅ {result.get('summary', '协作完成')}**", ""]
-    stats = (
-        f"成功 {result.get('successful_results', 0)} / "
-        f"共 {result.get('total_results', 0)}"
-    )
-    lines.append(stats)
-    lines.append("")
-    for r in result.get("results", []):
-        status = "✅" if r.get("success") else "❌"
-        agent_id = r.get("agent_id", "?")
-        output = (r.get("output") or "").strip()
-        lines.append(f"{status} **{agent_id}**")
-        if output:
-            lines.append(f"> {output}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    展示综合回答 ``answer`` + 各 Agent 摘要（步数/工具/耗时）+ 结构化来源，
+    兼容 COMPETITIVE 模式的 ``best_result`` / ``all_results`` 结构。
+    """
+    from collaboration.presenter import format_multi_agent_result as _render
+
+    return _render(result if isinstance(result, dict) else {})
 
 
 _SESSION_STATUS_ICON = {"active": "🟢 活跃", "archived": "📦 已归档", "deleted": "🗑️ 已删除"}

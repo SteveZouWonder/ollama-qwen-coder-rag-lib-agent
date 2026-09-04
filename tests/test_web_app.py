@@ -89,6 +89,38 @@ class TestFormatMultiAgent:
         out = format_multi_agent_result({"success": True})
         assert "协作完成" in out
 
+    def test_answer_agent_summary_and_sources(self):
+        """P0-6：渲染综合回答 + 各 Agent 摘要（步数/工具）+ 结构化来源。"""
+        out = format_multi_agent_result({
+            "success": True, "summary": "执行了 2 个任务，成功 2 个。", "answer": "快排已实现并测试通过。",
+            "successful_results": 2, "total_results": 2,
+            "tasks": [{"task_id": "a", "description": "写快排"}],
+            "results": [
+                {"success": True, "agent_id": "code_agent_1", "task_id": "a", "output": "raw",
+                 "metadata": {"steps": 3, "tools": ["write_file", "execute_command"]}},
+            ],
+            "sources": [{"kind": "kb", "file": "算法.md", "score": 0.81},
+                        {"kind": "web", "title": "Wiki", "url": "https://w"}],
+        })
+        assert out.startswith("快排已实现并测试通过。")
+        assert "code_agent_1** · 写快排（3 步，工具: write_file、execute_command）" in out
+        assert "📄 算法.md（相似度 0.810）" in out
+        assert "[Wiki](https://w)" in out
+        assert "> raw" not in out
+
+    def test_competitive_best_result(self):
+        best = {"success": True, "agent_id": "b", "output": "B", "metadata": {}}
+        out = format_multi_agent_result({
+            "success": True, "summary": "竞争完成", "answer": "B",
+            "best_result": best, "all_results": [{"success": True, "agent_id": "a", "output": "A", "metadata": {}}, best],
+            "selection_criteria": "LLM 评审选优：更完整",
+        })
+        assert "🏆 选用：**b** — LLM 评审选优：更完整" in out
+        assert "其他候选" in out and "**a**" in out
+
+    def test_non_dict(self):
+        assert "协作失败" in format_multi_agent_result(None)
+
 
 class TestFormatSessions:
     def test_empty(self):

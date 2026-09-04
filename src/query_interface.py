@@ -314,6 +314,10 @@ TUTORIAL_TEXT = """
   >>> /agent 检查 src/main.py 第 20-50 行是否有内存泄漏
   >>> /agent 搜索项目中所有硬编码的 API Key
 
+  # 多 Agent 协作（代码/测试/文档/审计/知识库专家分工）
+  >>> /multi 写一个快速排序保存到 sort.py 并为它写测试
+  >>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
+
   # 快捷命令
   >>> /file main.py          快速读取文件
   >>> /exec git status       执行命令
@@ -325,6 +329,7 @@ TUTORIAL_TEXT = """
   /tutorial  重新显示本教程
   /ask       直接查询知识库
   /agent     进入 Agent 任务模式
+  /multi     多 Agent 协作模式
   /tools     查看所有可用工具
   /add       添加文档到知识库
   /stats     知识库统计
@@ -584,6 +589,7 @@ def print_help():
   /tutorial          显示使用指引教程
   /ask <question>    直接查询知识库（基于上传的文档）
   /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
+  /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
   /add <path>        添加文档到知识库（PDF/MD/TXT/代码等）
   /stats             显示知识库统计
@@ -851,6 +857,9 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("ask", user_input, arg)
     if cmd == "/agent":
         return ParsedCommand("agent", user_input, arg)
+    if cmd == "/multi":
+        # /multi <任务> [--mode hierarchy|parallel|sequential|competitive]
+        return ParsedCommand("multi", user_input, arg)
     if cmd == "/model":
         # /model <name> 运行时热切换；/model list 列出可选模型
         return ParsedCommand("model", user_input, arg)
@@ -995,7 +1004,7 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
                      "session_delete", "session_info", "session_search", "session_current",
                      "session_compress", "web_search", "web_cache", "web_extract",
                      "code_ast", "code_quality", "git_analyze", "git_commit_gen",
-                     "graph_query", "graph_build"):
+                     "graph_query", "graph_build", "multi"):
         return "cmd"
 
     # 明确指定 RAG

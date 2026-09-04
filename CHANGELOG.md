@@ -10,6 +10,37 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **多 Agent 协作重做为真实 Agent（F8 P0）**：Code / Test / Doc / Audit 四个专业 Agent 不再返回
+  硬编码假数据，而是各自构造一个**受限工具集**的 ReActEngine 真实执行子任务（Code：读写文件 /
+  运行命令 / 搜索 / AST；Test：读写 / 运行 / 质量检查；Doc：读写 / 知识库 / 联网；Audit：只读
+  审查），角色附加提示 ≤200 token；子 Agent 在白名单内自动放行需确认工具，`execute_command`
+  只放行 low / medium 风险命令。RAGAgent 的 document_search / knowledge_extraction /
+  literature_review 改为 `answer_question` 的提问变体并补传会话上下文。
+- **LLM 任务分解**：`TaskDecomposer` 先用一次 LLM（`think=False`，`num_predict≤512`）输出 JSON
+  子任务列表（类型 / 独立描述 / 依赖序号），每个子任务带独立 `request` 与 `original_request`；
+  解析失败 / 超时自动回退关键词表，进度文案如实显示「模型推理」或「规则回退」。纯问答只产生
+  1 个子任务，不再因"检查"等关键词误触发审计。
+- **LLM 结果整合与竞争评审**：整合结果新增面向用户的 `answer`（LLM 综合各子任务输出，失败回退
+  按子任务拼接；单一子任务直接采用其输出不额外调用）、合并去重的结构化 `sources`
+  （kb / web）；COMPETITIVE 模式由 LLM 评审候选选优（`{"best", "reason"}`），失败回退"最长成功
+  输出"而非最短耗时，`selection_criteria` 如实描述。会话记录 `answer` 而非统计句。
+- **真并行与超时**：PARALLEL 模式按依赖分波、同一波内用线程池并发（受 `max_parallel_tasks`
+  限制），下游子任务可看到上游输出；COMPETITIVE 候选并行执行；`execute_task_with_timeout`
+  真正按超时返回 `error="timeout"` 并通知 Agent 中止；Agent 失败 / 超时后状态恢复 IDLE，
+  不再永久卡在 ERROR。`AgentConfig` 的 model / timeout / max_iterations 真正传入实例，
+  `specialized_tools` 改为真实工具名白名单。
+- **CLI `/multi <任务> [--mode hierarchy|parallel|sequential|competitive]`**：多 Agent 协作进入
+  命令行，实时打印分解 → 调度 → 执行（含各 Agent 的 ReAct 步骤）→ 整合进度，结果渲染与 Web
+  一致（共用 `collaboration/presenter.py`），并接入帮助与教程。
+- Web 多 Agent 结果面板重做：先展示综合回答，再列各 Agent 摘要（步数 / 实际调用工具 / 耗时 /
+  未完成 / 未经验证标记）与来源列表，兼容 COMPETITIVE 的 `best_result` / `all_results`；
+  「处理过程」实时显示每个子 Agent 的执行步骤。
+- ReActEngine 新增 `allowed_tools`（工具描述与可执行集合同时过滤，越界调用回灌错误提示）、
+  `system_prompt_extra`（角色附加提示）、`max_iterations`、`prompt_mode` 参数。
+- **系统提示分层**：内置模板精简为 ≈1.1K token（紧凑工具速查、协议与格式规则合并、示例
+  各 1 个），`.devin/SYSTEM_PROMPT.md` 改为**追加**（截断到 `SYSTEM_PROMPT_EXTRA_MAX_CHARS`，
+  默认 4000 字符）而非整体替换；新增 `CODE_AGENT_PROMPT_MODE=builtin|append|replace`
+  （默认 `append`）。
 - **知识库文件删除**：CLI 新增 `/file-delete <path>`，Web 文件管理表格末列新增「⋯」，点击任意
   单元格即选中该行并在右侧弹出操作条（📄 文件名 [查看详情] [删除文件]）。删除会一次清掉该
   文件在向量库中的全部片段（含 docstore）、知识图谱中仅由该文件贡献的节点与边、以及文件
@@ -120,6 +151,9 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- 多 Agent 子 Agent 若从未真正调用角色关键工具（如测试 Agent 没有 `write_file` /
+  `execute_command`）却给出结论，结果标记「⚠️ 未经验证」并在输出前注明为模型自述，避免把编造
+  的"已完成"当成事实；Agent 摘要中的工具列表只统计真正执行过的工具。
 - 知识图谱构建器新增 `remove_document`（文档删除时同步移除其在节点 / 边 `documents` 中的
   贡献，为空则删除）与 `subgraph_for_view` / `layout_positions`（可视化子图抽取与带缓存
   的 spring 布局），图谱变更时自动失效布局缓存。
@@ -217,6 +251,12 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- 多 Agent 模式此前 4/5 专业 Agent 返回固定假文本且 `success=True`、PARALLEL 实际串行、
+  COMPETITIVE 按最快耗时选优、超时不生效、失败后 Agent 卡在 ERROR、进度文案「分解任务
+  （模型推理）」与实现不符（实际为关键词匹配）——均已在 F8 P0 中修正。
+- `.devin/SYSTEM_PROMPT.md`（≈6.2K token 的本机开发规范）不再整体替换内置系统提示占满 40%
+  上下文；多 Agent 子角色默认只用精简内置提示，避免被"必须先读系统提示文件"等规范诱导去调用
+  白名单外的工具。
 - 打包构建补齐 Gradio：`requirements-build.txt` 加入 `gradio`，PyInstaller spec 以
   `collect_all` 收集 gradio / gradio_client 及其静态前端与数据文件，修复打包版托盘
   「打开 Web UI」与 `--web` 因缺少前端资源而打不开页面的问题。
