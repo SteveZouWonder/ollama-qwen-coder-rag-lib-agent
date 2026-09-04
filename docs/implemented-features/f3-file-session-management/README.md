@@ -75,9 +75,9 @@ v4.1.0版本实现了智能文件管理和多会话管理系统，优化文件�
 
 ## 相关链接
 
-- [v4.1.0实施总结](../../general/v4.1.0_IMPLEMENTATION_SUMMARY.md)
+- [实施总结](IMPLEMENTATION_SUMMARY.md)
 - [未来功能设计](../../future-feature-design/README.md)
-- [项目CHANGELOG](../../CHANGELOG.md)
+- [项目CHANGELOG](../../../CHANGELOG.md)
 - [项目README](../../README.md)
 
 ---

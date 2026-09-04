@@ -43,8 +43,7 @@ Ollama 依赖引导与模型预热、GitHub Actions 打 tag 自动构建并发�
 
 - [DESIGN.md](DESIGN.md) - 原始设计方案
 - [docs/CI_CD.md](../../CI_CD.md) - CI/CD 与发布流程
-- [docs/implementation/IMPLEMENTATION_PLAN.md](../../implementation/IMPLEMENTATION_PLAN.md) - 桌面应用具体实现方案
-- [docs/design/SIMPLE_DESIGN.md](../../design/SIMPLE_DESIGN.md) - 本地应用简化设计
+- [SIMPLE_DESIGN.md](SIMPLE_DESIGN.md) - 被采纳的单文件托盘方案原始设计（类结构与 `src/desktop_app.py` 对应；其中的自启动参数未实现，模型名已过时）
 
 ## 遗留事项
 

@@ -449,4 +449,4 @@ tar -czf logs_backup_$(date +%Y%m%d).tar.gz logs/
 
 ---
 
-**上一篇**: [故障排除](06-troubleshooting.md) | **返回目录**: [TUTORIAL.md](../TUTORIAL.md)
+**上一篇**: [故障排除](06-troubleshooting.md) | **返回目录**: [TUTORIAL.md](../../TUTORIAL.md)

@@ -1,8 +1,13 @@
-# v4.1.0 功能实现总结
+# F3 实施总结：文件管理和会话管理优化
+
+> 原文件名 `docs/general/v4.1.0_IMPLEMENTATION_SUMMARY.md`，2026-09 归档至此。"v4.1.0" 为当时的内部迭代
+> 代号，不是发布版本号（项目发布版本为 v0.0.x）。文中提到的 `docs/OPTIMIZATION_PROPOSAL.md`、
+> `docs/FEATURES_FILE_AND_SESSION_MANAGEMENT.md` 现位于本目录。后续新增的 `/file-delete`、
+> `/context`、`/compact`、`/session-new --carry` 等命令见 CHANGELOG。
 
 ## 概述
 
-本文档总结了v4.1.0版本的文件管理和会话管理优化功能的实现情况。
+本文档总结了文件管理和会话管理优化功能的首版实现情况。
 
 ---
 

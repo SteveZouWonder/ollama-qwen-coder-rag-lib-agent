@@ -5,7 +5,7 @@
 **功能名称**: OCR 图片/图表提取功能
 **实施日期**: 2026-06-11
 **实施状态**: ✅ 已完成
-**设计文档**: [../future-feature-design/f1-ocr-extrace/](../future-feature-design/f1-ocr-extrace/)
+**设计文档**: 本目录 [OVERVIEW.md](OVERVIEW.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、[IMPLEMENTATION.md](IMPLEMENTATION.md)
 
 ## 实现成果
 

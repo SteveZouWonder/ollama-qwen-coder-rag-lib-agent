@@ -2,7 +2,7 @@
 
 ## 概述
 
-内容安全扫描器 (`content_security.py`) 是一个专门用于防止基于文档的提示词攻击的安全系统。它自动扫描用户添加到知识库的文档，检测并阻止潜在的安全威胁。
+内容安全扫描器 (`src/content_security.py`) 是一个专门用于防止基于文档的提示词攻击的安全系统。它自动扫描用户添加到知识库的文档，检测并阻止潜在的安全威胁。
 
 ## 核心功能
 
@@ -83,6 +83,7 @@ engine = KnowledgeToSkillsEngine(
 ### 基本使用
 
 ```python
+# 需在 src/ 目录下运行，或先将 src/ 加入 sys.path
 from content_security import ContentSecurityScanner, SkillSecurityFilter
 
 # 创建扫描器
@@ -164,16 +165,16 @@ else:
 ### 运行安全扫描器测试
 
 ```bash
-# 测试安全扫描器
-python -m pytest test_content_security.py -v
+# 测试安全扫描器（在项目根目录执行）
+./venv/bin/python -m pytest tests/test_content_security.py -v
 
 # 查看测试覆盖率
-python -m pytest test_content_security.py -v --cov=content_security --cov-report=term-missing
+./venv/bin/python -m pytest tests/test_content_security.py -v --cov=src/content_security --cov-report=term-missing
 ```
 
 ### 测试覆盖
 
-当前测试覆盖率：85%
+测试文件：`tests/test_content_security.py`
 
 测试用例包括：
 - 提示词注入检测测试

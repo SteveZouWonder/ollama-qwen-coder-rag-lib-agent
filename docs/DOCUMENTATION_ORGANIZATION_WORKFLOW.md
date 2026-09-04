@@ -312,30 +312,28 @@ docs/
 │   ├── 03-scenarios.md
 │   ├── 04-features.md
 │   └── ...
-├── design/                      # 设计文档
-│   ├── DESIGN_SUMMARY.md
-│   └── ...
-├── implementation/              # 实现文档
-│   ├── IMPLEMENTATION_GUIDE.md
-│   └── ...
 ├── testing/                     # 测试文档
 │   └── TEST_DESIGN.md
-├── general/                     # 一般文档（保留重要文档）
+├── general/                     # 面向用户的长期文档（不放实施报告）
 │   ├── PROJECT_ROADMAP.md
-│   ├── SECURITY_DOCUMENTATION.md
-│   ├── USE_CASES.md
+│   ├── QUICK_START_CHECK.md
+│   └── SECURITY_DOCUMENTATION.md
+├── history/                     # 一次性修复报告 / 实施总结
+│   ├── README.md                # 必须收录目录内全部文件
 │   └── ...
-├── history/                     # 历史文档（修复和实施总结）
-│   ├── README.md
-│   ├── FIX_REPORT.md
-│   └── ...
-├── future-feature-design/       # 未来功能设计
-│   └── README.md
-└── implemented-features/         # 已实现功能
+├── future-feature-design/       # 只放尚未实现的需求
+│   ├── README.md                # 待实现索引 + 残留小项 + 明确不做
+│   └── F{n}_*.md
+└── implemented-features/        # 已实现功能：设计 + 实现记录，按 F 编号归档
     ├── f1-feature-name/
-    ├── f2-feature-name/
+    │   ├── README.md            # 状态、实现记录（与原设计差异）
+    │   ├── DESIGN.md            # 原设计文档（从 future-feature-design 迁入）
+    │   └── IMPLEMENTATION_SUMMARY.md
     └── ...
 ```
+
+> 约定：功能级设计/实现文档一律进 `implemented-features/f{n}-*/`，不再另设 `design/`、
+> `implementation/` 目录；文档搬运本身不写总结报告（Git 历史即记录）。
 
 #### 5.2 识别需要移动的文档
 - 检查 `docs/general/` 目录

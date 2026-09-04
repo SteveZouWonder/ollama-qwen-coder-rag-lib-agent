@@ -13,7 +13,7 @@
 ### Windows 用户
 
 ```powershell
-.\scrpits\check_prereqs.ps1
+.\scripts\check_prereqs.ps1
 ```
 
 ## 检查结果说明
@@ -137,16 +137,13 @@ Failed to send telemetry event ClientCreateCollectionEvent: capture() takes 1 po
 export ANONYMIZED_TELEMETRY=False
 export CHROMA_TELEMETRY=False
 
-# 方案2：降级ChromaDB
-pip install chromadb==0.4.22
-
-# 方案3：更新代码
-git pull  # 获取最新修复
+# 方案2：更新代码与依赖
+git pull && pip install -r requirements.txt
 ```
 
 **注意**: 此错误不影响核心功能，只是显示错误信息。
 
-### 6. urllib3 OpenSSL警告（macOS）
+### 7. urllib3 OpenSSL警告（macOS）
 
 **症状**: 在macOS上出现OpenSSL版本警告：
 ```
@@ -172,7 +169,7 @@ git pull && pip install -r requirements.txt
 
 ### ✅ Python环境
 ```bash
-python3 --version  # 应该 >= 3.8
+python3 --version  # 应该为 3.13（推荐，与 check_prereqs 脚本一致）
 ```
 
 ### ✅ pip工具
@@ -200,9 +197,9 @@ python3 -c "import llama_index, chromadb, rich"
 ## 详细文档
 
 更详细的配置说明请参考：
-- [详细使用教程 - 前置条件检查与配置章节](TUTORIAL.md#前置条件检查与配置)
-- [详细使用教程 - 安装指南章节](TUTORIAL.md#安装指南)
-- [详细使用教程 - 故障排除章节](TUTORIAL.md#故障排除)
+- [安装和配置指南](../tutorials/02-installation.md)
+- [故障排除指南](../tutorials/06-troubleshooting.md)（依赖冲突、ChromaDB、urllib3 警告等的完整说明）
+- [桌面应用使用指南](../tutorials/05-desktop-app.md)（打包版会在首次启动时自动引导安装 Ollama 与模型）
 
 ## 获取帮助
 
@@ -214,5 +211,7 @@ python3 -c "import llama_index, chromadb, rich"
 
 完成所有检查后，即可开始使用项目：
 ```bash
-python query_interface.py --data ./data
+python launcher.py --cli    # 命令行界面
+python launcher.py --web    # Web 界面（http://127.0.0.1:7860）
+python launcher.py          # 桌面托盘
 ```

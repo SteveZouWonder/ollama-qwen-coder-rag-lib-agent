@@ -264,6 +264,17 @@
   独立代码语义索引、MySQL / PostgreSQL、应用内自动更新、.pkg / deb / rpm / Docker、
   应用商店、插件系统、云同步）。`docs/README.md` 与 `docs/general/PROJECT_ROADMAP.md`
   同步对齐现状。
+- 清理 `docs/design/`、`docs/implementation/`、`docs/general/`、`docs/history/`：删除未被采纳
+  的桌面应用"多文件方案"设计与实现指南、与其他文档逐字重复的实现计划、已合并进综合报告的
+  两份修复报告、三份"文档搬运"记录、与 F4 重复的命令推荐实施总结、内容已并入故障排除教程的
+  `WARNING_FIX`，以及含 4 处不存在的 `/search` 命令且与 `tutorials/03-scenarios.md` 重叠的
+  `USE_CASES.md`；`design/` 与 `implementation/` 目录随之移除。被采纳的托盘方案 `SIMPLE_DESIGN`
+  迁入 F5 目录，`v4.1.0_IMPLEMENTATION_SUMMARY` 迁入 F3 目录，`KNOWLEDGE_OPTIMIZATION_SUMMARY`
+  归入 `history/`。修正 `QUICK_START_CHECK.md`（`scrpits` 拼写、Python 版本要求 3.13、重复
+  小节编号、过时的 `chromadb==0.4.22` 建议、启动命令改为 `launcher.py`）与
+  `SECURITY_DOCUMENTATION.md` 的 `src/`、`tests/` 路径；根 README、`docs/README.md`、教程页
+  中十余处指向 TUTORIAL.md 已不存在锚点或已移动文件的断链改为指向 `docs/tutorials/` 对应
+  章节；`history/README.md` 重写并补齐两份此前未被任何索引收录的系统提示优化报告。
 
 ## [v0.0.13] - 2026-07-20
 

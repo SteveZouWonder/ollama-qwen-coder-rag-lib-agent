@@ -5,7 +5,7 @@
 **功能名称**: 多Agent协作系统
 **实施日期**: 2026-06-11
 **实施状态**: ✅ 已完成
-**设计文档**: [../future-feature-design/f2-multiple-agent/](../future-feature-design/f2-multiple-agent/)
+**设计文档**: 本目录 [DESIGN.md](DESIGN.md)、[DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md)、[API_REFERENCE.md](API_REFERENCE.md)
 
 ## 实现成果
 
