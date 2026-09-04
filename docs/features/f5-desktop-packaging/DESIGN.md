@@ -121,8 +121,8 @@ ollama-qwen-coder-rag-lib-agent/
 │   ├── build_linux.sh        # Linux 构建脚本
 │   └── test_package.sh       # 包测试脚本
 └── docs/
-    └── future-feature-design/
-        └── CROSS_PLATFORM_DESKTOP_APP_DESIGN.md  # 本文档
+    └── features/
+        └── f5-desktop-packaging/DESIGN.md  # 本文档
 ```
 
 ### 2. PyInstaller 配置

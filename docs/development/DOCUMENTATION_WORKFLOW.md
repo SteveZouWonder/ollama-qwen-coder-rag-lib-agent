@@ -137,7 +137,7 @@ command --option
 #### 3.1 创建功能文档目录结构
 ```bash
 # 建议的目录结构
-docs/implemented-features/
+docs/features/
 ├── f1-feature-name/
 │   ├── README.md           # 功能概述
 │   ├── OVERVIEW.md         # 技术选型与方案
@@ -238,58 +238,23 @@ docs/implemented-features/
 
 ---
 
-## 步骤4: 更新未来功能设计文档
+## 步骤4: 更新功能索引与路线图
 
 ### 目标
-标记已完成的功能，更新实施历史。
+功能状态变化时，同步 `docs/features/` 下的索引，避免"代码已做、文档仍写待实现"。
 
 ### 执行步骤
 
-#### 4.1 更新未来功能设计文档
-```markdown
-## 在 future-feature-design/README.md 中
+#### 4.1 更新功能目录 README
+- 目录 `docs/features/f{n}-*/README.md` 的「实施状态」改为 ✅ 已完成（日期）
+- 补「实现记录（与原设计的差异）」表：原设计 vs 实际实现，逐项对照；取消的子项注明原因
 
-### F编号: 功能名称 ✅ 已完成
+#### 4.2 更新功能索引 `docs/features/README.md`
+- 该功能从「待实现」表移到「已实现」表
+- 遗留的小待办写入「残留小项」；决定不做的写入「已明确不做」并注明原因
 
-**状态**: ✅ 已实现 (日期)
-
-**目录**: [路径]
-
-**描述**: 功能描述
-
-**核心特性**:
-列出核心特性
-
-**性能目标**:
-列出性能目标和实际达成情况
-
-**实施周期**: 实施周期 (已完成)
-
-**文档**:
-列出相关文档
-
-**实现详情**:
-列出实现的模块和文件
-```
-
-#### 4.2 更新实施历史
-```markdown
-### Phase N: 功能名称 ✅ 已完成
-**时间**: 日期
-
-**实施内容**:
-列出实施内容
-
-**性能验证**:
-列出性能验证结果
-```
-
-#### 4.3 更新实施路线图
-```markdown
-## 实施路线图 (历史)
-
-添加已完成阶段的详细说明
-```
+#### 4.3 更新路线图 `docs/features/ROADMAP.md`
+- 「已完成」表补一行；「进行中 / 待实现」表移除对应项
 
 ---
 
@@ -302,55 +267,42 @@ docs/implemented-features/
 
 #### 5.1 评估文档结构
 ```
-## 建议的文档结构
+## 文档结构（按受众三分）
 
 docs/
 ├── README.md                    # 文档中心导航
-├── tutorials/                   # 教程文档
+├── assets/                      # README 演示 GIF 与生成脚本
+├── tutorials/                   # 【用户】编号教程 01-07
 │   ├── 01-overview.md
-│   ├── 02-installation.md
-│   ├── 03-scenarios.md
-│   ├── 04-features.md
+│   ├── 02-installation.md       # 含一键前置条件检查
 │   └── ...
-├── testing/                     # 测试文档
-│   └── TEST_DESIGN.md
-├── general/                     # 面向用户的长期文档（不放实施报告）
-│   ├── PROJECT_ROADMAP.md
-│   ├── QUICK_START_CHECK.md
-│   └── SECURITY_DOCUMENTATION.md
-├── history/                     # 一次性修复报告 / 实施总结
-│   ├── README.md                # 必须收录目录内全部文件
-│   └── ...
-├── future-feature-design/       # 只放尚未实现的需求
-│   ├── README.md                # 待实现索引 + 残留小项 + 明确不做
-│   └── F{n}_*.md
-└── implemented-features/        # 已实现功能：设计 + 实现记录，按 F 编号归档
-    ├── f1-feature-name/
-    │   ├── README.md            # 状态、实现记录（与原设计差异）
-    │   ├── DESIGN.md            # 原设计文档（从 future-feature-design 迁入）
-    │   └── IMPLEMENTATION_SUMMARY.md
-    └── ...
+├── features/                    # 【功能】一个功能一个目录，状态写在各自 README
+│   ├── README.md                # 待实现 / 已实现 / 残留小项 / 明确不做
+│   ├── ROADMAP.md               # 项目路线图
+│   └── f{n}-feature-name/
+│       ├── README.md            # 状态、范围、实现记录（与原设计差异）
+│       ├── DESIGN.md / REQUIREMENTS.md
+│       └── IMPLEMENTATION_SUMMARY.md
+├── development/                 # 【开发者】CI/CD、测试设计、内部机制、文档流程
+└── history/                     # 【归档】一次性修复报告 / 实施总结
+    └── README.md                # 必须收录目录内全部文件
 ```
 
-> 约定：功能级设计/实现文档一律进 `implemented-features/f{n}-*/`，不再另设 `design/`、
-> `implementation/` 目录；文档搬运本身不写总结报告（Git 历史即记录）。
+> 约定：
+> - 功能设计与实现文档一律进 `features/f{n}-*/`，实现前后**不搬目录**，只改 README 状态；
+>   不另设 `design/`、`implementation/`、`future-*`、`implemented-*` 目录。
+> - 面向用户的内容进 `tutorials/`（不新建"一般文档"类目录）；面向开发者的进 `development/`。
+> - 一次性报告进 `history/`；文档搬运本身不写总结报告（Git 历史即记录）。
 
 #### 5.2 识别需要移动的文档
-- 检查 `docs/general/` 目录
-- 将历史修复报告移到 `docs/history/`
-- 将临时文档移到 `docs/history/`
-- 保留重要的长期文档在 `docs/general/`
+- 一次性修复报告 / 实施总结 → `docs/history/`
+- 与教程重叠的用户指南 → 并入对应 `docs/tutorials/0x-*.md` 后删除
+- 已实现功能的设计文档 → 留在 `docs/features/f{n}-*/`，只改状态
 
 #### 5.3 执行文档移动
 ```bash
-# 示例命令
-mkdir -p docs/history
-
-# 移动历史文档
-mv docs/general/AGENT_FIX_SUMMARY.md docs/history/
-mv docs/general/OCR_CONFIG_FIX.md docs/history/
-mv docs/general/IMAGE_HANDLING_FIX.md docs/history/
-# ... 继续移动其他历史文档
+# 用 git mv 保留历史
+git mv docs/<旧路径>.md docs/history/
 ```
 
 #### 5.4 创建历史文档目录的README
@@ -389,7 +341,7 @@ grep -r '\]\(.+\.md\)' docs/
 ## 常见修复场景
 
 ### 场景1: 文件已移动
-**修复前**: `[文档](general/DOCUMENT.md)`
+**修复前**: `[文档](tutorials/DOCUMENT.md)`
 **修复后**: `[文档](history/DOCUMENT.md)`
 
 ### 场景2: 文件名错误

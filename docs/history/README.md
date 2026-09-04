@@ -5,7 +5,7 @@
 版本）可能已过时；当前行为以 [README.md](../../README.md)、[docs/tutorials/](../tutorials/)
 与 [CHANGELOG.md](../../CHANGELOG.md) 为准。
 
-功能级的设计与实现文档已按功能归档到 [docs/implemented-features/](../implemented-features/)，
+功能级的设计与实现文档已按功能归档到 [docs/features/](../features/)，
 不在此目录重复。
 
 ## 文档列表
@@ -21,8 +21,8 @@
 
 ## 已清理
 
-以下报告因内容已被合并、与 `implemented-features/` 重复、或仅为文档搬运记录而删除
+以下报告因内容已被合并、与 `features/` 下功能目录重复、或仅为文档搬运记录而删除
 （Git 历史可查）：`AGENT_FIX_SUMMARY`、`IMAGE_HANDLING_FIX`（并入 COMPREHENSIVE_FIX_REPORT）、
-`COMMAND_RECOMMENDER_IMPLEMENTATION_SUMMARY`（见 `f4-command-recommender/IMPLEMENTATION_SUMMARY.md`）、
+`COMMAND_RECOMMENDER_IMPLEMENTATION_SUMMARY`（见 `features/f4-command-recommender/IMPLEMENTATION_SUMMARY.md`）、
 `WARNING_FIX`（内容见 `tutorials/06-troubleshooting.md`）、`DOCUMENTATION_REORG_SUMMARY`、
 `DOCUMENTATION_UPDATE_REPORT`、`TUTORIAL_RESTRUCTURE_SUMMARY`。

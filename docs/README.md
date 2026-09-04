@@ -1,59 +1,59 @@
 # 文档中心
 
-本目录包含项目的详细文档资源。
+```
+docs/
+├── tutorials/     【用户】  安装、功能、场景、桌面应用、故障排除、最佳实践
+├── features/      【功能】  每个功能一个目录：设计 + 实现记录 + 状态；索引与路线图
+├── development/   【开发者】CI/CD、测试设计、内容安全扫描器、文档维护流程
+├── history/       【归档】  一次性修复报告与实施总结（反映编写当日状态）
+└── assets/                  README 演示 GIF 与生成脚本
+```
 
-## 📚 文档分类
+## 📖 教程 (tutorials/)
 
-### 📖 教程文档 (tutorials/) — 面向用户
-- [项目概述和系统要求](tutorials/01-overview.md)
-- [安装和配置指南](tutorials/02-installation.md)
-- [实战场景示例](tutorials/03-scenarios.md)
-- [详细功能说明](tutorials/04-features.md)
-- [桌面应用使用指南](tutorials/05-desktop-app.md)
-- [故障排除指南](tutorials/06-troubleshooting.md)
-- [最佳实践指南](tutorials/07-best-practices.md)
+| 篇 | 内容 |
+|---|---|
+| [01 项目概述和系统要求](tutorials/01-overview.md) | 定位、架构、硬件与软件要求 |
+| [02 安装和配置指南](tutorials/02-installation.md) | Ollama 与模型、依赖安装、一键前置条件检查、环境变量 |
+| [03 实战场景示例](tutorials/03-scenarios.md) | 14 个场景：学术、开发、OCR、多 Agent、文件与会话管理等 |
+| [04 详细功能说明](tutorials/04-features.md) | RAG / Agent / 安全机制 / 文件与会话管理等 |
+| [05 桌面应用使用指南](tutorials/05-desktop-app.md) | 托盘、模型预热、状态监控、打包版 |
+| [06 故障排除指南](tutorials/06-troubleshooting.md) | 依赖冲突、ChromaDB、urllib3、OCR、性能 |
+| [07 最佳实践指南](tutorials/07-best-practices.md) | 知识库组织、提问技巧、安全使用 |
 
-### 📋 一般文档 (general/)
-- [前置条件检查快速指南](general/QUICK_START_CHECK.md) - 一键验证环境
-- [内容安全扫描器文档](general/SECURITY_DOCUMENTATION.md) - `content_security.py` 的 API 与集成方式
-- [项目路线图](general/PROJECT_ROADMAP.md) - 已完成 / 待实现 / 不做
+导航页：[TUTORIAL.md](../TUTORIAL.md)
 
-### 🎯 功能实现文档 (implemented-features/) — 按功能归档的设计与实现记录
-- [F1 OCR提取功能](implemented-features/f1-ocr-extrace/) ✅
-- [F2 多Agent系统（骨架）](implemented-features/f2-multiple-agent/) ✅
-- [F3 文件管理和会话管理](implemented-features/f3-file-session-management/) ✅
-- [F4 智能命令推荐系统](implemented-features/f4-command-recommender/) ✅
-- [F5 跨平台桌面应用打包与发布](implemented-features/f5-desktop-packaging/) ✅
-- [F6 系统能力增强（Agent 工具集）](implemented-features/f6-capability-tools/) ✅
-- [F7 Web 界面（Gradio）](implemented-features/f7-web-ui/) ✅
+## 🎯 功能 (features/)
 
-### 🚀 未来特性设计 (future-feature-design/)
-- [待实现需求索引与残留小项](future-feature-design/README.md)
-- [F8 三种对话模式优化（RAG / 单 Agent / 多 Agent）](future-feature-design/AGENT_MODES_OPTIMIZATION.md) 📋 待实现
+- [功能索引](features/README.md) - 待实现 / 已实现 / 残留小项 / 明确不做
+- [路线图](features/ROADMAP.md) - 已完成领域、进行中、工程目标
 
-### 🧪 测试文档 (testing/)
-- [测试设计文档](testing/TEST_DESIGN.md)
+| 编号 | 功能 | 状态 |
+|---|---|---|
+| [F1](features/f1-ocr-extract/) | OCR 图片/图表提取 | ✅ |
+| [F2](features/f2-multiple-agent/) | 多 Agent 协作系统（骨架） | ✅ |
+| [F3](features/f3-file-session-management/) | 文件管理与会话管理 | ✅ |
+| [F4](features/f4-command-recommender/) | 智能命令推荐 | ✅ |
+| [F5](features/f5-desktop-packaging/) | 跨平台桌面应用打包与发布 | ✅ |
+| [F6](features/f6-capability-tools/) | 系统能力增强（Agent 工具集） | ✅ |
+| [F7](features/f7-web-ui/) | Web 界面（Gradio） | ✅ |
+| [F8](features/f8-agent-modes-optimization/) | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | 📋 待实现 |
 
-### 📜 历史文档 (history/)
-一次性修复报告与实施总结，见 [history/README.md](history/README.md)（内容反映编写当日状态，可能过时）。
+## 🔧 开发者 (development/)
 
-### 🔧 工程文档
-- [CI/CD 与发布流程](CI_CD.md)
-- [文档组织工作流](DOCUMENTATION_ORGANIZATION_WORKFLOW.md)
+- [CI_CD.md](development/CI_CD.md) - GitHub Actions：CI 检查、PR 门禁、打 tag 自动发布
+- [TEST_DESIGN.md](development/TEST_DESIGN.md) - 测试 Mock 策略与可测性设计（初版，门禁现为 80%）
+- [CONTENT_SECURITY.md](development/CONTENT_SECURITY.md) - 内容安全扫描器 `content_security.py` 的 API 与集成
+- [DOCUMENTATION_WORKFLOW.md](development/DOCUMENTATION_WORKFLOW.md) - 代码变更后的文档更新与整理流程
 
-## 相关链接
+## 📜 归档 (history/)
 
-- **项目主文档**: [README.md](../README.md)
-- **教程导航**: [TUTORIAL.md](../TUTORIAL.md)
-- **变更日志**: [CHANGELOG.md](../CHANGELOG.md)
+见 [history/README.md](history/README.md)。
 
-## 📖 文档导航
+## 快速导航
 
-如果您是：
-- **新用户** → 先阅读 [README.md](../README.md) 了解项目概览
-- **想要快速开始** → [安装和配置指南](tutorials/02-installation.md) + [前置条件检查](general/QUICK_START_CHECK.md)
-- **遇到问题** → [故障排除指南](tutorials/06-troubleshooting.md)
-- **想了解新功能** → [CHANGELOG.md](../CHANGELOG.md) 与 [详细功能说明](tutorials/04-features.md)
-- **关注安全问题** → [内容安全扫描器文档](general/SECURITY_DOCUMENTATION.md)、[详细功能说明 · 安全机制](tutorials/04-features.md#5-安全机制)
-- **查看实际应用** → [实战场景示例](tutorials/03-scenarios.md)
-- **参与开发** → [功能实现文档](implemented-features/)、[未来特性设计](future-feature-design/README.md)、[CI/CD](CI_CD.md)
+- **新用户** → [README.md](../README.md) → [02 安装](tutorials/02-installation.md)
+- **遇到问题** → [06 故障排除](tutorials/06-troubleshooting.md)
+- **想了解新功能** → [CHANGELOG.md](../CHANGELOG.md)、[04 功能说明](tutorials/04-features.md)
+- **关注安全** → [04 · 安全机制](tutorials/04-features.md#5-安全机制)、[CONTENT_SECURITY.md](development/CONTENT_SECURITY.md)
+- **参与开发** → [功能索引](features/README.md)、[CI/CD](development/CI_CD.md)、[文档流程](development/DOCUMENTATION_WORKFLOW.md)

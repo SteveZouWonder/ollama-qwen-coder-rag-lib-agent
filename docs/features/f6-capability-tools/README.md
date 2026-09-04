@@ -44,4 +44,4 @@
 
 - [DESIGN.md](DESIGN.md) - 原需求设计
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) - 原代码级实现方案（模块名与库选型与实际有出入，以本文件为准）
-- [docs/future-feature-design/AGENT_MODES_OPTIMIZATION.md](../../future-feature-design/AGENT_MODES_OPTIMIZATION.md) - 后续：让 Agent 更好地使用这些工具（F8）
+- [F8 三种对话模式优化](../f8-agent-modes-optimization/REQUIREMENTS.md) - 后续：让 Agent 更好地使用这些工具（F8）

@@ -1,7 +1,7 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
 > 功能编号：F8 · 状态：待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
-> 启动提示词见 [AGENT_MODES_OPTIMIZATION_PROMPT.md](AGENT_MODES_OPTIMIZATION_PROMPT.md)
+> 启动提示词见 [PROMPT.md](PROMPT.md) · 功能索引见 [../README.md](../README.md)
 
 ## 0. 背景（已核实的代码事实，实施时勿重复调研）
 
@@ -37,7 +37,7 @@
 - 测试：`./venv/bin/python -m pytest -q -n 4`，全量覆盖 ≥80%；新逻辑必须有单测（Mock Ollama/Chroma，模式见 `tests/test_react_engine.py`、`tests/test_rag_pipeline.py`、`tests/multi_agent/`、`tests/test_web_services.py`）。
 - Web 服务层 `src/web/services.py` 是唯一接引擎处；`src/web/app.py` 的 `format_*`/`build_handlers` 可单测；`src/web/ui/*` 标 `# pragma: no cover`。
 - CLI：`query_interface.py::parse_command/classify_mode/print_help/TUTORIAL_TEXT` + `cli_handlers.py::COMMAND_HANDLERS`。
-- 每阶段完成更新 `CHANGELOG.md [Unreleased]`、README 对应段落、`docs/future-feature-design/README.md` 状态。
+- 每阶段完成更新 `CHANGELOG.md [Unreleased]`、README 对应段落、本目录 `README.md` 与 `docs/features/README.md` 的状态。
 - Git：不得直接提交 master；改动前确认分支；完成后询问是否建 PR，不得自动建 PR。
 
 ---

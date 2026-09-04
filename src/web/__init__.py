@@ -7,7 +7,7 @@
   业务逻辑。这是唯一与核心引擎交互的层，也是单元测试的重点。
 - ``app``：薄 UI 层，仅负责 Gradio 组件布局与事件绑定。
 
-详见 ``docs/implemented-features/f7-web-ui/DESIGN.md``。
+详见 ``docs/features/f7-web-ui/DESIGN.md``。
 """
 
 from .services import WebService, get_web_service

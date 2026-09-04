@@ -167,7 +167,7 @@ ollama-qwen-coder-rag-lib-agent/
 │       ├── test_display.py
 │       ├── test_context.py
 │       └── test_engine.py
-└── docs/implemented-features/f4-command-recommender/
+└── docs/features/f4-command-recommender/
     ├── README.md           # 本文件
     ├── OVERVIEW.md
     ├── ARCHITECTURE.md

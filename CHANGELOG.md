@@ -275,6 +275,16 @@
   `SECURITY_DOCUMENTATION.md` 的 `src/`、`tests/` 路径；根 README、`docs/README.md`、教程页
   中十余处指向 TUTORIAL.md 已不存在锚点或已移动文件的断链改为指向 `docs/tutorials/` 对应
   章节；`history/README.md` 重写并补齐两份此前未被任何索引收录的系统提示优化报告。
+- `docs/` 目录按受众重组为四类：`tutorials/`（用户）、`features/`（功能：`implemented-features/`
+  与 `future-feature-design/` 合并，一个功能一个目录、状态写在各自 README，F8 需求与提示词进
+  `features/f8-agent-modes-optimization/`，路线图移入 `features/ROADMAP.md`）、`development/`
+  （开发者：`CI_CD.md`、`TEST_DESIGN.md`、内容安全扫描器文档 `CONTENT_SECURITY.md`、文档维护流程
+  `DOCUMENTATION_WORKFLOW.md`）、`history/`（归档）；移除 `general/`、`testing/` 目录与根目录散件。
+  `QUICK_START_CHECK.md` 的独有内容（一键检查、结果图例、依赖诊断、手动验证清单）并入
+  `tutorials/02-installation.md`「步骤 6」后删除，该教程的启动命令同步改为 `launcher.py`；
+  `TEST_DESIGN.md` 顶部标注现行 80% 门禁与测试清单以 `tests/` 为准；修正 `f1-ocr-extrace` 目录名
+  拼写为 `f1-ocr-extract`。`docs/README.md`、根 README 目录树与文档链接、文档流程中的目录约定
+  全部对齐新结构。
 
 ## [v0.0.13] - 2026-07-20
 

@@ -1,7 +1,7 @@
 # F8 启动提示词：三种对话模式优化（P0-P3）
 
 > 用法：新开任务时把「提示词正文」整段贴给 Agent。需求细节与代码事实都在
-> `docs/future-feature-design/AGENT_MODES_OPTIMIZATION.md`（下称 REQ），Agent 应先读它，**不要重复调研已核实事实**。
+> `docs/features/f8-agent-modes-optimization/REQUIREMENTS.md`（下称 REQ），Agent 应先读它，**不要重复调研已核实事实**。
 > 可按 P 级分多次任务：把「本次范围」一行改成对应 P 级即可。
 
 ---
@@ -11,7 +11,7 @@
 ```
 # 任务：实现三种对话模式优化（RAG / 单 Agent / 多 Agent），按 P0→P1→P2→P3 顺序
 
-先完整阅读 docs/future-feature-design/AGENT_MODES_OPTIMIZATION.md（REQ）。其 §0 是已核实的代码事实与文件:行号，直接采信，勿重复调研；§1-§4 是需求与验收；附录 A 是 LLM 提示词草案。
+先完整阅读 docs/features/f8-agent-modes-optimization/REQUIREMENTS.md（REQ）。其 §0 是已核实的代码事实与文件:行号，直接采信，勿重复调研；§1-§4 是需求与验收；附录 A 是 LLM 提示词草案。
 
 ## 本次范围
 P0 → P1 → P2 → P3 全部（若上下文不足，至少完成一个完整 P 级并提交，再在总结中说明下一步）。

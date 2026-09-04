@@ -492,7 +492,7 @@ OCR_MAX_IMAGE_SIZE = 5242880  # 5MB
 3. **使用标签**: 为重要文件添加标签，便于管理
 4. **监控存储**: 使用 `/file-stats` 监控存储使用情况
 
-详细文档请参考: [文件管理和会话管理功能文档](../implemented-features/f3-file-session-management/FEATURES_FILE_AND_SESSION_MANAGEMENT.md)
+详细文档请参考: [文件管理和会话管理功能文档](../features/f3-file-session-management/FEATURES_FILE_AND_SESSION_MANAGEMENT.md)
 
 ---
 
@@ -620,7 +620,7 @@ export SESSION_STORAGE_PATH=~/.code_agent_sessions
 3. **压缩历史**: 定期压缩长会话的历史记录
 4. **使用搜索**: 利用搜索功能快速找到相关对话
 
-详细文档请参考: [文件管理和会话管理功能文档](../implemented-features/f3-file-session-management/FEATURES_FILE_AND_SESSION_MANAGEMENT.md)
+详细文档请参考: [文件管理和会话管理功能文档](../features/f3-file-session-management/FEATURES_FILE_AND_SESSION_MANAGEMENT.md)
 
 ---
 

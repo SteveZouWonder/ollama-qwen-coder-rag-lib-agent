@@ -96,18 +96,41 @@ sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 
 > **注意**: OCR 功能是可选的，如果不安装这些依赖，系统会自动禁用 OCR 相关功能，不影响其他功能的使用。
 
-### 步骤6：验证安装
+### 步骤6：验证安装（一键前置条件检查）
 
 ```bash
-# 检查Python依赖
-pip list
-
-# 检查Ollama服务
-ollama list
-
-# 测试模型
-echo "测试" | ollama run qwen3.5:4b "请回答：1+1等于几？"
+./scripts/check_prereqs.sh        # Linux/macOS
+.\scripts\check_prereqs.ps1       # Windows PowerShell
 ```
+
+结果说明：
+- 🟢 **绿色 (✓)**: 条件满足，可以继续
+- 🔴 **红色 (✗)**: 条件缺失，必须解决
+- 🟡 **黄色 (⚠)**: 警告项（可选，但推荐解决）
+
+**依赖不一致时的诊断：**
+```bash
+# 显示当前 Python 环境、已安装包与模块导入测试结果
+./scripts/verify_deps.sh
+
+# 若 install_deps.sh 成功但 check_prereqs.sh 失败，多半是虚拟环境未激活：
+echo $VIRTUAL_ENV
+source venv/bin/activate          # Windows: venv\Scripts\activate
+./scripts/check_prereqs.sh
+```
+
+**手动验证清单**（自动脚本无法运行时）：
+```bash
+python3 --version                              # 应为 3.13
+ollama --version
+curl http://localhost:11434/api/tags           # 应返回 JSON
+ollama list | grep qwen3.5                     # 应显示主模型
+ollama list | grep nomic-embed-text            # 应显示嵌入模型
+python3 -c "import llama_index, chromadb, rich"
+```
+
+> 打包版桌面应用（dmg / exe / AppImage）首次启动会自动检测并引导安装 Ollama 与模型，
+> 无需手动执行以上步骤，见 [桌面应用使用指南](05-desktop-app.md)。
 
 ---
 
@@ -173,8 +196,8 @@ chmod 600 .env
 mkdir data
 cp 你的文档.pdf data/
 
-# 启动带知识库的助手
-python query_interface.py --data ./data
+# 启动带知识库的助手（launcher 会先做 Ollama 环境检测，参数透传给 CLI）
+python launcher.py --cli --data ./data
 
 # 在交互界面中
 >>> /ask 这篇文档的主要内容是什么？
@@ -186,7 +209,7 @@ python query_interface.py --data ./data
 
 ```bash
 # 启动纯Agent模式
-python query_interface.py
+python launcher.py --cli
 
 # 在交互界面中
 >>> /agent 写一个Python快速排序，保存到sort.py
@@ -197,10 +220,13 @@ python query_interface.py
 
 ```bash
 # 知识库单次查询
-python query_interface.py --data ./papers --query "实验结果是什么？"
+python launcher.py --cli --data ./papers --query "实验结果是什么？"
 
 # Agent单次任务
-python query_interface.py --agent "检查main.py的语法错误"
+python launcher.py --cli --agent "检查main.py的语法错误"
+
+# 也可以启动 Web 界面（http://127.0.0.1:7860）
+python launcher.py --web
 ```
 
 ---
@@ -233,7 +259,18 @@ export ANONYMIZED_TELEMETRY=False
 **解决方案**:
 1. 检查Ollama服务状态: `ps aux | grep ollama`
 2. 检查端口: `lsof -i :11434`
-3. 重启Ollama: `ollama serve`
+3. 重启Ollama: `ollama serve`（后台：`nohup ollama serve > ollama.log 2>&1 &`）
+
+### 网络 / 代理问题
+
+拉取模型或联网搜索失败时：
+```bash
+ping ollama.com
+export HTTP_PROXY=http://your-proxy:port
+export HTTPS_PROXY=http://your-proxy:port
+```
+
+更多问题（urllib3 OpenSSL 警告、OCR 依赖、性能调优等）见 [故障排除指南](06-troubleshooting.md)。
 
 ---
 

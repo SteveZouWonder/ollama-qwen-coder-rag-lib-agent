@@ -157,7 +157,7 @@ ollama-qwen-coder-rag-lib-agent/
 │   ├── test_ocr_performance.py
 │   ├── test_ocr_accuracy.py
 │   └── test_ocr_stability.py
-└── docs/future-feature-design/f1-ocr-extrace/
+└── docs/features/f1-ocr-extract/
     ├── README.md           # 本文件
     ├── OVERVIEW.md
     ├── ARCHITECTURE.md

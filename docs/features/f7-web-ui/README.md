@@ -30,9 +30,9 @@ src/web/
 |---|---|
 | 工具/命令面板 | ✅ 已实现（「工具」页：网络搜索 / 代码分析 / Git / 数据库 / Shell 与文件） |
 | 系统状态面板 | ✅ 已实现（「系统」页：模型热切换与思考模式 / 运行环境 / 工具清单 / 帮助） |
-| 配置管理（可视化修改 `TOP_K`、`SIMILARITY_CUTOFF`、`CHUNK_SIZE` 等并写回） | ⏳ 未实现，「系统」页目前为只读概览。已收入 [future-feature-design/README.md](../../future-feature-design/README.md)「残留小项」 |
+| 配置管理（可视化修改 `TOP_K`、`SIMILARITY_CUTOFF`、`CHUNK_SIZE` 等并写回） | ⏳ 未实现，「系统」页目前为只读概览。已收入 [features/README.md](../README.md)「残留小项」 |
 
 ## 相关文档
 
 - [DESIGN.md](DESIGN.md) - 设计方案与实现记录
-- [docs/future-feature-design/AGENT_MODES_OPTIMIZATION.md](../../future-feature-design/AGENT_MODES_OPTIMIZATION.md) - F8 对 Web 对话页的后续改动（自动模式、来源编号、fallback 按钮）
+- [F8 三种对话模式优化](../f8-agent-modes-optimization/REQUIREMENTS.md) - F8 对 Web 对话页的后续改动（自动模式、来源编号、fallback 按钮）
