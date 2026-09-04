@@ -658,6 +658,9 @@ GRAPH_TYPE_COLORS: Dict[str, str] = {
     "concept": "#3b82f6", "technology": "#06b6d4", "tool": "#eab308",
     "language": "#ec4899", "framework": "#14b8a6", "other": "#9ca3af",
 }
+# 边 / 边标签颜色：slate-500/600，浅色与深色背景均可辨（此前的浅灰半透明在浅色下近似白色）
+GRAPH_EDGE_COLOR = "rgba(100,116,139,0.78)"
+GRAPH_EDGE_LABEL_COLOR = "#64748b"
 
 
 def _node_size(degree: int, dim: int) -> float:
@@ -763,7 +766,9 @@ def build_graph_figure(
                      f"<br>来源: {_hover_docs(e.get('documents') or [])}")
         mlabel.append(rel)
 
-    edge_line = dict(color="rgba(148,163,184,0.45)", width=1.2 if dim == 3 else 1.0)
+    # 边色取 slate-500 中灰：浅色背景上足够深、深色背景上足够亮，两种模式都可辨；
+    # 3D 场景里 WebGL 线条视觉上更细，线宽给得更大一些。
+    edge_line = dict(color=GRAPH_EDGE_COLOR, width=2.4 if dim == 3 else 1.6)
     if ex:
         if dim == 3:
             fig.add_trace(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=edge_line,
@@ -779,7 +784,7 @@ def build_graph_figure(
                 x=mx, y=my, mode="markers+text" if edge_labels else "markers",
                 marker=dict(size=4, color="rgba(148,163,184,0.01)"),
                 text=mlabel if edge_labels else None, textposition="top center",
-                textfont=dict(size=9, color="#94a3b8"),
+                textfont=dict(size=9, color=GRAPH_EDGE_LABEL_COLOR),
                 hovertext=mtext, hoverinfo="text", showlegend=False, name="关系",
             ))
 
@@ -1578,7 +1583,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         return format_graph_summary_cards(service.graph_summary())
 
     def on_graph_view(
-        dim_label: str = "3D", types: Optional[List[str]] = None, min_confidence: float = 0.0,
+        dim_label: str = "3D", types: Optional[List[str]] = None, min_confidence: float = 0.6,
         max_nodes: float = 500, focus: str = "", hops: float = 1, edge_labels: bool = False,
     ):
         """渲染图谱视图：返回 (Plotly Figure 或 None, 视图统计 Markdown, 概览卡片 HTML)。"""

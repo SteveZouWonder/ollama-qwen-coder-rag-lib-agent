@@ -39,7 +39,7 @@ def build_graph_page(service, handlers: Dict[str, Callable]) -> Dict[str, Any]: 
             choices=handlers["on_graph_type_choices"](), value=[], multiselect=True,
             label="实体类型（空=全部）", scale=2, min_width=220, interactive=True,
         )
-        min_conf = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="最小置信度", scale=1, min_width=160)
+        min_conf = gr.Slider(0.0, 1.0, value=0.6, step=0.05, label="最小置信度", scale=1, min_width=160)
         max_nodes = gr.Number(value=500, minimum=10, maximum=5000, precision=0, label="最多节点数", scale=0, min_width=110)
     with gr.Row(elem_classes=["cb-graph-controls"]):
         focus = gr.Textbox(placeholder="聚焦实体（可选，如 Python）", show_label=False, container=False, scale=2)
