@@ -805,6 +805,7 @@ def generate_answer(
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
     history_text: str = "",
+    kb_only: bool = False,
 ) -> dict:
     """根据知识库状态生成回答（知识库/网络分区标注、综合总结）。
 
@@ -818,12 +819,19 @@ def generate_answer(
         rag_progress_callback: 直接透传给 ``query_with_sources`` 的进度回调。
         should_stop: 取消探针，阶段边界命中即抛 ``PipelineCancelled``。
         history_text: 最近几轮对话的紧凑文本（连续对话时注入综合 prompt）。
+        kb_only: 只要知识库结论：未初始化或未命中时不做网络回退、不调模型
+            兜底，直接返回 ``{"answer": "", "sources": []}``（供 Agent 工具
+            ``query_knowledge_base`` 使用，由模型自行决定是否转 web_search）。
 
     Returns:
         ``{"answer": str, "sources": [...]}``。sources 仅含知识库来源。
     """
     kb_initialized = rag_engine.query_engine is not None
     _check_stop(should_stop)
+
+    if kb_only and not kb_initialized:
+        _emit(progress, "kb_uninitialized", "⚠️ 知识库未初始化")
+        return {"answer": "", "sources": []}
 
     # 按相关度精简网络上下文：只保留与问题最相关的摘要 + 精选正文，最大化信噪比，
     # 避免全部结果+全文的噪音淹没有效信息、导致 LLM 抓不住重点或误判无答案。
@@ -894,6 +902,8 @@ def generate_answer(
 
     # 知识库 0 命中（或全部为低相关噪音）：明确告知，再用网络/模型回答。
     _emit(progress, "kb_empty", "📭 知识库中未检索到相关内容。")
+    if kb_only:
+        return {"answer": "", "sources": []}
     if not web_search_result:
         _emit(progress, "kb_fallback_search", "🌐 正在网络搜索补充信息...")
         web_search_result = simple_web_search(original_question)
@@ -926,6 +936,7 @@ def answer_question(
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
     context=None,
+    kb_only: bool = False,
 ) -> dict:
     """完整的知识库问答编排入口，CLI 与 Web 共享。
 
@@ -947,6 +958,7 @@ def answer_question(
         rag_progress_callback: 透传给 query_with_sources 的进度回调。
         should_stop: 取消探针；用户请求停止时在阶段边界抛 ``PipelineCancelled``。
         context: 可选会话上下文，用于问题改写与历史注入。
+        kb_only: 只取知识库结论，未命中时不做网络回退/模型兜底（见 ``generate_answer``）。
 
     Returns:
         统一结构：
@@ -1006,6 +1018,7 @@ def answer_question(
         rag_progress_callback=rag_progress_callback,
         should_stop=should_stop,
         history_text=history_text,
+        kb_only=kb_only,
     )
 
     return {

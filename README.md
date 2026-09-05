@@ -509,6 +509,28 @@ Agent 会自动：
 [OK] [7/50] Step 7/50: 给出最终答案
 ```
 
+**鲁棒性保护（自动生效，进度行 / Web「处理过程」/ `/summary` 中可见）：**
+
+| 标记 | 场景 | 行为 |
+|---|---|---|
+| `[~]` 格式重试 | 模型输出没有 `Action` / `Final Answer`、`Action Input` 不是 JSON、调用了不存在的工具 | 回灌 `[格式错误]` 提示连续重试最多 2 次（`MAX_FORMAT_RETRIES`），仍失败则按现有文本收尾并标注「（格式异常，可能不完整）」 |
+| `[R]` 重复调用 | 相同工具 + 相同参数第 2 次出现 | 不再执行，回灌「已有结果，请换方法」；第 3 次终止并强制总结 |
+| `[F]` 上下文折叠 | 本轮往返超出 `num_ctx − 系统提示 − 历史 − 4096` 的预算 | 单条 Observation 超过 `OBSERVATION_MAX_CHARS`（默认 3000）先截断；仍超预算则把最早步骤的 Observation 折叠为一行摘要，最近 3 步始终完整 |
+| `[!!]` 强制总结 | 步数用尽（`MAX_ITERATIONS`）或重复调用终止 | 追加「请基于以上 Observation 总结已完成/未完成/建议」再调一次模型，以 **⚠️ 未完成** 为前缀返回，而不是丢弃全部中间结果 |
+| `[E]` 错误 | Ollama 连不上 / 超时 | 直接返回 `[错误] …`，不写入会话 |
+
+**命令安全分级**（`execute_command`）：`ls/cat/git status` 等只读命令 → low 免确认；
+`pip/npm/brew/apt install`、`git push/commit/reset/checkout/rebase/merge`、`python x.py`、
+`node x.js`、`make`、`docker run/exec` → **medium 需确认**；`rm`、`drop`、`curl … | sh|bash` →
+**high 需确认**；`rm -rf /`、`mkfs`、`sudo rm` 等 → critical 直接拦截。
+`write_file` / `add_to_knowledge_base` 只允许操作**当前工作目录**或 `WRITE_ALLOWED_DIRS`
+（冒号分隔）内的路径，其余返回 `[错误] 路径超出允许范围`——要让 Agent 入库项目外的 PDF/图片，
+先 `export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads`。
+
+`query_knowledge_base` 与 RAG 模式走同一条管道（相关性阈值 + 模型判定），返回「答案 + 相关性
+结论 + top-3 片段原文（含文件名）」；知识库无相关内容时明确返回 `[知识库无相关内容]`，Agent 会
+据此改用 `web_search`。
+
 ### 🤝 模式三：多Agent 协作系统 ⭐ 新功能
 
 适合 **复杂任务分解、专业化分工、并行处理、多视角分析** 等高级场景。
@@ -806,12 +828,13 @@ orchestrator = AgentOrchestrator(config)
 
 | 风险等级 | 行为 | 示例 |
 |----------|------|------|
-| **critical** | 自动拦截 | `rm -rf /`, `dd if=/dev/zero` |
-| **high** | 询问确认 | `rm file`, `del file` |
-| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `write_file` |
-| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest` |
+| **critical** | 自动拦截 | `rm -rf /`, `dd if=/dev/zero`, `sudo rm` |
+| **high** | 询问确认 | `rm file`, `del file`, `curl … \| sh`, `wget … \| bash` |
+| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `pip/npm/brew/apt install`, `git push/commit/reset/checkout/rebase/merge`, `python x.py`, `node x.js`, `make`, `docker run/exec` |
+| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest`, `python -m pytest` |
 
-使用 `--yes` 参数可跳过所有确认（仅自动化脚本使用）。
+使用 `--yes` 参数可跳过所有确认（仅自动化脚本使用）。`write_file` / `add_to_knowledge_base`
+另受路径边界约束：只能操作当前工作目录或 `WRITE_ALLOWED_DIRS` 内的文件。
 
 ### 内容安全防护 ⚡
 
@@ -935,6 +958,11 @@ export CODE_AGENT_AUTO_CONFIRM=true
 # （截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS，默认 4000 字符）；replace 用该文件整体替换（旧行为）
 export CODE_AGENT_PROMPT_MODE=append
 export SYSTEM_PROMPT_EXTRA_MAX_CHARS=4000
+# 单 Agent 鲁棒性：连续格式错误重试次数 / 单条 Observation 最大字符数
+export MAX_FORMAT_RETRIES=2
+export OBSERVATION_MAX_CHARS=3000
+# write_file / add_to_knowledge_base 允许操作的额外目录（冒号分隔；当前工作目录始终允许）
+export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads
 
 python query_interface.py --data ./data
 ```

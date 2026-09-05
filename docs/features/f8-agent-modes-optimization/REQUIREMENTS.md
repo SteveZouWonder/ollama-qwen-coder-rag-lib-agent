@@ -1,6 +1,8 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）**，P1 / P2 / P3 待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）**，P2 / P3 待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+>
+> P1 实现记录：P1-1~P1-8 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：格式重试按**连续**次数计（合法步骤后重置）；重复检测为全局计数；`answer_question` 新增 `kb_only` 参数避免 0 命中时的无用网络回退；`curl … | sh` 由 critical 降为 high（需确认而非直接拦截，`| bash|zsh` 同级）；`write_file` / `add_to_knowledge_base` 越界拒绝对 Web「工具」页同样生效。
 >
 > P0 实现记录：P0-1~P0-8 全部落地；同时前置完成 P1-1 的 `build_system_prompt(tools, extra, mode)` 分层、`allowed_tools` / `system_prompt_extra` / `max_iterations` 参数与 `CODE_AGENT_PROMPT_MODE`（`.devin/SYSTEM_PROMPT.md` 错误指引清理留在 P1）。与需求的差异：新增「未经验证」标记（子 Agent 未调用角色关键工具却给出结论时）；子 Agent 对白名单内需确认工具自动放行、`execute_command` 只放行 low/medium 风险（需求未规定确认策略）。
 > 启动提示词见 [PROMPT.md](PROMPT.md) · 功能索引见 [../README.md](../README.md)

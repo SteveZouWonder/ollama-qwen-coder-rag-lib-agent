@@ -422,6 +422,34 @@ _progress_state = {
     "current_thinking_dots": 0
 }
 
+# ReAct 步骤阶段 → CLI 标记 / 颜色（含 P1-8 鲁棒性事件：格式重试、重复、折叠、强制总结、错误）
+STEP_PHASE_EMOJI = {
+    "thinking": "[*]",
+    "action": "[>]",
+    "executing": "[!]",
+    "observed": "[=]",
+    "blocked": "[X]",
+    "rejected": "[-]",
+    "final": "[OK]",
+    "format_retry": "[~]",
+    "repeat": "[R]",
+    "budget_fold": "[F]",
+    "forced_summary": "[!!]",
+    "error": "[E]",
+}
+STEP_PHASE_COLOR = {
+    "thinking": "cyan",
+    "executing": "yellow",
+    "blocked": "red",
+    "rejected": "red",
+    "final": "green",
+    "format_retry": "yellow",
+    "repeat": "yellow",
+    "budget_fold": "magenta",
+    "forced_summary": "red",
+    "error": "red",
+}
+
 def on_step_callback(data: dict):
     from config import Config
     
@@ -433,26 +461,12 @@ def on_step_callback(data: dict):
     phase = data.get("phase", "?")
     msg = data.get("message", "")
 
-    phase_emoji = {
-        "thinking": "[*]",
-        "action": "[>]",
-        "executing": "[!]",
-        "observed": "[=]",
-        "blocked": "[X]",
-        "rejected": "[-]",
-        "final": "[OK]"
-    }.get(phase, "[?]")
+    phase_emoji = STEP_PHASE_EMOJI.get(phase, "[?]")
 
     if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
         from rich.console import Console as RichConsole
         
-        color = {
-            "thinking": "cyan",
-            "executing": "yellow",
-            "blocked": "red",
-            "rejected": "red",
-            "final": "green"
-        }.get(phase, "white")
+        color = STEP_PHASE_COLOR.get(phase, "white")
         
         # 计算进度百分比
         if step != "?" and total != "?":

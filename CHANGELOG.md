@@ -10,6 +10,35 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **单 Agent 鲁棒性与上下文预算（F8 P1）**：
+  - **协议容错**：模型输出没有 `Action` / `Final Answer`、`Action Input` 不是合法 JSON 对象、
+    或调用了不存在的工具时，不再把整段文本当作最终答案，而是回灌
+    `Observation: [格式错误] …请严格按协议重新输出` 连续重试最多 `MAX_FORMAT_RETRIES`（默认 2）
+    次，仍失败才按现有文本收尾并标注「（格式异常，可能不完整）」；模型调用本身失败
+    （`[错误] …` 连不上 / 超时）直接返回错误，不写入会话。
+  - **步数耗尽强制总结**：达到最大步数时追加一条「步数已用尽，请基于以上 Observation 总结：
+    已完成/未完成/建议」再调一次模型（`think=False`，`num_predict=1024`），以「⚠️ 未完成」为
+    前缀返回总结，不再丢弃全部中间结果；模型失败时回退为执行摘要。
+  - **重复调用检测**：按 `(tool, 参数规范化 JSON)` 计数，第 2 次完全相同的调用不再执行、回灌
+    「已有结果，请换方法或给出答案」，第 3 次触发强制总结并结束。
+  - **本轮上下文预算**：`turn_budget = num_ctx − 系统提示 − 历史 − 4096 预留`；单条 Observation
+    超过 `OBSERVATION_MAX_CHARS`（默认 3000）截断并注明；本轮往返超预算时从最早一步起把
+    Observation 折叠为一行「（第 k 步 tool=x 结果已折叠，要点：前 200 字）」，始终保留系统
+    提示与最近 3 步完整。
+  - **知识库工具对齐 RAG 模式**：`query_knowledge_base` 改走 `rag_pipeline.answer_question`
+    （0.45 相关性阈值 + 模型相关性判定，`kb_only` 不联网不兜底），返回「答案 + 相关性结论 +
+    top-3 片段原文（每条 ≤300 字，含文件名）」；不相关时明确返回 `[知识库无相关内容]`，
+    内置提示据此引导模型转 `web_search`；元查询返回文件清单概览。
+  - **命令安全分级补洞**：`pip/npm/yarn/pnpm/brew/apt install`、`git push/commit/reset/checkout/
+    rebase/merge`、`python x.py`、`node x.js`、`make`、`docker run/exec` 由免确认 low 升为
+    **medium（需确认）**；`curl|wget … | sh|bash|zsh` 为 **high**（需确认；此前 `| sh` 被
+    直接拦截、`| bash` 却是 low）。`write_file` / `add_to_knowledge_base` 的路径解析后必须
+    位于当前工作目录或 `WRITE_ALLOWED_DIRS`（环境变量，冒号分隔）内，否则返回
+    `[错误] 路径超出允许范围`。
+  - **可观测**：`step_log` 新增 `format_retry` / `repeat` / `budget_fold` / `forced_summary` /
+    `error` 事件，Web「处理过程」与执行摘要、CLI 进度行（`[~]` `[R]` `[F]` `[!!]` `[E]`）与
+    `/summary` 同步显示；会话执行摘要追加「格式重试 n 次 / 重复调用 n 次 / 上下文折叠 n 次 /
+    强制总结收尾」。
 - **多 Agent 协作重做为真实 Agent（F8 P0）**：Code / Test / Doc / Audit 四个专业 Agent 不再返回
   硬编码假数据，而是各自构造一个**受限工具集**的 ReActEngine 真实执行子任务（Code：读写文件 /
   运行命令 / 搜索 / AST；Test：读写 / 运行 / 质量检查；Doc：读写 / 知识库 / 联网；Audit：只读
@@ -151,6 +180,12 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- `.devin/SYSTEM_PROMPT.md`（v4.3.0）清理错误指引：不再要求读取 `~/.config/devin/*` 全局配置、
+  不再要求用 `read_system_prompt` 重复读取本提示（引擎已自动注入）、移除不存在的
+  `todo_write` 任务工具、明确斜杠命令（`/snapshot-create` 等）不能通过 `execute_command`
+  执行；`read_system_prompt` 工具描述改为「一般无需调用」。原文备份为 `.devin/SYSTEM_PROMPT.md.bak`。
+- `rag_pipeline.answer_question` / `generate_answer` 新增 `kb_only` 参数：只取知识库结论，
+  未初始化或未命中时不做网络回退、不调模型兜底（供 Agent 工具使用，RAG 模式行为不变）。
 - 多 Agent 子 Agent 若从未真正调用角色关键工具（如测试 Agent 没有 `write_file` /
   `execute_command`）却给出结论，结果标记「⚠️ 未经验证」并在输出前注明为模型自述，避免把编造
   的"已完成"当成事实；Agent 摘要中的工具列表只统计真正执行过的工具。
@@ -251,6 +286,11 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- 单 Agent 此前把无 `Final Answer` 的裸文本 / 非 JSON 的 `Action Input` / `[错误] 模型调用失败`
+  整段当作最终答案并写入会话、步数耗尽只返回固定警告丢弃全部中间结果、相同调用无限重复、
+  本轮 ReAct 往返（≤50 步 × ≤5000 字符）无截断折叠——均已在 F8 P1 中修正。
+- `python x.py`、`pip/npm install`、`git push/commit` 等此前落入默认 low 免确认，
+  `curl … | bash` 未被识别，`write_file` 可写任意路径——已补安全分级与路径边界。
 - 多 Agent 模式此前 4/5 专业 Agent 返回固定假文本且 `success=True`、PARALLEL 实际串行、
   COMPETITIVE 按最快耗时选优、超时不生效、失败后 Agent 卡在 ERROR、进度文案「分解任务
   （模型推理）」与实现不符（实际为关键词匹配）——均已在 F8 P0 中修正。

@@ -92,14 +92,37 @@ class ToolRegistry:
 # ========== 命令安全分析 ==========
 
 class CommandSafetyChecker:
-    """命令安全分析器"""
+    """命令安全分析器。
+
+    风险分级（由高到低）：
+    - ``critical``：匹配 ``DANGEROUS_PATTERNS``，直接拦截不执行；
+    - ``high``：匹配 ``HIGH_PATTERNS``（如 ``curl … | sh`` 远程脚本直执行）或含删除类关键字，需确认；
+    - ``medium``：匹配 ``MEDIUM_PATTERNS``（安装依赖、git 写操作、运行脚本、make、docker run/exec）
+      或含修改类关键字，需确认；
+    - ``low``：只读命令或其余命令，免确认。
+    """
 
     DANGEROUS_PATTERNS = [
         r"rm\s+-rf\s+/", r"rm\s+-rf\s+/\*", r"dd\s+if=/dev/zero",
         r"mkfs\.", r">\s*/dev/sda", r"chmod\s+777\s+/",
-        r"curl\s+.*\|\s*sh", r"wget\s+.*\|\s*sh", r"sudo\s+rm",
+        r"sudo\s+rm",
         r"del\s+/f\s+/s\s+/q", r"format\s+", r":\(\)\{\s*:\|:&\s*\};:",
         r"mv\s+/\s+", r"cp\s+/\s+", r"ln\s+-sf\s+/",
+    ]
+
+    # 高风险（需确认，但不直接拦截）：下载远程脚本直接交给 shell 执行
+    HIGH_PATTERNS = [
+        r"\b(curl|wget)\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b",
+    ]
+
+    # 中风险（需确认）：会改变环境/仓库/运行任意代码，但不具破坏性
+    MEDIUM_PATTERNS = [
+        r"\b(pip3?|npm|yarn|pnpm|brew|apt(-get)?)\s+install\b",
+        r"\bgit\s+(push|commit|reset|checkout|rebase|merge)\b",
+        r"\bpython3?\s+(\S+/)?\S+\.py\b",
+        r"\bnode\s+(\S+/)?\S+\.js\b",
+        r"(^|[;&|]\s*)make\b",
+        r"\bdocker\s+(run|exec)\b",
     ]
 
     READONLY_PATTERNS = [
@@ -142,8 +165,14 @@ class CommandSafetyChecker:
         elif result["is_readonly"]:
             result["risk_level"] = "low"
             result["needs_confirm"] = False
+        elif any(re.search(p, command, re.IGNORECASE) for p in cls.HIGH_PATTERNS):
+            result["risk_level"] = "high"
+            result["needs_confirm"] = True
         elif any(kw in command.lower() for kw in ["rm", "del", "drop", "truncate", "format"]):
             result["risk_level"] = "high"
+            result["needs_confirm"] = True
+        elif any(re.search(p, command, re.IGNORECASE) for p in cls.MEDIUM_PATTERNS):
+            result["risk_level"] = "medium"
             result["needs_confirm"] = True
         elif any(kw in command.lower() for kw in ["write", "insert", "update", "delete", "chmod", "chown", "mv", "cp"]):
             result["risk_level"] = "medium"
@@ -153,6 +182,36 @@ class CommandSafetyChecker:
             result["needs_confirm"] = False
 
         return result
+
+
+# ========== 写路径边界 ==========
+
+WRITE_ALLOWED_DIRS_ENV = "WRITE_ALLOWED_DIRS"
+PATH_OUT_OF_SCOPE_ERROR = "[错误] 路径超出允许范围"
+
+
+def write_allowed_dirs() -> List[str]:
+    """允许写入/入库的目录：当前工作目录 + ``WRITE_ALLOWED_DIRS``（冒号分隔）。"""
+    dirs = [os.getcwd()]
+    extra = os.getenv(WRITE_ALLOWED_DIRS_ENV, "")
+    dirs.extend(d.strip() for d in extra.split(":") if d.strip())
+    return [os.path.realpath(os.path.expanduser(d)) for d in dirs]
+
+
+def is_path_allowed(path: str) -> bool:
+    """路径（解析符号链接与 ``..`` 后）是否位于允许目录内。"""
+    if not path or not str(path).strip():
+        return False
+    real = os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
+    for base in write_allowed_dirs():
+        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def path_scope_error(path: str) -> str:
+    return (f"{PATH_OUT_OF_SCOPE_ERROR}: {path}（仅允许 {os.getcwd()} "
+            f"或环境变量 {WRITE_ALLOWED_DIRS_ENV} 指定的目录）")
 
 # ========== 具体工具实现 ==========
 
@@ -176,6 +235,8 @@ def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
         return "[错误] 读取失败: " + str(e)
 
 def write_file(path: str, content: str, append: bool = False) -> str:
+    if not is_path_allowed(path):
+        return path_scope_error(path)
     try:
         abs_path = os.path.abspath(path)
         parent = os.path.dirname(abs_path)
@@ -364,13 +425,84 @@ def get_current_dir() -> str:
 
 # ========== RAG 知识库工具 ==========
 
+# query_knowledge_base 返回给模型的片段数与每条片段最大字符数
+KB_TOOL_TOP_K = 3
+KB_TOOL_SNIPPET_CHARS = 300
+KB_NO_RELEVANT_MARK = "[知识库无相关内容]"
+
+
+def format_kb_tool_result(result: Dict[str, Any]) -> str:
+    """把 ``rag_pipeline.answer_question`` 的结果渲染为回灌模型的文本。
+
+    命中：``答案 + 相关性结论 + top-3 片段原文（每条 ≤300 字，含文件名）``；
+    未命中：``[知识库无相关内容]``（内置提示据此引导模型转 web_search）；
+    元查询（"知识库里有什么"）：文件清单概览。
+    """
+    if not isinstance(result, dict):
+        return KB_NO_RELEVANT_MARK
+    if result.get("kind") == "meta":
+        meta = result.get("meta") or {}
+        files = meta.get("files") or []
+        stats = meta.get("stats") or {}
+        lines = ["[知识库概览]"]
+        if stats:
+            doc_count = stats.get("total_documents", stats.get("document_count"))
+            if doc_count is not None:
+                lines.append(f"文档块数: {doc_count}")
+        if files:
+            lines.append(f"文件 {len(files)} 个：")
+            for f in files[:20]:
+                lines.append(f"- {os.path.basename(str(f.get('path', '')))} ({f.get('size', '?')})")
+            if len(files) > 20:
+                lines.append(f"…另有 {len(files) - 20} 个文件")
+        else:
+            lines.append("知识库中暂无文件")
+        return "\n".join(lines)
+
+    sources = [s for s in (result.get("kb_sources") or []) if isinstance(s, dict)]
+    if not sources:
+        return (f"{KB_NO_RELEVANT_MARK} 知识库中没有与该问题相关的文档"
+                "（已按相关性阈值与模型判定过滤）。请改用 web_search，或基于自身知识回答并说明来源。")
+
+    scores = [float(s["score"]) for s in sources if isinstance(s.get("score"), (int, float))]
+    top = f"，最高相关度 {max(scores):.2f}" if scores else ""
+    lines = [
+        f"[知识库命中] 相关性判定：通过（{len(sources)} 个相关片段{top}）",
+        "",
+        "答案：",
+        (result.get("answer") or "").strip() or "（无综合答案）",
+        "",
+        f"相关片段（top-{min(KB_TOOL_TOP_K, len(sources))}，原文）：",
+    ]
+    for i, src in enumerate(sources[:KB_TOOL_TOP_K], 1):
+        name = src.get("file") or src.get("file_name") or os.path.basename(str(src.get("path") or "")) or "未知"
+        text = str(src.get("content") or src.get("text") or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        if len(text) > KB_TOOL_SNIPPET_CHARS:
+            text = text[:KB_TOOL_SNIPPET_CHARS] + "…"
+        score = src.get("score")
+        score_s = f"（相关度 {float(score):.2f}）" if isinstance(score, (int, float)) else ""
+        lines.append(f"{i}. [{name}]{score_s} {text or '（无正文）'}")
+    return "\n".join(lines)
+
+
 def query_knowledge_base(question: str) -> str:
-    """查询个人知识库（PDF、论文、笔记等）"""
+    """查询个人知识库（PDF、论文、笔记等）。
+
+    与 RAG 模式走同一条管道（``rag_pipeline.answer_question``：0.45 相关性阈值 +
+    模型相关性判定），只取知识库结论、不联网、不兜底；返回"答案 + 相关性结论 +
+    top-3 片段原文"，不相关时返回 ``[知识库无相关内容]``。
+    """
     global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
     try:
-        return _rag_engine.query_tool(question)
+        from rag_pipeline import answer_question
+        result = answer_question(
+            _rag_engine, question,
+            enable_web_search=False, show_progress=False, kb_only=True,
+        )
+        return format_kb_tool_result(result)
     except Exception as e:
         return "[错误] 知识库查询失败: " + str(e)
 
@@ -379,6 +511,8 @@ def add_to_knowledge_base(file_path: str) -> str:
     global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
+    if not is_path_allowed(file_path):
+        return path_scope_error(file_path)
     try:
         return _rag_engine.add_document_tool(file_path)
     except Exception as e:
@@ -643,7 +777,7 @@ registry.register("analyze_project_structure", analyze_project_structure, "分�
 registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件",
                   {"query": "搜索关键字(必填)", "path": "搜索目录，默认当前目录", "max_results": "最大结果数，默认10"}, safe=True)
 registry.register("get_current_dir", get_current_dir, "获取当前工作目录路径", {}, safe=True)
-registry.register("read_system_prompt", read_system_prompt, "读取系统提示文件（必须优先阅读）", {}, safe=True)
+registry.register("read_system_prompt", read_system_prompt, "查看 .devin/SYSTEM_PROMPT.md 原文（其内容已自动注入系统提示，一般无需调用）", {}, safe=True)
 
 # RAG 工具
 registry.register("query_knowledge_base", query_knowledge_base, "查询个人知识库（PDF、论文、笔记、OCR识别的图片等文档）",

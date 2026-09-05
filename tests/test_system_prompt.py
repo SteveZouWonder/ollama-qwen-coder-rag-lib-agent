@@ -214,9 +214,26 @@ class TestSystemPromptContent:
         with open(prompt_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 检查版本号（应与项目 CHANGELOG 当前版本保持同步）
-        assert "4.2.1" in content, "系统提示版本应该更新为4.2.1"
-        assert "2026-06-23" in content, "系统提示应该包含更新日期"
+        # 检查版本号（P1-1 清理错误指引后升为 4.3.0）
+        assert "4.3.0" in content, "系统提示版本应该更新为4.3.0"
+        assert "2026-09-05" in content, "系统提示应该包含更新日期"
+
+    def test_system_prompt_wrong_guidance_removed(self):
+        """P1-1：错误指引已清理——不再要求读全局配置/调用不存在的工具/用 execute_command 跑斜杠命令。"""
+        prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 不存在的任务列表工具
+        assert "todo_write" not in content
+        # 用户主目录下的全局配置（本机开发规范，不应要求 Agent 读取）
+        assert "~/.config/devin" not in content.replace("v4.3.0", "").split("> 版本说明")[0]
+        # 不再要求"用 read_system_prompt 读本提示"（引擎已自动注入）
+        assert "使用 `read_system_prompt` 工具读取系统提示文件内容" not in content
+        assert "不要" in content and "read_system_prompt" in content
+        # 斜杠命令不得通过 execute_command 执行
+        assert '"command": "/snapshot-create"' not in content
+        assert "不能**通过 `execute_command` 执行" in content
 
 
 class TestSystemPromptIntegration:

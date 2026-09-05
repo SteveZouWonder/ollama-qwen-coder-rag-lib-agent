@@ -79,7 +79,11 @@ class TestReadFile:
 
 
 class TestWriteFile:
-    """测试 write_file"""
+    """测试 write_file（P1-7 后临时目录需通过 WRITE_ALLOWED_DIRS 放行）"""
+
+    @pytest.fixture(autouse=True)
+    def _allow_temp_dir(self, temp_dir, monkeypatch):
+        monkeypatch.setenv("WRITE_ALLOWED_DIRS", str(temp_dir))
 
     def test_write_new_file(self, temp_dir):
         path = temp_dir / "new.txt"
@@ -107,8 +111,14 @@ class TestWriteFile:
         def mock_makedirs(*a, **k):
             raise PermissionError("no")
         monkeypatch.setattr(os, "makedirs", mock_makedirs)
-        result = write_file("/fake/path.txt", "x")
+        result = write_file(str(temp_dir / "fake" / "path.txt"), "x")
         assert "[错误] 写入失败" in result
+
+    def test_write_outside_scope_rejected(self, temp_dir, monkeypatch):
+        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
+        result = write_file(str(temp_dir / "x.txt"), "x")
+        assert result.startswith("[错误] 路径超出允许范围")
+        assert not (temp_dir / "x.txt").exists()
 
 
 class TestListDirectory:

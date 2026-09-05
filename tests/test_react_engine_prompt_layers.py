@@ -141,14 +141,23 @@ class TestEngineParams:
 
     @patch("react_engine.requests.post")
     def test_max_iterations_param(self, mock_post):
-        r = MagicMock()
-        r.json.return_value = {"message": {"content": 'Thought: t\nAction: read_file\nAction Input: {"path": "x"}'}}
-        mock_post.return_value = r
+        def resp(text):
+            r = MagicMock()
+            r.json.return_value = {"message": {"content": text}}
+            return r
+
+        # 两步各读不同文件（避免触发重复检测），随后步数耗尽 → 强制总结再调一次模型
+        mock_post.side_effect = [
+            resp('Thought: t\nAction: read_file\nAction Input: {"path": "a"}'),
+            resp('Thought: t\nAction: read_file\nAction Input: {"path": "b"}'),
+            resp("已完成：读了 a、b；未完成：无；建议：无"),
+        ]
         with patch("react_engine.registry.execute", return_value="ok"):
             eng = ReActEngine(context=FakeContext(), max_iterations=2, prompt_mode="builtin")
             steps = []
             eng.on_step = lambda e: steps.append(e) if not e.get("transient") else None
             out = eng.chat("x")
-        assert "达到最大迭代次数" in out
-        assert mock_post.call_count == 2
+        assert out.startswith("⚠️ 未完成")
+        assert "读了 a、b" in out
+        assert mock_post.call_count == 3
         assert steps[0]["total"] == 2

@@ -98,6 +98,32 @@ class TestAnswerQuestion:
         assert "模型回答" in result["answer"]
         assert result["kb_sources"] == []
 
+    def test_kb_only_miss_skips_web_and_model_fallback(self, monkeypatch):
+        """kb_only=True（Agent 工具）：未命中时不联网、不调模型兜底，直接返回空来源。"""
+        rag = FakeRAG(result={"answer": "Empty Response", "sources": []})
+        calls = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: calls.append("llm") or "x")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: calls.append("web") or "y")
+        events = []
+        result = rag_pipeline.answer_question(
+            rag, "冷门问题", enable_web_search=False, kb_only=True,
+            progress=lambda e: events.append(e["stage"]),
+        )
+        assert result["answer"] == "" and result["kb_sources"] == []
+        assert calls == []
+        assert "kb_empty" in events
+
+    def test_kb_only_uninitialized_returns_empty(self, monkeypatch):
+        rag = FakeRAG(query_engine=None)
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: pytest.fail("不应调用模型"))
+        result = rag_pipeline.answer_question(rag, "问题", enable_web_search=False, kb_only=True)
+        assert result["answer"] == "" and result["kb_sources"] == []
+
+    def test_kb_only_hit_returns_sources(self):
+        rag = FakeRAG(result={"answer": "命中答案", "sources": [{"content": "相关", "file": "d.md", "score": 0.8}]})
+        result = rag_pipeline.answer_question(rag, "问题", enable_web_search=False, kb_only=True)
+        assert result["answer"] == "命中答案" and len(result["kb_sources"]) == 1
+
     def test_low_relevance_source_treated_as_miss(self, monkeypatch):
         """低相关片段（低于阈值）应被过滤，视为 0 命中并回退网络/模型。
 

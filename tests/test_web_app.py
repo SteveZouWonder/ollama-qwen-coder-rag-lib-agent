@@ -1001,6 +1001,30 @@ class TestNewFormatters:
         assert app.format_step_log([]) == ""
         assert app.format_step_log([{"phase": "thinking"}]) == ""
 
+    def test_format_step_log_robustness_events(self):
+        """P1-8：格式重试 / 重复 / 折叠 / 强制总结 / 错误 事件在「处理过程」中可见。"""
+        out = app.format_step_log([
+            {"step": 1, "phase": "format_retry", "reason": "输出中既没有 Action 也没有 Final Answer", "retry": 1},
+            {"step": 2, "phase": "repeat", "tool": "read_file", "count": 2},
+            {"step": 5, "phase": "budget_fold", "folded_steps": [1, 2]},
+            {"step": 6, "phase": "forced_summary", "reason": "max_iterations"},
+            {"step": 6, "phase": "final", "answer": "⚠️ 未完成…", "forced": "max_iterations"},
+        ])
+        assert "🔁 输出格式错误，回灌重试（第 1 次）：输出中既没有 Action" in out
+        assert "♻️ 重复调用 `read_file`（第 2 次相同参数）" in out
+        assert "🗜️ 上下文超预算，已折叠第 1、2 步的 Observation" in out
+        assert "⚠️ 步数已用尽，请模型总结" in out
+        assert "⚠️ 未完成，强制总结收尾" in out
+
+        out2 = app.format_step_log([
+            {"step": 3, "phase": "forced_summary", "reason": "repeat"},
+            {"step": 3, "phase": "final", "answer": "x", "format_abnormal": True},
+            {"step": 4, "phase": "error", "message": "[错误] 模型响应超时"},
+        ])
+        assert "重复调用终止" in out2
+        assert "🏁 格式异常，按现有文本收尾" in out2
+        assert "❌ [错误] 模型响应超时" in out2
+
     def test_format_confirm_request(self):
         out = app.format_confirm_request({
             "tool": "execute_command", "command": "rm -r build", "safety": {"risk_level": "high"},

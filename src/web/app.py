@@ -347,8 +347,27 @@ def format_step_log(step_log: List[Dict[str, Any]]) -> str:
             lines.append(f"- Step {step} 🛡️ 危险命令被拦截")
         elif phase == "rejected":
             lines.append(f"- Step {step} ⛔ 用户拒绝执行")
+        elif phase == "format_retry":
+            reason = (log.get("reason") or "").strip()
+            lines.append(f"- Step {step} 🔁 输出格式错误，回灌重试（第 {log.get('retry', '?')} 次）"
+                         + (f"：{reason[:80]}" if reason else ""))
+        elif phase == "repeat":
+            lines.append(f"- Step {step} ♻️ 重复调用 `{log.get('tool', '?')}`（第 {log.get('count', '?')} 次相同参数）")
+        elif phase == "budget_fold":
+            folded = "、".join(str(s) for s in log.get("folded_steps", []))
+            lines.append(f"- Step {step} 🗜️ 上下文超预算，已折叠第 {folded} 步的 Observation")
+        elif phase == "forced_summary":
+            why = "步数已用尽" if log.get("reason") == "max_iterations" else "重复调用终止"
+            lines.append(f"- Step {step} ⚠️ {why}，请模型总结已完成/未完成/建议")
+        elif phase == "error":
+            lines.append(f"- Step {step} ❌ {log.get('message', '模型调用失败')}")
         elif phase == "final":
-            lines.append(f"- Step {step} 🏁 给出最终答案")
+            if log.get("forced"):
+                lines.append(f"- Step {step} ⚠️ 未完成，强制总结收尾")
+            elif log.get("format_abnormal"):
+                lines.append(f"- Step {step} 🏁 格式异常，按现有文本收尾（可能不完整）")
+            else:
+                lines.append(f"- Step {step} 🏁 给出最终答案")
     return "\n".join(lines) if len(lines) > 2 else ""
 
 

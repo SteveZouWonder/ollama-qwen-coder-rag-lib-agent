@@ -37,6 +37,26 @@ class TestOnStepCallback:
         captured = capsys.readouterr()
         assert "[1/10]" in captured.out
 
+    @patch("query_interface.HAS_RICH", False)
+    def test_on_step_robustness_phases_have_markers(self, capsys):
+        """P1-8：格式重试 / 重复 / 折叠 / 强制总结 / 错误 事件有专属标记而非 [?]。"""
+        expected = {
+            "format_retry": "[~]", "repeat": "[R]", "budget_fold": "[F]",
+            "forced_summary": "[!!]", "error": "[E]",
+        }
+        for phase, mark in expected.items():
+            on_step_callback({"step": 3, "phase": phase, "message": f"Step 3: {phase}"})
+            out = capsys.readouterr().out
+            assert mark in out and f"Step 3: {phase}" in out and "[?]" not in out
+
+    @patch("query_interface.HAS_RICH", True)
+    @patch("query_interface.console")
+    def test_on_step_robustness_phase_rich(self, mock_console):
+        from query_interface import STEP_PHASE_COLOR
+        on_step_callback({"step": 2, "phase": "budget_fold", "message": "折叠"})
+        last = str(mock_console.print.call_args_list[-1])
+        assert "[F]" in last and "折叠" in last and STEP_PHASE_COLOR["budget_fold"] in last
+
 
 class TestOnConfirmCallback:
     """测试确认回调"""

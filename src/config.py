@@ -193,6 +193,11 @@ TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
 AUTO_CONFIRM = os.getenv("CODE_AGENT_AUTO_CONFIRM", "false").lower() == "true"
 
+# Agent 的 write_file / add_to_knowledge_base 允许操作的目录（冒号分隔），
+# 始终隐含当前工作目录；解析后不在这些目录内的路径返回 "[错误] 路径超出允许范围"。
+# agent_tools 在调用时实时读取该环境变量，这里仅作为配置项文档与 Config 映射。
+WRITE_ALLOWED_DIRS = os.getenv("WRITE_ALLOWED_DIRS", "")
+
 # ==================== 文件上传配置 ====================
 # 文件大小限制（字节）
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", "10485760"))  # 10MB
@@ -312,6 +317,7 @@ class Config:
     MAX_ITERATIONS: int = MAX_ITERATIONS
     TIMEOUT: int = TIMEOUT
     AUTO_CONFIRM: bool = AUTO_CONFIRM
+    WRITE_ALLOWED_DIRS: str = WRITE_ALLOWED_DIRS
     READONLY_COMMANDS: tuple = READONLY_COMMANDS
     DANGEROUS_PATTERNS: tuple = DANGEROUS_PATTERNS
     FIRST_RUN_MARKER: str = FIRST_RUN_MARKER
