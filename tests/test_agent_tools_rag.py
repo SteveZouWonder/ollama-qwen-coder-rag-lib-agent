@@ -127,3 +127,22 @@ class TestRAGToolsWithEngine:
         set_rag_engine(mock_rag_engine)
         result = add_to_knowledge_base("bad")
         assert "[错误] 添加文档失败" in result
+
+
+class TestKbToolResultP2Compat:
+    """F8 P2：kb_sources 新增 ref/rerank_note/retriever 字段与 kind=fallback 不影响工具回灌文本。"""
+
+    def test_ref_fields_tolerated(self):
+        from agent_tools import format_kb_tool_result
+        result = _hit_result(n=2)
+        for i, s in enumerate(result["kb_sources"], 1):
+            s["ref"] = str(i)
+            s["rerank_note"] = "相关"
+            s["retriever"] = "bm25"
+        out = format_kb_tool_result(result)
+        assert "[知识库命中]" in out and "1. [doc1.pdf]" in out and "2. [doc2.pdf]" in out
+
+    def test_fallback_kind_without_sources_is_miss(self):
+        from agent_tools import format_kb_tool_result, KB_NO_RELEVANT_MARK
+        out = format_kb_tool_result({"kind": "fallback", "answer": "x 建议：/agent q", "kb_sources": []})
+        assert out.startswith(KB_NO_RELEVANT_MARK)

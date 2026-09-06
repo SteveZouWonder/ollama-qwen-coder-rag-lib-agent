@@ -532,6 +532,8 @@ class WebService:
                     "meta": result.get("meta"),
                     "rewritten": result.get("rewritten"),
                     "context": result.get("context") or {},
+                    # kind="fallback" 时附原问题，供 UI「用单 Agent 重试」
+                    "fallback_question": result.get("fallback_question"),
                 },
             )
 

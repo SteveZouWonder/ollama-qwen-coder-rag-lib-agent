@@ -89,6 +89,13 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
                 hint_box = gr.Markdown(scale=1)
                 hint_new_btn = gr.Button("新建会话", size="sm", elem_classes=["cb-btn"], min_width=90)
                 hint_continue_btn = gr.Button("继续当前会话", size="sm", elem_classes=["cb-btn"], min_width=110)
+            # RAG 失败回退（知识库与网络均无结果）：切到单 Agent 用同一问题重发
+            with gr.Row(visible=False, elem_classes=["cb-hint", "cb-retry"], elem_id="retry-row") as retry_row:
+                retry_box = gr.Markdown(scale=1)
+                retry_agent_btn = gr.Button(
+                    "用单 Agent 重试", size="sm", variant="primary", elem_classes=["cb-btn"],
+                    min_width=120, elem_id="retry-agent-btn",
+                )
 
         # ---- 右：侧面板 ----
         with gr.Column(scale=3, min_width=280, elem_classes=["cb-side-panel"]):
@@ -127,15 +134,17 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     pending_msg = gr.State("")
     _chat_outputs = [
         chatbot, status_box, process_box, sources_box, hint_box, hint_row, approval_md, approval_row,
+        retry_box, retry_row,
     ]
 
     def _chat_stream_ui(message, mode_v, web_v, confirm_v, sid, collab_v):
-        for history, status, process, sources, hint, confirm in handlers["on_chat_stream"](
+        for history, status, process, sources, hint, confirm, retry in handlers["on_chat_stream"](
             message, mode_v, web_v, confirm_v, sid, collab_v
         ):
             yield (
                 history, status, process, sources, hint, gr.update(visible=bool(hint)),
                 confirm, gr.update(visible=bool(confirm)),
+                retry, gr.update(visible=bool(retry)),
             )
 
     def _begin(message: str):
@@ -174,9 +183,21 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     )
     example_chain.then(_end, session_state, _end_outputs)
 
+    # 「用单 Agent 重试」：切模式为单 Agent、隐藏提示，再用 pending_msg 里的同一问题重发
+    def _retry_begin():
+        return (
+            gr.update(value=MODE_AGENT), "", gr.update(visible=False),
+            gr.update(interactive=False), gr.update(interactive=True),
+        )
+
+    retry_chain = retry_agent_btn.click(
+        _retry_begin, None, [mode, retry_box, retry_row, send_btn, stop_btn],
+    ).then(_chat_stream_ui, _chat_inputs, _chat_outputs)
+    retry_chain.then(_end, session_state, _end_outputs)
+
     stop_btn.click(
         handlers["on_stop"], None, status_box,
-        cancels=[send_chain, submit_chain, example_chain],
+        cancels=[send_chain, submit_chain, example_chain, retry_chain],
     ).then(_end, session_state, _end_outputs)
 
     # 审批卡片

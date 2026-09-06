@@ -735,21 +735,29 @@ def print_rag_sources(sources: list):
         console.print("⚠️  没有来源信息", style="yellow")
         return
     if HAS_RICH:
-        table = Table(title="📚 参考来源", show_lines=True)
+        table = Table(title="📚 参考来源（编号与回答中的 [n] 对应）", show_lines=True)
+        table.add_column("#", style="bold", justify="right", no_wrap=True)
         table.add_column("文件", style="cyan", no_wrap=True)
         table.add_column("相似度", style="green", justify="right")
         table.add_column("内容片段", style="white")
 
-        for src in sources:
-            score = f"{src['score']:.3f}" if src['score'] else "N/A"
+        for i, src in enumerate(sources, 1):
+            ref = f"[{src.get('ref') or i}]"
+            score = f"{src['score']:.3f}" if src.get('score') else "N/A"
+            if src.get("retriever") == "bm25":
+                score += " (关键词)"
             content = src['content'][:100] + "..." if len(src['content']) > 100 else src['content']
-            table.add_row(src['file'], score, content)
+            note = (src.get("rerank_note") or "").strip()
+            if note:
+                content += f"\n[dim]相关性：{note}[/dim]"
+            table.add_row(ref, src['file'], score, content)
         console.print(table)
     else:
         print("=== 参考来源 ===")
-        for src in sources:
-            score = f"({src['score']:.3f})" if src['score'] else ""
-            print(f"  {src['file']} {score}")
+        for i, src in enumerate(sources, 1):
+            ref = f"[{src.get('ref') or i}]"
+            score = f"({src['score']:.3f})" if src.get('score') else ""
+            print(f"  {ref} {src['file']} {score}")
             print(f"    {src['content'][:100]}...")
 
 def print_knowledge_stats():
@@ -1193,8 +1201,14 @@ def _cli_ask_progress(event: dict):
         "context_rewritten": "cyan",
     }
     style = style_map.get(stage, "dim")
-    if stage in ("kb_retrieving", "synthesizing", "model_thinking",
-                 "context_compress", "context_compressed"):
+    if stage == "thinking":
+        # /think on：模型思维链（已截断 800 字），dim 样式、转义避免被当作 Rich 标记
+        from rich.markup import escape as _escape
+        console.print(f"[dim]{_escape(msg)}[/dim]")
+    elif stage == "fallback":
+        console.print(msg, style="yellow")  # 具体 /agent 提示在回答渲染后由 _run_ask 打印
+    elif stage in ("kb_retrieving", "synthesizing", "model_thinking", "rerank",
+                   "context_compress", "context_compressed"):
         # 这些"进行中"提示走安静的 dim 行，避免打断 status
         console.print(f"[dim]{msg}[/dim]")
     elif msg:
@@ -1237,17 +1251,19 @@ def print_web_sources(sources: list):
     if not sources:
         return
     if HAS_RICH:
-        table = Table(title="🌐 网络来源", show_lines=False)
+        table = Table(title="🌐 网络来源（编号与回答中的 [Wn] 对应）", show_lines=False)
         table.add_column("#", style="dim", justify="right", no_wrap=True)
         table.add_column("标题", style="cyan")
         table.add_column("链接", style="blue")
         for i, src in enumerate(sources, 1):
-            table.add_row(str(i), src.get("title", ""), src.get("url", ""))
+            ref = f"[{src.get('ref') or f'W{i}'}]"
+            table.add_row(ref, src.get("title", ""), src.get("url", ""))
         console.print(table)
     else:
         print("=== 🌐 网络来源 ===")
         for i, src in enumerate(sources, 1):
-            print(f"  {i}. {src.get('title', '')}")
+            ref = f"[{src.get('ref') or f'W{i}'}]"
+            print(f"  {ref} {src.get('title', '')}")
             print(f"     {src.get('url', '')}")
 
 
@@ -1589,7 +1605,12 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
         console.print()
         print_web_sources(last_web_sources)
     if last_rag_sources or last_web_sources:
-        console.print("[dim]输入 /sources 查看完整来源明细[/dim]")
+        console.print("[dim]输入 /sources 查看完整来源明细（编号与回答中的 [n]/[Wn] 对应）[/dim]")
+
+    # 失败回退：知识库与网络均无结果 → 提示改用单 Agent 工具进一步查找
+    if result.get("kind") == "fallback":
+        fq = result.get("fallback_question") or original_question
+        console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
 
     record_command_execution(cmd_name, original_question)
     record_conversation(

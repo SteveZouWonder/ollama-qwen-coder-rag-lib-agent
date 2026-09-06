@@ -94,8 +94,11 @@ class TestAnswerQuestion:
         result = rag_pipeline.answer_question(
             rag, "冷门问题", enable_web_search=False,
         )
-        assert result["kind"] == "answer"
+        # P2-5：知识库无相关片段且网络无结果 → kind="fallback"，答案末尾附 /agent 建议
+        assert result["kind"] == "fallback"
         assert "模型回答" in result["answer"]
+        assert "/agent 冷门问题" in result["answer"]
+        assert result["fallback_question"] == "冷门问题"
         assert result["kb_sources"] == []
 
     def test_kb_only_miss_skips_web_and_model_fallback(self, monkeypatch):
@@ -558,3 +561,366 @@ class TestProgressVisibilityAndCancel:
 
         with pytest.raises(rag_pipeline.PipelineCancelled):
             rag_pipeline.augment_with_web_search("最新新闻", should_stop=probe)
+
+
+# ==================== F8 P2：检索规划 / 多跳 / 编号引用 / thinking / fallback ====================
+
+def _patch_settings_llm(monkeypatch, fn):
+    """把 ``llama_index.core.Settings.llm.complete`` 打桩为 ``fn(prompt) -> str|obj``。"""
+    import types
+
+    class _FakeLLM:
+        def complete(self, prompt):
+            return fn(prompt)
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "llama_index.core",
+        types.SimpleNamespace(Settings=types.SimpleNamespace(llm=_FakeLLM())),
+    )
+
+
+class TestPlanRetrieval:
+    def test_parses_complex_plan(self, monkeypatch):
+        import json as _json
+        _patch_settings_llm(monkeypatch, lambda p: _json.dumps({
+            "complex": True,
+            "subquestions": ["A 的价格", "B 的价格", " A 的价格 ", "C", "D"],
+            "needs_search": True,
+            "queries": ["A 价格", "B 价格"],
+        }))
+        events = []
+        plan = rag_pipeline.plan_retrieval("A 与 B 的价格差多少", progress=lambda e: events.append(e))
+        assert plan["complex"] is True
+        assert plan["subquestions"] == ["A 的价格", "B 的价格", "C"]  # 去重 + ≤3
+        assert plan["needs_search"] is True and plan["queries"] == ["A 价格", "B 价格"]
+        assert events[0]["stage"] == "web_plan"
+        assert any(e["stage"] == "kb_decompose" and e["subquestions"] == plan["subquestions"] for e in events)
+
+    def test_complex_with_single_subquestion_downgrades(self, monkeypatch):
+        import json as _json
+        _patch_settings_llm(monkeypatch, lambda p: _json.dumps({
+            "complex": True, "subquestions": ["只有一个"], "needs_search": False, "queries": [],
+        }))
+        plan = rag_pipeline.plan_retrieval("q")
+        assert plan["complex"] is False and plan["subquestions"] == []
+
+    def test_simple_plan(self, monkeypatch):
+        import json as _json
+        _patch_settings_llm(monkeypatch, lambda p: "```json\n" + _json.dumps({
+            "complex": False, "subquestions": [], "needs_search": False, "queries": [],
+        }) + "\n```")
+        plan = rag_pipeline.plan_retrieval("什么是递归")
+        assert plan == {"complex": False, "subquestions": [], "needs_search": False, "queries": []}
+
+    def test_needs_search_without_queries_uses_question(self, monkeypatch):
+        _patch_settings_llm(monkeypatch, lambda p: '{"needs_search": true}')
+        plan = rag_pipeline.plan_retrieval("最新版本")
+        assert plan["queries"] == ["最新版本"] and plan["complex"] is False
+
+    def test_llm_failure_falls_back_to_heuristics(self, monkeypatch):
+        def boom(p):
+            raise RuntimeError("down")
+        _patch_settings_llm(monkeypatch, boom)
+        plan = rag_pipeline.plan_retrieval("最新版本是什么")
+        assert plan == {"complex": False, "subquestions": [], "needs_search": True, "queries": ["最新版本是什么"]}
+        assert rag_pipeline.plan_retrieval("写一首诗")["needs_search"] is False
+
+    def test_plan_web_search_wrapper_is_single_call(self, monkeypatch):
+        calls = []
+
+        def fake(p):
+            calls.append(p)
+            return '{"complex": false, "subquestions": [], "needs_search": true, "queries": ["x"]}'
+        _patch_settings_llm(monkeypatch, fake)
+        plan = rag_pipeline.plan_web_search("q")
+        assert plan == {"needs_search": True, "queries": ["x"]}
+        assert len(calls) == 1
+
+    def test_prompt_contains_schema_and_domestic_rule(self):
+        p = rag_pipeline.build_retrieval_plan_prompt("国内 dji 售价")
+        assert '"complex"' in p and '"subquestions"' in p and '"needs_search"' in p and '"queries"' in p
+        assert "请勿生成英文查询" in p
+        assert "请勿生成英文查询" not in rag_pipeline.build_retrieval_plan_prompt("what is rag")
+
+
+class _CountingRAG(FakeRAG):
+    """记录 query_with_sources 被调用的问题列表。"""
+
+    def __init__(self, results=None, default=None):
+        super().__init__(result=default)
+        self.results = results or {}
+        self.queries = []
+
+    def query_with_sources(self, question, progress_callback=None):
+        self.queries.append(question)
+        return self.results.get(question, self._result)
+
+
+class TestLLMCallBudgetAndMultiHop:
+    def test_simple_question_call_count_unchanged(self, monkeypatch):
+        """简单问题（联网开、无需搜索）：规划 1 + rerank ≤1 + 综合 ≤1，且无多余调用。"""
+        import rag_rerank
+        settings_calls = []
+
+        def settings_llm(p):
+            settings_calls.append(p)
+            return '{"complex": false, "subquestions": [], "needs_search": false, "queries": []}'
+        _patch_settings_llm(monkeypatch, settings_llm)
+
+        rerank_calls = []
+
+        def rerank_llm(p):
+            rerank_calls.append(p)
+            return '{"keep":[1],"notes":{"1":"相关"}}'
+        monkeypatch.setattr(rag_rerank, "_llm_complete", rerank_llm)
+
+        direct = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: direct.append(p) or "综合")
+
+        rag = _CountingRAG(default={"answer": "原答案", "sources": [{"content": "c", "file": "f.md", "score": 0.5}]})
+        result = rag_pipeline.answer_question(rag, "简单问题", enable_web_search=True)
+        assert rag.queries == ["简单问题"]  # 单跳：只检索一次
+        assert len(settings_calls) == 1     # 规划 1 次（分解 + 搜索规划合并）
+        assert len(rerank_calls) == 1       # rerank 1 次
+        assert direct == []                 # 快路径：无过滤/无网络 → 不再综合
+        assert result["answer"] == "原答案"
+        assert result["kb_sources"][0]["ref"] == "1" and result["kb_sources"][0]["rerank_note"] == "相关"
+
+    def test_complex_question_multi_hop_dedup(self, monkeypatch):
+        import rag_rerank
+        _patch_settings_llm(monkeypatch, lambda p: (
+            '{"complex": true, "subquestions": ["A 的价格", "B 的价格"], "needs_search": false, "queries": []}'
+        ))
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[1,2,3]}')
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "A 比 B 贵 1000 元[1][2]")
+
+        shared = {"content": "共同片段", "file": "common.md", "score": 0.7}
+        rag = _CountingRAG(results={
+            "A 的价格": {"answer": "A 2999", "sources": [
+                {"content": "A 售价 2999", "file": "a.md", "score": 0.8}, dict(shared),
+            ]},
+            "B 的价格": {"answer": "B 1999", "sources": [
+                {"content": "B 售价 1999", "file": "b.md", "score": 0.75}, dict(shared),
+            ]},
+        })
+        events = []
+        result = rag_pipeline.answer_question(
+            rag, "A 与 B 的价格差多少", enable_web_search=False, progress=lambda e: events.append(e),
+        )
+        assert rag.queries == ["A 的价格", "B 的价格"]
+        files = [s["file"] for s in result["kb_sources"]]
+        assert sorted(files) == ["a.md", "b.md", "common.md"]  # 按 (file, content) 去重
+        assert [s["ref"] for s in result["kb_sources"]] == ["1", "2", "3"]
+        # 多跳必须综合（不能沿用某个子问题的原始答案）
+        assert len(prompts) == 1 and "[1]" in prompts[0] and "[2]" in prompts[0] and "[3]" in prompts[0]
+        assert result["answer"].endswith("[1][2]")
+        stages = [e["stage"] for e in events]
+        assert "kb_decompose" in stages and "kb_merged" in stages
+        assert sum(1 for s in stages if s == "kb_retrieving") == 2
+
+    def test_web_off_still_decomposes_but_no_search(self, monkeypatch):
+        import rag_rerank
+        _patch_settings_llm(monkeypatch, lambda p: (
+            '{"complex": true, "subquestions": ["s1", "s2"], "needs_search": true, "queries": ["q"]}'
+        ))
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[1]}')
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "ok")
+        monkeypatch.setattr(rag_pipeline, "run_web_search", lambda *a, **k: pytest.fail("不应联网"))
+        rag = _CountingRAG(default={"answer": "a", "sources": [{"content": "c", "file": "f", "score": 0.5}]})
+        result = rag_pipeline.answer_question(rag, "复合", enable_web_search=False)
+        assert rag.queries == ["s1", "s2"]
+        assert result["web_sources"] == []
+
+    def test_kb_uninitialized_web_off_skips_planning(self, monkeypatch):
+        _patch_settings_llm(monkeypatch, lambda p: pytest.fail("不应规划"))
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型回答")
+        result = rag_pipeline.answer_question(FakeRAG(query_engine=None), "q", enable_web_search=False)
+        assert result["kind"] == "answer" and "模型回答" in result["answer"]
+
+    def test_rerank_drops_some_then_synthesizes(self, monkeypatch):
+        import rag_rerank
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[2],"notes":{"2":"含答案"}}')
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "答[1]")
+        rag = FakeRAG(result={"answer": "原答案", "sources": [
+            {"content": "噪音", "file": "n.md", "score": 0.5},
+            {"content": "有用", "file": "u.md", "score": 0.5},
+        ]})
+        events = []
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False, progress=lambda e: events.append(e))
+        assert [s["file"] for s in result["kb_sources"]] == ["u.md"]
+        assert result["kb_sources"][0]["ref"] == "1"
+        assert len(prompts) == 1 and "[1]（来自 u.md）" in prompts[0] and "n.md" not in prompts[0]
+        assert any(e["stage"] == "rerank_done" and e["kept"] == 1 for e in events)
+
+    def test_rerank_all_dropped_is_miss(self, monkeypatch):
+        import rag_rerank
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[]}')
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "网络答")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "1. 标题\n   URL: http://x\n   摘要: y")
+        rag = FakeRAG(result={"answer": "原答案", "sources": [{"content": "噪音", "file": "n.md", "score": 0.5}]})
+        events = []
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False, progress=lambda e: events.append(e))
+        assert result["kb_sources"] == [] and result["kind"] == "answer"
+        assert "kb_irrelevant" in [e["stage"] for e in events]
+        # 回退搜索得到的网络来源也被编号并返回
+        assert result["web_sources"] and result["web_sources"][0]["ref"] == "W1"
+
+    def test_hybrid_bm25_source_forces_synthesis(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "综合")
+        rag = FakeRAG(result={"answer": "原答案", "sources": [
+            {"content": "向量命中", "file": "d.md", "score": 0.8, "retriever": "dense"},
+            {"content": "关键词命中", "file": "k.md", "score": 0.5, "retriever": "bm25"},
+        ]})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
+        assert result["answer"] == "综合" and len(prompts) == 1
+
+
+class TestNumberedCitations:
+    def test_format_kb_context_numbering(self):
+        srcs = [{"content": "甲", "file": "a.md"}, {"content": "", "file": "skip.md"}, {"content": "丙", "file": "c.md"}]
+        ctx = rag_pipeline.format_kb_context(srcs)
+        assert ctx.startswith("[1]（来自 a.md）\n甲")
+        assert "[3]（来自 c.md）\n丙" in ctx and "[2]" not in ctx  # 空内容占号不输出
+        assert srcs[0]["ref"] == "1" and srcs[2]["ref"] == "3"
+
+    def test_assign_refs(self):
+        kb, web = rag_pipeline.assign_refs([{"a": 1}, {"b": 2}], [{"url": "u"}])
+        assert [s["ref"] for s in kb] == ["1", "2"] and web[0]["ref"] == "W1"
+
+    def test_synthesize_prompt_requires_citations(self):
+        p = rag_pipeline.synthesize_prompt("q", "[1]（来自 a.md）\n甲", "[W1] 网页")
+        assert "[W1]" in p and "末尾必须标注" in p and "不要标注不存在的编号" in p
+
+    def test_compact_web_context_labels_w_refs(self):
+        text = (
+            "搜索结果:\n1. 标题一\n   URL: http://a\n   摘要: 售价 2999\n"
+            "2. 标题二\n   URL: http://b\n   摘要: 其他\n"
+            "=== 相关页面详细信息 ===\n--- 页面 1: http://b ---\n正文 B\n"
+        )
+        web_sources = rag_pipeline.parse_web_sources(text)
+        ctx = rag_pipeline.compact_web_context(text, "售价", web_sources)
+        assert "[W1] 标题一" in ctx and "[W2] 标题二" in ctx
+        assert "[W2] http://b ---" in ctx
+        assert web_sources[0]["ref"] == "W1" and web_sources[1]["ref"] == "W2"
+
+    def test_compact_web_context_without_sources_keeps_numbers(self):
+        text = "1. 标题一\n   URL: http://a\n   摘要: 售价 2999\n"
+        ctx = rag_pipeline.compact_web_context(text, "售价")
+        assert "1. 标题一" in ctx
+
+    def test_answer_question_refs_kb_and_web(self, monkeypatch):
+        import rag_rerank
+        _patch_settings_llm(monkeypatch, lambda p: '{"complex": false, "needs_search": true, "queries": ["q"]}')
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[1]}')
+        monkeypatch.setattr(rag_pipeline, "run_web_search", lambda queries, progress=None: "1. 网页\n   URL: http://w\n   摘要: 最新 3.2")
+        monkeypatch.setattr(rag_pipeline, "enrich_with_page_content", lambda r, question="", progress=None: r)
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "售价 2999[1]，最新 3.2[W1]")
+        rag = FakeRAG(result={"answer": "原答案", "sources": [{"content": "售价 2999", "file": "a.md", "score": 0.5}]})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=True)
+        assert result["kb_sources"][0]["ref"] == "1"
+        assert result["web_sources"][0]["ref"] == "W1" and result["web_sources"][0]["url"] == "http://w"
+        assert "[1]" in result["answer"] and "[W1]" in result["answer"]
+        assert "[1]（来自 a.md）" in prompts[0] and "[W1] 网页" in prompts[0]
+
+
+class TestThinkingEvents:
+    def test_extract_thinking_from_raw(self):
+        class R:
+            raw = {"message": {"thinking": "先想想", "content": "答"}}
+
+            def __str__(self):
+                return "答"
+        assert rag_pipeline.extract_thinking(R()) == "先想想"
+
+    def test_extract_thinking_from_additional_kwargs_and_blocks(self):
+        class R1:
+            raw = None
+            additional_kwargs = {"thinking": "kw"}
+        assert rag_pipeline.extract_thinking(R1()) == "kw"
+
+        class ThinkingBlock:
+            content = "blk"
+
+        class Msg:
+            blocks = [ThinkingBlock()]
+
+        class R2:
+            raw = {}
+            additional_kwargs = {}
+            message = Msg()
+        assert rag_pipeline.extract_thinking(R2()) == "blk"
+        assert rag_pipeline.extract_thinking("plain") == ""
+        assert rag_pipeline.extract_thinking(None) == ""
+
+    def test_thinking_emitted_when_think_on_and_truncated(self, monkeypatch):
+        class R:
+            raw = {"message": {"thinking": "思" * 1000, "content": "综合答案"}}
+
+            def __str__(self):
+                return "综合答案"
+        _patch_settings_llm(monkeypatch, lambda p: R())
+
+        rag = FakeRAG(result={"answer": "原答案", "sources": [
+            {"content": "噪音", "file": "n.md", "score": 0.5}, {"content": "有用", "file": "u.md", "score": 0.5},
+        ]})
+        rag.llm_think = True
+        import rag_rerank
+        monkeypatch.setattr(rag_rerank, "_llm_complete", lambda p: '{"keep":[2]}')
+        events = []
+        result = rag_pipeline.answer_question(
+            rag, "q", enable_web_search=False, progress=lambda e: events.append(e),
+        )
+        thinking = [e for e in events if e["stage"] == "thinking"]
+        # 规划 + 综合各一次 → 两次 thinking；每条截断 800 字（+ 省略号）
+        assert len(thinking) == 2
+        assert all(len(e["thinking"]) == 801 and e["truncated"] for e in thinking)
+        assert all(e["message"].startswith("🧠 模型思考：") for e in thinking)
+        assert result["answer"] == "综合答案"
+
+    def test_thinking_not_emitted_when_think_off(self, monkeypatch):
+        class R:
+            raw = {"message": {"thinking": "秘密", "content": "答"}}
+
+            def __str__(self):
+                return "答"
+        _patch_settings_llm(monkeypatch, lambda p: R())
+        rag = FakeRAG(result={"answer": "原答案", "sources": [{"content": "c", "file": "f", "score": 0.9}]})
+        rag.llm_think = False
+        events = []
+        rag_pipeline.answer_question(rag, "q", enable_web_search=False, progress=lambda e: events.append(e))
+        assert not any(e["stage"] == "thinking" for e in events)
+
+
+class TestFallbackKind:
+    def test_fallback_when_kb_miss_and_no_web(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型自答")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "")
+        rag = FakeRAG(result={"answer": "Empty Response", "sources": []})
+        events = []
+        result = rag_pipeline.answer_question(rag, "冷门", enable_web_search=False, progress=lambda e: events.append(e))
+        assert result["kind"] == "fallback"
+        assert result["answer"].rstrip().endswith(rag_pipeline.fallback_suggestion("冷门"))
+        assert result["fallback_question"] == "冷门"
+        assert any(e["stage"] == "fallback" and e["question"] == "冷门" for e in events)
+
+    def test_no_fallback_when_web_has_results(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "网络答")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "1. t\n   URL: http://x\n   摘要: y")
+        rag = FakeRAG(result={"answer": "Empty Response", "sources": []})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
+        assert result["kind"] == "answer" and "fallback_question" not in result
+        assert "/agent" not in result["answer"]
+
+    def test_kb_only_miss_is_not_fallback(self, monkeypatch):
+        rag = FakeRAG(result={"answer": "Empty Response", "sources": []})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False, kb_only=True)
+        assert result["kind"] == "answer" and result["answer"] == ""
+
+    def test_uninitialized_kb_no_web_is_plain_answer(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型答")
+        result = rag_pipeline.answer_question(FakeRAG(query_engine=None), "q", enable_web_search=False)
+        assert result["kind"] == "answer"

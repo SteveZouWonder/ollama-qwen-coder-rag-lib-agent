@@ -471,6 +471,19 @@ python query_interface.py --data ./data
 
 **支持的格式**：PDF、Markdown、TXT、Python、JS/TS、Java、C/C++、Go、Rust、HTML、JSON、YAML、XML
 
+**检索与推理链路（F8 P2）**：
+- **hybrid 召回**：向量检索 + BM25 关键词检索用 RRF 融合，型号 / 术语等精确词也能召回
+  （`RAG_HYBRID`，默认开；文档块数 >20000 自动关闭；`rank_bm25` 未安装自动回退纯向量）。
+- **复合问题分解**：一次模型调用同时判断"是否拆子问题 / 是否联网 / 搜索词"；"A 与 B 的价格差多少"
+  会拆为 ≤3 个子问题分别检索、去重合并后再综合，简单问题不增加调用。
+- **逐片段 rerank**：对通过阈值的片段逐条判定"是否真能回答问题"并给出一句理由，剔除话题不搭的
+  噪音（`RERANKER=llm` 默认；`RERANKER=cross-encoder` 可选，见下方环境变量）。
+- **编号引用**：答案中的关键结论句末标注 `[1]`（知识库片段）/ `[W1]`（网络来源），`/sources`
+  与 Web 来源面板按同一编号显示，可逐条核验。
+- **思维链透出**：`/think on` 时模型思考过程（截断 800 字）显示在 Web「处理过程」/ CLI dim 行。
+- **失败回退**：知识库与网络都没有结果时，答案末尾提示 `建议：/agent <原问题>`，Web 出现
+  「用单 Agent 重试」按钮一键切模式重发。
+
 **OCR 增强功能**（需要安装 OCR 依赖）：
 - 扫描版 PDF 自动识别
 - 图片文件直接识别：PNG、JPG、JPEG、GIF、BMP、TIFF
@@ -963,6 +976,12 @@ export MAX_FORMAT_RETRIES=2
 export OBSERVATION_MAX_CHARS=3000
 # write_file / add_to_knowledge_base 允许操作的额外目录（冒号分隔；当前工作目录始终允许）
 export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads
+# RAG 推理：逐片段 rerank 方式 llm（默认，一次模型调用）| cross-encoder（需 pip install sentence-transformers，
+# 未安装自动回退 llm）；cross-encoder 模型名；hybrid（向量 + BM25）召回开关与自动关闭的块数上限
+export RERANKER=llm
+export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+export RAG_HYBRID=true
+export RAG_HYBRID_MAX_CHUNKS=20000
 
 python query_interface.py --data ./data
 ```

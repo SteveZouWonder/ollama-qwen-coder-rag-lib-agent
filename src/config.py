@@ -156,6 +156,17 @@ SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.3"))
 # 综合 prompt，从而回退到网络/模型回答。仅影响问答判定，不改变底层检索召回。
 KB_RELEVANCE_THRESHOLD = float(os.getenv("KB_RELEVANCE_THRESHOLD", "0.45"))
 
+# ==================== RAG 推理与可核验性（F8 P2）====================
+# RERANKER：逐片段相关性筛选方式。
+#   llm（默认）：一次 LLM 调用（think=False）对 top-k 片段输出 keep/notes JSON；
+#   cross-encoder：sentence-transformers CrossEncoder（可选依赖，未安装自动回退 llm）。
+RERANKER = os.getenv("RERANKER", "llm").strip().lower() or "llm"
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+# RAG_HYBRID：dense（向量）+ BM25 关键词 hybrid 召回（RRF 融合），默认开启；
+# 文档块数 >20000 时自动关闭；rank_bm25 未安装时静默回退 dense。
+RAG_HYBRID = os.getenv("RAG_HYBRID", "true").strip().lower() in ("1", "true", "yes", "on")
+RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "20000"))
+
 # ==================== 网络搜索配置 ====================
 # 此前网络搜索完全未设 region/backend，DuckDuckGo 默认 us-en，天然偏英文/海外
 # 结果，导致中国国内信息（中文网页、国行价格、国内新闻等）召回与准确率很差。

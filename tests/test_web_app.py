@@ -466,7 +466,7 @@ def _rag_answer(msg="答案", **data):
 
 
 class TestChatStream:
-    """``on_chat_stream`` yield 六元组 (history, status, process, sources, hint, confirm)。
+    """``on_chat_stream`` yield 七元组 (history, status, process, sources, hint, confirm, retry)。
 
     ``history`` 为 Chatbot（messages 格式）的完整多轮列表：既有会话历史 + 本轮
     用户消息，完成后追加助手回答。
@@ -475,7 +475,7 @@ class TestChatStream:
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 6, f"应为六元组: {item!r}"
+            assert len(item) == 7, f"应为七元组: {item!r}"
             assert isinstance(item[0], list)
         return out
 
@@ -513,7 +513,7 @@ class TestChatStream:
         assert "已用时" in out[0][1]
         assert [m["content"] for m in out[0][0]] == ["旧问", "旧答", "问题"]
         # 最终一条：追加助手回答 + 完成状态 + 已完成的处理过程
-        history, status, process, _, hint, _ = out[-1]
+        history, status, process, _, hint, _, _ = out[-1]
         assert self._last_assistant(history) == "答案"
         assert len(history) == 4
         assert status.startswith("✅ 完成")
@@ -562,8 +562,8 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        assert any("网络搜索中" in process for _, _, process, _, _, _ in out)
-        history, _, _, sources, _, _ = out[-1]
+        assert any("网络搜索中" in process for _, _, process, _, _, _, _ in out)
+        history, _, _, sources, _, _, _ = out[-1]
         assert self._last_assistant(history) == "最终"
         assert "f.md" in sources and "http://x" in sources
 
@@ -581,7 +581,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("它多少钱", "RAG 检索"))
-        history, status, process, _, hint, _ = out[-1]
+        history, status, process, _, hint, _, _ = out[-1]
         content = self._last_assistant(history)
         assert content.startswith("> 🔗 已理解为：DJI OSMO 360 多少钱")
         assert content.endswith("2999 元")
@@ -635,7 +635,7 @@ class TestChatStream:
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, _, _, _, _ = out[-1]
+        history, status, _, _, _, _, _ = out[-1]
         assert "检索炸了" in self._last_assistant(history)
         assert status.startswith("❌")
 
@@ -647,7 +647,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, process, _, _, _ = out[-1]
+        history, status, process, _, _, _, _ = out[-1]
         assert "已停止" in status
         assert "规划搜索" in process
         # 未产出回答：历史只到用户消息
@@ -670,11 +670,11 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True, "sid2"))
-        assert any("第一步" in process for _, _, process, _, _, _ in out)
+        assert any("第一步" in process for _, _, process, _, _, _, _ in out)
         # 心跳出现在状态行，但不进入执行过程列表
-        assert any("模型推理中" in status for _, status, _, _, _, _ in out)
-        assert not any("模型推理中" in process for _, _, process, _, _, _ in out)
-        history, status, process, _, _, _ = out[-1]
+        assert any("模型推理中" in status for _, status, _, _, _, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _, _, _, _ in out)
+        history, status, process, _, _, _, _ = out[-1]
         assert self._last_assistant(history) == "完成"
         assert "执行过程" in process
         assert "上下文 10 / 100" in status
@@ -703,9 +703,9 @@ class TestChatStream:
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
         # 中间能看到分解/执行阶段
-        assert any("分解任务" in process for _, _, process, _, _, _ in out)
-        assert any("执行子任务" in process for _, _, process, _, _, _ in out)
-        history, status, process, _, _, _ = out[-1]
+        assert any("分解任务" in process for _, _, process, _, _, _, _ in out)
+        assert any("执行子任务" in process for _, _, process, _, _, _, _ in out)
+        history, status, process, _, _, _, _ = out[-1]
         content = self._last_assistant(history)
         assert "协作完成" in content and "已理解为：帮我总结 X" in content
         assert status.startswith("✅")
@@ -1291,3 +1291,66 @@ class TestNewHandlers:
         assert h["on_model_table"]() == [["m", "✔", ""]]
         assert h["on_collab_choices"]() == [("自动", "")]
         assert "cb-status-chip" in h["on_model_chip"]()
+
+
+# ==================== F8 P2：编号来源 / thinking / fallback 重试 ====================
+
+class TestNumberedSourcesAndFallback:
+    def test_format_sources_uses_ref_and_note(self):
+        from web.app import format_sources as fs
+        out = fs([
+            {"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "rerank_note": "含售价"},
+            {"file": "k.md", "score": 0.49, "content": "乙", "ref": "2", "retriever": "bm25"},
+        ])
+        assert "**[1] a.md**" in out and "_相关性：含售价_" in out
+        assert "**[2] k.md**" in out and "关键词命中" in out
+
+    def test_format_sources_without_ref_falls_back_to_index(self):
+        from web.app import format_sources as fs
+        assert "**[1] a.md**" in fs([{"file": "a.md", "content": "x"}])
+
+    def test_format_web_sources_uses_w_ref(self):
+        from web.app import format_web_sources as fw
+        out = fw([{"title": "T", "url": "http://x", "ref": "W1"}, {"title": "U"}])
+        assert "- **[W1]** [T](http://x)" in out and "- **[W2]** U" in out
+        assert fw([]) == ""
+
+    def test_format_fallback_hint(self):
+        from web.app import format_fallback_hint
+        assert "/agent 冷门问题" in format_fallback_hint("冷门问题")
+        assert format_fallback_hint("") == ""
+
+    def test_fallback_answer_yields_retry_hint(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            _rag_answer("⚠️ 知识库中无相关内容…\n\n建议：/agent 冷门问题 让 Agent 用工具进一步查找",
+                        kind="fallback", fallback_question="冷门问题"),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("冷门问题", "RAG 检索"))
+        assert all(len(o) == 7 for o in out)
+        history, status, _, _, _, _, retry = out[-1]
+        assert "完成" in status
+        assert "/agent 冷门问题" in retry and "用工具进一步查找" in retry
+        # 过程中的帧不显示重试提示
+        assert all(o[6] == "" for o in out[:-1])
+
+    def test_normal_answer_has_no_retry_hint(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("答", kind="answer")])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        assert out[-1][6] == ""
+
+    def test_thinking_progress_appears_in_process(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "🧠 模型思考：先看知识库…", {"stage": "thinking", "thinking": "先看知识库…"}),
+            StreamEvent("progress", "🔎 逐片段校验相关性（2 个片段，模型判定）...", {"stage": "rerank"}),
+            _rag_answer("答[1]", sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1"}]),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        _, _, process, sources, _, _, _ = out[-1]
+        assert "模型思考" in process and "逐片段校验" in process
+        assert "**[1] a.md**" in sources

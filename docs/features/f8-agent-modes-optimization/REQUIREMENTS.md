@@ -1,6 +1,8 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）**，P2 / P3 待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）**，P3 待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+>
+> P2 实现记录：P2-1~P2-5 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：rerank 的 LLM 调用走 `collaboration.llm_helper.complete_text`（`/api/chat` 直连，才能真正 `think=False` + `num_predict`；`Settings.llm.complete` 的 `think` kwarg 会被 `or self.thinking` 吞掉），解析失败回退 `judge_kb_relevance`；`plan_retrieval` 在关闭联网时**仍会调用一次**（为了分解），故 `enable_web_search=False` / `kb_only` 路径比改动前多 1 次规划调用（联网路径次数不变）；BM25-only 片段的 `score` 用 RRF 相对"两路均第 1"的归一值（上限 0.5：能过 0.45 粗筛、不会触发 0.6 跳过 rerank）；hybrid 补入 BM25 片段或多跳时不再走"沿用 LlamaIndex 原答案"的快路径而强制综合；`kind="fallback"` 只在知识库已初始化且无命中、网络也无结果时触发（知识库未初始化不算）。
 >
 > P1 实现记录：P1-1~P1-8 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：格式重试按**连续**次数计（合法步骤后重置）；重复检测为全局计数；`answer_question` 新增 `kb_only` 参数避免 0 命中时的无用网络回退；`curl … | sh` 由 critical 降为 high（需确认而非直接拦截，`| bash|zsh` 同级）；`write_file` / `add_to_knowledge_base` 越界拒绝对 Web「工具」页同样生效。
 >

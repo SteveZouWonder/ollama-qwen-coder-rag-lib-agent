@@ -113,16 +113,22 @@ class ProgressTracker:
 # ==================== 纯格式化辅助（可测试）====================
 
 def format_sources(sources: List[Dict[str, Any]]) -> str:
-    """把 sources 列表渲染为 Markdown 文本。"""
+    """把 sources 列表渲染为 Markdown 文本（按引用编号 ``[1]``.. 显示，与答案中的标注对应）。"""
     if not sources:
         return "_无引用来源_"
     lines = ["### 引用来源", ""]
     for i, src in enumerate(sources, 1):
         score = src.get("score")
         score_str = f"（相似度 {score:.3f}）" if isinstance(score, (int, float)) else ""
+        if src.get("retriever") == "bm25":
+            score_str += "（关键词命中）"
         file_name = src.get("file", "未知")
         content = (src.get("content") or "").strip()
-        lines.append(f"**{i}. {file_name}** {score_str}")
+        ref = str(src.get("ref") or i)
+        lines.append(f"**[{ref}] {file_name}** {score_str}".rstrip())
+        note = (src.get("rerank_note") or "").strip()
+        if note:
+            lines.append(f"_相关性：{note}_")
         if content:
             lines.append(f"> {content}")
         lines.append("")
@@ -130,18 +136,25 @@ def format_sources(sources: List[Dict[str, Any]]) -> str:
 
 
 def format_web_sources(sources: List[Dict[str, Any]]) -> str:
-    """把网络来源列表渲染为 Markdown 文本（与知识库来源明确区分）。"""
+    """把网络来源列表渲染为 Markdown 文本（按引用编号 ``[W1]``.. 显示，与知识库来源明确区分）。"""
     if not sources:
         return ""
     lines = ["### 🌐 网络来源", ""]
     for i, src in enumerate(sources, 1):
         title = src.get("title", "") or src.get("url", "")
         url = src.get("url", "")
+        ref = str(src.get("ref") or f"W{i}")
         if url:
-            lines.append(f"{i}. [{title}]({url})")
+            lines.append(f"- **[{ref}]** [{title}]({url})")
         else:
-            lines.append(f"{i}. {title}")
+            lines.append(f"- **[{ref}]** {title}")
     return "\n".join(lines)
+
+
+def format_fallback_hint(question: str) -> str:
+    """知识库与网络均无结果时的提示文案（旁边显示「用单 Agent 重试」按钮）。"""
+    q = (question or "").strip()
+    return f"📭 知识库与网络均未找到相关内容。可让单 Agent 用工具进一步查找：`/agent {q}`" if q else ""
 
 
 def format_meta_overview(meta: Dict[str, Any]) -> str:
@@ -985,7 +998,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     ):
         """流式对话入口（供 Gradio 使用）。
 
-        yield 六元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md)``：
+        yield 七元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md, retry_md)``：
 
         - ``history``：Chatbot（messages 格式）的完整多轮消息列表——会话内既有
           历史 + 本轮用户消息，完成后追加助手回答；
@@ -997,7 +1010,9 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细；
         - ``hint_md``：健康度建议（如"对话较长，建议新建会话"），空串表示无提示；
         - ``confirm_md``：单 Agent 遇到危险操作时的审批卡片文案（非空时 UI 显示
-          「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串。
+          「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串；
+        - ``retry_md``：RAG 回答 ``kind="fallback"``（知识库无相关片段且网络无结果）
+          时的提示文案，非空时 UI 显示「用单 Agent 重试」按钮（切模式并用同一问题重发）。
 
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
         并绑定到 ``session_id``（每个浏览器标签页自己的会话）。多 Agent 可指定
@@ -1007,11 +1022,11 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         session_id = (session_id or "").strip()
         history = _load_history(session_id)
         if not message:
-            yield history, "_请输入内容_", "", "", "", ""
+            yield history, "_请输入内容_", "", "", "", "", ""
             return
 
         if service.is_running() is True:
-            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", ""
+            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", "", ""
             return
 
         activity, hint = _startup_hint()
@@ -1021,7 +1036,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         history = history + [{"role": "user", "content": message}]
 
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield history, tracker.render_status(), "", "", "", ""
+        yield history, tracker.render_status(), "", "", "", "", ""
 
         if mode == "多 Agent 协作":
             stream = service.multi_agent_stream(
@@ -1048,19 +1063,19 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             if evt.kind == "confirm":
                 confirm_md = format_confirm_request(evt.data if isinstance(evt.data, dict) else {})
                 tracker.current = "⏸️ 等待你确认危险操作…"
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
             elif evt.kind in ("progress", "step"):
                 confirm_md = ""
                 tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", "", ""
             elif evt.kind == "heartbeat":
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
                 yield (
                     history, tracker.render_status("cancelled"),
-                    tracker.render_steps(title, done=True), "", "", "",
+                    tracker.render_steps(title, done=True), "", "", "", "",
                 )
                 return
             elif evt.kind == "error":
@@ -1071,12 +1086,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                     "",
                     "",
                     "",
+                    "",
                 )
                 return
 
         steps_md = tracker.render_steps(title, done=True)
         if final is None:
-            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", ""
+            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", "", ""
             return
 
         data = final.data if isinstance(final.data, dict) else {}
@@ -1096,7 +1112,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
         if mode == "多 Agent 协作":
             content = prefix + format_multi_agent_result(data)
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
 
         if mode == "单 Agent":
@@ -1104,13 +1120,17 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             summary = format_step_log(data.get("step_log") or [])
             if summary:
                 steps_md = f"{steps_md}\n\n{summary}" if steps_md else summary
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
 
         if data.get("kind") == "meta":
             content = format_meta_overview(data.get("meta") or {})
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
+        # 失败回退：知识库与网络均无结果 → 状态行下方出现「用单 Agent 重试」按钮
+        retry_q = ""
+        if data.get("kind") == "fallback":
+            retry_q = format_fallback_hint(data.get("fallback_question") or message)
         yield (
             history + [{"role": "assistant", "content": prefix + (final.message or "")}],
             status,
@@ -1123,6 +1143,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             ),
             hint_md,
             "",
+            retry_q,
         )
 
     def on_resolve_confirm(approved: bool) -> str:

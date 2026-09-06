@@ -44,6 +44,8 @@ from config import (
     CHUNK_OVERLAP,
     TOP_K,
     SIMILARITY_CUTOFF,
+    RAG_HYBRID,
+    RAG_HYBRID_MAX_CHUNKS,
 )
 from config import resolve_num_ctx as _resolve_num_ctx
 from document_loader import load_documents
@@ -81,6 +83,10 @@ class RAGEngine:
         self.query_engine = None
         # 最近一次入库时知识图谱是否成功派生构建（供 CLI 调整提示文案）
         self.last_graph_derived: bool = False
+        # hybrid 召回：惰性构建的 BM25 索引（入库/删除/清空后置 None 失效）
+        self._bm25 = None
+        self._bm25_disabled_reason: Optional[str] = None
+        self.hybrid_enabled: bool = bool(RAG_HYBRID)
         self.enable_auto_snapshot = enable_auto_snapshot
         self.enable_security = enable_security
         self._setup_llm()
@@ -215,6 +221,7 @@ class RAGEngine:
             self._persist_index()
 
         self._setup_query_engine()
+        self.invalidate_bm25()
 
         # 登记文件元数据（供 /file-list 等命令读取）。复用上面创建的 node_parser，
         # 避免重复构造 SentenceSplitter。
@@ -473,6 +480,7 @@ class RAGEngine:
             self.index.insert(doc)
 
         self._persist_index()
+        self.invalidate_bm25()
         print("✅ 文档添加完成！")
 
         # 登记文件元数据（供 /file-list 等命令读取）
@@ -499,17 +507,165 @@ class RAGEngine:
         response = self.query_engine.query(question)
         return str(response)
 
-    def query_with_sources(self, question: str, progress_callback=None) -> dict:
+    # ==================== hybrid 召回：BM25 + RRF ====================
+
+    # RRF 常数（Cormack et al. 推荐 60）
+    RRF_K = 60
+    # 片段去重/匹配用的内容前缀长度（与 sources 中 content[:500] 一致）
+    _CONTENT_KEY_CHARS = 500
+
+    @staticmethod
+    def _bm25_tokenize(text: str) -> List[str]:
+        """BM25 轻量分词：英文/数字按词（小写），中文按单字 + 相邻二字组。"""
+        import re
+        if not text:
+            return []
+        tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        cjk = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
+        tokens.extend(cjk)
+        tokens.extend(a + b for a, b in zip(cjk, cjk[1:]))
+        return tokens
+
+    def invalidate_bm25(self) -> None:
+        """入库/删除/清空后使 BM25 索引失效（下次查询按需重建）。"""
+        self._bm25 = None
+        self._bm25_disabled_reason = None
+
+    def _ensure_bm25(self, progress_callback=None) -> bool:
+        """惰性构建 BM25 索引。返回是否可用（依赖缺失/规模超限/读取失败均为 False）。"""
+        if self._bm25 is not None:
+            return True
+        if self._bm25_disabled_reason:
+            return False
+        try:
+            from rank_bm25 import BM25Okapi  # type: ignore
+        except ImportError:
+            self._bm25_disabled_reason = "rank_bm25 未安装"
+            return False  # 静默回退 dense
+
+        try:
+            count = int(self.chroma_collection.count())
+        except Exception:  # noqa: BLE001 - 无法统计时不做规模限制
+            count = -1
+        if count > RAG_HYBRID_MAX_CHUNKS:
+            self._bm25_disabled_reason = f"文档块数 {count} 超过 {RAG_HYBRID_MAX_CHUNKS}"
+            msg = f"⚠️ 文档块数 {count} > {RAG_HYBRID_MAX_CHUNKS}，已自动关闭 hybrid 召回（仅向量检索）"
+            print(msg)
+            if progress_callback:
+                progress_callback({"phase": "hybrid_off", "message": msg})
+            return False
+
+        try:
+            data = self.chroma_collection.get(include=["documents", "metadatas"]) or {}
+            docs = data.get("documents") or []
+            metas = data.get("metadatas") or []
+            if not isinstance(docs, list) or not docs:
+                self._bm25_disabled_reason = "向量库为空"
+                return False
+            entries = []
+            corpus = []
+            for i, text in enumerate(docs):
+                text = str(text or "")
+                meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
+                entries.append({
+                    "content": text[:self._CONTENT_KEY_CHARS],
+                    "file": meta.get("file_name", "未知"),
+                    "path": meta.get("file_path", ""),
+                })
+                corpus.append(self._bm25_tokenize(text))
+            self._bm25 = {"index": BM25Okapi(corpus), "entries": entries}
+            return True
+        except Exception as e:  # noqa: BLE001 - 构建失败静默回退 dense
+            self._bm25_disabled_reason = f"BM25 构建失败: {e}"
+            logging.getLogger(__name__).debug(self._bm25_disabled_reason)
+            return False
+
+    def _bm25_search(self, question: str, top_k: int) -> List[dict]:
+        """BM25 检索前 top_k 条（分数 >0），返回 ``[{content, file, path, bm25_score}]``。"""
+        if not self._bm25:
+            return []
+        tokens = self._bm25_tokenize(question)
+        if not tokens:
+            return []
+        scores = self._bm25["index"].get_scores(tokens)
+        ranked = sorted(range(len(scores)), key=lambda i: float(scores[i]), reverse=True)
+        out = []
+        for i in ranked[:top_k]:
+            if float(scores[i]) <= 0:
+                break
+            item = dict(self._bm25["entries"][i])
+            item["bm25_score"] = float(scores[i])
+            out.append(item)
+        return out
+
+    @classmethod
+    def rrf_fuse(cls, dense: List[dict], sparse: List[dict], top_k: int, k: int = None) -> List[dict]:
+        """RRF 融合 dense 与 BM25 两路排序，取前 top_k。
+
+        - 以 ``(path|file, content[:500])`` 作为同一片段的键；
+        - 两路都命中的项保留 dense 分数、``retriever="hybrid"``；
+        - 仅 dense 命中：保留原分数、``retriever="dense"``；
+        - 仅 BM25 命中：``score`` 用 RRF 归一值（相对"两路均第 1 名"的理论最大值，
+          故上限 0.5，能过 0.45 粗筛但不会触发 0.6 的"跳过 rerank"高可信线），
+          ``retriever="bm25"``；
+        - 每项附 ``rrf`` 原始融合分，按其降序排列。
+        """
+        k = cls.RRF_K if k is None else k
+
+        def key_of(src: dict):
+            return (src.get("path") or src.get("file") or "", (src.get("content") or "")[:cls._CONTENT_KEY_CHARS])
+
+        fused: dict = {}
+        for rank, src in enumerate(dense, 1):
+            key = key_of(src)
+            item = fused.setdefault(key, {"src": dict(src), "rrf": 0.0, "in_dense": False, "in_sparse": False})
+            item["rrf"] += 1.0 / (k + rank)
+            item["in_dense"] = True
+        for rank, src in enumerate(sparse, 1):
+            key = key_of(src)
+            item = fused.setdefault(key, {"src": dict(src), "rrf": 0.0, "in_dense": False, "in_sparse": False})
+            item["rrf"] += 1.0 / (k + rank)
+            item["in_sparse"] = True
+            if item["in_dense"]:
+                item["src"].setdefault("bm25_score", src.get("bm25_score"))
+
+        max_possible = 2.0 / (k + 1)
+        ordered = sorted(
+            fused.values(),
+            key=lambda it: (it["rrf"], float(it["src"].get("score") or 0)),
+            reverse=True,
+        )
+        out = []
+        for it in ordered[:top_k]:
+            src = it["src"]
+            src["rrf"] = round(it["rrf"], 6)
+            if it["in_dense"] and it["in_sparse"]:
+                src["retriever"] = "hybrid"
+            elif it["in_dense"]:
+                src["retriever"] = "dense"
+            else:
+                src["retriever"] = "bm25"
+                src["score"] = round(it["rrf"] / max_possible, 4)
+            out.append(src)
+        return out
+
+    def query_with_sources(self, question: str, progress_callback=None, hybrid: Optional[bool] = None) -> dict:
         """
         查询并返回来源信息
         
         Args:
             question: 查询问题
             progress_callback: 进度回调函数，接收字典参数：
-                - phase: 当前阶段 (embedding|retrieving|scoring|generating)
+                - phase: 当前阶段 (embedding|retrieving|scoring|hybrid|hybrid_off|generating)
                 - message: 进度消息
                 - current: 当前步骤（可选）
                 - total: 总步骤（可选）
+            hybrid: 是否启用 dense + BM25 hybrid 召回（RRF 融合）。None 时按
+                ``RAG_HYBRID``（默认开启）；``rank_bm25`` 未安装或块数超限时自动回退 dense。
+
+        Returns:
+            ``{"answer": str, "sources": [...], "hybrid": bool}``；hybrid 生效时 sources
+            各项带 ``retriever``（dense/bm25/hybrid）与 ``rrf``。
         """
         if self.query_engine is None:
             raise RuntimeError("索引未初始化")
@@ -543,6 +699,26 @@ class RAGEngine:
                     "file": node.node.metadata.get("file_name", "未知"),
                     "path": node.node.metadata.get("file_path", ""),
                 })
+
+        # hybrid：BM25 关键词召回与 dense 结果 RRF 融合（失败/不可用静默回退 dense）
+        use_hybrid = self.hybrid_enabled if hybrid is None else bool(hybrid)
+        hybrid_applied = False
+        if use_hybrid:
+            try:
+                if self._ensure_bm25(progress_callback):
+                    sparse = self._bm25_search(question, TOP_K)
+                    if sparse:
+                        sources = self.rrf_fuse(sources, sparse, TOP_K)
+                        hybrid_applied = True
+                        added = sum(1 for s in sources if s.get("retriever") == "bm25")
+                        if progress_callback:
+                            progress_callback({
+                                "phase": "hybrid",
+                                "message": f"hybrid 召回：BM25 补充 {added} 个关键词命中片段，RRF 融合后 {len(sources)} 个",
+                                "added": added,
+                            })
+            except Exception as e:  # noqa: BLE001
+                logging.getLogger(__name__).debug(f"hybrid 召回失败，回退 dense: {e}")
         
         # 调用进度回调：生成回答
         if progress_callback:
@@ -551,6 +727,7 @@ class RAGEngine:
         return {
             "answer": str(response),
             "sources": sources,
+            "hybrid": hybrid_applied,
         }
 
     # ==================== Agent 工具接口 ====================
@@ -672,6 +849,7 @@ class RAGEngine:
 
         # 1) 删除向量库 chunk（优先经索引删除，同时清理 docstore/index_struct）
         chunks_deleted = len(metas)
+        self.invalidate_bm25()
         ref_doc_ids = {
             str(m.get("document_id") or m.get("ref_doc_id") or m.get("doc_id") or "")
             for m in metas
@@ -789,6 +967,7 @@ class RAGEngine:
         self.vector_store = ChromaVectorStore(chroma_collection=self.chroma_collection)
         self.index = None
         self.query_engine = None
+        self.invalidate_bm25()
         print("✅ 索引已清空")
 
 

@@ -69,6 +69,28 @@ def setup_settings_mock():
 
 
 @pytest.fixture(autouse=True, scope="function")
+def block_rerank_llm(monkeypatch):
+    """全局fixture：拦截 rag_rerank 的默认 LLM 调用（``complete_text`` 直连本机 Ollama）。
+
+    逐片段 rerank 默认通过 ``/api/chat`` 直连 Ollama；若开发机上恰好运行着 Ollama，
+    未打桩的 RAG 编排测试会真的调用模型（慢且结果不可控）。这里让默认调用抛
+    ConnectionError → rerank 走"回退整体判定（保守保留）"路径，与旧行为一致。
+    需要验证 rerank 解析逻辑的测试请显式注入 ``complete`` 或覆盖该属性。
+    """
+    try:
+        import rag_rerank
+    except ImportError:
+        yield
+        return
+
+    def _blocked(prompt: str) -> str:
+        raise ConnectionError("rerank LLM disabled in tests")
+
+    monkeypatch.setattr(rag_rerank, "_llm_complete", _blocked)
+    yield
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_file_metadata(tmp_path_factory):
     """全局fixture：将文件元数据全局单例隔离到临时目录。
 

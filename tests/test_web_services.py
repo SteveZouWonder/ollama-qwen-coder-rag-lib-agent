@@ -1724,3 +1724,40 @@ class TestStructuredLists:
         rows = make_service(model_switcher_factory=lambda: switcher).model_table()
         assert rows == [{"name": "a", "current": False, "loaded": False},
                         {"name": "b", "current": True, "loaded": True}]
+
+
+class TestRagStreamFallbackKind:
+    """F8 P2-5：``kind="fallback"`` 与 ``fallback_question`` 透传到 answer 事件。"""
+
+    def test_fallback_kind_and_question_passthrough(self, monkeypatch):
+        import rag_pipeline
+
+        def fake_answer_question(engine, question, **kwargs):
+            return {
+                "kind": "fallback", "answer": "无… 建议：/agent q 让 Agent 用工具进一步查找",
+                "kb_sources": [], "web_sources": [], "meta": None, "rewritten": None,
+                "fallback_question": "q",
+            }
+
+        monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer_question)
+        svc = make_service()
+        events = list(svc.rag_query_stream("q"))
+        answer = [e for e in events if e.kind == "answer"][-1]
+        assert answer.data["kind"] == "fallback" and answer.data["fallback_question"] == "q"
+        assert "/agent q" in answer.message
+
+    def test_refs_passthrough_in_sources(self, monkeypatch):
+        import rag_pipeline
+
+        def fake_answer_question(engine, question, **kwargs):
+            return {
+                "kind": "answer", "answer": "a[1][W1]", "meta": None, "rewritten": None,
+                "kb_sources": [{"file": "f", "content": "c", "score": 0.5, "ref": "1"}],
+                "web_sources": [{"title": "t", "url": "u", "ref": "W1"}],
+            }
+
+        monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer_question)
+        svc = make_service()
+        result = svc.rag_query("q")
+        assert result["sources"][0]["ref"] == "1" and result["web_sources"][0]["ref"] == "W1"
+        assert result["kind"] == "answer"

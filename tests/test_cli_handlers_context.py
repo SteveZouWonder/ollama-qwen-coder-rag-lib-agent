@@ -315,6 +315,58 @@ class TestRunAsk:
         assert qi._health_before("q") == {}
 
 
+# ==================== F8 P2：编号来源 / fallback 提示 / thinking ====================
+
+class TestAskP2Display:
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_fallback_kind_prints_agent_hint(self, mock_console, _rec, conv):
+        rag = MagicMock(query_engine=object())
+        with patch.object(rag_pipeline, "answer_question",
+                          lambda *a, **k: _answer(kind="fallback", answer="无… 建议：/agent 冷门 让 Agent 用工具进一步查找",
+                                                  fallback_question="冷门")), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
+                patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag)
+            assert qi.handle_ask(ctx, ParsedCommand("ask", "/ask 冷门", "冷门")) is True
+        out = _printed(mock_console)
+        assert "/agent 冷门" in out and "均未找到相关内容" in out
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_answer_kind_has_no_agent_hint(self, mock_console, _rec, conv):
+        rag = MagicMock(query_engine=object())
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
+                patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q"))
+        assert "/agent" not in _printed(mock_console)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_sources_hint_mentions_numbering(self, mock_console, _rec, conv):
+        rag = MagicMock(query_engine=object())
+        src = [{"file": "a.md", "content": "c", "score": 0.5, "ref": "1"}]
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer(kb_sources=src)), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
+                patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag)
+            qi.handle_ask(ctx, ParsedCommand("ask", "/ask q", "q"))
+        assert ctx.last_rag_sources == src
+        assert "[n]/[Wn]" in _printed(mock_console)
+
+    def test_progress_thinking_dim_and_rerank(self):
+        with patch.object(qi, "console") as mock_console:
+            qi._cli_ask_progress({"stage": "thinking", "message": "🧠 模型思考：[abc] 想一想"})
+            qi._cli_ask_progress({"stage": "rerank", "message": "🔎 逐片段校验"})
+            qi._cli_ask_progress({"stage": "fallback", "message": "🧭 均未找到", "question": "q"})
+        printed = [str(c.args[0]) for c in mock_console.print.call_args_list]
+        assert printed[0].startswith("[dim]") and "\\[abc]" in printed[0]  # 转义避免被当 Rich 标记
+        assert printed[1] == "[dim]🔎 逐片段校验[/dim]"
+        assert printed[2] == "🧭 均未找到"
+        assert mock_console.print.call_args_list[2].kwargs.get("style") == "yellow"
+
+
 # ==================== rag_pipeline 上下文接线 ====================
 
 class FakeRAG:

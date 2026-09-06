@@ -963,3 +963,216 @@ class TestRAGEngineDeriveKnowledgeGraph:
             engine.build_index([MagicMock()], persist=False)
             mock_derive.assert_called_once()
             assert engine.last_graph_derived is True
+
+
+# ==================== F8 P2-4：hybrid 召回（BM25 + RRF）====================
+
+def _mk_engine(mock_chroma, count=3, docs=None, metas=None):
+    """构造带可控 chroma_collection 的引擎。"""
+    mock_collection = MagicMock()
+    mock_collection.count.return_value = count
+    docs = docs if docs is not None else ["Cloudflare Tunnel 配置指南", "DJI Osmo 360 售价 2999 元", "Python 递归示例"]
+    metas = metas if metas is not None else [
+        {"file_name": "cf.md", "file_path": "/d/cf.md"},
+        {"file_name": "dji.md", "file_path": "/d/dji.md"},
+        {"file_name": "py.md", "file_path": "/d/py.md"},
+    ]
+    mock_collection.get.return_value = {"documents": docs, "metadatas": metas}
+    mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+    engine = RAGEngine()
+    return engine, mock_collection
+
+
+def _dense_response(items):
+    """items: [(content, score, file_name, file_path)]"""
+    resp = MagicMock()
+    nodes = []
+    for content, score, fname, fpath in items:
+        n = MagicMock()
+        n.node.get_content.return_value = content
+        n.node.metadata = {"file_name": fname, "file_path": fpath}
+        n.score = score
+        nodes.append(n)
+    resp.source_nodes = nodes
+    resp.__str__ = lambda self: "回答"
+    return resp
+
+
+class TestRRFFuse:
+    def test_fuse_orders_and_labels(self):
+        dense = [
+            {"content": "A", "file": "a", "path": "/a", "score": 0.8},
+            {"content": "B", "file": "b", "path": "/b", "score": 0.7},
+        ]
+        sparse = [
+            {"content": "B", "file": "b", "path": "/b", "bm25_score": 5.0},
+            {"content": "C", "file": "c", "path": "/c", "bm25_score": 3.0},
+        ]
+        fused = RAGEngine.rrf_fuse(dense, sparse, top_k=10)
+        # B 两路都命中 → 最高；A（dense 第 1）与 C（bm25 第 2）分别为 1/61、1/62
+        assert [s["content"] for s in fused] == ["B", "A", "C"]
+        by = {s["content"]: s for s in fused}
+        assert by["B"]["retriever"] == "hybrid" and by["B"]["score"] == 0.7 and by["B"]["bm25_score"] == 5.0
+        assert by["A"]["retriever"] == "dense" and by["A"]["score"] == 0.8
+        assert by["C"]["retriever"] == "bm25"
+        # bm25-only 的 score = rrf / (2/(k+1))，上限 0.5：能过 0.45 粗筛但不触发 0.6 跳过线
+        assert 0.45 < by["C"]["score"] < 0.5
+        assert by["B"]["rrf"] == round(1 / 62 + 1 / 61, 6)  # dense 第 2 + bm25 第 1
+
+    def test_fuse_respects_top_k(self):
+        dense = [{"content": f"d{i}", "file": "f", "path": "/f", "score": 0.9 - i * 0.01} for i in range(5)]
+        sparse = [{"content": f"s{i}", "file": "f", "path": "/f"} for i in range(5)]
+        fused = RAGEngine.rrf_fuse(dense, sparse, top_k=4)
+        assert len(fused) == 4
+
+    def test_bm25_only_rank1_score_is_half(self):
+        fused = RAGEngine.rrf_fuse([], [{"content": "x", "file": "f", "path": "/f"}], top_k=5)
+        assert fused[0]["score"] == 0.5 and fused[0]["retriever"] == "bm25"
+
+    def test_tokenize_mixed(self):
+        toks = RAGEngine._bm25_tokenize("DJI Osmo 售价")
+        assert "dji" in toks and "osmo" in toks and "售" in toks and "售价" in toks
+        assert RAGEngine._bm25_tokenize("") == []
+
+
+class TestHybridQuery:
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_hybrid_merges_bm25_hit_missing_from_dense(self, mock_chroma, mock_embed, mock_llm):
+        pytest.importorskip("rank_bm25")
+        engine, coll = _mk_engine(mock_chroma)
+        engine.hybrid_enabled = True
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([
+            ("Cloudflare Tunnel 配置指南", 0.5, "cf.md", "/d/cf.md"),
+        ])
+        events = []
+        result = engine.query_with_sources("DJI Osmo 售价", progress_callback=lambda e: events.append(e))
+        assert result["hybrid"] is True
+        files = [s["file"] for s in result["sources"]]
+        assert "dji.md" in files  # BM25 关键词命中补进来
+        dji = next(s for s in result["sources"] if s["file"] == "dji.md")
+        assert dji["retriever"] == "bm25" and 0 < dji["score"] <= 0.5
+        cf = next(s for s in result["sources"] if s["file"] == "cf.md")
+        assert cf["retriever"] == "dense" and cf["score"] == 0.5
+        assert any(e["phase"] == "hybrid" for e in events)
+        coll.get.assert_called_once_with(include=["documents", "metadatas"])
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_bm25_index_lazy_and_invalidated(self, mock_chroma, mock_embed, mock_llm):
+        pytest.importorskip("rank_bm25")
+        engine, coll = _mk_engine(mock_chroma)
+        engine.hybrid_enabled = True
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([])
+        engine.query_with_sources("售价")
+        engine.query_with_sources("售价")
+        assert coll.get.call_count == 1  # 第二次复用缓存
+        # 入库后失效 → 重建
+        engine.index = MagicMock()
+        engine.security_scanner = None
+        engine.metadata_manager = None
+        engine.auto_snapshot_trigger = None
+        engine._derive_knowledge_graph = lambda docs: False
+        engine._persist_index = lambda: None
+        engine.add_documents([MagicMock()])
+        assert engine._bm25 is None
+        engine.query_with_sources("售价")
+        assert coll.get.call_count == 2
+        # 清空后失效
+        engine.chroma_client = MagicMock()
+        engine.clear_index()
+        assert engine._bm25 is None
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_remove_file_invalidates_bm25(self, mock_chroma, mock_embed, mock_llm):
+        engine, coll = _mk_engine(mock_chroma)
+        engine._bm25 = {"index": object(), "entries": []}
+        engine.metadata_manager = None
+        engine.index = None
+        coll.get.return_value = {"metadatas": [{"file_path": "/d/cf.md", "file_name": "cf.md"}]}
+        engine.remove_file("/d/cf.md")
+        assert engine._bm25 is None
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_too_many_chunks_disables_hybrid_with_hint(self, mock_chroma, mock_embed, mock_llm):
+        pytest.importorskip("rank_bm25")
+        engine, coll = _mk_engine(mock_chroma, count=20001)
+        engine.hybrid_enabled = True
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        events = []
+        result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
+        assert result["hybrid"] is False
+        assert any(e["phase"] == "hybrid_off" and "20000" in e["message"] for e in events)
+        coll.get.assert_not_called()
+        assert "20001" in (engine._bm25_disabled_reason or "")
+        # 已记录关闭原因 → 后续不再重复检查
+        engine.query_with_sources("q")
+        assert coll.count.call_count == 1
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_missing_rank_bm25_falls_back_dense_silently(self, mock_chroma, mock_embed, mock_llm, monkeypatch):
+        monkeypatch.setitem(sys.modules, "rank_bm25", None)
+        engine, coll = _mk_engine(mock_chroma)
+        engine.hybrid_enabled = True
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        events = []
+        result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
+        assert result["hybrid"] is False
+        assert [s["file"] for s in result["sources"]] == ["a"]
+        assert "retriever" not in result["sources"][0]
+        assert not any(e["phase"] in ("hybrid", "hybrid_off") for e in events)
+        coll.get.assert_not_called()
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_hybrid_explicit_false_and_env_default(self, mock_chroma, mock_embed, mock_llm):
+        engine, coll = _mk_engine(mock_chroma)
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        result = engine.query_with_sources("q", hybrid=False)
+        assert result["hybrid"] is False
+        coll.get.assert_not_called()
+        import config
+        assert engine.hybrid_enabled == bool(config.RAG_HYBRID)
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_empty_collection_or_bad_data_falls_back(self, mock_chroma, mock_embed, mock_llm):
+        pytest.importorskip("rank_bm25")
+        engine, coll = _mk_engine(mock_chroma, docs=[], metas=[])
+        engine.hybrid_enabled = True
+        engine.query_engine = MagicMock()
+        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        assert engine.query_with_sources("q")["hybrid"] is False
+        # get() 抛错 → 记录原因、回退 dense
+        engine.invalidate_bm25()
+        coll.get.side_effect = RuntimeError("boom")
+        assert engine.query_with_sources("q")["hybrid"] is False
+        assert "BM25 构建失败" in engine._bm25_disabled_reason
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_bm25_search_no_tokens_or_zero_scores(self, mock_chroma, mock_embed, mock_llm):
+        pytest.importorskip("rank_bm25")
+        engine, coll = _mk_engine(mock_chroma)
+        assert engine._bm25_search("q", 5) == []  # 未构建
+        assert engine._ensure_bm25() is True
+        assert engine._bm25_search("", 5) == []
+        assert engine._bm25_search("完全不相关的词汇组合", 5) == [] or all(
+            s["bm25_score"] > 0 for s in engine._bm25_search("完全不相关的词汇组合", 5)
+        )

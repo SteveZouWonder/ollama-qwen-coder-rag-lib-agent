@@ -10,6 +10,30 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **RAG 推理与可核验性（F8 P2）**：
+  - **逐片段相关性筛选（rerank）**：新增 `src/rag_rerank.py`，替代原"整批一词判定"。默认
+    `RERANKER=llm`：一次 LLM 调用（`think=False`、`num_predict≤320`，片段各截 400 字）输出
+    `{"keep":[序号],"notes":{序号:"一句理由"}}`，逐片段剔除噪音并给出保留理由（来源面板显示
+    「相关性：…」）；解析失败 / 超时回退原整体判定（保守保留，不误杀）。可选
+    `RERANKER=cross-encoder`（`sentence-transformers` + `RERANKER_MODEL`，默认
+    `BAAI/bge-reranker-v2-m3`），依赖未安装自动回退 llm 并在处理过程中提示。最高分 ≥0.6 仍跳过
+    模型判定；阈值 0.45 粗筛保留。
+  - **复合问题分解与多跳检索**：`plan_retrieval` 把"是否拆子问题 / 子问题（≤3）/ 是否联网 /
+    搜索词"合并为**一次** LLM 调用（`plan_web_search` 保留为兼容封装）。`complex=true` 时对每个
+    子问题分别检索，按 `(文件, 内容)` 去重合并后再 rerank 与综合；简单问题走原路径，LLM 调用
+    次数不增加。关闭联网 / `kb_only` 时仍可分解但不搜索。
+  - **带编号引用的综合答案**：知识库片段以 `[1]..[k]`、网络来源以 `[W1]..` 编号送入综合 prompt，
+    要求关键结论句末标注依据编号；返回的 `kb_sources[i].ref="1"` / `web_sources[j].ref="W1"`。
+    Web 来源面板与 CLI `/sources` 按编号显示，可与答案中的 `[i]`/`[Wj]` 一一对应。
+  - **思维链透出**：`/think on` 时从模型响应取出思维链，以 `stage="thinking"` 进度事件推送
+    （截断 800 字）——Web「处理过程」显示「🧠 模型思考：…」，CLI 以 dim 样式打印。
+  - **hybrid 召回（dense + BM25）**：`RAGEngine` 惰性构建 BM25 索引（入库 / 删除 / 清空后自动
+    失效重建），`query_with_sources(hybrid=None)` 用 RRF（k=60）融合向量与关键词两路 top-k；仅
+    关键词命中的片段标 `retriever="bm25"`（来源面板显示「关键词命中」）。`RAG_HYBRID`
+    默认开启，文档块数 >20000 自动关闭并提示；`rank_bm25` 未安装静默回退纯向量。
+  - **失败回退提示**：知识库无相关片段且网络也无结果时 `kind="fallback"`，答案末尾追加
+    「建议：/agent <原问题> 让 Agent 用工具进一步查找」；Web 状态行下出现「用单 Agent 重试」
+    按钮（一键切模式并用同一问题重发），CLI 提示 `/agent <原问题>`。
 - **单 Agent 鲁棒性与上下文预算（F8 P1）**：
   - **协议容错**：模型输出没有 `Action` / `Final Answer`、`Action Input` 不是合法 JSON 对象、
     或调用了不存在的工具时，不再把整段文本当作最终答案，而是回灌

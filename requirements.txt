@@ -17,6 +17,14 @@ llama-index-vector-stores-chroma
 chromadb
 posthog>=3.0.0,<4.0.0  # 修复ChromaDB遥测兼容性问题
 
+# RAG hybrid 召回（dense + BM25 关键词，RRF 融合；RAG_HYBRID=true 默认开启）
+rank_bm25>=0.2.2
+
+# 可选：cross-encoder 逐片段 rerank（RERANKER=cross-encoder，默认 llm 不需要）
+# 依赖较重（torch），按需手动安装；未安装时自动回退 llm rerank：
+#   pip install sentence-transformers
+# 模型由 RERANKER_MODEL 指定，默认 BAAI/bge-reranker-v2-m3（首次使用自动下载）
+
 # 文档处理
 pypdf>=6.15.0,<7
 pymupdf>=1.25.0  # PDF图像提取（兼容新版本，使用 import pymupdf as fitz）
