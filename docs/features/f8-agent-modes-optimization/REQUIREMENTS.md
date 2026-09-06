@@ -1,6 +1,8 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）**，P3 待实现 · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）、P3 已完成（2026-09-06）—— 全部完成** · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+>
+> P3 实现记录：P3-1~P3-3 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：规则表在需求列举之外补充了常用中英文动词/疑问词并剔除易误判的 `build`；路径匹配先剔除 URL；`classify_intent` 返回 `RouteDecision(mode, reason)`（可解包）而非裸字符串，原因文案用于 CLI 提示与 Web 处理过程；CLI 在 Agent 引擎不可用或判定异常时静默回退知识库问答；Web 意图判定在心跳桥接之外同步执行（LLM 兜底硬超时 5s）。
 >
 > P2 实现记录：P2-1~P2-5 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：rerank 的 LLM 调用走 `collaboration.llm_helper.complete_text`（`/api/chat` 直连，才能真正 `think=False` + `num_predict`；`Settings.llm.complete` 的 `think` kwarg 会被 `or self.thinking` 吞掉），解析失败回退 `judge_kb_relevance`；`plan_retrieval` 在关闭联网时**仍会调用一次**（为了分解），故 `enable_web_search=False` / `kb_only` 路径比改动前多 1 次规划调用（联网路径次数不变）；BM25-only 片段的 `score` 用 RRF 相对"两路均第 1"的归一值（上限 0.5：能过 0.45 粗筛、不会触发 0.6 跳过 rerank）；hybrid 补入 BM25 片段或多跳时不再走"沿用 LlamaIndex 原答案"的快路径而强制综合；`kind="fallback"` 只在知识库已初始化且无命中、网络也无结果时触发（知识库未初始化不算）。
 >

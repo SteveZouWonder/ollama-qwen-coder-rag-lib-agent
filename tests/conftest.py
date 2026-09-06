@@ -91,6 +91,27 @@ def block_rerank_llm(monkeypatch):
 
 
 @pytest.fixture(autouse=True, scope="function")
+def block_intent_llm(monkeypatch):
+    """全局fixture：拦截 intent_router 的默认 LLM 一词判定（同样直连本机 Ollama）。
+
+    模糊输入会触发一次 ``complete_text``；未打桩时若开发机上有 Ollama 会真的调用模型。
+    这里让默认调用抛 ConnectionError → 判定走"回退 rag"路径。需要验证 LLM 判定
+    的测试请显式注入 ``complete``。
+    """
+    try:
+        import intent_router
+    except ImportError:
+        yield
+        return
+
+    def _blocked(prompt: str, num_predict: int = 4, timeout: int = 5) -> str:
+        raise ConnectionError("intent LLM disabled in tests")
+
+    monkeypatch.setattr(intent_router, "_llm_complete", _blocked)
+    yield
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_file_metadata(tmp_path_factory):
     """全局fixture：将文件元数据全局单例隔离到临时目录。
 

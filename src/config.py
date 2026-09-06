@@ -204,6 +204,10 @@ TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
 AUTO_CONFIRM = os.getenv("CODE_AGENT_AUTO_CONFIRM", "false").lower() == "true"
 
+# 入口智能路由（F8 P3）：自然语言输入先由 intent_router 判定走 RAG 还是 Agent；
+# 关闭后自然语言一律走知识库问答（与 /ask 相同）。CLI 可用 /auto on|off 运行时切换。
+AUTO_ROUTE = os.getenv("AUTO_ROUTE", "true").lower() == "true"
+
 # Agent 的 write_file / add_to_knowledge_base 允许操作的目录（冒号分隔），
 # 始终隐含当前工作目录；解析后不在这些目录内的路径返回 "[错误] 路径超出允许范围"。
 # agent_tools 在调用时实时读取该环境变量，这里仅作为配置项文档与 Config 映射。
@@ -328,6 +332,7 @@ class Config:
     MAX_ITERATIONS: int = MAX_ITERATIONS
     TIMEOUT: int = TIMEOUT
     AUTO_CONFIRM: bool = AUTO_CONFIRM
+    AUTO_ROUTE: bool = AUTO_ROUTE
     WRITE_ALLOWED_DIRS: str = WRITE_ALLOWED_DIRS
     READONLY_COMMANDS: tuple = READONLY_COMMANDS
     DANGEROUS_PATTERNS: tuple = DANGEROUS_PATTERNS

@@ -1761,3 +1761,146 @@ class TestRagStreamFallbackKind:
         result = svc.rag_query("q")
         assert result["sources"][0]["ref"] == "1" and result["web_sources"][0]["ref"] == "W1"
         assert result["kind"] == "answer"
+
+
+# ==================== F8 P3-3：自动路由 chat_auto_stream ====================
+
+def _fake_rag_answer(monkeypatch, answer="回答"):
+    import rag_pipeline
+
+    calls = []
+
+    def fake_answer_question(engine, question, **kwargs):
+        calls.append((question, kwargs))
+        return {
+            "kind": "answer", "answer": answer, "kb_sources": [{"file": "f", "content": "c", "score": 0.5}],
+            "web_sources": [], "meta": None, "rewritten": None,
+        }
+
+    monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer_question)
+    return calls
+
+
+class TestChatAutoStream:
+    def test_empty_input(self):
+        assert list(make_service().chat_auto_stream("  ")) == [StreamEvent("error", "输入不能为空")]
+
+    def test_rag_intent_dispatches_to_rag_with_routed_mode(self, monkeypatch):
+        calls = _fake_rag_answer(monkeypatch)
+        svc = make_service()
+        events = list(svc.chat_auto_stream("什么是 RAG？", enable_web_search=False))
+        route = events[0]
+        assert route.kind == "progress" and route.message.startswith("🧭 自动路由：按 RAG 处理")
+        assert route.data["phase"] == "route" and route.data["routed_mode"] == "rag"
+        answer = [e for e in events if e.kind == "answer"][-1]
+        assert answer.message == "回答"
+        assert answer.data["routed_mode"] == "rag" and answer.data["route_reason"].startswith("规则：")
+        # P2 字段透传不变
+        assert answer.data["kind"] == "answer" and answer.data["sources"][0]["file"] == "f"
+        assert "fallback_question" in answer.data
+        assert calls and calls[0][1]["enable_web_search"] is False
+
+    def test_agent_intent_dispatches_to_agent(self, monkeypatch):
+        import rag_pipeline
+        monkeypatch.setattr(rag_pipeline, "answer_question",
+                            MagicMock(side_effect=AssertionError("RAG 不应被调用")))
+        svc = make_service()
+        events = list(svc.chat_auto_stream("修改 main.py 加日志"))
+        assert events[0].message.startswith("🧭 自动路由：按 Agent 处理")
+        assert any(e.kind == "step" for e in events)
+        answer = events[-1]
+        assert answer.kind == "answer" and answer.message == "最终答案"
+        assert answer.data["routed_mode"] == "agent" and "动词" in answer.data["route_reason"]
+        assert "step_log" in answer.data and "context" in answer.data
+
+    def test_agent_confirm_policy_auto_confirm(self):
+        captured = {}
+
+        def factory(on_step=None, on_confirm=None, context=None):
+            captured["on_confirm"] = on_confirm
+            return FakeReact(on_step=on_step, on_confirm=on_confirm, context=context)
+
+        svc = make_service(react_factory=factory)
+        list(svc.chat_auto_stream("修改 main.py", auto_confirm=True))
+        assert captured["on_confirm"]({"tool": "rm"}) is True
+
+    def test_agent_confirm_policy_default_reject_when_not_interactive(self):
+        captured = {}
+
+        def factory(on_step=None, on_confirm=None, context=None):
+            captured["on_confirm"] = on_confirm
+            return FakeReact(on_step=on_step, on_confirm=on_confirm, context=context)
+
+        svc = make_service(react_factory=factory)
+        list(svc.chat_auto_stream("修改 main.py", auto_confirm=False, interactive_confirm=False))
+        assert captured["on_confirm"]({"tool": "rm"}) is False
+
+    def test_agent_confirm_interactive_pushes_confirm_event(self):
+        svc = make_service(
+            react_factory=lambda on_step=None, on_confirm=None, context=None: _ConfirmingReact(
+                on_step=on_step, on_confirm=on_confirm, context=context
+            )
+        )
+        import threading
+        events = []
+
+        def consume():
+            for e in svc.chat_auto_stream("删除 tmp.txt", interactive_confirm=True):
+                events.append(e)
+                if e.kind == "confirm":
+                    svc.resolve_confirm(True)
+
+        t = threading.Thread(target=consume)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive()
+        assert any(e.kind == "confirm" for e in events)
+        assert events[-1].kind == "answer" and events[-1].data["routed_mode"] == "agent"
+
+    def test_ambiguous_uses_intent_llm_once_and_falls_back(self, monkeypatch):
+        import intent_router
+        calls = []
+
+        def fake_llm(prompt, num_predict=4, timeout=5):
+            calls.append((num_predict, timeout))
+            raise TimeoutError("slow")
+
+        monkeypatch.setattr(intent_router, "_llm_complete", fake_llm)
+        _fake_rag_answer(monkeypatch)
+        svc = make_service()
+        events = list(svc.chat_auto_stream("helloworld"))
+        assert calls == [(4, 5)]
+        assert events[-1].data["routed_mode"] == "rag" and "默认 RAG" in events[-1].data["route_reason"]
+
+    def test_kb_unavailable_ambiguous_goes_agent_without_llm(self, monkeypatch):
+        import intent_router
+        monkeypatch.setattr(intent_router, "_llm_complete",
+                            MagicMock(side_effect=AssertionError("不应调用 LLM")))
+        rag = FakeRAG()
+        rag.query_engine = None
+        svc = make_service(rag=rag)
+        assert svc.kb_available() is False
+        events = list(svc.chat_auto_stream("helloworld"))
+        assert events[-1].kind == "answer" and events[-1].data["routed_mode"] == "agent"
+
+    def test_kb_available_and_engine_failure(self):
+        def boom():
+            raise RuntimeError("no engine")
+        svc = make_service(rag_factory=boom)
+        assert svc.kb_available() is False
+
+    def test_classify_intent_error_falls_back_rag(self, monkeypatch):
+        import intent_router
+        monkeypatch.setattr(intent_router, "classify_intent", MagicMock(side_effect=RuntimeError("x")))
+        svc = make_service()
+        mode, reason = svc.classify_intent("修改 main.py")
+        assert mode == "rag" and "判定失败" in reason
+
+    def test_session_id_passthrough(self, monkeypatch):
+        _fake_rag_answer(monkeypatch)
+        sm = make_session_manager()
+        svc = make_service(session_manager=sm)
+        sid = svc.create_session("t")
+        events = list(svc.chat_auto_stream("什么是 RAG？", session_id=sid))
+        assert events[-1].data["context"]  # 已写入会话并带上下文指标
+        assert [m["content"] for m in svc.chat_history(sid)] == ["什么是 RAG？", "回答"]

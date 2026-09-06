@@ -309,7 +309,8 @@ python query_interface.py --agent "检查 main.py 的语法错误"
 python launcher.py --web        # 默认 http://127.0.0.1:7860
 ```
 界面为「左侧栏导航 + 主区 + 右侧面板」：左侧栏切换 **对话 / 知识库 / 知识图谱 / 工具 / 系统**
-五个页面并管理会话；对话页支持 RAG / 单 Agent / 多 Agent（可选协作模式）三种模式，右侧面板
+五个页面并管理会话；对话页默认「自动」模式（按意图判定走 RAG 还是单 Agent，状态行显示实际模式），
+也可手动选 RAG / 单 Agent / 多 Agent（可选协作模式），右侧面板
 展示上下文用量、处理过程与引用来源，单 Agent 遇到危险操作会弹出「允许 / 拒绝」审批卡片；
 右上角可切换 6 套主题色（跟随系统深浅色）。功能面与 CLI 命令一一对应，见「系统 → 帮助」。
 
@@ -449,6 +450,25 @@ export TESSERACT_LANG=chi_sim+eng
 ---
 
 ## 三模式使用指南
+
+### 🧭 自动路由（默认）：不用记模式，直接输入
+
+CLI 中不加斜杠的自然语言输入、Web 对话页默认的「自动」模式，都会先由 `src/intent_router.py`
+判定意图再分发：
+
+| 输入特征 | 走向 | 示例 |
+|---------|------|------|
+| 文件/目录路径（`/x/y.py`、`./src`、`~/`、`*.log`）、代码围栏、命令式动词（修改/创建/运行/删除/安装/实现/修复/重构/部署、create/run/fix/refactor/…） | 🤖 Agent | `修改 main.py 加上日志` |
+| 疑问句（？/吗/呢/什么/为什么/如何理解/是否）、"总结/比较/解释/介绍/区别/优缺点"、以"什么是"开头 | 📚 RAG | `什么是 RAG？` `总结这份文档` |
+| 两类都命中或都不命中（模糊） | 一次 LLM 一词判定（`think=False`、`num_predict=4`、5s 超时；失败回退 RAG） | `你好啊` |
+| 模糊且知识库为空 | 🤖 Agent（不调 LLM） | — |
+
+- CLI 判为 Agent 时会提示「🤖 已按 Agent 模式处理（原因；用 /ask 强制知识库；/auto off 关闭自动路由）」；
+  `/ask` / `/agent` / `/multi` 显式命令**不判定**。`/auto` 查看状态，`/auto on|off` 运行时开关，
+  环境变量 `AUTO_ROUTE=false` 可默认关闭（关闭后自然语言一律走知识库问答）。
+- Web「自动」模式下同时显示「联网搜索增强」与「自动确认危险操作」两个开关；处理过程首行为
+  「🧭 自动路由：按 RAG/Agent 处理（原因）」，完成后状态行追加「· 实际模式：RAG 检索 | 单 Agent」，
+  并按实际模式渲染来源面板 / 执行摘要。手动切到其他模式即不再判定。
 
 ### 📚 模式一：RAG 知识库查询
 
@@ -600,7 +620,10 @@ ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（
 
 | 命令 | 模式 | 说明 |
 |------|------|------|
-| `/ask <问题>` | RAG | 直接查询知识库 |
+| `<自然语言>` | 自动 | 🆕 不加斜杠直接输入：按意图自动判定走 RAG 还是 Agent（`AUTO_ROUTE`） |
+| `/auto` | 自动 | 🆕 显示自动路由状态（默认开） |
+| `/auto on\|off` | 自动 | 🆕 运行时开关自动路由（关闭后自然语言一律走知识库问答） |
+| `/ask <问题>` | RAG | 直接查询知识库（不做意图判定） |
 | `/agent <任务>` | Agent | 进入 ReAct 自动任务模式 |
 | `/multi <任务> [--mode m]` | MultiAgent | 多 Agent 协作（hierarchy / parallel / sequential / competitive） |
 | `/add <路径>` | RAG | 添加文档到知识库 |
@@ -967,6 +990,8 @@ export LLM_THINK=false
 export LLM_NUM_CTX=16384
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
+# 入口智能路由：自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（默认 true；CLI 可 /auto on|off）
+export AUTO_ROUTE=true
 # Agent 系统提示分层：builtin 只用精简内置模板；append（默认）在其后追加 .devin/SYSTEM_PROMPT.md
 # （截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS，默认 4000 字符）；replace 用该文件整体替换（旧行为）
 export CODE_AGENT_PROMPT_MODE=append

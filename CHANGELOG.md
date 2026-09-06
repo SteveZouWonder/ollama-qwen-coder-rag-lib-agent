@@ -10,6 +10,21 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **入口智能路由（F8 P3）**：
+  - **意图判定** `src/intent_router.py::classify_intent(text, kb_available)`：规则优先——含文件/目录
+    路径（`/x/y.py`、`./`、`~/`、`*.ext`）、代码围栏、命令式动词（修改/创建/运行/…、create/run/fix/…）
+    判为 Agent；疑问句、"总结/比较/解释/区别/优缺点"、以"什么是"开头判为 RAG；两类都命中或都不
+    命中时一次 LLM 一词判定（`think=False`、`num_predict=4`、超时 5s），异常/超时/乱输出回退 RAG；
+    知识库不可用且模糊直接走 Agent（不调 LLM）。返回 `(mode, reason)`，规则表为模块常量便于扩展。
+  - **CLI 自动路由**：不加斜杠的自然语言输入先判定意图，判为 Agent 时打印
+    「🤖 已按 Agent 模式处理（原因；用 /ask 强制知识库；/auto off 关闭自动路由）」后走 Agent；
+    新增 `/auto`（显示状态）/ `/auto on|off`（运行时开关）与环境变量 `AUTO_ROUTE`（默认 true）。
+    `/ask`、`/agent` 显式命令不判定；Agent 引擎不可用或判定失败自动回退知识库问答。
+  - **Web「自动」模式**：对话页模式分段新增「自动」并设为默认（同时显示「联网搜索」与「自动确认」）；
+    服务层 `chat_auto_stream` 判定后分发到 RAG / 单 Agent（确认策略与单 Agent 一致），处理过程先
+    出现「🧭 自动路由：按 RAG/Agent 处理（原因）」，`answer` 事件携带 `routed_mode` / `route_reason`；
+    完成后按实际模式渲染（RAG 来源面板 / Agent 执行摘要），状态行追加「· 实际模式：RAG 检索|单 Agent」。
+    手动选 RAG / 单 Agent / 多 Agent 时不判定；RAG 失败回退的「用单 Agent 重试」按钮在自动模式下仍可用。
 - **RAG 推理与可核验性（F8 P2）**：
   - **逐片段相关性筛选（rerank）**：新增 `src/rag_rerank.py`，替代原"整批一词判定"。默认
     `RERANKER=llm`：一次 LLM 调用（`think=False`、`num_predict≤320`，片段各截 400 字）输出
@@ -204,6 +219,8 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- CLI `handle_agent` 优先使用 `CLIContext.react_engine`（无则回退模块级引擎），与其他处理器一致。
+- `/help`、`/tutorial` 补充自动路由说明与 `/auto` 用法；Web 对话页空态提示改为介绍「自动」模式。
 - `.devin/SYSTEM_PROMPT.md`（v4.3.0）清理错误指引：不再要求读取 `~/.config/devin/*` 全局配置、
   不再要求用 `read_system_prompt` 重复读取本提示（引擎已自动注入）、移除不存在的
   `todo_write` 任务工具、明确斜杠命令（`/snapshot-create` 等）不能通过 `execute_command`

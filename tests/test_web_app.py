@@ -1354,3 +1354,175 @@ class TestNumberedSourcesAndFallback:
         _, _, process, sources, _, _, _ = out[-1]
         assert "模型思考" in process and "逐片段校验" in process
         assert "**[1] a.md**" in sources
+
+
+# ==================== F8 P3-3：「自动」模式 ====================
+
+def _route_evt(mode, reason="规则：动词「修改」"):
+    label = "Agent" if mode == "agent" else "RAG"
+    return StreamEvent("progress", f"🧭 自动路由：按 {label} 处理（{reason}）",
+                       {"phase": "route", "routed_mode": mode, "route_reason": reason})
+
+
+class TestAutoModeStream:
+    def _collect(self, gen):
+        out = list(gen)
+        for item in out:
+            assert len(item) == 7, f"应为七元组: {item!r}"
+        return out
+
+    def test_mode_auto_constant(self):
+        from web.app import MODE_AUTO
+        from web.ui.chat import MODE_AUTO as UI_MODE_AUTO
+        assert MODE_AUTO == "自动" == UI_MODE_AUTO
+
+    def test_auto_routed_rag_renders_sources_and_status(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag", "规则：疑问句"),
+            StreamEvent("progress", "检索知识库...", {"stage": "kb_retrieving"}),
+            _rag_answer("答[1]", sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1"}],
+                        routed_mode="rag", route_reason="规则：疑问句", context={}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("什么是 RAG？", "自动", True, False, "sid1"))
+        history, status, process, sources, _, confirm, retry = out[-1]
+        assert history[-1]["content"] == "答[1]"
+        assert status.startswith("✅ 完成") and "实际模式：RAG 检索" in status
+        assert "自动路由：按 RAG 处理" in process and "检索知识库" in process
+        assert "**[1] a.md**" in sources
+        assert "执行摘要" not in process
+        assert confirm == "" and retry == ""
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["session_id"] == "sid1" and kwargs["enable_web_search"] is True
+        assert kwargs["auto_confirm"] is False and kwargs["interactive_confirm"] is True
+        svc.rag_query_stream.assert_not_called()
+        svc.agent_chat_stream.assert_not_called()
+
+    def test_auto_routed_agent_renders_step_log_and_status(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("step", "读取 main.py", {"phase": "action"}),
+            StreamEvent("answer", "已加日志", {
+                "step_log": [{"step": 1, "phase": "action", "tool": "read_file"}, {"step": 2, "phase": "final"}],
+                "context": {}, "routed_mode": "agent", "route_reason": "规则：动词「修改」",
+            }),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("修改 main.py 加日志", "自动", True, True, "sid1"))
+        history, status, process, sources, _, _, retry = out[-1]
+        assert history[-1]["content"] == "已加日志"
+        assert "实际模式：单 Agent" in status
+        assert "自动路由：按 Agent 处理" in process and "执行摘要" in process
+        assert sources == "" and retry == ""
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["auto_confirm"] is True
+
+    def test_auto_confirm_card_passthrough(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("confirm", "确认?", {"tool": "execute_command", "command": "rm x",
+                                             "safety": {"risk_level": "high"}}),
+            StreamEvent("answer", "done", {"step_log": [], "context": {}, "routed_mode": "agent"}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("删除 x", "自动"))
+        assert any("rm x" in o[5] for o in out)
+        assert out[-1][5] == ""
+
+    def test_auto_rag_fallback_keeps_retry_button(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"),
+            _rag_answer("无相关内容", kind="fallback", fallback_question="冷门", routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("冷门", "自动"))
+        assert "/agent 冷门" in out[-1][6]
+
+    def test_auto_meta_answer(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"),
+            _rag_answer("[知识库概览]", kind="meta", meta={"total_documents": 3, "files": []}, routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("知识库里有什么", "自动"))
+        assert "实际模式：RAG 检索" in out[-1][1]
+        assert out[-1][0][-1]["content"]  # 概览内容非空
+
+    def test_auto_missing_routed_mode_defaults_rag(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([_rag_answer("答")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "自动"))
+        assert "实际模式：RAG 检索" in out[-1][1]
+
+    def test_auto_error_event(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([_route_evt("agent"), StreamEvent("error", "炸了")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("修改 x.py", "自动"))
+        assert "[错误] 炸了" in out[-1][0][-1]["content"]
+
+    def test_manual_modes_do_not_call_auto_stream(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("a")])
+        svc.agent_chat_stream.return_value = iter([StreamEvent("answer", "b", {})])
+        svc.multi_agent_stream.return_value = iter([StreamEvent("answer", "c", {"success": True, "summary": "c"})])
+        h = build_handlers(svc)
+        list(h["on_chat_stream"]("修改 x.py", "RAG 检索"))
+        list(h["on_chat_stream"]("什么是 RAG？", "单 Agent"))
+        list(h["on_chat_stream"]("什么是 RAG？", "多 Agent 协作"))
+        svc.chat_auto_stream.assert_not_called()
+        svc.classify_intent.assert_not_called()
+        # 手动模式的状态行不带"实际模式"
+        svc.rag_query_stream.return_value = iter([_rag_answer("a")])
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        assert "实际模式" not in out[-1][1]
+
+
+class TestAutoModeNonStream:
+    def test_on_chat_auto_rag(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag", "规则：疑问句"),
+            _rag_answer("回答", sources=[{"file": "f.md", "score": 0.5, "content": "c"}], routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("什么是 RAG？", "自动")
+        assert answer == "回答"
+        assert "自动路由：按 RAG 处理" in side and "f.md" in side
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["interactive_confirm"] is False
+
+    def test_on_chat_auto_agent(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("step", "思考中"),
+            StreamEvent("answer", "最终答案", {"routed_mode": "agent", "step_log": []}),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("修改 main.py", "自动", True, True)
+        assert answer == "最终答案"
+        assert "自动路由：按 Agent 处理" in side and "执行过程" in side and "思考中" in side
+        assert svc.chat_auto_stream.call_args[1]["auto_confirm"] is True
+
+    def test_on_chat_auto_meta_and_errors(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"), _rag_answer("[概览]", kind="meta", meta={"total_documents": 1, "files": []},
+                                          routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("知识库里有什么", "自动")
+        assert answer and "自动路由" in side
+
+        svc.chat_auto_stream.return_value = iter([StreamEvent("error", "炸了")])
+        assert h["on_chat"]("q", "自动") == ("", "[错误] 炸了")
+
+        svc.chat_auto_stream.return_value = iter([_route_evt("rag")])
+        assert h["on_chat"]("q", "自动") == ("", "[错误] 未获得回答")

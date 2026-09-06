@@ -435,3 +435,140 @@ class TestPipelineContext:
     def test_record_conversation_swallows_errors(self, monkeypatch):
         monkeypatch.setattr(cc, "get_conversation_context", lambda: (_ for _ in ()).throw(RuntimeError("x")))
         rag_pipeline.record_conversation("u", "a")  # 不抛
+
+
+# ==================== F8 P3-2：自然语言自动路由 ====================
+
+class TestNaturalAutoRoute:
+    """AUTO_ROUTE 开时 handle_natural 先判定意图：agent → handle_agent，rag → _run_ask。"""
+
+    def _engine(self):
+        engine = MagicMock()
+        engine.chat.return_value = "已加日志"
+        engine.step_log = [{"phase": "final"}]
+        return engine
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_agent_intent_routes_to_agent_with_hint(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        engine = self._engine()
+        rag = MagicMock(query_engine=object())
+        asked = MagicMock()
+        with patch.object(rag_pipeline, "answer_question", asked), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag, react_engine=engine)
+            text = "修改 main.py 加日志"
+            assert qi.handle_natural(ctx, ParsedCommand("natural", text, text)) is True
+        engine.chat.assert_called_once_with(text)
+        asked.assert_not_called()
+        out = _printed(mock_console)
+        assert "已按 Agent 模式处理" in out and "/ask" in out and "/auto off" in out
+        # 会话由 ReAct 引擎负责落库；handler 不重复入库
+        assert conv.all_messages() == []
+        _rec.assert_called_with("agent", text)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_rag_intent_uses_run_ask(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        engine = self._engine()
+        rag = MagicMock(query_engine=object())
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag, react_engine=engine)
+            assert qi.handle_natural(ctx, ParsedCommand("natural", "什么是 RAG？", "什么是 RAG？")) is True
+        engine.chat.assert_not_called()
+        assert "已按 Agent 模式处理" not in _printed(mock_console)
+        assert [m["content"] for m in conv.all_messages()] == ["什么是 RAG？", "回答"]
+        _rec.assert_called_with("natural", "什么是 RAG？")
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_auto_off_same_input_goes_rag(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
+        engine = self._engine()
+        rag = MagicMock(query_engine=object())
+        classify = MagicMock()
+        import intent_router
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(intent_router, "classify_intent", classify), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag, react_engine=engine)
+            text = "修改 main.py 加日志"
+            assert qi.handle_natural(ctx, ParsedCommand("natural", text, text)) is True
+        engine.chat.assert_not_called()
+        classify.assert_not_called()
+        assert [m["content"] for m in conv.all_messages()] == [text, "回答"]
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_kb_unavailable_passed_to_classifier(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        engine = self._engine()
+        rag = MagicMock(query_engine=None)
+        import intent_router
+        seen = {}
+
+        def fake_classify(text, kb_available=True, complete=None):
+            seen["kb"] = kb_available
+            return intent_router.RouteDecision("agent", "无明确信号，知识库不可用")
+
+        with patch.object(rag_pipeline, "answer_question", MagicMock()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(intent_router, "classify_intent", fake_classify), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_natural(_cli_ctx(rag_engine=rag, react_engine=engine),
+                              ParsedCommand("natural", "你好啊", "你好啊"))
+        assert seen["kb"] is False
+        engine.chat.assert_called_once_with("你好啊")
+        assert "知识库未初始化" not in _printed(mock_console)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_no_react_engine_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        rag = MagicMock(query_engine=object())
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", None), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            text = "修改 main.py 加日志"
+            assert qi.handle_natural(_cli_ctx(rag_engine=rag), ParsedCommand("natural", text, text)) is True
+        assert [m["content"] for m in conv.all_messages()] == [text, "回答"]
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_classifier_error_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        engine = self._engine()
+        rag = MagicMock(query_engine=object())
+        import intent_router
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(intent_router, "classify_intent", MagicMock(side_effect=RuntimeError("x"))), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            text = "修改 main.py 加日志"
+            assert qi.handle_natural(_cli_ctx(rag_engine=rag, react_engine=engine),
+                                     ParsedCommand("natural", text, text)) is True
+        engine.chat.assert_not_called()
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_explicit_ask_and_agent_skip_classifier(self, mock_console, _rec, conv, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        engine = self._engine()
+        rag = MagicMock(query_engine=object())
+        import intent_router
+        classify = MagicMock()
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
+                patch.object(intent_router, "classify_intent", classify), \
+                patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            ctx = _cli_ctx(rag_engine=rag, react_engine=engine)
+            qi.handle_ask(ctx, ParsedCommand("ask", "/ask 修改 main.py", "修改 main.py"))
+            qi.handle_agent(ctx, ParsedCommand("agent", "/agent 什么是 RAG？", "什么是 RAG？"))
+        classify.assert_not_called()
+        engine.chat.assert_called_once_with("什么是 RAG？")

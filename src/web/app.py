@@ -12,6 +12,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .services import WebService, get_web_service
 
+# 对话页模式分段的「自动」标签（与 ui/chat.py 的 MODE_AUTO 保持一致）：
+# 服务层先判定意图再分发到 RAG / 单 Agent，UI 按 answer.data["routed_mode"] 渲染。
+MODE_AUTO = "自动"
+
 try:  # 上下文状态/提示的纯格式化函数（核心层提供，前端只接线）
     from conversation_context import format_context_status, format_suggest_hint, format_tokens
 except ImportError:  # pragma: no cover - 以 src.* 方式导入时的兜底
@@ -950,6 +954,35 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             side = "### 执行过程\n" + "\n".join(steps) if steps else ""
             return answer, side
 
+        if mode == MODE_AUTO:
+            # 自动路由（F8 P3-3）：服务层判定后分发；按 routed_mode 选择渲染路径
+            answer = ""
+            steps: List[str] = []
+            route_line = ""
+            final = None
+            for evt in service.chat_auto_stream(
+                message, enable_web_search=enable_web, auto_confirm=auto_confirm,
+                interactive_confirm=False,
+            ):
+                if evt.kind == "progress" and isinstance(evt.data, dict) and evt.data.get("phase") == "route":
+                    route_line = evt.message
+                elif evt.kind == "step":
+                    steps.append(f"- {evt.message}")
+                elif evt.kind == "answer":
+                    final = evt
+                elif evt.kind == "error":
+                    return "", f"[错误] {evt.message}"
+            if final is None:
+                return "", "[错误] 未获得回答"
+            data = final.data if isinstance(final.data, dict) else {}
+            if data.get("routed_mode") == "agent":
+                side = "### 执行过程\n" + "\n".join(steps) if steps else ""
+                return final.message or "", (route_line + "\n\n" + side).strip()
+            if data.get("kind") == "meta":
+                return format_meta_overview(data.get("meta") or {}), route_line
+            side = format_rag_side({"sources": data.get("sources", []), "web_sources": data.get("web_sources", [])})
+            return final.message or "", (route_line + "\n\n" + side).strip()
+
         # 默认 RAG 模式（与 CLI /ask 编排一致：可选网络搜索、双区综合、元查询直答）
         result = service.rag_query(message, enable_web_search=enable_web)
         # 元查询：直接展示知识库概览
@@ -1017,6 +1050,11 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
         并绑定到 ``session_id``（每个浏览器标签页自己的会话）。多 Agent 可指定
         ``collab_mode``（hierarchy/parallel/sequential/competitive，空为自动）。
+
+        「自动」模式（默认）：服务层 ``chat_auto_stream`` 先判定意图再分发到 RAG /
+        单 Agent，``answer.data["routed_mode"]`` 决定渲染路径（RAG 来源面板 / Agent
+        执行摘要），状态行追加「· 实际模式：RAG 检索|单 Agent」；用户手动选其他模式
+        时不判定。
         """
         message = (message or "").strip()
         session_id = (session_id or "").strip()
@@ -1051,6 +1089,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                 interactive_confirm=not auto_confirm,
             )
             title = "执行过程"
+        elif mode == MODE_AUTO:
+            # 自动路由（F8 P3-3）：服务层先判定意图再分发；answer.data["routed_mode"] 决定渲染路径
+            stream = service.chat_auto_stream(
+                message, enable_web_search=enable_web, auto_confirm=auto_confirm,
+                session_id=session_id or None, interactive_confirm=True,
+            )
+            title = "处理过程"
         else:
             stream = service.rag_query_stream(
                 message, enable_web_search=enable_web, session_id=session_id or None
@@ -1097,7 +1142,14 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
         data = final.data if isinstance(final.data, dict) else {}
         ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
-        status = with_context_status(tracker.render_status("done"), ctx)
+        status = tracker.render_status("done")
+        # 自动模式：状态行追加实际模式，并按 routed_mode 切换到对应渲染路径
+        render_mode = mode
+        if mode == MODE_AUTO:
+            routed = data.get("routed_mode") or "rag"
+            render_mode = "单 Agent" if routed == "agent" else "RAG 检索"
+            status = f"{status} · 实际模式：{render_mode}"
+        status = with_context_status(status, ctx)
 
         # 健康度提示：每会话只提示一次（展示后即标记）
         hint_md = format_suggest_hint(ctx)
@@ -1115,7 +1167,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
 
-        if mode == "单 Agent":
+        if render_mode == "单 Agent":
             content = prefix + (final.message or "")
             summary = format_step_log(data.get("step_log") or [])
             if summary:

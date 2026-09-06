@@ -637,6 +637,68 @@ class WebService:
         """中断当前正在运行的对话任务（任一模式）。兼容旧名，等价 ``stop_current``。"""
         return self.stop_current()
 
+    # ---------- 自动路由（F8 P3-3）----------
+
+    def kb_available(self) -> bool:
+        """知识库是否可用（RAG 引擎已建索引）；引擎创建失败视为不可用。"""
+        try:
+            return getattr(self.rag_engine, "query_engine", None) is not None
+        except BaseException:  # noqa: BLE001
+            return False
+
+    def classify_intent(self, message: str) -> Tuple[str, str]:
+        """调用 ``intent_router.classify_intent`` 判定 ``(mode, reason)``；异常回退 rag。"""
+        try:
+            from intent_router import classify_intent
+            decision = classify_intent(message, kb_available=self.kb_available())
+            return decision.mode, decision.reason
+        except BaseException as exc:  # noqa: BLE001
+            return "rag", f"判定失败，默认 RAG（{exc}）"
+
+    def chat_auto_stream(
+        self, message: str, enable_web_search: bool = True, auto_confirm: bool = False,
+        session_id: Optional[str] = None, interactive_confirm: bool = True,
+    ) -> Iterator[StreamEvent]:
+        """「自动」模式：先判定意图，再分发到 ``rag_query_stream`` / ``agent_chat_stream``。
+
+        - 判定后先 yield 一条 ``progress``「🧭 自动路由：按 RAG/Agent 处理（原因）」；
+        - 子流事件原样透传，``answer`` 事件的 ``data`` 追加 ``routed_mode``
+          （``"rag"``/``"agent"``）与 ``route_reason``，供 UI 选择渲染路径；
+        - Agent 路径的确认策略与「单 Agent」模式一致：``auto_confirm`` 全部放行，
+          否则按 ``interactive_confirm`` 决定挂起等待页面审批还是默认拒绝。
+        """
+        message = (message or "").strip()
+        if not message:
+            yield StreamEvent("error", "输入不能为空")
+            return
+
+        routed, reason = self.classify_intent(message)
+        label = "Agent" if routed == "agent" else "RAG"
+        yield StreamEvent(
+            "progress", f"🧭 自动路由：按 {label} 处理（{reason}）",
+            {"phase": "route", "routed_mode": routed, "route_reason": reason},
+        )
+
+        if routed == "agent":
+            confirm_handler = (lambda evt: True) if auto_confirm else None
+            stream = self.agent_chat_stream(
+                message, confirm_handler=confirm_handler, session_id=session_id,
+                interactive_confirm=(not auto_confirm) and bool(interactive_confirm),
+            )
+        else:
+            stream = self.rag_query_stream(
+                message, enable_web_search=enable_web_search, session_id=session_id,
+            )
+
+        for evt in stream:
+            if evt.kind == "answer":
+                data = dict(evt.data) if isinstance(evt.data, dict) else {}
+                data["routed_mode"] = routed
+                data["route_reason"] = reason
+                yield StreamEvent("answer", evt.message, data)
+            else:
+                yield evt
+
     # ---------- 多 Agent 协作 ----------
 
     def _run_orchestrator(self, request: str, mode: Optional[str], progress=None,

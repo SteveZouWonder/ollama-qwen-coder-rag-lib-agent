@@ -318,6 +318,10 @@ TUTORIAL_TEXT = """
   >>> /multi 写一个快速排序保存到 sort.py 并为它写测试
   >>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
 
+  # 自动路由（默认开）：不加斜杠直接输入，自动判定走知识库还是 Agent
+  >>> 什么是 RAG？                    → 知识库问答
+  >>> 修改 main.py 加上日志           → Agent 处理（用 /ask 可强制知识库）
+
   # 快捷命令
   >>> /file main.py          快速读取文件
   >>> /exec git status       执行命令
@@ -344,6 +348,7 @@ TUTORIAL_TEXT = """
   /cd        切换目录
   /model     显示模型信息；/model <name> 热切换模型
   /think     显示/开关思考模式（/think on|off）
+  /auto      显示/开关自动路由（/auto on|off；开时自然语言自动判定走知识库还是 Agent）
   /reset     重置 Agent 对话上下文
   /quit      退出
 
@@ -621,6 +626,8 @@ def print_help():
   /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
   /think             显示思考模式状态（默认关，响应快）
   /think on|off      运行时开关思考模式（开启需模型支持，如 qwen3.5）
+  /auto              显示自动路由状态（默认开：自然语言先判定走知识库还是 Agent）
+  /auto on|off       运行时开关自动路由（关闭后自然语言一律走知识库问答）
   /context           查看当前会话上下文（轮数/估算 token/预算/压缩次数/摘要）
   /compact           手动压缩当前会话历史（最旧轮次折叠进滚动摘要）
   /reset             清空当前会话上下文（消息与滚动摘要，三种模式共用）
@@ -628,6 +635,8 @@ def print_help():
 
 连续对话：/ask、自然语言输入与 /agent 都会记住当前会话的上下文，可直接追问
 （如"它多少钱"）；历史超出预算时自动压缩，对话过长会提示新建会话。
+自动路由：不加斜杠的自然语言输入会先判定意图——含路径/代码/命令式动词走 Agent，
+疑问/总结类走知识库；/ask、/agent 显式命令不判定。可用 /auto off 关闭（或环境变量 AUTO_ROUTE=false）。
 
 知识库管理命令（新功能）：
   /generate-skills   将知识库内容转化为Skills
@@ -869,6 +878,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("model", user_input)
     if user_input == "/think":
         return ParsedCommand("think", user_input)
+    if user_input == "/auto":
+        return ParsedCommand("auto", user_input)
 
     # 带参数命令（至少一个空格分隔）
     parts = user_input.split(None, 1)
@@ -888,6 +899,9 @@ def parse_command(user_input: str) -> ParsedCommand:
     if cmd == "/think":
         # /think on|off 运行时开关思考模式
         return ParsedCommand("think", user_input, arg)
+    if cmd == "/auto":
+        # /auto on|off 运行时开关入口自动路由
+        return ParsedCommand("auto", user_input, arg)
     if cmd == "/add":
         return ParsedCommand("add", user_input, arg)
     if cmd == "/file":
@@ -1013,7 +1027,7 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
     # 纯命令，不走任何引擎
     if cmd_type in ("help", "tutorial", "tools", "stats", "sources",
                      "clear", "history", "summary", "reset", "context", "compact",
-                     "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
+                     "pwd", "cd", "model", "think", "auto", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
                      "snapshot_restore", "snapshot_info", "snapshot_delete", "snapshot_prune",
                      "knowledge_summary",
@@ -1533,6 +1547,40 @@ def handle_think(ctx, parsed):
     return True
 
 
+def handle_auto(ctx, parsed):
+    """``/auto`` 显示自动路由状态；``/auto on|off`` 运行时开关（F8 P3-2）。
+
+    开启时自然语言输入先由 ``intent_router.classify_intent`` 判定走知识库还是
+    Agent；关闭后一律走知识库问答（等价 ``/ask``）。显式命令不受影响。
+    """
+    import model_switcher
+
+    arg = (parsed.arg or "").strip()
+    record_command_execution("auto")
+
+    if not arg:
+        state = "开" if Config.AUTO_ROUTE else "关"
+        console.print(f"[green]自动路由: {state}[/green]")
+        console.print(
+            "[dim]开启时自然语言输入先判定意图：含路径/代码/命令式动词走 Agent，疑问/总结类走知识库，"
+            "模糊时由模型一词判定；关闭后一律走知识库问答。/ask、/agent 显式命令不判定。"
+            "用法: /auto on | /auto off[/dim]"
+        )
+        return True
+
+    flag = model_switcher.parse_think_flag(arg)
+    if flag is None:
+        console.print(f"[red]无法识别参数 '{arg}'，请使用 /auto on 或 /auto off[/red]")
+        return True
+
+    Config.AUTO_ROUTE = flag
+    if flag:
+        console.print("[green]自动路由已开启：自然语言输入将自动判定走知识库还是 Agent[/green]")
+    else:
+        console.print("[green]自动路由已关闭：自然语言输入一律走知识库问答（/agent 可显式使用 Agent）[/green]")
+    return True
+
+
 def handle_ask(ctx, parsed):
     """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。
 
@@ -1678,12 +1726,13 @@ def _answer_question(question: str, original_question: str, web_search_result: s
 def handle_agent(ctx, parsed):
     task = parsed.arg
     answer = ""
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
     pre_health = _health_before(task)
     try:
-        answer = react_engine.chat(task)
+        answer = engine.chat(task)
     except KeyboardInterrupt:
         console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
-        react_engine.stop()
+        engine.stop()
         return False
     except Exception as e:  # noqa: BLE001
         console.print(f"[red]错误: {e}[/red]")
@@ -1699,8 +1748,8 @@ def handle_agent(ctx, parsed):
         print(answer)
         print("=" * 50 + "\n")
 
-    if len(react_engine.step_log) > 1:
-        console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+    if len(engine.step_log) > 1:
+        console.print(f"[dim]本次共执行 {len(engine.step_log)} 步，输入 /summary 查看详情[/dim]")
     # ReAct 引擎已在 chat() 结束时把本轮（任务 + 最终答案 + 执行摘要）写回会话
     record_command_execution("agent", task)
     _print_health_hint(pre_health, task)
@@ -1714,12 +1763,42 @@ def handle_natural(ctx, parsed):
     未初始化时只能提示；现统一到 ``_run_ask``（知识库为空时由编排层自动
     回退到网络/模型回答），追问同样能结合上下文理解。
     """
+    text = parsed.arg
+    engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else rag_engine
+    kb_available = bool(engine is not None and getattr(engine, "query_engine", None) is not None)
+
+    # F8 P3-2：自动路由——先判定意图，再决定走知识库问答还是 Agent
+    if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
+        return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
+
     if rag_engine is not None and rag_engine.query_engine is None:
         console.print(
             "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
             "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
         )
-    return _run_ask(ctx, parsed.arg, cmd_name="natural")
+    return _run_ask(ctx, text, cmd_name="natural")
+
+
+def _route_natural_to_agent(ctx, text: str, kb_available: bool) -> bool:
+    """自动路由判定：返回 True 表示应按 Agent 处理（并已打印状态行）。
+
+    判定失败或 Agent 引擎不可用时返回 False（走知识库问答），不影响主流程。
+    """
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
+    if engine is None:
+        return False
+    try:
+        from intent_router import classify_intent
+        decision = classify_intent(text, kb_available=kb_available)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("自动路由判定失败，回退知识库问答: %s", e)
+        return False
+    if decision.mode != "agent":
+        return False
+    console.print(
+        f"[cyan]🤖 已按 Agent 模式处理（{decision.reason}；用 /ask 强制知识库；/auto off 关闭自动路由）[/cyan]"
+    )
+    return True
 
 
 def handle_unknown_cmd(ctx, parsed):
@@ -1740,6 +1819,7 @@ _ENGINE_HANDLERS = {
     "cd": handle_cd,
     "model": handle_model,
     "think": handle_think,
+    "auto": handle_auto,
     "ask": handle_ask,
     "agent": handle_agent,
     "natural": handle_natural,

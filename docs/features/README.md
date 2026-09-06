@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | 🚧 P0 多 Agent 真实化、P1 单 Agent 鲁棒性与上下文、P2 RAG 推理与可核验性已完成，P3 待实现，分支 `feat/agent-modes-optimization` | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | ✅ P0 多 Agent 真实化、P1 单 Agent 鲁棒性与上下文、P2 RAG 推理与可核验性、P3 入口智能路由全部完成（2026-09-06），分支 `feat/agent-modes-optimization` | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
 
 ## 已实现
 

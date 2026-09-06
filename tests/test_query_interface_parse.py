@@ -216,3 +216,35 @@ class TestClassifyMode:
 
     def test_unexpected_type(self):
         assert classify_mode(True, ParsedCommand("weird", "", "")) == "noop"
+
+
+# ==================== F8 P3：/auto 解析 + classify_mode 兼容 ====================
+
+class TestAutoRouteParse:
+    def test_auto_variants(self):
+        assert parse_command("/auto").cmd_type == "auto"
+        assert parse_command("/auto").arg == ""
+        r = parse_command("/auto on")
+        assert r.cmd_type == "auto" and r.arg == "on"
+        r = parse_command("/auto off")
+        assert r.cmd_type == "auto" and r.arg == "off"
+
+    def test_auto_is_pure_cmd(self):
+        assert classify_mode(True, ParsedCommand("auto", "/auto", "")) == "cmd"
+        assert classify_mode(False, ParsedCommand("auto", "/auto on", "on")) == "cmd"
+
+    def test_classify_mode_natural_unchanged_by_auto_route(self):
+        """classify_mode 保持向后兼容：不做意图判定，仍按知识库可用性决定。"""
+        for text in ("修改 main.py 加日志", "什么是 RAG？"):
+            assert classify_mode(True, ParsedCommand("natural", text, text)) == "rag"
+            assert classify_mode(False, ParsedCommand("natural", text, text)) == "agent"
+
+    def test_help_and_tutorial_mention_auto(self):
+        import query_interface as qi
+        assert "/auto" in qi.TUTORIAL_TEXT
+        from unittest.mock import patch
+        with patch.object(qi, "console"), patch.object(qi, "HAS_RICH", False), \
+                patch("builtins.print") as mock_print:
+            qi.print_help()
+        out = "\n".join(str(c.args[0]) for c in mock_print.call_args_list)
+        assert "/auto on|off" in out and "AUTO_ROUTE" in out
