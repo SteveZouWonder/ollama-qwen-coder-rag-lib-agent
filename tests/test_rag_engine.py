@@ -554,6 +554,7 @@ class TestRAGEngineStats:
         assert stats["llm_model"] == "qwen3.5:4b"
         assert stats["llm_num_ctx"] == 16384
         assert stats["chunk_size"] == 1024
+        assert stats["self_check"] is False  # F9 P2-1：/stats 显示自校验开关（默认关）
 
 
 class TestRAGEngineSetModel:

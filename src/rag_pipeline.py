@@ -27,7 +27,8 @@
 ``kb_low_relevance`` | ``rerank`` | ``rerank_done`` | ``rerank_fallback`` |
 ``kb_irrelevant`` | ``kb_empty`` | ``kb_fallback_search`` | ``synthesizing`` |
 ``model_thinking`` | ``thinking``（/think on 时的思维链，截断 800 字）|
-``fallback``（知识库与网络均无结果）| ``kb_uninitialized`` 等。
+``fallback``（知识库与网络均无结果）| ``kb_uninitialized`` | ``self_check``（RAG_SELF_CHECK 开启时）|
+``premise_unverified``（前提实体未在资料中出现）等。
 
 返回 ``kind``：``meta``（知识库概览直答）| ``answer`` | ``fallback``（无相关片段且
 网络无结果）。``answer`` 只含正文；警示 / 建议 / 引用校验等"关于可信度的信息"以
@@ -226,6 +227,8 @@ def _is_mostly_ascii(text: str) -> bool:
 
 # 复合问题最多拆成的子问题数
 MAX_SUBQUESTIONS = 3
+# F9 P2-2：检索规划中提取的实体上限
+MAX_ENTITIES = 4
 
 
 def _dedupe_strings(items: list) -> list:
@@ -259,7 +262,8 @@ def build_retrieval_plan_prompt(question: str) -> str:
         '{"complex":是否需要拆成多个子问题才能回答,'
         '"subquestions":[最多3个,简单问题留空],'
         '"needs_search":是否需要联网获取最新/外部信息,'
-        '"queries":[最多3个搜索词]}\n'
+        '"queries":[最多3个搜索词],'
+        '"entities":[问题中的专有名词/函数名/产品名，最多4个，没有则空]}\n'
         "说明：complex 仅在问题涉及多个对象/多个事实需分别查找再综合时为 true"
         "（如\"A 与 B 的价格差多少\"拆为 A 的价格、B 的价格）；"
         "needs_search 仅在需要版本号、新闻、价格、近期事件等最新/外部信息时为 true，"
@@ -278,7 +282,7 @@ def plan_retrieval(question: str, progress: ProgressCallback = None) -> dict:
 
     Returns:
         ``{"complex": bool, "subquestions": [str...](≤3), "needs_search": bool,
-           "queries": [str...]}``。subquestions/queries 已去重；``complex`` 为 True
+           "queries": [str...], "entities": [str...](≤4)}``。subquestions/queries 已去重；``complex`` 为 True
         但子问题不足 2 个时降级为简单问题。对国内查询剔除英文搜索词。
         LLM 不可用时回退到轻量触发词（不分解）。
     """
@@ -305,11 +309,15 @@ def plan_retrieval(question: str, progress: ProgressCallback = None) -> dict:
         complex_ = bool(data.get("complex", False)) and len(subquestions) >= 2
         if not complex_:
             subquestions = []
+        # F9 P2-2：问题中的实体（≤4），供"前提实体校验"使用；缺失 / 非列表兼容为空
+        raw_entities = data.get("entities")
+        entities = _dedupe_strings(raw_entities)[:MAX_ENTITIES] if isinstance(raw_entities, list) else []
         plan = {
             "complex": complex_,
             "subquestions": subquestions,
             "needs_search": needs,
             "queries": queries,
+            "entities": entities,
         }
         if complex_:
             _emit(
@@ -327,6 +335,7 @@ def plan_retrieval(question: str, progress: ProgressCallback = None) -> dict:
             "subquestions": [],
             "needs_search": needs,
             "queries": [question] if needs else [],
+            "entities": [],  # 回退（无 LLM）时跳过前提实体校验
         }
 
 
@@ -899,6 +908,59 @@ FAITHFULNESS_RULES: List[str] = [
 ]
 
 
+# ==================== 前提实体校验（F9 P2-2，零新增调用）====================
+
+_ENTITY_SPLIT_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _entity_tokens(entity: str) -> List[str]:
+    """实体的子词（小写）：按非字母数字拆分，再拆 snake / camel（兼容 ``_bm25_tokenize`` 的拆词）。"""
+    out: List[str] = []
+    for part in _ENTITY_SPLIT_RE.split(entity or ""):
+        if not part:
+            continue
+        for sub in _CAMEL_RE.split(part):
+            sub = sub.lower()
+            if len(sub) >= 2 and sub not in out:
+                out.append(sub)
+    return out
+
+
+def entity_in_text(entity: str, text: str) -> bool:
+    """大小写不敏感子串命中；否则要求实体的全部子词都出现在文本中（如 ``_ensure_bm25`` → ensure + bm25）。"""
+    e = (entity or "").strip().lower()
+    t = (text or "").lower()
+    if not e or not t:
+        return False
+    if e in t:
+        return True
+    tokens = _entity_tokens(entity)
+    return bool(tokens) and all(tok in t for tok in tokens)
+
+
+def unverified_entities(entities: Optional[list], sources: Optional[list]) -> List[str]:
+    """返回在**所有**保留片段（内容 + 文件名 + 符号名）中都没出现的实体；实体为空返回 []。"""
+    ents = [str(e).strip() for e in (entities or []) if str(e or "").strip()]
+    if not ents or not sources:
+        return []
+    texts = []
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        texts.append(" ".join(str(src.get(k) or "") for k in ("content", "file", "symbol")))
+    blob = "\n".join(texts)
+    return [e for e in ents if not entity_in_text(e, blob)]
+
+
+def premise_note(missing: List[str]) -> str:
+    """注入综合 prompt 问题段前的一行提示（无缺失实体返回空串）。"""
+    if not missing:
+        return ""
+    names = "」「".join(missing)
+    return f"注意：资料中未出现「{names}」，先核对该前提是否成立。"
+
+
 # 无依据作答（F9 P1-1）：知识库与网络双空时替换 prompt 末尾的作答指令——先判断是否确知
 NO_EVIDENCE_INSTRUCTION = (
     "当前没有任何资料。先判断你是否确知答案：确知则简要回答并注明「依据模型自身知识，未经资料核实」；"
@@ -908,12 +970,14 @@ NO_EVIDENCE_INSTRUCTION = (
 
 def synthesize_prompt(
     question: str, kb_context: str, web_context: str, history: str = "",
-    no_evidence: bool = False,
+    no_evidence: bool = False, premise: str = "",
 ) -> str:
     """组装带"准确回答方法论"的结构化 prompt。
 
     ``no_evidence=True``（知识库与网络均无资料，F9 P1-1）时末尾的作答指令替换为
     ``NO_EVIDENCE_INSTRUCTION``：先判断是否确知，确知则答并注明依据模型知识，不确知只说不确定。
+    ``premise``（F9 P2-2）非空时在「## 问题」段前注入该行（``premise_note`` 生成的
+    「注意：资料中未出现「X」，先核对该前提是否成立。」）。
 
     ``history`` 为最近 2-3 轮对话的紧凑摘要（可为空）：连续对话中用于理解指代
     与延续上下文，但明确要求"事实只以资料为准"，避免把历史回答当作依据。
@@ -937,6 +1001,8 @@ def synthesize_prompt(
             f"{history}"
         )
         parts.append("")
+    if premise:
+        parts.append(premise)
     parts.append(f"## 问题\n{question}")
     parts.append("")
     if kb_context:
@@ -1121,6 +1187,97 @@ def verify_citations(answer: str, kb_sources: Optional[list], web_sources: Optio
     }
 
 
+# ==================== LLM 自校验（F9 P2-1，可选开关 RAG_SELF_CHECK）====================
+
+SELF_CHECK_NUM_PREDICT = 400
+SELF_CHECK_TIMEOUT = 60
+SELF_CHECK_MAX_ITEMS = 5
+
+
+def self_check_enabled() -> bool:
+    """读取 ``RAG_SELF_CHECK`` 开关（默认关闭）。"""
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, "RAG_SELF_CHECK", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def build_self_check_prompt(kb_context: str, answer: str) -> str:
+    """附录 A「LLM 自校验」提示词：逐条核对回答中的事实句是否被资料支持，只输出 JSON。"""
+    return (
+        "逐条核对「回答」中的事实句是否被「资料」支持。只输出 JSON："
+        '{"unsupported":["原句…"]}；全部支持输出 {"unsupported":[]}\n'
+        f"资料：\n{kb_context}\n回答：\n{answer}"
+    )
+
+
+def _self_check_complete(prompt: str) -> str:
+    """默认 LLM 调用：全局唯一模型、``think=False``、限制输出长度与超时。失败抛异常。"""
+    from collaboration.llm_helper import complete_text
+    return complete_text(prompt, num_predict=SELF_CHECK_NUM_PREDICT, timeout=SELF_CHECK_TIMEOUT)
+
+
+def parse_self_check(raw: str) -> Optional[List[str]]:
+    """解析自校验输出为未支持句列表；无法解析返回 None（调用方静默跳过）。"""
+    text = _strip_json_fence(str(raw or ""))
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return None
+    items = data.get("unsupported") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    out: List[str] = []
+    for it in items:
+        t = str(it or "").strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def run_self_check(answer: str, kb_context: str, progress: ProgressCallback = None,
+                   complete: Optional[Callable[[str], str]] = None) -> Optional[dict]:
+    """知识库命中后的可选自校验：返回 ``{"unsupported": [...], "checked": True}``；失败 / 解析不了返回 None。"""
+    if not (answer or "").strip() or not (kb_context or "").strip():
+        return None
+    _emit(progress, "self_check", "🔍 自校验：逐句核对回答是否被资料支持...")
+    fn = complete or _self_check_complete
+    try:
+        raw = fn(build_self_check_prompt(kb_context, answer))
+    except Exception as e:  # noqa: BLE001 - 超时 / 连接失败静默跳过
+        logger.debug(f"self_check 调用失败，跳过: {e}")
+        _emit(progress, "self_check", "🔍 自校验未完成（调用失败，已跳过）")
+        return None
+    items = parse_self_check(raw)
+    if items is None:
+        logger.debug("self_check 输出无法解析，跳过")
+        _emit(progress, "self_check", "🔍 自校验未完成（输出无法解析，已跳过）")
+        return None
+    if items:
+        _emit(progress, "self_check", f"🔍 自校验：{len(items)} 句未在资料中找到依据", count=len(items))
+    else:
+        _emit(progress, "self_check", "🔍 自校验：全部陈述有资料支持", count=0)
+    return {"unsupported": items, "checked": True}
+
+
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+
+
+def self_check_notice(result: Optional[dict]) -> Optional[dict]:
+    """把自校验结果转成 after 位 warn notice；无未支持句返回 None。"""
+    items = (result or {}).get("unsupported") or []
+    if not items:
+        return None
+    shown = items[:SELF_CHECK_MAX_ITEMS]
+    parts = [f"{_CIRCLED[i] if i < len(_CIRCLED) else str(i + 1) + '.'} {t[:80]}" for i, t in enumerate(shown)]
+    more = f" …另 {len(items) - len(shown)} 句" if len(items) > len(shown) else ""
+    return make_notice("self_check", "以下陈述未在资料中找到依据：" + " ".join(parts) + more, position="after")
+
+
 def citation_notices(check: Optional[dict]) -> List[dict]:
     """由 ``verify_citations`` 结果生成 info 级 notices（无问题返回空列表）。"""
     out: List[dict] = []
@@ -1184,6 +1341,7 @@ def generate_answer(
     kb_only: bool = False,
     subquestions: Optional[list] = None,
     web_sources: Optional[list] = None,
+    entities: Optional[list] = None,
 ) -> dict:
     """根据知识库状态生成回答（知识库/网络分区标注、编号引用、综合总结）。
 
@@ -1204,6 +1362,8 @@ def generate_answer(
             再筛选/综合）；为空走单次检索路径。
         web_sources: 已解析的网络来源（``parse_web_sources``），用于 ``[Wj]``
             编号；为空时按 ``web_search_result`` 解析。
+        entities: 检索规划提取的问题实体（F9 P2-2）；知识库命中后若所有保留片段都不含任一
+            实体，发 ``premise_unverified`` 事件 + ``premise`` notice，并在综合 prompt 注入前提核对行。
 
     Returns:
         ``{"answer": str, "sources": [...], "web_sources": [...], "kind": "answer"|"fallback"}``。
@@ -1226,7 +1386,7 @@ def generate_answer(
             show_progress=show_progress, progress=progress,
             rag_progress_callback=rag_progress_callback, should_stop=should_stop,
             history_text=history_text, kb_only=kb_only, subquestions=subquestions,
-            web_sources=web_sources, kb_initialized=kb_initialized,
+            web_sources=web_sources, kb_initialized=kb_initialized, entities=entities,
         )
     finally:
         _THINKING_SINK.reset(sink_token)
@@ -1263,7 +1423,7 @@ def _merge_multi_hop(results: list) -> dict:
 def _generate_answer_inner(
     rag_engine, question, original_question, web_search_result, *,
     show_progress, progress, rag_progress_callback, should_stop, history_text,
-    kb_only, subquestions, web_sources, kb_initialized,
+    kb_only, subquestions, web_sources, kb_initialized, entities=None,
 ) -> dict:
     web_sources = [s for s in (web_sources if web_sources is not None else parse_web_sources(web_search_result)) if isinstance(s, dict)]
     assign_refs([], web_sources)
@@ -1342,13 +1502,32 @@ def _generate_answer_inner(
     if kb_hit:
         assign_refs(relevant_sources, web_sources)
         kb_context = format_kb_context(relevant_sources)
-        prompt = synthesize_prompt(original_question, kb_context, web_context, history=history_text)
+        # F9 P2-2：前提实体校验（零新增调用）——规划提取的实体在所有保留片段中都未出现时，
+        # 进度事件 + before 位 warn notice + prompt 注入前提核对行三轨并行
+        notices: List[dict] = []
+        missing = unverified_entities(entities, relevant_sources)
+        if missing:
+            names = "」「".join(missing)
+            _emit(progress, "premise_unverified", f"⚠️ 问题中的「{names}」未在资料中出现，将先核对前提",
+                  entities=missing)
+            notices.append(make_notice("premise", f"资料中未出现「{names}」，已先核对前提"))
+        prompt = synthesize_prompt(original_question, kb_context, web_context, history=history_text,
+                                   premise=premise_note(missing))
         if web_search_result:
             _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答（带编号引用）...")
         else:
             _emit(progress, "synthesizing", "✍️ 基于知识库综合回答（带编号引用）...")
         answer = llm_direct_answer(prompt)
-        return _finalize_answer(answer, relevant_sources, web_sources, "answer", [])
+        out = _finalize_answer(answer, relevant_sources, web_sources, "answer", notices)
+        # F9 P2-1：可选 LLM 自校验（默认关；一次额外调用；不改正文）
+        if self_check_enabled():
+            _check_stop(should_stop)
+            sc = run_self_check(out["answer"], kb_context, progress=progress)
+            out["self_check"] = sc
+            n = self_check_notice(sc)
+            if n:
+                out["notices"].append(n)
+        return out
 
     # 知识库 0 命中（或全部为低相关噪音）：明确告知，再用网络/模型回答。
     _emit(progress, "kb_empty", "📭 知识库中未检索到相关内容。")
@@ -1544,6 +1723,7 @@ def _answer_question_planned(
         kb_only=kb_only,
         subquestions=subquestions,
         web_sources=web_sources,
+        entities=(plan or {}).get("entities") or [],
     )
 
     kb_sources, web_sources = assign_refs(result.get("sources", []), result.get("web_sources", web_sources))
@@ -1556,6 +1736,7 @@ def _answer_question_planned(
         "rewritten": rewritten,
         "notices": list(result.get("notices") or []),
         "citation_check": result.get("citation_check"),
+        "self_check": result.get("self_check"),
         "model": _current_model_name(rag_engine),
     }
     if out["kind"] == "fallback":

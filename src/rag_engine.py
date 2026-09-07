@@ -1000,7 +1000,17 @@ class RAGEngine:
             "code_chunking": code_chunking_status(),
             "code_chunk_max_chars": CODE_CHUNK_MAX_CHARS,
             "top_k": TOP_K,
+            # F9 P2-1：LLM 自校验开关（运行时读取 config，随环境变量生效）
+            "self_check": self._self_check_enabled(),
         }
+
+    @staticmethod
+    def _self_check_enabled() -> bool:
+        try:
+            import config as _cfg
+            return bool(getattr(_cfg, "RAG_SELF_CHECK", False))
+        except Exception:  # noqa: BLE001
+            return False
 
     # ==================== 文件删除 ====================
 

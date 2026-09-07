@@ -1439,6 +1439,7 @@ class WebService:
                 "code_chunking": _code_chunking_env_text(),
                 "similarity_cutoff": getattr(config, "SIMILARITY_CUTOFF", ""),
                 "kb_relevance_threshold": getattr(config, "KB_RELEVANCE_THRESHOLD", ""),
+                "self_check": bool(getattr(config, "RAG_SELF_CHECK", False)),
                 "data_dir": str(getattr(config, "DATA_DIR", "")),
                 "index_dir": str(getattr(config, "INDEX_DIR", "")),
                 "vector_db_path": str(getattr(config, "VECTOR_DB_PATH", "")),

@@ -42,6 +42,17 @@
     `scripts/eval_overcompliance.py --model <name>`（对真实 Ollama 跑用例，规则词表判定，输出各类别通过率 /
     非法引用率 / 无来源数字句均值的 Markdown 表，用于切换模型前后对比；不进 CI）。
   - README「模型选择指南」与教程 `04-features.md` 新增小模型过度顺从说明、引用校验行与可信度提示的解读。
+- **抗过度顺从 P2（F9 P2，可选开关 / 零新增调用）**：
+  - **LLM 自校验 `RAG_SELF_CHECK`**（环境变量，默认 `false`）：知识库命中并综合完成后，再用同一模型逐句核对
+    "回答中的事实句是否被资料支持"（一次额外调用，`think=False`、`num_predict≤400`、超时 60s），有未支持陈述时以
+    `self_check` 警示列出（CLI 黄色行 / Web blockquote：`以下陈述未在资料中找到依据：① … ② …`），不改答案正文；
+    解析失败 / 超时静默跳过。结果 `self_check` 字段、进度事件 `self_check`（CLI dim）；「系统 → 运行环境」新增
+    「自校验（RAG_SELF_CHECK）：开启 / 关闭」，`/stats` 与 `get_stats()` 新增 `self_check` 键。
+  - **前提实体校验**：检索规划 JSON 新增 `"entities"`（问题中的专有名词 / 函数名 / 产品名，≤4，不增加调用）；
+    知识库命中后若所有保留片段都不含某实体（大小写不敏感子串，兼容 `snake_case` / `camelCase` 拆词），
+    同时发进度事件 `⚠️ 问题中的「X」未在资料中出现，将先核对前提`（CLI yellow）、产生 `premise` 警示
+    `资料中未出现「X」，已先核对前提`，并在综合 prompt 的问题段前注入「注意：资料中未出现「X」，先核对该前提是否成立。」；
+    规划回退（无 LLM）时跳过。
 - **代码感知分块（F8 P4）**：
   - **按函数 / 类切分代码文件**：新增 `src/code_chunker.py::LanguageAwareNodeParser`，`.py/.js/.ts/.java/.go/.rs/.c/.cpp`
     入库时用 tree-sitter 按语法结构切块（签名与函数体不分离、碎片并入相邻块、超长块按行二次切分、

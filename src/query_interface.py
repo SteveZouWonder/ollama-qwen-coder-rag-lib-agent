@@ -1241,6 +1241,8 @@ def _cli_ask_progress(event: dict):
         "enrich_start": "dim",
         "enrich_page_failed": "dim",
         "enrich_page_blocked": "cyan",   # F9 P1-3：丢弃疑似注入页面
+        "premise_unverified": "yellow",  # F9 P2-2：前提实体未在资料中出现
+        "self_check": "dim",             # F9 P2-1：LLM 自校验
         "enrich_done": "green",
         "kb_empty": "yellow",
         "kb_fallback_search": "cyan",

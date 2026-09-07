@@ -2,13 +2,13 @@
 
 ## 实施状态
 
-**🚧 进行中（P0 / P1 已完成）** · 分支 `feat/anti-overcompliance`（自 master `d35ac38` 切出）· 目标：在不改模型内部的前提下降低小模型"过度顺从"型幻觉，引用可程序核验，措施随 `/model` 切换生效
+**✅ 已实现（P0 / P1 / P2 全部完成，2026-09-07）** · 分支 `feat/anti-overcompliance`（自 master `d35ac38` 切出）· 目标：在不改模型内部的前提下降低小模型"过度顺从"型幻觉，引用可程序核验，措施随 `/model` 切换生效
 
 | 级别 | 主题 | 完成日期 | 提交 |
 |---|---|---|---|
 | P0 | 单一综合路径 + 提示词条款 + 结构化提示 notices + 引用程序化校验 + ReAct 事实规则 | 2026-09-07 | （本次提交） |
 | P1 | 无依据路径、追问改写、网页注入扫描、评测集与脚本、文档 | 2026-09-07 | （本次提交） |
-| P2 | LLM 自校验开关（默认关）、前提实体校验（零新增调用） | — | — |
+| P2 | LLM 自校验开关（默认关）、前提实体校验（零新增调用） | 2026-09-07 | （本次提交） |
 
 ## 文档导读
 
@@ -50,6 +50,13 @@
 | P1-4 评测集与脚本 | `tests/fixtures/overcompliance_cases.json` 30 例（false_premise 8 / misleading_context 6 / sycophancy 8 / nonexistent 8；sycophancy 带 `followup / truth / claim`，hold/cite 带 `truth`）；`tests/test_overcompliance_prompts.py` 46 个 Mock 用例；`scripts/eval_overcompliance.py --model <name> [--cases] [--out] [--category] [--limit] [--num-predict] [-v]`：不经检索，直接以 `synthesize_prompt` + `complete_text(think=False)` 评测，规则词表判定（`HEDGE_WORDS / PREMISE_WORDS / HOLD_WORDS`，数字千分位 / `HTTP/2` 归一化），输出按类别 Markdown 表；`tests/test_eval_overcompliance_script.py` 覆盖其纯函数（`_ask` 打桩） | `tests/fixtures/`、`tests/`、`scripts/` |
 | P1-5 文档 | README「模型选择指南」新增小模型过度顺从段与评测命令；`docs/tutorials/04-features.md` 新增「引用校验行与可信度提示」小节 | `README.md`、`docs/tutorials/04-features.md` |
 
+### P2（2026-09-07）
+
+| 编号 | 实现 | 位置 |
+|---|---|---|
+| P2-1 LLM 自校验 | `config.RAG_SELF_CHECK`（env，默认 false，含注释；项目无 `.env.example`，写入 README 环境变量段）；`rag_pipeline.self_check_enabled / build_self_check_prompt（附录 A 原文）/ _self_check_complete（llm_helper.complete_text，think=False，num_predict=400，timeout=60）/ parse_self_check / run_self_check / self_check_notice`；知识库命中路径在 `_finalize_answer` 之后调用，结果 `self_check` 字段、非空时追加 `self_check` warn after 位 notice（`以下陈述未在资料中找到依据：① … ② …`，最多 5 句、每句 80 字）；进度事件 `self_check`（开始 / 结果 / 调用失败 / 无法解析，CLI dim）；解析失败 / 超时返回 None 静默跳过。`RAGEngine.get_stats()["self_check"]`（`/stats` 自动显示）、`services.env_info()["self_check"]` → `format_env_info` 行「自校验（RAG_SELF_CHECK）：开启/关闭」；统计卡不增 | `src/config.py`、`src/rag_pipeline.py`、`src/rag_engine.py`、`src/web/services.py`、`src/web/app.py`、`src/query_interface.py` |
+| P2-2 前提实体校验 | `build_retrieval_plan_prompt` JSON 增 `"entities"`；`plan_retrieval` 解析（去重、≤`MAX_ENTITIES=4`、非列表兼容为空；回退分支 `[]`）；`entity_in_text`（大小写不敏感子串，否则实体全部子词命中——snake / camel 拆词兼容 `_bm25_tokenize`）、`unverified_entities`（在所有保留片段的 content+file+symbol 中都未出现）、`premise_note`；`synthesize_prompt(premise=...)` 在「## 问题」前注入一行；`generate_answer(entities=...)`：命中后 `_emit("premise_unverified", "⚠️ 问题中的「X」未在资料中出现，将先核对前提", entities=[...])`（CLI yellow）+ `premise` warn before notice + prompt 注入；多个缺失实体以「X」「Y」并列 | `src/rag_pipeline.py`、`src/query_interface.py` |
+
 ### 与需求的差异
 
 | 项 | 需求文本 | 实际 | 原因 |
@@ -65,6 +72,9 @@
 | P1-3 扫描范围 | 只用 `_detect_prompt_injection` | 同；但该检测含 `act as a` / `pretend` / `simulate` 等宽泛模式，可能误丢正常页面 | 按需求只做留痕（进度事件）不做 notice，误丢代价是少一页正文，可从「处理过程」看到 |
 | P1-4 评测方式 | "对真实 Ollama 跑用例" | 不经检索 / rerank，直接 `synthesize_prompt` + `complete_text`；sycophancy 第二轮以「用户：/助手：」文本作 history、原样提交反驳句（不经 LLM 改写） | 评测目标是"忠实性 prompt + 模型"的顺从表现，去掉检索与改写的随机性，模型间可比 |
 | P1-4 mc-05 期望 | 立项草案为 `correct` | 改为 `cite`（truth `最后`） | 该例是"论坛说法 vs 官方指南"的冲突资料，模型按第 9 条并列列出并标编号是正确行为 |
+| P2-1 `.env.example` | "config.py 常量 + .env.example 注释" | 仓库没有 `.env.example`，改写入 README「环境变量配置」段 | 项目环境变量文档一直在 README 与 `config.py` 注释中 |
+| P2-1 自校验判定边界 | — | 小模型会把"资料未提及 X"这类**关于资料缺失的陈述**判为"未被资料支持"（浏览器验证中出现） | 这是用同一模型作裁判的固有局限（REQ §4 已声明不引入 NLI 模型）；默认关闭、仅作提示、不改正文，可接受 |
+| P2-2 实体匹配范围 | "所有保留片段均不含任一实体" | 逐实体判断，列出**全部**未出现的实体（部分命中时只提示缺失的那几个） | 比"全部实体都未命中才提示"更贴近前提核对目的：问题中任一实体在资料中不存在就该先核对 |
 
 ## 验证记录
 
@@ -100,4 +110,19 @@
   且每例都把用户主张标注为「资料未提及 / 与资料不符」。第一次运行（判定口径未归一化千分位与 `HTTP/2` 前）为 25/30，
   差异全部来自 `20,000` vs `20000`、`HTTP/2` vs `http2` 这类格式问题，已在脚本中归一化。
 
-（P2 完成后在此追加：开关截图与 `complete` 次数验证。）
+### P2
+
+- 全量测试：`./venv/bin/python -m pytest -q -n 4` → **2850 passed, 36 skipped**，总覆盖率 **89%**。
+- 新增测试 18 个：`tests/test_rag_pipeline.py`（自校验 7：默认关零新增调用、开时解析成功 / 全支持 / 解析失败 / 超时、
+  非知识库路径不触发、helpers；前提实体 8：规划字段与解析、匹配 helpers、prompt 注入位置、未命中双轨、命中无提示、
+  部分缺失、回退跳过）、`tests/test_web_app.py`（`format_env_info` 自校验行；`self_check` after 位 + `premise` before 位
+  渲染）、`tests/test_web_services.py`（`env_info["self_check"]`）、`tests/test_rag_engine.py`（`get_stats()["self_check"]`）、
+  `tests/test_cli_handlers_context.py`（`premise_unverified` yellow / `self_check` dim）。
+- 浏览器验证（`RAG_SELF_CHECK=true` 启动 Gradio 7861，Playwright Chrome headless，真实 `qwen3.5:4b`，问
+  「Cloudflare Tunnel 的 quantum-ingress 模式怎么配置？」，联网关）：
+  - 气泡前 `⚠️ 资料中未出现「quantum-ingress」，已先核对前提`，正文首句「资料未提及 Cloudflare Tunnel 支持或配置
+    quantum-ingress 模式」（第 8 条 + 前提注入生效），气泡后 `⚠️ 以下陈述未在资料中找到依据：① …`；
+  - 「处理过程」含 `⚠️ 问题中的「quantum-ingress」未在资料中出现，将先核对前提` → `🔍 自校验：逐句核对回答是否被资料支持...`
+    → `🔍 自校验：1 句未在资料中找到依据`；状态行 `🔎 引用 4 处已核验`；console error 0；
+  - 「系统 → 运行环境」表含 `自校验（RAG_SELF_CHECK） | 开启`。截图 `/tmp/f9shots/04_system_selfcheck.png`、`05_selfcheck_answer.png`。
+  - 注：本次验证前一轮误连到 P0 阶段遗留的旧服务进程（`pkill` 模式含括号未匹配），已改用 `pkill -f "server_port=7861"` 清理后重测。

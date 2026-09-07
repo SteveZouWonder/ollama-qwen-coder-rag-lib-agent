@@ -458,6 +458,15 @@ class TestAskP2Display:
         assert str(calls[0].args[0]).startswith("🛡️ 已丢弃") and calls[0].kwargs.get("style") == "cyan"
         assert str(calls[1].args[0]).startswith("🔁 用户质疑，重新核对") and calls[1].kwargs.get("style") == "cyan"
 
+    def test_progress_p2_stages_registered(self):
+        """F9 P2：premise_unverified → yellow；self_check → dim。"""
+        with patch.object(qi, "console") as mock_console:
+            qi._cli_ask_progress({"stage": "premise_unverified", "message": "⚠️ 问题中的「X」未在资料中出现，将先核对前提"})
+            qi._cli_ask_progress({"stage": "self_check", "message": "🔍 自校验：1 句未在资料中找到依据", "count": 1})
+        calls = mock_console.print.call_args_list
+        assert calls[0].kwargs.get("style") == "yellow"
+        assert calls[1].kwargs.get("style") == "dim"
+
 
 # ==================== rag_pipeline 上下文接线 ====================
 

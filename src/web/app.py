@@ -602,6 +602,7 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("代码分块", info.get("code_chunking", "") or "—"),
         ("相似度阈值", info.get("similarity_cutoff", "")),
         ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
+        ("自校验（RAG_SELF_CHECK）", "开启" if info.get("self_check") else "关闭"),
         ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
         ("版本", info.get("app_version", "")),
     ]

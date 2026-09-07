@@ -2045,6 +2045,13 @@ class TestCodeAwareIngest:
         assert _describe_chunking(fm2, short=True) == "文本"
         assert _describe_chunking(fm2) == "文本"
 
+    def test_env_info_has_self_check(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "RAG_SELF_CHECK", True, raising=False)
+        assert make_service().env_info()["self_check"] is True
+        monkeypatch.setattr(config, "RAG_SELF_CHECK", False, raising=False)
+        assert make_service().env_info()["self_check"] is False
+
     def test_env_info_has_code_chunking(self):
         svc = make_service()
         info = svc.env_info()

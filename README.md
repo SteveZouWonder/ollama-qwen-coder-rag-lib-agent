@@ -516,6 +516,10 @@ python query_interface.py --data ./data
 - **结构化提示**：警示 / 校验信息与正文分离——CLI 在答案上方 / 下方以黄色 `⚠️ …`、dim `💡 …` 行显示，Web 以
   `> ⚠️ …` blockquote 置于气泡前 / 后（如「知识库无相关内容 · 回答基于网络搜索」「无资料依据 · 模型自身知识 ·
   请自行核实」「N 句含数字但未标来源」）。重要事实请结合 `/sources` 与引用校验行核对。
+- **前提实体校验（零新增调用）**：检索规划顺带提取问题中的专有名词 / 函数名 / 产品名，若资料中完全没出现，
+  先提示 `⚠️ 资料中未出现「X」，已先核对前提` 再作答（避免顺着虚构实体编）。
+- **可选自校验 `RAG_SELF_CHECK=true`**（默认关，每问多一次模型调用）：综合后用同一模型逐句核对是否被资料支持，
+  未支持的陈述以 `⚠️ 以下陈述未在资料中找到依据：① …` 列在答案后；「系统 → 运行环境」与 `/stats` 显示开关状态。
 
 **代码感知分块（F8 P4）**：代码文件（`.py/.js/.ts/.java/.go/.rs/.c/.cpp`）入库时不再按 token 数硬切，
 而是用 tree-sitter 按函数 / 类 / 方法边界切分，签名与函数体不分离；每个片段带 `符号 · L起-止` 元数据：
@@ -1038,6 +1042,8 @@ export RERANKER=llm
 export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 export RAG_HYBRID=true
 export RAG_HYBRID_MAX_CHUNKS=20000
+# 抗过度顺从：知识库命中后用同一模型逐句自校验"是否被资料支持"（每问多一次调用，默认关；结果以 ⚠️ 警示列出，不改正文）
+export RAG_SELF_CHECK=false
 # 代码感知分块：开关（缺 tree-sitter-language-pack 时自动回退）/ 单片段字符上限 / 碎片合并阈值
 export CODE_AWARE_CHUNKING=true
 export CODE_CHUNK_MAX_CHARS=1500

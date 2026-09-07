@@ -637,7 +637,8 @@ class TestPlanRetrieval:
             "complex": False, "subquestions": [], "needs_search": False, "queries": [],
         }) + "\n```")
         plan = rag_pipeline.plan_retrieval("什么是递归")
-        assert plan == {"complex": False, "subquestions": [], "needs_search": False, "queries": []}
+        # F9 P2-2：entities 缺失时兼容为空列表
+        assert plan == {"complex": False, "subquestions": [], "needs_search": False, "queries": [], "entities": []}
 
     def test_needs_search_without_queries_uses_question(self, monkeypatch):
         _patch_settings_llm(monkeypatch, lambda p: '{"needs_search": true}')
@@ -649,7 +650,8 @@ class TestPlanRetrieval:
             raise RuntimeError("down")
         _patch_settings_llm(monkeypatch, boom)
         plan = rag_pipeline.plan_retrieval("最新版本是什么")
-        assert plan == {"complex": False, "subquestions": [], "needs_search": True, "queries": ["最新版本是什么"]}
+        assert plan == {"complex": False, "subquestions": [], "needs_search": True, "queries": ["最新版本是什么"],
+                        "entities": []}
         assert rag_pipeline.plan_retrieval("写一首诗")["needs_search"] is False
 
     def test_plan_web_search_wrapper_is_single_call(self, monkeypatch):
@@ -1305,3 +1307,157 @@ class TestF9PageInjectionScan:
             assert rag_pipeline._page_scanner() is None
         finally:
             rag_pipeline._PAGE_SCANNER = None
+
+
+class TestF9SelfCheck:
+    """F9 P2-1：RAG_SELF_CHECK 可选自校验（默认关，零新增调用）。"""
+
+    _SRC = {"answer": "", "sources": [{"content": "售价 2999 元起", "file": "f.md", "score": 0.9}]}
+
+    def _run(self, monkeypatch, enabled, sc_reply, reply="售价 2999 元起[1]。重量 300g。"):
+        import config
+        monkeypatch.setattr(config, "RAG_SELF_CHECK", enabled, raising=False)
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: reply)
+        calls = []
+
+        def fake_sc(prompt):
+            calls.append(prompt)
+            if isinstance(sc_reply, Exception):
+                raise sc_reply
+            return sc_reply
+        monkeypatch.setattr(rag_pipeline, "_self_check_complete", fake_sc)
+        events = []
+        result = rag_pipeline.answer_question(FakeRAG(result=dict(self._SRC)), "q", enable_web_search=False,
+                                              progress=lambda e: events.append(e))
+        return result, calls, events
+
+    def test_disabled_by_default_no_extra_call(self, monkeypatch):
+        import config
+        assert config.RAG_SELF_CHECK is False
+        result, calls, events = self._run(monkeypatch, False, '{"unsupported":["x"]}')
+        assert calls == [] and result["self_check"] is None
+        assert not any(e["stage"] == "self_check" for e in events)
+        assert not any(n["code"] == "self_check" for n in result["notices"])
+
+    def test_enabled_unsupported_notice_after_and_answer_unchanged(self, monkeypatch):
+        result, calls, events = self._run(monkeypatch, True, '```json\n{"unsupported":["重量 300g。"]}\n```')
+        assert len(calls) == 1
+        assert "逐条核对「回答」中的事实句" in calls[0] and "售价 2999 元起" in calls[0] and "重量 300g" in calls[0]
+        assert result["answer"] == "售价 2999 元起[1]。重量 300g。"  # 正文不变
+        assert result["self_check"] == {"unsupported": ["重量 300g。"], "checked": True}
+        n = [x for x in result["notices"] if x["code"] == "self_check"]
+        assert len(n) == 1 and n[0]["level"] == "warn" and n[0]["position"] == "after"
+        assert n[0]["text"] == "以下陈述未在资料中找到依据：① 重量 300g。"
+        sc_events = [e for e in events if e["stage"] == "self_check"]
+        assert sc_events[0]["message"].startswith("🔍 自校验：逐句核对") and sc_events[-1]["count"] == 1
+
+    def test_enabled_all_supported_no_notice(self, monkeypatch):
+        result, calls, events = self._run(monkeypatch, True, '{"unsupported":[]}')
+        assert result["self_check"] == {"unsupported": [], "checked": True}
+        assert not any(n["code"] == "self_check" for n in result["notices"])
+        assert any(e["stage"] == "self_check" and e.get("count") == 0 for e in events)
+
+    def test_enabled_parse_failure_silently_skipped(self, monkeypatch):
+        result, calls, events = self._run(monkeypatch, True, "抱歉，我无法判断")
+        assert len(calls) == 1 and result["self_check"] is None
+        assert not any(n["code"] == "self_check" for n in result["notices"])
+        assert any("无法解析" in e["message"] for e in events if e["stage"] == "self_check")
+
+    def test_enabled_timeout_silently_skipped(self, monkeypatch):
+        result, calls, _ = self._run(monkeypatch, True, TimeoutError("timeout"))
+        assert len(calls) == 1 and result["self_check"] is None
+        assert result["answer"].startswith("售价 2999")
+
+    def test_not_run_on_no_kb_paths(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "RAG_SELF_CHECK", True, raising=False)
+        calls = []
+        monkeypatch.setattr(rag_pipeline, "_self_check_complete", lambda p: calls.append(p) or '{"unsupported":[]}')
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "答")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "")
+        rag_pipeline.answer_question(FakeRAG(result={"answer": "", "sources": []}), "q", enable_web_search=False)
+        rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=False)
+        assert calls == []
+
+    def test_parse_and_notice_helpers(self):
+        assert rag_pipeline.parse_self_check('{"unsupported":["a","a"," b "]}') == ["a", "b"]
+        assert rag_pipeline.parse_self_check('前言 {"unsupported":[]} 后记') == []
+        assert rag_pipeline.parse_self_check('{"unsupported":"x"}') is None
+        assert rag_pipeline.parse_self_check("nope") is None
+        assert rag_pipeline.parse_self_check('{"a":1}') is None
+        assert rag_pipeline.self_check_notice(None) is None
+        assert rag_pipeline.self_check_notice({"unsupported": []}) is None
+        n = rag_pipeline.self_check_notice({"unsupported": [f"句{i}" for i in range(7)]})
+        assert n["text"].startswith("以下陈述未在资料中找到依据：① 句0 ② 句1") and "…另 2 句" in n["text"]
+        assert rag_pipeline.run_self_check("", "kb") is None and rag_pipeline.run_self_check("a", "") is None
+        assert rag_pipeline.self_check_enabled() in (True, False)
+
+
+class TestF9PremiseEntities:
+    """F9 P2-2：检索规划 entities 字段 + 前提实体未命中双轨（进度事件 + notice + prompt 注入），零新增调用。"""
+
+    def test_plan_prompt_has_entities_field(self):
+        assert '"entities"' in rag_pipeline.build_retrieval_plan_prompt("q") and "最多4个" in rag_pipeline.build_retrieval_plan_prompt("q")
+
+    def test_plan_parses_entities_dedup_and_cap(self, monkeypatch):
+        _patch_settings_llm(monkeypatch, lambda p: '{"complex": false, "subquestions": [], "needs_search": false, '
+                                                  '"queries": [], "entities": ["A", "a", "B", "C", "D", "E", ""]}')
+        plan = rag_pipeline.plan_retrieval("q")
+        assert plan["entities"] == ["A", "B", "C", "D"]
+        _patch_settings_llm(monkeypatch, lambda p: '{"complex": false, "needs_search": false, "entities": "not-a-list"}')
+        assert rag_pipeline.plan_retrieval("q")["entities"] == []
+
+    def test_entity_matching_helpers(self):
+        assert rag_pipeline.entity_in_text("DJI Osmo 360", "dji osmo 360 售价") is True
+        assert rag_pipeline.entity_in_text("_ensure_bm25", "def _ensure_bm25(self)") is True
+        # 兼容 _bm25_tokenize 拆词：ensure + bm25 分别出现即命中
+        assert rag_pipeline.entity_in_text("_ensure_bm25", "先 ensure 索引，再跑 BM25 检索") is True
+        assert rag_pipeline.entity_in_text("getUserName", "get user name") is True
+        assert rag_pipeline.entity_in_text("quantum-ingress", "ingress 规则列表") is False
+        assert rag_pipeline.entity_in_text("", "x") is False and rag_pipeline.entity_in_text("x", "") is False
+        srcs = [{"content": "ingress 规则", "file": "cf.md"}, {"content": "http2", "file": "x", "symbol": "RAGEngine.query"}]
+        assert rag_pipeline.unverified_entities(["quantum-ingress", "ingress", "RAGEngine.query"], srcs) == ["quantum-ingress"]
+        assert rag_pipeline.unverified_entities([], srcs) == [] and rag_pipeline.unverified_entities(["x"], []) == []
+        assert rag_pipeline.premise_note([]) == ""
+        assert rag_pipeline.premise_note(["A", "B"]) == "注意：资料中未出现「A」「B」，先核对该前提是否成立。"
+
+    def test_synthesize_prompt_premise_line_before_question(self):
+        p = rag_pipeline.synthesize_prompt("q", "kb", "", premise="注意：资料中未出现「X」，先核对该前提是否成立。")
+        assert p.index("注意：资料中未出现「X」") < p.index("## 问题\nq")
+        assert "注意：资料中未出现" not in rag_pipeline.synthesize_prompt("q", "kb", "")
+
+    def _run(self, monkeypatch, entities, content="ingress 是路由规则列表"):
+        monkeypatch.setattr(rag_pipeline, "plan_retrieval",
+                            lambda q, progress=None: {"complex": False, "subquestions": [], "needs_search": False,
+                                                      "queries": [], "entities": entities})
+        prompts, events = [], []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "资料未提及[1]")
+        rag = FakeRAG(result={"answer": "", "sources": [{"content": content, "file": "cf.md", "score": 0.9}]})
+        result = rag_pipeline.answer_question(rag, "quantum-ingress 模式怎么配置", enable_web_search=False,
+                                              progress=lambda e: events.append(e))
+        return result, prompts, events
+
+    def test_unverified_entity_emits_event_notice_and_prompt_line(self, monkeypatch):
+        result, prompts, events = self._run(monkeypatch, ["quantum-ingress"])
+        ev = [e for e in events if e["stage"] == "premise_unverified"]
+        assert len(ev) == 1 and ev[0]["entities"] == ["quantum-ingress"]
+        assert ev[0]["message"] == "⚠️ 问题中的「quantum-ingress」未在资料中出现，将先核对前提"
+        n = [x for x in result["notices"] if x["code"] == "premise"]
+        assert len(n) == 1 and n[0]["level"] == "warn" and n[0]["position"] == "before"
+        assert n[0]["text"] == "资料中未出现「quantum-ingress」，已先核对前提"
+        assert "注意：资料中未出现「quantum-ingress」，先核对该前提是否成立。" in prompts[0]
+        assert len(prompts) == 1  # 零新增调用
+
+    def test_verified_entity_no_event_no_notice(self, monkeypatch):
+        result, prompts, events = self._run(monkeypatch, ["ingress", "quantum-ingress"], content="quantum-ingress 与 ingress")
+        assert not any(e["stage"] == "premise_unverified" for e in events)
+        assert not any(x["code"] == "premise" for x in result["notices"])
+        assert "注意：资料中未出现" not in prompts[0]
+
+    def test_partial_miss_lists_only_missing(self, monkeypatch):
+        result, prompts, _ = self._run(monkeypatch, ["ingress", "Foo Bar"])
+        assert [x["text"] for x in result["notices"] if x["code"] == "premise"] == ["资料中未出现「Foo Bar」，已先核对前提"]
+
+    def test_plan_fallback_skips_check(self, monkeypatch):
+        result, prompts, events = self._run(monkeypatch, [])
+        assert not any(e["stage"] == "premise_unverified" for e in events) and result["notices"] == []

@@ -1062,6 +1062,9 @@ class TestNewFormatters:
         assert "读取配置失败" in app.format_env_info({"error": "x"})
         out = app.format_env_info({"ollama_url": "http://h", "think": True, "cwd": "/w", "app_version": "1.0"})
         assert "http://h" in out and "| 思考模式 | 开 |" in out and "/w" in out and "1.0" in out
+        # F9 P2-1：自校验开关一行
+        assert "| 自校验（RAG_SELF_CHECK） | 关闭 |" in out
+        assert "| 自校验（RAG_SELF_CHECK） | 开启 |" in app.format_env_info({"self_check": True})
 
     def test_format_stats_cards(self):
         assert "获取统计失败" in app.format_stats_cards({"error": "x"})
@@ -1788,3 +1791,27 @@ class TestF9ChallengeLabel:
         h = build_handlers(svc)
         out = list(h["on_chat_stream"]("它多少钱", "RAG 检索"))
         assert out[-1][0][-1]["content"].startswith("> 🔗 已理解为：DJI 多少钱")
+
+
+class TestF9P2Rendering:
+    def test_self_check_notice_rendered_after_body_and_premise_before(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer(
+            "售价 2999 元起[1]。重量 300g。",
+            sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "cited": 1}],
+            citation_check={"total_refs": 1, "valid": 1, "invalid": [], "invalid_count": 0, "unsupported_numeric": 1},
+            notices=[
+                {"level": "warn", "code": "premise", "text": "资料中未出现「Pro Max」，已先核对前提", "position": "before"},
+                {"level": "warn", "code": "self_check", "text": "以下陈述未在资料中找到依据：① 重量 300g。", "position": "after"},
+                {"level": "info", "code": "citation", "text": "1 句含数字但未标来源", "position": "after"},
+            ],
+        )])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        content = out[-1][0][-1]["content"]
+        assert content == (
+            "> ⚠️ 资料中未出现「Pro Max」，已先核对前提\n\n"
+            "售价 2999 元起[1]。重量 300g。"
+            "\n\n> ⚠️ 以下陈述未在资料中找到依据：① 重量 300g。\n> 💡 1 句含数字但未标来源"
+        )
+        assert out[-1][7] == {"__type__": "update"}  # 无无效引用 → 不改折叠状态
