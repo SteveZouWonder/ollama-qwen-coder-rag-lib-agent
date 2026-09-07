@@ -85,7 +85,9 @@ def build_rerank_prompt(question: str, sources: list) -> str:
     for i, src in enumerate(sources, 1):
         content = " ".join(str(src.get("content") or "").split())[:CHUNK_CHARS]
         fname = src.get("file") or "未知文件"
-        chunks.append(f"[{i}]（{fname}）{content}")
+        # 代码块附符号名，帮助模型判断"问 X 函数"与片段的对应关系
+        label = f"{fname} · {src['symbol']}" if src.get("symbol") else fname
+        chunks.append(f"[{i}]（{label}）{content}")
     return (
         "判断每个片段是否包含回答问题所需的信息。"
         '只输出 JSON：{"keep":[序号...],"notes":{"序号":"一句理由"}}；'
@@ -244,9 +246,14 @@ def rerank(question: str, sources: list, progress: ProgressCallback = None,
         kept.append(item)
     dropped = len(sources) - len(kept)
     if kept:
+        symbols = [k.get("symbol") for k in kept if k.get("symbol")]
+        sym_text = ""
+        if symbols:
+            shown = ", ".join(f"`{x}`" for x in symbols[:3])
+            sym_text = f"（{shown}" + (f" 等 {len(symbols)} 个符号）" if len(symbols) > 3 else "）")
         _emit(progress, "rerank_done", f"🧹 保留 {len(kept)}/{len(sources)} 个相关片段"
-              + (f"，剔除 {dropped} 个" if dropped else ""),
-              kept=len(kept), total=len(sources), method="llm", notes=parsed["notes"])
+              + (f"，剔除 {dropped} 个" if dropped else "") + sym_text,
+              kept=len(kept), total=len(sources), method="llm", notes=parsed["notes"], symbols=symbols)
     else:
         _emit(progress, "rerank_done", "🧹 模型判定所有片段均与问题无关",
               kept=0, total=len(sources), method="llm", notes=parsed["notes"])

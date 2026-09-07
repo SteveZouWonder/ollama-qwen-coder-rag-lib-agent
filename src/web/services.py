@@ -139,6 +139,36 @@ class StreamEvent:
 
 # ==================== 服务层 ====================
 
+
+def _describe_chunking(fm, short: bool = False) -> str:
+    """文件分块描述（与 CLI ``/file-list`` 同源）；``short`` 用于表格单列：``代码`` / ``文本``。"""
+    try:
+        from code_chunker import describe_file_chunking, strategy_display
+    except ImportError:  # pragma: no cover
+        from src.code_chunker import describe_file_chunking, strategy_display  # type: ignore
+    strategy = str(getattr(fm, "chunk_strategy", "") or "text")
+    if short:
+        label = strategy_display(strategy)
+        return "代码" if label.startswith("代码") else "文本"
+    return describe_file_chunking(
+        getattr(fm, "file_path", ""), strategy, int(getattr(fm, "symbol_count", 0) or 0)
+    )
+
+
+def _code_chunking_env_text() -> str:
+    """系统页「代码分块」一行：``启用 · max 1500 字 · tree-sitter-language-pack 1.16.2`` 或未启用原因。"""
+    try:
+        from code_chunker import availability_message, dependency_version, is_enabled
+        import config as _cfg
+    except ImportError:  # pragma: no cover
+        return ""
+    if is_enabled():
+        return (
+            f"启用 · max {getattr(_cfg, 'CODE_CHUNK_MAX_CHARS', '')} 字 · "
+            f"tree-sitter-language-pack {dependency_version()}"
+        )
+    return f"未启用：{availability_message()}"
+
 class WebService:
     """Web 界面服务层。
 
@@ -810,8 +840,39 @@ class WebService:
 
     # ---------- 知识库管理 ----------
 
-    def add_documents(self, file_paths: List[str]) -> str:
-        """把上传的文件加入知识库，返回人类可读的结果摘要。"""
+    def _ingest_summary(self, file_count: int, doc_count: int, paths: Optional[List[str]] = None) -> str:
+        """入库成功文案（与 CLI ``/add`` 同源）：文件数 · 片段数（· 代码文件按函数/类切分，符号数）。
+
+        代码分块未启用且本次含代码文件时，追加一行一次性提示（进程内仅一次）。
+        """
+        try:
+            from code_chunker import availability_hint_once, format_ingest_summary, language_for
+        except ImportError:  # pragma: no cover
+            from src.code_chunker import availability_hint_once, format_ingest_summary, language_for  # type: ignore
+        stats = getattr(self.rag_engine, "last_ingest_stats", None) or {}
+        if stats:
+            text = format_ingest_summary(stats, file_count=file_count)
+        else:
+            text = f"已入库 {file_count} 个文件，共 {doc_count} 个片段"
+        candidates = list(stats.keys()) or list(paths or [])
+        if any(language_for(None, str(p)) for p in candidates):
+            hint = availability_hint_once()
+            if hint:
+                text += f"\n💡 {hint}（详见「系统」页）"
+        return text
+
+    def _graph_note(self) -> str:
+        return (
+            "，已同步更新知识图谱"
+            if getattr(self.rag_engine, "last_graph_derived", False)
+            else "，知识图谱未自动更新（可在「知识图谱」页手动构建）"
+        )
+
+    def add_documents(self, file_paths: List[str], progress_callback=None) -> str:
+        """把上传的文件加入知识库，返回人类可读的结果摘要。
+
+        ``progress_callback`` 透传给 ``RAGEngine.add_documents``（``stage=chunk|embed`` 事件）。
+        """
         if not file_paths:
             return "[提示] 未选择任何文件"
 
@@ -835,17 +896,23 @@ class WebService:
 
         if all_docs:
             try:
-                self.rag_engine.add_documents(all_docs, valid_paths)
+                if progress_callback is not None:
+                    self.rag_engine.add_documents(all_docs, valid_paths, progress_callback=progress_callback)
+                else:
+                    self.rag_engine.add_documents(all_docs, valid_paths)
             except BaseException as exc:  # noqa: BLE001
                 return f"[错误] 入库失败: {exc}"
 
-        lines = [f"[成功] 已入库 {len(added_files)} 个文件，共 {loaded} 个片段"]
+        if all_docs:
+            lines = [f"[成功] {self._ingest_summary(len(added_files), loaded, valid_paths)}"]
+        else:
+            lines = [f"[成功] 已入库 {len(added_files)} 个文件，共 {loaded} 个片段"]
         if errors:
             lines.append("[部分失败]")
             lines.extend(f"  - {e}" for e in errors)
         return "\n".join(lines)
 
-    def add_path(self, path: str, file_types: Optional[str] = None) -> str:
+    def add_path(self, path: str, file_types: Optional[str] = None, progress_callback=None) -> str:
         """把服务器上的文件/目录**追加**入库（等价 CLI ``/add <path>``，可选类型过滤）。
 
         与 ``rebuild_index``（替换整个索引）不同，本方法只追加。``file_types`` 为
@@ -862,15 +929,38 @@ class WebService:
         if not docs:
             return f"[提示] 未找到可加载的文档: {path}"
         try:
-            self.rag_engine.add_documents(docs, [path])
+            if progress_callback is not None:
+                self.rag_engine.add_documents(docs, [path], progress_callback=progress_callback)
+            else:
+                self.rag_engine.add_documents(docs, [path])
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 入库失败: {exc}"
-        graph_note = (
-            "，已同步更新知识图谱"
-            if getattr(self.rag_engine, "last_graph_derived", False)
-            else "，知识图谱未自动更新（可在「知识图谱」页手动构建）"
-        )
-        return f"[成功] 已追加入库 {len(docs)} 个片段{graph_note}"
+        stats = getattr(self.rag_engine, "last_ingest_stats", None) or {}
+        file_count = len(stats) if stats else 1
+        return f"[成功] {self._ingest_summary(file_count, len(docs), [path])}{self._graph_note()}"
+
+    def ingest_stream(self, file_paths: Optional[List[str]] = None, path: Optional[str] = None,
+                      file_types: Optional[str] = None) -> Iterator[StreamEvent]:
+        """流式入库：``progress`` 事件（``stage=chunk|embed``，带 current/total）+ 最终 ``answer``。
+
+        ``file_paths`` 非空走上传路径（``add_documents``），否则走 ``add_path``。结果文案在
+        ``answer.message``（含 ``[成功]/[提示]/[错误]`` 前缀，由 ``app._fmt_result`` 换图标）。
+        """
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def progress_cb(evt: Dict[str, Any]):
+                q.put(StreamEvent("progress", evt.get("message", ""), evt))
+
+            if file_paths:
+                return self.add_documents(list(file_paths), progress_callback=progress_cb)
+            return self.add_path(path or "", file_types, progress_callback=progress_cb)
+
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                yield StreamEvent("error", f"入库失败: {error_holder['error']}")
+                return
+            yield StreamEvent("answer", str(result_holder.get("result") or ""), {})
+
+        yield from self._bridge(run, on_finish)
 
     def get_stats(self) -> Dict[str, Any]:
         """返回知识库统计信息（含 ``total_documents`` 键）。"""
@@ -1335,6 +1425,7 @@ class WebService:
                 "top_k": getattr(config, "TOP_K", ""),
                 "chunk_size": getattr(config, "CHUNK_SIZE", ""),
                 "chunk_overlap": getattr(config, "CHUNK_OVERLAP", ""),
+                "code_chunking": _code_chunking_env_text(),
                 "similarity_cutoff": getattr(config, "SIMILARITY_CUTOFF", ""),
                 "kb_relevance_threshold": getattr(config, "KB_RELEVANCE_THRESHOLD", ""),
                 "data_dir": str(getattr(config, "DATA_DIR", "")),
@@ -1376,6 +1467,10 @@ class WebService:
             "chunk_count": int(getattr(fm, "chunk_count", 0) or 0),
             "tags": list(getattr(fm, "tags", None) or []),
             "file_hash": getattr(fm, "file_hash", None),
+            "chunk_strategy": str(getattr(fm, "chunk_strategy", "") or "text"),
+            "symbol_count": int(getattr(fm, "symbol_count", 0) or 0),
+            "chunking": _describe_chunking(fm),
+            "chunking_short": _describe_chunking(fm, short=True),
         }
 
     def file_list(self) -> List[Dict[str, Any]]:

@@ -504,6 +504,20 @@ python query_interface.py --data ./data
 - **失败回退**：知识库与网络都没有结果时，答案末尾提示 `建议：/agent <原问题>`，Web 出现
   「用单 Agent 重试」按钮一键切模式重发。
 
+**代码感知分块（F8 P4）**：代码文件（`.py/.js/.ts/.java/.go/.rs/.c/.cpp`）入库时不再按 token 数硬切，
+而是用 tree-sitter 按函数 / 类 / 方法边界切分，签名与函数体不分离；每个片段带 `符号 · L起-止` 元数据：
+- `/add` 后显示 `已入库 N 个文件 · M 个片段（其中 a 个代码文件按函数/类切分，共 s 个符号）`，追加入库有
+  「切分 → 嵌入」进度条（Web 同样实时显示）；
+- `/sources` 与 Web 来源面板对代码片段显示 `RAGEngine._ensure_bm25 · L534-581`，Web 以对应语言的代码块渲染；
+  综合回答可在 `[i]` 之外注明函数名与行号；
+- `/file-list`、`/file-info`、Web 文件表与详情显示每个文件的分块策略（`代码(python) · 27 个符号` / `文本`），
+  旧库中的代码文件提示「重新入库可启用代码分块」；
+- 依赖 `tree-sitter-language-pack` 为**可选**（`pip install "tree-sitter-language-pack>=1.16,<2"`，约 5 MB
+  预编译 wheel，桌面打包版已内置）；未安装、`CODE_AWARE_CHUNKING=false` 或语法错误过多时自动回退通用切分，
+  只在首次入库代码文件时给一行提示，`/stats` 与 Web「系统」页显示当前状态。
+- 注意：代码文件的片段数约为原来的 3-4 倍，入库时的 embedding 时间同比增加；已入库的代码文件需重新 `/add`
+  才会按新方式切分。
+
 **OCR 增强功能**（需要安装 OCR 依赖）：
 - 扫描版 PDF 自动识别
 - 图片文件直接识别：PNG、JPG、JPEG、GIF、BMP、TIFF
@@ -1007,6 +1021,10 @@ export RERANKER=llm
 export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 export RAG_HYBRID=true
 export RAG_HYBRID_MAX_CHUNKS=20000
+# 代码感知分块：开关（缺 tree-sitter-language-pack 时自动回退）/ 单片段字符上限 / 碎片合并阈值
+export CODE_AWARE_CHUNKING=true
+export CODE_CHUNK_MAX_CHARS=1500
+export CODE_CHUNK_MIN_CHARS=120
 
 python query_interface.py --data ./data
 ```

@@ -63,5 +63,7 @@ class TestFormat:
 
     def test_sources_md(self):
         assert format_sources_md([]) == ""
+        code = format_sources_md([{"kind": "kb", "file": "a.py", "score": 0.5, "symbol": "A.run", "start_line": 3, "end_line": 9}])
+        assert "📄 a.py · `A.run` · L3-9（相似度 0.500）" in code
         md = format_sources_md([{"kind": "web", "title": "T"}, {"kind": "kb"}])
         assert "🌐 T" in md and "📄 未知" in md

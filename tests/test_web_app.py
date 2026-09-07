@@ -1526,3 +1526,91 @@ class TestAutoModeNonStream:
 
         svc.chat_auto_stream.return_value = iter([_route_evt("rag")])
         assert h["on_chat"]("q", "自动") == ("", "[错误] 未获得回答")
+
+
+# ==================== F8 P4：代码感知分块的展示 ====================
+
+class TestCodeAwareRendering:
+    def test_format_sources_code_block_has_symbol_lines_and_fence(self):
+        from web.app import format_sources as fs
+        out = fs([
+            {"file": "rag_engine.py", "score": 0.71, "content": "def _ensure_bm25(self):\n    pass", "ref": "3",
+             "symbol": "RAGEngine._ensure_bm25", "start_line": 534, "end_line": 581, "language": "python",
+             "chunk_strategy": "code(python)", "part": "1/2"},
+            {"file": "a.md", "score": 0.5, "content": "文本片段", "ref": "4"},
+        ])
+        assert "**[3] rag_engine.py** · `RAGEngine._ensure_bm25` · L534-581（1/2） （相似度 0.710）" in out
+        assert "```python\ndef _ensure_bm25(self):\n    pass\n```" in out
+        assert "> 文本片段" in out and "```\n> 文本片段" not in out
+
+    def test_format_sources_code_block_escapes_inner_fence(self):
+        from web.app import format_sources as fs
+        out = fs([{"file": "a.md", "content": "```\nx\n```", "symbol": "f", "language": ""}])
+        assert out.count("```") == 2 and "ˋˋˋ" in out
+
+    def test_format_file_info_chunking_rows(self):
+        out = app.format_file_info({"path": "/a.py", "chunk_count": 9, "chunking": "代码(python) · 7 个符号", "symbol_count": 7})
+        assert "| 分块策略 | 代码(python) · 7 个符号 |" in out and "| 符号数 | 7 |" in out
+        out2 = app.format_file_info({"path": "/a.md", "chunk_count": 2})
+        assert "| 分块策略 | 文本 |" in out2 and "符号数" not in out2
+
+    def test_format_env_info_code_chunking_rows(self):
+        out = app.format_env_info({"chunk_size": 1024, "chunk_overlap": 200, "code_chunking": "启用 · max 1500 字"})
+        assert "| 文本分块 / 重叠 | 1024 / 200 |" in out and "| 代码分块 | 启用 · max 1500 字 |" in out
+        assert "| 代码分块 | — |" in app.format_env_info({"chunk_size": 1})
+
+    def test_format_stats_cards_code_label_and_stats_md(self):
+        stats = {"total_documents": 5, "embed_model": "e", "chunk_size": 1024, "chunk_overlap": 200, "top_k": 3,
+                 "code_chunking": "enabled (x 1.16)", "code_chunk_max_chars": 1500}
+        out = app.format_stats_cards(stats)
+        assert "1024 / 200 / 代码 1500" in out and out.count('class="cb-card"') == 4
+        off = app.format_stats_cards({**stats, "code_chunking": "disabled: x"})
+        assert "代码 1500" not in off
+        assert "- 代码分块: enabled (x 1.16)" in app.format_stats(stats)
+
+    def test_file_table_chunking_column(self):
+        svc = make_service_mock()
+        svc.file_list.return_value = [{"path": "/x/a.py", "size": "1 KB", "type": "permanent", "upload_time": "t",
+                                       "chunk_count": 12, "access_count": 0, "chunking_short": "代码"},
+                                      {"path": "/x/b.md", "chunk_count": 3}]
+        h = build_handlers(svc)
+        rows = h["on_file_table"]()
+        assert rows[0][4] == "12 · 代码" and rows[1][4] == "3 · 文本"
+        assert h["headers"]["files"][4] == "片段 · 分块"
+
+    def test_upload_and_add_path_stream_handlers(self):
+        from web.services import StreamEvent
+        svc = make_service_mock()
+        svc.get_stats.return_value = {"total_documents": 1}
+        svc.file_list.return_value = []
+        svc.ingest_stream.return_value = iter([
+            StreamEvent("progress", "切分 a.py (1/1)", {"stage": "chunk", "current": 1, "total": 1}),
+            StreamEvent("heartbeat", "", {"elapsed": 1.0}),
+            StreamEvent("progress", "生成向量 3/3", {"stage": "embed", "current": 3, "total": 3}),
+            StreamEvent("answer", "[成功] 已入库 1 个文件 · 3 个片段（其中 1 个代码文件按函数/类切分，共 2 个符号）", {}),
+        ])
+        h = build_handlers(svc)
+        outs = list(h["on_upload_stream"](["/a.py"]))
+        assert outs[0][0].startswith("⏳") and "cb-cards" in outs[0][1]
+        assert any("入库进度" in o[0] and "切分 a.py" in o[0] for o in outs)
+        assert outs[-1][0].startswith("✅ 已入库 1 个文件 · 3 个片段") and "用时" in outs[-1][0]
+        svc.ingest_stream.assert_called_with(file_paths=["/a.py"])
+
+        svc.ingest_stream.return_value = iter([StreamEvent("error", "入库失败: boom", {})])
+        outs = list(h["on_add_path_stream"]("/docs", ".md"))
+        assert outs[-1][0] == "❌ 入库失败: boom"
+        svc.ingest_stream.assert_called_with(path="/docs", file_types=".md")
+
+        assert list(h["on_upload_stream"]([]))[0][0].startswith("💡")
+        assert list(h["on_add_path_stream"](" "))[0][0].startswith("💡")
+
+    def test_stream_handler_cancelled_and_no_result(self):
+        from web.services import StreamEvent
+        svc = make_service_mock()
+        svc.get_stats.return_value = {"total_documents": 1}
+        svc.file_list.return_value = []
+        h = build_handlers(svc)
+        svc.ingest_stream.return_value = iter([StreamEvent("cancelled", "", {})])
+        assert list(h["on_add_path_stream"]("/d"))[-1][0].startswith("⏹️")
+        svc.ingest_stream.return_value = iter([])
+        assert "未获得结果" in list(h["on_add_path_stream"]("/d"))[-1][0]

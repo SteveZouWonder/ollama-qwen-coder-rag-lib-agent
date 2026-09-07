@@ -44,7 +44,12 @@ def format_sources_md(sources: List[Dict[str, Any]]) -> str:
         else:
             score = s.get("score")
             score_str = f"（相似度 {score:.3f}）" if isinstance(score, (int, float)) else ""
-            lines.append(f"{i}. 📄 {s.get('file', '未知')}{score_str}")
+            loc = ""
+            if s.get("symbol"):
+                loc += f" · `{s['symbol']}`"
+            if s.get("start_line") is not None:
+                loc += f" · L{s['start_line']}-{s.get('end_line') or s['start_line']}"
+            lines.append(f"{i}. 📄 {s.get('file', '未知')}{loc}{score_str}")
     return "\n".join(lines)
 
 

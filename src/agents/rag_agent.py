@@ -125,6 +125,10 @@ class RAGAgent(BaseAgent):
                 item = {"kind": "kb", "file": src.get("file", "未知")}
                 if isinstance(src.get("score"), (int, float)):
                     item["score"] = round(float(src["score"]), 3)
+                # 代码块位置（F8 P4）：符号与行号
+                for key in ("symbol", "start_line", "end_line", "language"):
+                    if src.get(key) is not None:
+                        item[key] = src[key]
                 if src.get("text"):
                     item["text"] = str(src["text"])[:300]
                 sources.append(item)

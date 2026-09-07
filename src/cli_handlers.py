@@ -246,14 +246,69 @@ def handle_sources(ctx, parsed):
     return True
 
 
+def _make_ingest_progress(console):
+    """构造入库进度回调（rich Progress 两行：切分 / 嵌入）；rich 不可用时返回 (None, None)。
+
+    返回 ``(progress, callback)``，``progress`` 需在 ``with`` 中使用。
+    """
+    try:
+        from rich.console import Console
+        from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+    except ImportError:  # pragma: no cover - rich 为项目必装依赖
+        return None, None
+    if not isinstance(console, Console):
+        # 非 rich Console（如测试桩）不渲染进度条
+        return None, None
+    progress = Progress(
+        TextColumn("{task.description}"),
+        BarColumn(bar_width=24),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    tasks: dict = {}
+
+    def callback(event: dict) -> None:
+        stage = event.get("stage") or event.get("phase")
+        if stage not in ("chunk", "embed"):
+            return
+        total = int(event.get("total") or 0)
+        current = int(event.get("current") or 0)
+        label = "🧩 切分" if stage == "chunk" else "🧠 嵌入"
+        if stage not in tasks:
+            tasks[stage] = progress.add_task(label, total=max(total, 1))
+        progress.update(tasks[stage], total=max(total, 1), completed=min(current, total) if total else current,
+                        description=f"{label} {event.get('message', '')}"[:60])
+
+    return progress, callback
+
+
 def handle_add(ctx, parsed):
     console = ctx.console
     path = parsed.arg
     try:
         docs = ctx.load_documents(path)
         if docs:
-            ctx.rag_engine.add_documents(docs, [path])
-            console.print("✅ 文档已添加到知识库", style="green")
+            progress, callback = _make_ingest_progress(console)
+            if progress is not None:
+                with progress:
+                    ctx.rag_engine.add_documents(docs, [path], progress_callback=callback)
+            else:
+                ctx.rag_engine.add_documents(docs, [path])
+            # 结果摘要：文件数 · 片段数（· 代码文件按函数/类切分，符号数）
+            try:
+                from code_chunker import availability_hint_once, format_ingest_summary, language_for
+                stats = getattr(ctx.rag_engine, "last_ingest_stats", None) or {}
+                summary = format_ingest_summary(stats) if stats else "文档已添加到知识库"
+                # 本次含代码文件但代码分块未启用 → 追加一次性提示
+                has_code = any(language_for(None, str(p)) for p in stats)
+                hint = availability_hint_once() if has_code else ""
+            except Exception:  # noqa: BLE001 - 摘要失败不影响入库结果
+                summary, hint = "文档已添加到知识库", ""
+            console.print(f"✅ {summary}", style="green")
+            if hint:
+                console.print(f"💡 {hint}", style="dim")
             # 知识图谱作为文档入库的派生索引，已在 add_documents 中同步构建。
             if getattr(ctx.rag_engine, "last_graph_derived", False):
                 console.print("🕸️  已同步更新知识图谱", style="dim")
@@ -586,6 +641,7 @@ def handle_file_list(ctx, parsed):
     console = ctx.console
     try:
         from file_metadata import get_global_metadata_manager
+        from code_chunker import describe_file_chunking
         manager = get_global_metadata_manager()
         files = manager.list_files()
         if not files:
@@ -597,6 +653,11 @@ def handle_file_list(ctx, parsed):
                 console.print(f"  📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
                 console.print(f"  🏷️  类型: {file_meta.persistence_type}", style="dim")
                 console.print(f"  📅 上传: {file_meta.upload_time[:19]}", style="dim")
+                console.print(
+                    f"  🧩 片段: {file_meta.chunk_count} · 分块: "
+                    f"{describe_file_chunking(file_meta.file_path, getattr(file_meta, 'chunk_strategy', None), getattr(file_meta, 'symbol_count', 0))}",
+                    style="dim",
+                )
                 if file_meta.tags:
                     console.print(f"  🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
         ctx.record_command("file_list")
@@ -614,6 +675,7 @@ def handle_file_info(ctx, parsed):
         return False
     try:
         from file_metadata import get_global_metadata_manager
+        from code_chunker import describe_file_chunking
         manager = get_global_metadata_manager()
         file_meta = manager.get_file_metadata(file_path)
         if not file_meta:
@@ -626,6 +688,10 @@ def handle_file_info(ctx, parsed):
         console.print(f"🔢 访问次数: {file_meta.access_count}", style="dim")
         console.print(f"📄 文档数: {file_meta.document_count}", style="dim")
         console.print(f"🧩 Chunk数: {file_meta.chunk_count}", style="dim")
+        console.print(
+            f"🧬 分块策略: {describe_file_chunking(file_meta.file_path, getattr(file_meta, 'chunk_strategy', None), getattr(file_meta, 'symbol_count', 0))}",
+            style="dim",
+        )
         if file_meta.last_access:
             console.print(f"🕐 最后访问: {file_meta.last_access[:19]}", style="dim")
         if file_meta.tags:

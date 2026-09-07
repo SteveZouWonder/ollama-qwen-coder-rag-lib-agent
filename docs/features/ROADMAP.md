@@ -25,8 +25,8 @@
 
 | 优先级 | 内容 | 文档 |
 |---|---|---|
-| 高 | **F8 三种对话模式优化**：多 Agent 真实化（P0）→ 单 Agent 鲁棒性与上下文预算（P1）→ RAG rerank / 多跳 / 编号引用 / hybrid 召回（P2）→ 入口自动路由（P3） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
-| 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑、代码感知分块 | [features/README.md](README.md)「残留小项」 |
+| 高 | **F8 三种对话模式优化**：多 Agent 真实化（P0）→ 单 Agent 鲁棒性与上下文预算（P1）→ RAG rerank / 多跳 / 编号引用 / hybrid 召回（P2）→ 入口自动路由（P3）→ 代码感知分块（P4） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑（代码感知分块已并入 F8 P4） | [features/README.md](README.md)「残留小项」 |
 
 ## 已明确不做
 

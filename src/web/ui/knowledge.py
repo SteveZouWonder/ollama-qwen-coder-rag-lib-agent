@@ -46,13 +46,22 @@ def build_knowledge_page(service, handlers: Dict[str, Callable]) -> Dict[str, An
                 clear_confirm = Confirm("清空索引", "清空全部向量索引？此操作不可撤销。", min_width=110)
             danger_result = result_md()
 
-            def _upload(paths):
-                msg, _ = handlers["on_upload"](paths)
-                return msg, handlers["on_stats_cards"]()
+            # 流式入库：结果区实时显示「切分 x/y → 嵌入 m/n · 已用时」，完成后刷新统计卡片；
+            # 进行中禁用「追加入库」按钮避免重复提交。
+            upload.upload(handlers["on_upload_stream"], upload, [upload_result, stats_cards])
 
-            upload.upload(_upload, upload, [upload_result, stats_cards])
-            add_btn.click(handlers["on_add_path"], [add_path, add_types], [add_result, stats_cards])
-            add_path.submit(handlers["on_add_path"], [add_path, add_types], [add_result, stats_cards])
+            def _lock():
+                return gr.update(interactive=False)
+
+            def _unlock():
+                return gr.update(interactive=True)
+
+            add_btn.click(_lock, None, add_btn).then(
+                handlers["on_add_path_stream"], [add_path, add_types], [add_result, stats_cards],
+            ).then(_unlock, None, add_btn)
+            add_path.submit(_lock, None, add_btn).then(
+                handlers["on_add_path_stream"], [add_path, add_types], [add_result, stats_cards],
+            ).then(_unlock, None, add_btn)
 
             def _rebuild(path):
                 msg, _ = handlers["on_rebuild_index"](path)

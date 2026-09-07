@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | ✅ P0 多 Agent 真实化、P1 单 Agent 鲁棒性与上下文、P2 RAG 推理与可核验性、P3 入口智能路由全部完成（2026-09-06），分支 `feat/agent-modes-optimization` | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | ✅ P0 多 Agent 真实化、P1 单 Agent 鲁棒性与上下文、P2 RAG 推理与可核验性、P3 入口智能路由已完成（2026-09-06）；✅ P4 代码感知分块已完成（2026-09-07），分支 `feat/agent-modes-optimization` | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
 
 ## 已实现
 
@@ -34,7 +34,6 @@
 | macOS / Linux 开机自启 | F5 | `AppConfig.autostart` 配置项已存在但未生效；补 launchd plist / XDG `autostart/*.desktop`。Windows 已由 Inno Setup 可选任务覆盖 |
 | `bootstrap.py` 补 Tesseract 检测提示 | F5 | 当前仅引导 Ollama；OCR 依赖缺失时给出安装提示（不自动安装） |
 | Web「系统」页配置可编辑 | F7 | `TOP_K` / `SIMILARITY_CUTOFF` / `CHUNK_SIZE` 等写回 `.env`，重启生效；当前为只读概览 |
-| 代码感知分块（可选） | F6（原 F5.2） | 代码文件入库时按函数 / 类边界切分，替代通用 `SentenceSplitter`。作为 F8 P2 的可选子项评估，不单独立项 |
 
 ## 已明确不做
 
@@ -56,4 +55,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-04
+**最后更新**: 2026-09-07

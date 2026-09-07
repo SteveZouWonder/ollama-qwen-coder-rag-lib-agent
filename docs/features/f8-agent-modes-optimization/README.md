@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**状态**: ✅ 全部完成 —— P0（多 Agent 真实化，2026-09-04）、P1（单 Agent 鲁棒性与上下文，2026-09-05）、P2（RAG 推理与可核验性，2026-09-06）、P3（入口智能路由，2026-09-06） · 分支 `feat/agent-modes-optimization`
+**状态**: P0（多 Agent 真实化，2026-09-04）、P1（单 Agent 鲁棒性与上下文，2026-09-05）、P2（RAG 推理与可核验性，2026-09-06）、P3（入口智能路由，2026-09-06）✅ 已完成；P4（代码感知分块，2026-09-07）✅ 已完成 · 分支 `feat/agent-modes-optimization`
 **目标**: 提升任务质量、回答准确度与智能程度
 
 ## 文档
@@ -10,7 +10,7 @@
 - [REQUIREMENTS.md](REQUIREMENTS.md) - 需求、已核实的代码事实（带 `文件:行号`）、验收标准、LLM 提示词草案
 - [PROMPT.md](PROMPT.md) - 交给 Agent 的启动提示词（省 token 版，可按 P 级拆多次任务）
 
-## 范围（按 P0 → P3 顺序实施）
+## 范围（按 P0 → P4 顺序实施）
 
 | 级别 | 模式 | 内容 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | P1 ✅ | 单 Agent | 系统提示分层（内置 ≤1.5K token + 项目附加）；协议容错重试；步数耗尽强制总结；重复调用检测；本轮上下文预算折叠；知识库工具对齐 RAG 编排；安全分级与写路径边界 |
 | P2 ✅ | RAG | 逐片段 rerank（LLM 默认 / cross-encoder 可选）；复合问题分解与多跳；带编号引用的综合与思维链透出；BM25 hybrid 召回；失败回退提示 |
 | P3 ✅ | 路由 | 自然语言输入的意图判定（规则 + LLM 兜底），CLI `/auto`、Web「自动」模式 |
+| P4 ✅ | RAG 入库 | 代码文件按函数/类切分（tree-sitter 可选依赖，缺失回退）；碎片合并与符号/行号元数据；来源可定位到 `文件 · 符号 · L起-止`；CLI/Web 入库文案、进度、文件表、详情、来源、系统页联动；顺带修复 `load_index` 分块参数、chunk_count 估算、扩展名白名单不一致 |
 
 ## 关联
 
@@ -52,4 +53,9 @@
 | P3-1 | ✅ | `src/intent_router.py::classify_intent(text, kb_available=True, complete=None) -> RouteDecision(mode, reason)`（可解包为 `(mode, reason)`）。规则表为模块常量：`PATH_PATTERNS`（绝对/相对/家目录路径、`*.ext`、常见源码/配置扩展名，先剔除 URL 避免 `https://…/a.py` 误判）、`AGENT_VERBS_ZH/EN`（英文按词边界）、`RAG_QUESTION_MARKS/WORDS_ZH`、`RAG_TOPIC_WORDS_ZH`、`RAG_PREFIXES_ZH`、`RAG_WORDS_EN`；`agent_signals` / `rag_signals` 返回命中描述用于原因文案。单边命中直接判定；冲突或无信号 → `kb_available=False` 直接 agent（0 次 LLM），否则 `llm_classify`（`INTENT_PROMPT` 附录 A 草案，`complete_text(num_predict=4, timeout=5)`，`parse_intent_word` 剥 `<think>` 后取词），异常/超时/乱输出回退 rag。`tests/conftest.py` 新增 `block_intent_llm` 全局拦截默认调用。差异：需求只列了动词与疑问词，实现额外补了"帮我写/编写/调试/移动/复制"与"哪些/多少/原理/含义/讲讲"等常用词以及英文同义集合，并把 `build` 从动词表剔除（"build fail" 类疑问句误判） |
 | P3-2 | ✅ | `config.AUTO_ROUTE`（env `AUTO_ROUTE`，默认 true，`Config.AUTO_ROUTE` 映射，运行时开关直接改类属性）；`parse_command` 识别 `/auto` / `/auto on|off`（`classify_mode` 归为 `cmd`）；`handle_auto` 复用 `model_switcher.parse_think_flag`（无参显示状态与用法）。`handle_natural` 在 `Config.AUTO_ROUTE` 为真时调用 `_route_natural_to_agent`：`kb_available = rag_engine.query_engine is not None`，判为 agent 打印「🤖 已按 Agent 模式处理（原因；用 /ask 强制知识库；/auto off 关闭自动路由）」并交给 `handle_agent(ParsedCommand("agent", raw, text))`（会话由 ReAct 引擎落库，不重复记录；命令记录为 `agent`），否则原 `_run_ask`。`/ask` `/agent` 不判定；`classify_mode` 语义不变。`/help` `TUTORIAL_TEXT` 同步。差异：Agent 引擎不可用（`ctx.react_engine` 与模块级均为 None）或判定抛异常时静默回退知识库问答；`handle_agent` 改为优先用 `ctx.react_engine` |
 | P3-3 | ✅ | `web/ui/chat.py::MODE_AUTO="自动"`（`web/app.py` 同名常量）加入模式分段首位并设为默认，`_mode_changed` 在自动下同时显示 `enable_web` 与 `auto_confirm`（初始 `visible=True`）；空态文案改为介绍自动模式。`WebService.kb_available()` / `classify_intent()`（异常回退 rag）/ `chat_auto_stream(message, enable_web_search, auto_confirm, session_id, interactive_confirm=True)`：先 yield `progress`「🧭 自动路由：按 RAG/Agent 处理（原因）」（`data.phase="route"`），再分发到 `rag_query_stream` / `agent_chat_stream`（`confirm_handler=lambda: True` 当 auto_confirm，否则 `interactive_confirm`），`answer.data` 追加 `routed_mode` / `route_reason`，其余事件（confirm/heartbeat/step/cancelled/error）原样透传。`on_chat_stream` 的自动分支据 `routed_mode` 选择渲染路径（缺省 rag），状态行「✅ 完成 · 用时 … · 实际模式：RAG 检索|单 Agent · 上下文 …」；七元组不变，P2 `kind/fallback_question`（重试按钮）与 `step_log` 渲染不变。非流式 `on_chat` 同样支持（`interactive_confirm=False`，侧栏首行为路由原因）。浏览器验证（playwright + 打桩引擎与 LLM）：默认选中「自动」、问句按 RAG 渲染且状态行含「实际模式：RAG 检索」、"修改 main.py …" 按 Agent 渲染含执行摘要与「实际模式：单 Agent」，无 console error。差异：意图判定在 `_bridge` 之外同步执行（最长 5s，无心跳），因规则命中时为零开销、LLM 兜底有硬超时而接受 |
-
+| P4-1 | ✅ | `src/code_chunker.py`：`LANGUAGE_MAP`（8 种语言，`config.CODE_FILE_EXTENSIONS` 同源）、`LanguageAwareNodeParser(NodeParser)` 按 `file_type` 分派；代码路径**自研** tree-sitter 切分（原子收集 → 贪心打包（定义前优先断块、只在行首断）→ 碎片并入下一块 / 尾碎片并入上一块 → 超长块按行二次切分），metadata `symbol / start_line / end_line / language / chunk_strategy / part`，首行注释头 `# file · symbol · L起-止`；`ERROR` 字节占比 >30% 回退。差异：未复用 llama-index `CodeSplitter`（实测碎片多、无位置信息），改为直接基于 tree-sitter 节点树实现；超长块用**按行贪心**而非 `SentenceSplitter` 二次切（不拆行、无 tokenizer 开销）；`part i/n` 对任何跨块符号标注而不只限超长函数。实测 `rag_engine.py` 48 块 / 0 碎片 / 行号全部核对一致 |
+| P4-2 | ✅ | `RAGEngine.node_parser`（惰性 `build_node_parser()`）在 `build_index / load_index / add_documents` 三处统一；`_split_documents` 先切分再 `VectorStoreIndex(nodes=…)` / 分批 `insert_nodes`（`_INSERT_BATCH=16`），`progress_callback` 发 `stage=chunk|embed`；`per_file` 统计直接写 `FileMetadata.chunk_count / symbol_count / chunk_strategy`（新增字段，`from_dict` 忽略未知键）；`_backfill_file_metadata_from_vector_store` 从 node metadata 反推；`_make_source` 为 dense / BM25 两路共用（剥注释头、透出符号字段）；`_bm25_tokenize` 拆 `snake_case/camelCase`；`rrf_fuse` 键 `(path, L起始行)`；`get_stats().code_chunking / code_chunk_max_chars`。差异：切分异常时回退 `from_documents(transformations=[parser])` / `index.insert(doc)` 内部路径，保证 Mock 文档与异常输入不阻断入库 |
+| P4-3 | ✅ | `format_kb_context` → `[i]（来自 file · symbol · L起-止）`（`source_location` 共用）；`synthesize_prompt` 第 7 条行号引用规则；`_merge_multi_hop` 代码块按起始行去重；`kb_merged` / `rerank_done` 事件带 `symbols` 与符号名文案；`build_rerank_prompt` 片段标签附符号 |
+| P4-4 | ✅ | CLI：`handle_add` rich `Progress`（切分 / 嵌入两行，非 rich Console 不渲染）+ `format_ingest_summary` 文案 + `availability_hint_once`（进程内一次，仅含代码文件时）；`/file-list` 加「🧩 片段 · 分块」行、`/file-info` 加「🧬 分块策略」（`describe_file_chunking` 共用，旧库代码文件提示重新入库）；`/sources` 文件列下加 dim `symbol · L起-止 · (part)`；`/ask` 摘要「（N 个代码符号）」；`--build-only` 补 `file_paths` 并打印摘要；`/help` `TUTORIAL_TEXT` 更新 |
+| P4-5 | ✅ | Web：`services.ingest_stream`（`_bridge` 桥接 `add_documents / add_path` 的 `progress_callback`）+ `app._ingest_stream / on_upload_stream / on_add_path_stream`（`ProgressTracker` 渲染「⏳ … 入库进度」，完成后刷新统计卡片）；`ui/knowledge.py` 上传与追加改流式并在进行中禁用按钮；`_file_meta_dict` 新增 `chunk_strategy / symbol_count / chunking / chunking_short`，文件表「片段 · 分块」列 `27 · 代码`，`format_file_info` 加「分块策略 / 符号数」；`format_sources` 标题 `` `symbol` · L起-止（part）``、代码内容按 `language` 围栏（内部 ``` 转义）；系统页「文本分块 / 重叠」+「代码分块」两行（`_code_chunking_env_text`），统计卡「分块 / 重叠」附「/ 代码 1500」；`presenter.format_sources_md`、`rag_agent` sources、`agent_tools.format_kb_tool_result` 带符号与行号。浏览器验证（playwright + 打桩引擎/LLM、独立元数据目录）：路径追加显示流式进度与「✅ 已入库 1 个文件 · 38 个片段（其中 1 个代码文件按函数/类切分，共 31 个符号）· 用时」、文件表 `38 · 代码`、详情含分块策略与符号数、来源面板 `RAGEngine._ensure_bm25 · L620-640` + 2 个代码围栏、处理过程显示符号名、系统页「代码分块 启用 · max 1500 字 · tree-sitter-language-pack 1.16.2」，无 console error |
+| P4-6 | ✅ | `requirements.txt` 可选依赖注释块；`requirements-build.txt` 加 `tree-sitter-language-pack>=1.16,<2` 与此前漏掉的 `rank_bm25`；`packaging/cerebro.spec` `collect_all` 三个包（缺失时跳过）。测试：`tests/test_code_chunker.py`（29，真实解析用例 `skipif` 缺依赖）、`tests/test_cli_code_chunking.py`（12）及 rag_engine / pipeline / rerank / web / presenter / agent_tools 增补；屏蔽 tree-sitter 导入后相关套件仍全部通过；全量 2704+ 通过、覆盖率 89% |

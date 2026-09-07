@@ -56,24 +56,60 @@ class TestRAGEngineBuildIndex:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     @patch("rag_engine.VectorStoreIndex")
-    @patch("rag_engine.SentenceSplitter")
+    @patch("rag_engine.build_node_parser")
     @patch("rag_engine.Settings")
-    def test_build_index(self, mock_settings, mock_splitter, mock_index_cls, mock_chroma, mock_embed, mock_llm):
-        
-        # Mock chroma client's methods to avoid side effects
+    def test_build_index(self, mock_settings, mock_build_parser, mock_index_cls, mock_chroma, mock_embed, mock_llm):
+        """P4：统一切分器由 build_node_parser 提供并设到 Settings；切分结果直接建索引。"""
+        from llama_index.core.schema import Document, TextNode
+
         mock_collection = MagicMock()
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
+        parser = MagicMock()
+        parser.fallback_reasons = {}
+        parser.get_nodes_from_documents.return_value = [TextNode(text="a"), TextNode(text="b")]
+        mock_build_parser.return_value = parser
+        mock_index = MagicMock()
+        mock_index_cls.return_value = mock_index
+
+        engine = RAGEngine()
+        doc = Document(text="hello", metadata={"file_path": "/kb/a.md", "file_name": "a.md"})
+        with patch.object(engine, "_register_file_metadata") as mock_register:
+            result = engine.build_index([doc], persist=True)
+
+        assert result == mock_index
+        mock_build_parser.assert_called_once()
+        assert mock_settings.node_parser is parser
+        # 用切好的节点建索引（不再让 from_documents 内部重切一次）
+        mock_index_cls.assert_called_once()
+        assert mock_index_cls.call_args.kwargs["nodes"] == parser.get_nodes_from_documents.return_value
+        mock_index_cls.from_documents.assert_not_called()
+        # 登记元数据复用本次切分统计
+        per_file = mock_register.call_args.kwargs["per_file"]
+        assert per_file["/kb/a.md"]["chunk_count"] == 2
+        assert engine.last_ingest_stats["/kb/a.md"]["chunk_count"] == 2
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    @patch("rag_engine.VectorStoreIndex")
+    @patch("rag_engine.Settings")
+    def test_build_index_falls_back_to_from_documents_when_split_fails(
+        self, mock_settings, mock_index_cls, mock_chroma, mock_embed, mock_llm
+    ):
+        """切分异常时回退 LlamaIndex 内部路径（from_documents + transformations）。"""
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         mock_index = MagicMock()
         mock_index_cls.from_documents.return_value = mock_index
 
         engine = RAGEngine()
-        mock_doc = MagicMock()
-        result = engine.build_index([mock_doc], persist=True)
-
+        parser = MagicMock()
+        parser.get_nodes_from_documents.side_effect = RuntimeError("boom")
+        engine._node_parser = parser
+        with patch.object(engine, "_register_file_metadata"):
+            result = engine.build_index([MagicMock()], persist=False)
         assert result == mock_index
-        mock_index_cls.from_documents.assert_called_once()
-        mock_splitter.assert_called_once_with(chunk_size=1024, chunk_overlap=200)
+        assert mock_index_cls.from_documents.call_args.kwargs["transformations"] == [parser]
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -120,6 +156,9 @@ class TestRAGEngineLoadIndex:
             mock_load.return_value = mock_index
             result = engine.load_index()
             assert result == mock_index
+            # P4：加载路径也设置统一切分器（此前缺失 → 追加文档落到 llama-index 默认参数）
+            assert mock_settings.node_parser is engine.node_parser
+            assert mock_index._transformations == [engine.node_parser]
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -169,9 +208,33 @@ class TestRAGEngineAddDocuments:
 
         with patch.object(engine, "_persist_index") as mock_persist:
             mock_doc = MagicMock()
+            # MagicMock 文档无法被统一切分器处理 → 回退 index.insert 路径
             engine.add_documents([mock_doc])
             engine.index.insert.assert_called_once_with(mock_doc)
             mock_persist.assert_called_once()
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_add_documents_inserts_presplit_nodes_with_progress(self, mock_chroma, mock_embed, mock_llm):
+        """P4：真实 Document 先统一切分，再分批 insert_nodes，并发 chunk/embed 进度事件。"""
+        from llama_index.core.schema import Document
+
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        engine.index = MagicMock()
+        engine.query_engine = MagicMock()
+        events = []
+        doc = Document(text="hello world. " * 400, metadata={"file_path": "/kb/x.txt", "file_name": "x.txt", "file_type": ".txt"})
+        with patch.object(engine, "_persist_index"), patch.object(engine, "_register_file_metadata") as reg:
+            engine.add_documents([doc], ["/kb/x.txt"], progress_callback=events.append)
+        engine.index.insert.assert_not_called()
+        assert engine.index.insert_nodes.call_count >= 1
+        inserted = sum(len(c.args[0]) for c in engine.index.insert_nodes.call_args_list)
+        assert inserted == reg.call_args.kwargs["per_file"]["/kb/x.txt"]["chunk_count"] >= 1
+        stages = [e["stage"] for e in events]
+        assert "chunk" in stages and "embed" in stages
+        assert events[-1]["current"] == events[-1]["total"] == inserted
 
 
 class TestRAGEngineQuery:
@@ -788,6 +851,56 @@ class TestRAGEngineFileMetadataRegistration:
         b = engine.metadata_manager.get_file_metadata("/kb/b.md")
         assert a is not None and a.chunk_count == 2
         assert b is not None and b.chunk_count == 1
+        assert a.chunk_strategy == "text" and a.symbol_count == 0
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_backfill_reads_code_chunk_strategy_and_symbols(
+        self, mock_chroma, mock_embed, mock_llm, tmp_path
+    ):
+        """P4：存量补登记从 node metadata 反推分块策略与符号数。"""
+        engine, mock_collection = self._make_engine(mock_chroma, tmp_path / "meta")
+        mock_collection.get.return_value = {
+            "metadatas": [
+                {"file_path": "/kb/x.py", "chunk_strategy": "code(python)", "symbol": "A"},
+                {"file_path": "/kb/x.py", "chunk_strategy": "code(python)", "symbol": "A.run"},
+                {"file_path": "/kb/x.py", "chunk_strategy": "code(python)", "symbol": "A"},
+            ]
+        }
+        engine._backfill_file_metadata_from_vector_store()
+        x = engine.metadata_manager.get_file_metadata("/kb/x.py")
+        assert x.chunk_count == 3 and x.symbol_count == 2 and x.chunk_strategy == "code(python)"
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_register_uses_per_file_stats(self, mock_chroma, mock_embed, mock_llm, tmp_path):
+        """P4：登记优先使用本次实际切分统计（chunk_count / symbol_count / chunk_strategy）。"""
+        from llama_index.core.schema import Document
+
+        engine, _ = self._make_engine(mock_chroma, tmp_path / "meta")
+        src = tmp_path / "m.py"
+        src.write_text("def f():\n    return 1\n", encoding="utf-8")
+        doc = Document(text=src.read_text(), metadata={"file_path": str(src), "file_name": "m.py", "file_type": ".py"})
+        engine._register_file_metadata(
+            [doc], [str(src)],
+            per_file={str(src): {"chunk_count": 7, "symbol_count": 5, "chunk_strategy": "code(python)"}},
+        )
+        meta = engine.metadata_manager.get_file_metadata(str(src))
+        assert meta.chunk_count == 7 and meta.symbol_count == 5 and meta.chunk_strategy == "code(python)"
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_get_stats_includes_code_chunking(self, mock_chroma, mock_embed, mock_llm):
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 3
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+        engine = RAGEngine()
+        stats = engine.get_stats()
+        assert "code_chunking" in stats and "code_chunk_max_chars" in stats
+        assert "代码分块" in engine.get_stats_tool()
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -947,14 +1060,14 @@ class TestRAGEngineDeriveKnowledgeGraph:
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     @patch("rag_engine.VectorStoreIndex")
-    @patch("rag_engine.SentenceSplitter")
     @patch("rag_engine.Settings")
     def test_build_index_sets_last_graph_derived(
-        self, mock_settings, mock_splitter, mock_index_cls, mock_chroma,
+        self, mock_settings, mock_index_cls, mock_chroma,
         mock_embed, mock_llm,
     ):
         mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         mock_index_cls.from_documents.return_value = MagicMock()
+        mock_index_cls.return_value = MagicMock()
 
         engine = RAGEngine()
         with patch.object(engine, "_register_file_metadata"), patch.object(
@@ -1033,6 +1146,41 @@ class TestRRFFuse:
         toks = RAGEngine._bm25_tokenize("DJI Osmo 售价")
         assert "dji" in toks and "osmo" in toks and "售" in toks and "售价" in toks
         assert RAGEngine._bm25_tokenize("") == []
+
+    def test_tokenize_splits_identifiers(self):
+        """P4：snake_case / camelCase 保留原词并追加子词。"""
+        toks = RAGEngine._bm25_tokenize("def _ensure_bm25(self): getUserName HTTPServer")
+        assert "_ensure_bm25" in toks and "ensure" in toks and "bm25" in toks
+        assert "getusername" in toks and "get" in toks and "user" in toks and "name" in toks
+        assert "httpserver" in toks and "http" in toks and "server" in toks
+        # 普通单词不重复
+        assert RAGEngine._bm25_tokenize("hello").count("hello") == 1
+
+    def test_rrf_key_uses_start_line_for_code_chunks(self):
+        """P4：代码块以 (path, L起始行) 去重，相似函数头前 500 字相同也不会误合并。"""
+        same_head = "def handler(self, request):\n    # 相同开头\n" + "x" * 600
+        dense = [
+            {"content": same_head, "file": "a.py", "path": "/a.py", "score": 0.7, "start_line": 10, "end_line": 30},
+            {"content": same_head, "file": "a.py", "path": "/a.py", "score": 0.6, "start_line": 50, "end_line": 70},
+        ]
+        sparse = [{"content": same_head, "file": "a.py", "path": "/a.py", "start_line": 50, "bm25_score": 3.0}]
+        fused = RAGEngine.rrf_fuse(dense, sparse, top_k=5)
+        assert len(fused) == 2
+        by_line = {f["start_line"]: f for f in fused}
+        assert by_line[50]["retriever"] == "hybrid" and by_line[10]["retriever"] == "dense"
+
+    def test_make_source_strips_header_and_exposes_code_fields(self):
+        meta = {"file_name": "a.py", "file_path": "/a.py", "symbol": "Engine.run", "start_line": 12,
+                "end_line": 20, "language": "python", "chunk_strategy": "code(python)", "part": "1/2"}
+        src = RAGEngine._make_source("# a.py · Engine.run · L12-L20\n    def run(self):\n        pass", meta, score=0.8)
+        assert src["content"].startswith("    def run(self):")
+        assert src["symbol"] == "Engine.run" and src["start_line"] == 12 and src["end_line"] == 20
+        assert src["language"] == "python" and src["chunk_strategy"] == "code(python)" and src["part"] == "1/2"
+        assert src["score"] == 0.8 and src["file"] == "a.py"
+        plain = RAGEngine._make_source("普通文本", {"file_name": "a.md"})
+        assert plain == {"content": "普通文本", "score": None, "file": "a.md", "path": ""}
+        bad = RAGEngine._make_source("x", {"file_name": "a.py", "start_line": "abc"})
+        assert "start_line" not in bad
 
 
 class TestHybridQuery:

@@ -24,7 +24,6 @@ from llama_index.core import (
     StorageContext,
     load_index_from_storage,
 )
-from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import Document
 from llama_index.embeddings.ollama import OllamaEmbedding
@@ -46,9 +45,16 @@ from config import (
     SIMILARITY_CUTOFF,
     RAG_HYBRID,
     RAG_HYBRID_MAX_CHUNKS,
+    CODE_CHUNK_MAX_CHARS,
 )
 from config import resolve_num_ctx as _resolve_num_ctx
 from document_loader import load_documents
+from code_chunker import (
+    build_node_parser,
+    status_text as code_chunking_status,
+    strip_header as strip_chunk_header,
+    summarize_nodes,
+)
 
 # 导入快照管理
 try:
@@ -87,6 +93,10 @@ class RAGEngine:
         self._bm25 = None
         self._bm25_disabled_reason: Optional[str] = None
         self.hybrid_enabled: bool = bool(RAG_HYBRID)
+        # 统一切分器（build / load / add 三条路径共用；F8 P4 代码感知分块）
+        self._node_parser = None
+        # 最近一次入库的按文件统计：path -> {chunk_count, symbol_count, chunk_strategy}
+        self.last_ingest_stats: dict = {}
         self.enable_auto_snapshot = enable_auto_snapshot
         self.enable_security = enable_security
         self._setup_llm()
@@ -192,30 +202,96 @@ class RAGEngine:
         )
         self.vector_store = ChromaVectorStore(chroma_collection=self.chroma_collection)
 
+    @property
+    def node_parser(self):
+        """统一切分器（惰性创建）：代码文件按函数/类切分，其余走 SentenceSplitter。"""
+        if self._node_parser is None:
+            self._node_parser = build_node_parser()
+        return self._node_parser
+
+    def _split_documents(self, documents: List[Document], progress_callback=None):
+        """用统一切分器把文档切成节点，并按来源文件统计。
+
+        返回 ``(nodes, per_file)``；切分异常时返回 ``(None, {})``，由调用方回退到
+        LlamaIndex 内部切分路径。``per_file``：``path -> {chunk_count, symbol_count, chunk_strategy}``。
+        """
+        parser = self.node_parser
+        nodes: List = []
+        per_file: dict = {}
+        total = len(documents)
+        try:
+            # 按来源文件分组，便于逐文件发进度与统计
+            grouped: "dict[str, List[Document]]" = {}
+            for doc in documents:
+                meta = getattr(doc, "metadata", None) or {}
+                fp = str(meta.get("file_path") or meta.get("source") or meta.get("file_name") or getattr(doc, "doc_id", "") or id(doc))
+                grouped.setdefault(fp, []).append(doc)
+            for i, (fp, docs) in enumerate(grouped.items(), 1):
+                if progress_callback:
+                    progress_callback({
+                        "stage": "chunk",
+                        "message": f"切分 {Path(fp).name} ({i}/{len(grouped)})",
+                        "current": i,
+                        "total": len(grouped),
+                    })
+                file_nodes = parser.get_nodes_from_documents(docs)
+                nodes.extend(file_nodes)
+                per_file[fp] = summarize_nodes(file_nodes)
+            fallback = getattr(parser, "fallback_reasons", None) or {}
+            for fp, reason in fallback.items():
+                if fp in per_file and per_file[fp]["chunk_strategy"] == "text":
+                    per_file[fp]["chunk_strategy"] = f"text(fallback:{reason})"
+        except Exception as e:  # noqa: BLE001 - 切分失败回退 LlamaIndex 内部路径
+            logging.getLogger(__name__).debug("统一切分失败，回退内部切分: %s", e)
+            return None, {}
+        self.last_ingest_stats = per_file
+        if progress_callback and total:
+            progress_callback({"stage": "chunk", "message": f"切分完成：{len(nodes)} 个片段", "current": total, "total": total})
+        return nodes, per_file
+
     def build_index(
         self,
         documents: List[Document],
         persist: bool = True,
         file_paths: List[str] = None,
+        progress_callback=None,
     ) -> VectorStoreIndex:
         """构建向量索引"""
         print(f"\n🏗️  构建索引中... (文档数: {len(documents)})")
 
-        node_parser = SentenceSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
+        node_parser = self.node_parser
         Settings.node_parser = node_parser
 
         storage_context = StorageContext.from_defaults(
             vector_store=self.vector_store
         )
 
-        self.index = VectorStoreIndex.from_documents(
-            documents,
-            storage_context=storage_context,
-            show_progress=True,
-        )
+        # 先切分再建索引：切分结果同时用于文件元数据统计（chunk_count / 符号数 / 策略），
+        # 避免此前"索引内部切一次、登记元数据再切一次"导致的计数不一致。
+        nodes, per_file = self._split_documents(documents, progress_callback)
+        if nodes is None:
+            self.index = VectorStoreIndex.from_documents(
+                documents,
+                storage_context=storage_context,
+                show_progress=True,
+                transformations=[node_parser],
+            )
+        else:
+            if progress_callback:
+                progress_callback({"stage": "embed", "message": f"生成 {len(nodes)} 个片段的向量...", "current": 0, "total": len(nodes)})
+            self.index = VectorStoreIndex(
+                nodes=nodes,
+                storage_context=storage_context,
+                show_progress=True,
+                transformations=[node_parser],
+            )
+            for doc in documents:
+                try:
+                    self.index.docstore.set_document_hash(doc.id_, doc.hash)
+                except Exception:  # noqa: BLE001 - 仅影响去重哈希
+                    pass
+            if progress_callback:
+                progress_callback({"stage": "embed", "message": "向量生成完成", "current": len(nodes), "total": len(nodes)})
 
         if persist:
             self._persist_index()
@@ -223,9 +299,8 @@ class RAGEngine:
         self._setup_query_engine()
         self.invalidate_bm25()
 
-        # 登记文件元数据（供 /file-list 等命令读取）。复用上面创建的 node_parser，
-        # 避免重复构造 SentenceSplitter。
-        self._register_file_metadata(documents, file_paths, splitter=node_parser)
+        # 登记文件元数据（供 /file-list 等命令读取），复用上面的切分统计。
+        self._register_file_metadata(documents, file_paths, per_file=per_file)
 
         # 派生构建知识图谱（图谱是文档入库的派生索引）
         self.last_graph_derived = self._derive_knowledge_graph(documents)
@@ -244,7 +319,7 @@ class RAGEngine:
         self,
         documents: List[Document],
         file_paths: Optional[List[str]] = None,
-        splitter: Optional["SentenceSplitter"] = None,
+        per_file: Optional[dict] = None,
     ):
         """将本次入库的文件登记到文件元数据管理器。
 
@@ -254,7 +329,8 @@ class RAGEngine:
         登记策略：
           - 优先按文档自带的 ``metadata['file_path']`` 分组统计 document_count；
           - 缺失时回退到传入的 ``file_paths``；
-          - chunk_count 用与索引一致的 SentenceSplitter 切分估算；
+          - chunk_count / symbol_count / chunk_strategy 优先取 ``per_file``（本次入库
+            实际切分结果），缺失时用统一切分器重新切一次估算；
           - file_hash 基于文件内容计算，便于去重命令识别重复。
         """
         if not self.metadata_manager:
@@ -277,20 +353,19 @@ class RAGEngine:
             if not grouped:
                 return
 
-            # 复用调用方传入的切分器（如 build_index 已创建的），否则按需新建，
-            # 避免重复构造 SentenceSplitter。
-            if splitter is None:
-                splitter = SentenceSplitter(
-                    chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
-                )
-
+            per_file = per_file or {}
             for fp, docs in grouped.items():
                 document_count = len(docs)
-                # 估算 chunk 数：对该文件的所有文档做与索引一致的切分
-                try:
-                    chunk_count = len(splitter.get_nodes_from_documents(docs)) if docs else 0
-                except Exception:
-                    chunk_count = document_count
+                stats = per_file.get(fp)
+                if stats is None:
+                    # 未提供实际切分统计时，用统一切分器重切一次估算（与索引一致）
+                    try:
+                        stats = summarize_nodes(self.node_parser.get_nodes_from_documents(docs)) if docs else {}
+                    except Exception:
+                        stats = {}
+                chunk_count = int(stats.get("chunk_count", document_count) or 0) if stats else document_count
+                symbol_count = int(stats.get("symbol_count", 0) or 0) if stats else 0
+                chunk_strategy = str(stats.get("chunk_strategy") or "text") if stats else "text"
 
                 file_hash = self._compute_file_hash(fp)
 
@@ -306,6 +381,8 @@ class RAGEngine:
                     fp,
                     document_count=document_count,
                     chunk_count=chunk_count,
+                    symbol_count=symbol_count,
+                    chunk_strategy=chunk_strategy,
                     file_hash=file_hash,
                 )
         except Exception as e:  # noqa: BLE001 - 登记失败不应影响入库主流程
@@ -383,6 +460,13 @@ class RAGEngine:
             persist_dir=str(persist_dir),
         )
         self.index = load_index_from_storage(storage_context)
+        # 统一切分器：此前加载路径未设置 node_parser，"加载已有索引后追加文档"会落到
+        # LlamaIndex 默认 SentenceSplitter(1024/200) 而非 .env 的 CHUNK_SIZE/CHUNK_OVERLAP。
+        Settings.node_parser = self.node_parser
+        try:
+            self.index._transformations = [self.node_parser]
+        except Exception:  # noqa: BLE001 - Mock/旧版本索引对象无此属性时忽略
+            pass
         self._setup_query_engine()
 
         # 存量补全：历史上文档只入向量库而未登记文件元数据，这里从向量库
@@ -407,14 +491,22 @@ class RAGEngine:
             return
 
         metadatas = (data or {}).get("metadatas") or []
-        # 统计每个文件的 chunk 数
+        # 统计每个文件的 chunk 数、符号数与分块策略（代码块的 node metadata 带 symbol/chunk_strategy）
         chunk_counts: dict[str, int] = {}
+        symbols: dict[str, set] = {}
+        strategies: dict[str, str] = {}
         for meta in metadatas:
             if not meta:
                 continue
             fp = meta.get("file_path") or meta.get("source")
             if fp:
-                chunk_counts[str(fp)] = chunk_counts.get(str(fp), 0) + 1
+                fp = str(fp)
+                chunk_counts[fp] = chunk_counts.get(fp, 0) + 1
+                if meta.get("symbol"):
+                    symbols.setdefault(fp, set()).add(meta["symbol"])
+                strat = str(meta.get("chunk_strategy") or "")
+                if strat.startswith("code") or fp not in strategies:
+                    strategies[fp] = strat or "text"
 
         registered = 0
         for fp, chunk_count in chunk_counts.items():
@@ -426,7 +518,12 @@ class RAGEngine:
                     persistence_type=FilePersistenceType.PERMANENT,
                     file_hash=self._compute_file_hash(fp),
                 )
-                self.metadata_manager.update_file_metadata(fp, chunk_count=chunk_count)
+                self.metadata_manager.update_file_metadata(
+                    fp,
+                    chunk_count=chunk_count,
+                    symbol_count=len(symbols.get(fp, ())),
+                    chunk_strategy=strategies.get(fp, "text"),
+                )
                 registered += 1
             except Exception as e:  # noqa: BLE001
                 print(f"⚠️ 补登记文件元数据失败 {fp}: {e}")
@@ -446,11 +543,18 @@ class RAGEngine:
             ],
         )
 
-    def add_documents(self, documents: List[Document], file_paths: List[str] = None):
-        """向现有索引添加新文档"""
+    # 追加入库时每批嵌入的节点数（用于进度回调粒度）
+    _INSERT_BATCH = 16
+
+    def add_documents(self, documents: List[Document], file_paths: List[str] = None, progress_callback=None):
+        """向现有索引添加新文档。
+
+        ``progress_callback`` 接收字典：``stage`` 为 ``chunk``（按文件切分）或 ``embed``
+        （按节点批次生成向量），带 ``message`` / ``current`` / ``total``；CLI 与 Web 共用。
+        """
         if self.index is None:
             print("⚠️  索引不存在，将创建新索引")
-            return self.build_index(documents, file_paths=file_paths)
+            return self.build_index(documents, file_paths=file_paths, progress_callback=progress_callback)
 
         print(f"\n➕ 添加 {len(documents)} 个新文档到索引...")
         
@@ -476,15 +580,35 @@ class RAGEngine:
                 except Exception as e:
                     print(f"⚠️  无法检查文件 {file_path} 的安全性: {e}")
         
-        for doc in documents:
-            self.index.insert(doc)
+        nodes, per_file = self._split_documents(documents, progress_callback)
+        if nodes is None:
+            # 切分异常：回退 LlamaIndex 内部逐文档插入（内部使用同一 node_parser）
+            for doc in documents:
+                self.index.insert(doc)
+        else:
+            total = len(nodes)
+            for start in range(0, total, self._INSERT_BATCH):
+                batch = nodes[start:start + self._INSERT_BATCH]
+                if progress_callback:
+                    progress_callback({
+                        "stage": "embed",
+                        "message": f"生成向量 {min(start + len(batch), total)}/{total}",
+                        "current": min(start + len(batch), total),
+                        "total": total,
+                    })
+                self.index.insert_nodes(batch)
+            for doc in documents:
+                try:
+                    self.index.docstore.set_document_hash(doc.id_, doc.hash)
+                except Exception:  # noqa: BLE001
+                    pass
 
         self._persist_index()
         self.invalidate_bm25()
         print("✅ 文档添加完成！")
 
-        # 登记文件元数据（供 /file-list 等命令读取）
-        self._register_file_metadata(documents, file_paths)
+        # 登记文件元数据（供 /file-list 等命令读取），复用本次实际切分统计
+        self._register_file_metadata(documents, file_paths, per_file=per_file)
 
         # 派生构建知识图谱（图谱是文档入库的派生索引）
         self.last_graph_derived = self._derive_knowledge_graph(documents)
@@ -516,15 +640,61 @@ class RAGEngine:
 
     @staticmethod
     def _bm25_tokenize(text: str) -> List[str]:
-        """BM25 轻量分词：英文/数字按词（小写），中文按单字 + 相邻二字组。"""
+        """BM25 轻量分词：英文/数字按词（小写），中文按单字 + 相邻二字组。
+
+        标识符额外拆分：``snake_case`` / ``camelCase`` / ``PascalCase`` 在保留原词的同时
+        追加其子词（``_ensure_bm25`` → ``ensure``、``bm25``；``getUserName`` → ``get``、
+        ``user``、``name``），使代码问答中"问 ensure bm25 命中 _ensure_bm25"成为可能。
+        """
         import re
         if not text:
             return []
-        tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        words = re.findall(r"[a-zA-Z0-9_]+", text)
+        tokens: List[str] = []
+        for w in words:
+            tokens.append(w.lower())
+            parts = [p for p in w.split("_") if p]
+            sub: List[str] = []
+            for p in parts:
+                sub.extend(re.findall(r"[A-Z]+[0-9]*(?![a-z])|[A-Z]?[a-z]+[0-9]*|[0-9]+", p))
+            if len(sub) > 1 or (sub and sub[0] != w):
+                tokens.extend(s.lower() for s in sub if s.lower() != w.lower())
         cjk = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
         tokens.extend(cjk)
         tokens.extend(a + b for a, b in zip(cjk, cjk[1:]))
         return tokens
+
+    @classmethod
+    def _make_source(cls, text: str, meta: dict, score=None) -> dict:
+        """由片段文本与 node metadata 构造 sources 项（dense 与 BM25 两路共用，保证去重键一致）。
+
+        代码块的首行注释头（``# file · symbol · L1-L2``）在此剥离，位置信息改由
+        ``symbol / start_line / end_line / language / chunk_strategy`` 字段透出。
+        """
+        meta = meta or {}
+        content = strip_chunk_header(str(text or ""))[:cls._CONTENT_KEY_CHARS]
+        src = {
+            "content": content,
+            "score": score,
+            "file": meta.get("file_name", "未知"),
+            "path": meta.get("file_path", ""),
+        }
+        strategy = str(meta.get("chunk_strategy") or "")
+        if strategy:
+            src["chunk_strategy"] = strategy
+        if meta.get("symbol"):
+            src["symbol"] = str(meta["symbol"])
+        if meta.get("start_line") is not None:
+            try:
+                src["start_line"] = int(meta["start_line"])
+                src["end_line"] = int(meta.get("end_line") or meta["start_line"])
+            except (TypeError, ValueError):
+                pass
+        if meta.get("language"):
+            src["language"] = str(meta["language"])
+        if meta.get("part"):
+            src["part"] = str(meta["part"])
+        return src
 
     def invalidate_bm25(self) -> None:
         """入库/删除/清空后使 BM25 索引失效（下次查询按需重建）。"""
@@ -567,11 +737,9 @@ class RAGEngine:
             for i, text in enumerate(docs):
                 text = str(text or "")
                 meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
-                entries.append({
-                    "content": text[:self._CONTENT_KEY_CHARS],
-                    "file": meta.get("file_name", "未知"),
-                    "path": meta.get("file_path", ""),
-                })
+                entry = self._make_source(text, meta)
+                entry.pop("score", None)
+                entries.append(entry)
                 corpus.append(self._bm25_tokenize(text))
             self._bm25 = {"index": BM25Okapi(corpus), "entries": entries}
             return True
@@ -602,7 +770,8 @@ class RAGEngine:
     def rrf_fuse(cls, dense: List[dict], sparse: List[dict], top_k: int, k: int = None) -> List[dict]:
         """RRF 融合 dense 与 BM25 两路排序，取前 top_k。
 
-        - 以 ``(path|file, content[:500])`` 作为同一片段的键；
+        - 以 ``(path|file, start_line 或 content[:500])`` 作为同一片段的键（代码块用起始行，
+          避免多个相似函数头的前 500 字相同而被误判为同一片段）；
         - 两路都命中的项保留 dense 分数、``retriever="hybrid"``；
         - 仅 dense 命中：保留原分数、``retriever="dense"``；
         - 仅 BM25 命中：``score`` 用 RRF 归一值（相对"两路均第 1 名"的理论最大值，
@@ -613,7 +782,10 @@ class RAGEngine:
         k = cls.RRF_K if k is None else k
 
         def key_of(src: dict):
-            return (src.get("path") or src.get("file") or "", (src.get("content") or "")[:cls._CONTENT_KEY_CHARS])
+            where = src.get("path") or src.get("file") or ""
+            if src.get("start_line") is not None:
+                return (where, f"L{src.get('start_line')}")
+            return (where, (src.get("content") or "")[:cls._CONTENT_KEY_CHARS])
 
         fused: dict = {}
         for rank, src in enumerate(dense, 1):
@@ -693,12 +865,11 @@ class RAGEngine:
                         "total": source_count
                     })
                 
-                sources.append({
-                    "content": node.node.get_content()[:500],
-                    "score": float(node.score) if hasattr(node, "score") else None,
-                    "file": node.node.metadata.get("file_name", "未知"),
-                    "path": node.node.metadata.get("file_path", ""),
-                })
+                sources.append(self._make_source(
+                    node.node.get_content(),
+                    node.node.metadata,
+                    score=float(node.score) if hasattr(node, "score") else None,
+                ))
 
         # hybrid：BM25 关键词召回与 dense 结果 RRF 融合（失败/不可用静默回退 dense）
         use_hybrid = self.hybrid_enabled if hybrid is None else bool(hybrid)
@@ -778,6 +949,7 @@ class RAGEngine:
                 f"- LLM 模型: {self.llm_model}\n"
                 f"- Embedding 模型: {EMBED_MODEL}\n"
                 f"- 分块大小: {CHUNK_SIZE}\n"
+                f"- 代码分块: {code_chunking_status()}\n"
                 f"- 检索数量: {TOP_K}"
             )
         except Exception as e:
@@ -795,6 +967,8 @@ class RAGEngine:
             "embed_model": EMBED_MODEL,
             "chunk_size": CHUNK_SIZE,
             "chunk_overlap": CHUNK_OVERLAP,
+            "code_chunking": code_chunking_status(),
+            "code_chunk_max_chars": CODE_CHUNK_MAX_CHARS,
             "top_k": TOP_K,
         }
 

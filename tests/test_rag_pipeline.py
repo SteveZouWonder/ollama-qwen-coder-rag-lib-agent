@@ -786,6 +786,32 @@ class TestNumberedCitations:
         assert "[3]（来自 c.md）\n丙" in ctx and "[2]" not in ctx  # 空内容占号不输出
         assert srcs[0]["ref"] == "1" and srcs[2]["ref"] == "3"
 
+    def test_format_kb_context_code_location(self):
+        """P4：代码块的编号头带 符号 · L起-止，综合 prompt 追加行号引用规则。"""
+        srcs = [{"content": "def f(): pass", "file": "a.py", "symbol": "f", "start_line": 3, "end_line": 5}]
+        assert rag_pipeline.format_kb_context(srcs) == "[1]（来自 a.py · f · L3-5）\ndef f(): pass"
+        assert rag_pipeline.source_location({"file": "a.py", "start_line": 2}) == "a.py · L2-2"
+        assert rag_pipeline.source_location({}) == "未知文件"
+        p = rag_pipeline.synthesize_prompt("q", "[1]（来自 a.py · f · L3-5）\nx", "")
+        assert "函数/类名与行号" in p and "不要编造" in p
+
+    def test_source_symbols_summary(self):
+        srcs = [{"symbol": "a"}, {"symbol": "b"}, {"symbol": "a"}, {"symbol": "c"}, {"symbol": "d"}, {"file": "x"}]
+        assert rag_pipeline.source_symbols(srcs) == "`a`, `b`, `c` 等 5 个符号"
+        assert rag_pipeline.source_symbols([{"symbol": "only"}]) == "`only`"
+        assert rag_pipeline.source_symbols([{"file": "x"}, "junk"]) == ""
+
+    def test_merge_multi_hop_dedupes_code_by_start_line(self):
+        same = "def h():\n    pass"
+        merged = rag_pipeline._merge_multi_hop([
+            {"answer": "a", "sources": [
+                {"content": same, "file": "a.py", "score": 0.9, "start_line": 1},
+                {"content": same, "file": "a.py", "score": 0.8, "start_line": 40},
+            ]},
+            {"answer": "b", "sources": [{"content": same, "file": "a.py", "score": 0.7, "start_line": 1}]},
+        ])
+        assert [s["start_line"] for s in merged["sources"]] == [1, 40]
+
     def test_assign_refs(self):
         kb, web = rag_pipeline.assign_refs([{"a": 1}, {"b": 2}], [{"url": "u"}])
         assert [s["ref"] for s in kb] == ["1", "2"] and web[0]["ref"] == "W1"

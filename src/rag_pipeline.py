@@ -863,6 +863,8 @@ def synthesize_prompt(
         "6. 引用标注：资料已按 [1]、[2]…（知识库片段）与 [W1]、[W2]…（网络来源）编号，"
         "每个关键结论/数字所在句子的末尾必须标注其依据编号（如「售价 2999 元起[1]」、"
         "「最新版本为 3.2[W1]」）；一句话依据多条时并列标注（[1][W2]）。不要标注不存在的编号。",
+        "7. 引用代码片段时，在 [i] 之外可注明函数/类名与行号（如「`_ensure_bm25`（L534-581）[2]」），"
+        "便于用户定位；行号只能取自资料标注（来自 … · L起-止），不要编造。",
         "",
     ]
     if history:
@@ -909,10 +911,37 @@ def format_kb_context(sources: list) -> str:
         content = (src.get("content") or "").strip()
         if not content:
             continue
-        fname = src.get("file", "未知文件")
         src["ref"] = str(i)
-        blocks.append(f"[{i}]（来自 {fname}）\n{content}")
+        blocks.append(f"[{i}]（来自 {source_location(src)}）\n{content}")
     return "\n\n".join(blocks)
+
+
+def source_location(src: dict) -> str:
+    """来源定位文案：文本块为文件名；代码块为 ``file · symbol · L起-止``（CLI / Web / prompt 共用）。"""
+    fname = src.get("file") or "未知文件"
+    parts = [str(fname)]
+    if src.get("symbol"):
+        parts.append(str(src["symbol"]))
+    if src.get("start_line") is not None:
+        end = src.get("end_line") or src.get("start_line")
+        parts.append(f"L{src['start_line']}-{end}")
+    return " · ".join(parts)
+
+
+def source_symbols(sources: list, limit: int = 3) -> str:
+    """取前 ``limit`` 个代码来源的符号名拼成短文案（进度事件用），无代码块返回空串。"""
+    names = []
+    for src in sources or []:
+        sym = src.get("symbol") if isinstance(src, dict) else None
+        if sym and sym not in names:
+            names.append(str(sym))
+        if len(names) >= limit:
+            break
+    if not names:
+        return ""
+    more = sum(1 for s in sources if isinstance(s, dict) and s.get("symbol")) - len(names)
+    text = ", ".join(f"`{n}`" for n in names)
+    return text + (f" 等 {more + len(names)} 个符号" if more > 0 else "")
 
 
 # ==================== 网络搜索增强编排 ====================
@@ -1033,7 +1062,9 @@ def _merge_multi_hop(results: list) -> dict:
         for src in res.get("sources") or []:
             if not isinstance(src, dict):
                 continue
-            key = (src.get("file") or src.get("path") or "", (src.get("content") or "").strip())
+            where = src.get("file") or src.get("path") or ""
+            # 代码块用起始行去重（多个相似函数头的正文前缀可能相同）
+            key = (where, f"L{src['start_line']}") if src.get("start_line") is not None else (where, (src.get("content") or "").strip())
             if key in seen:
                 continue
             seen.add(key)
@@ -1076,8 +1107,10 @@ def _generate_answer_inner(
             results.append(_retrieve(rag_engine, sq, show_progress, rag_progress_callback))
             _check_stop(should_stop)
         result = _merge_multi_hop(results)
-        _emit(progress, "kb_merged", f"🔗 合并 {len(subquestions)} 个子问题的检索结果，去重后 {len(result['sources'])} 个片段",
-              count=len(result["sources"]))
+        syms = source_symbols(result["sources"])
+        _emit(progress, "kb_merged",
+              f"🔗 合并 {len(subquestions)} 个子问题的检索结果，去重后 {len(result['sources'])} 个片段" + (f"（含代码 {syms}）" if syms else ""),
+              count=len(result["sources"]), symbols=[s.get("symbol") for s in result["sources"] if s.get("symbol")])
     else:
         _emit(progress, "kb_retrieving", "📖 检索知识库并生成初步回答（含模型推理）...")
         result = _retrieve(rag_engine, question, show_progress, rag_progress_callback)

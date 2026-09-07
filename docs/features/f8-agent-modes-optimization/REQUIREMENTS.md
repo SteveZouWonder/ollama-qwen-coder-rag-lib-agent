@@ -1,6 +1,10 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）、P3 已完成（2026-09-06）—— 全部完成** · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）、P3 已完成（2026-09-06）、P4 已完成（2026-09-07）—— 全部完成** · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+>
+> P4 实现记录：P4-1~P4-6 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：未复用 llama-index `CodeSplitter` 而直接基于 tree-sitter 节点树自研切分（原子→打包→合并，只在行首断块）；超长块按行贪心二次切分而非 `SentenceSplitter`；`part i/n` 对任何跨块符号标注；切分异常回退 LlamaIndex 内部路径；Web 入库进度以结果区 Markdown（`ProgressTracker`）呈现而非独立进度条组件。
+>
+> P4 立项说明：原 `docs/features/README.md`「残留小项 · 代码感知分块（可选）」挂在 F8 P2 下评估。2026-09-07 评估结论（详见 §5 与 §0.5）：现有 `SentenceSplitter` 对代码切点全部落在语句中间；llama-index 自带 `CodeSplitter` 直接使用会产生大量碎片块（签名与函数体分离），须自研合并与上下文补全；采用**方案 C**（tree-sitter 多语言 + 碎片合并 + 符号/行号元数据 + CLI/Web 展示联动），可选依赖、缺失自动回退。
 >
 > P3 实现记录：P3-1~P3-3 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：规则表在需求列举之外补充了常用中英文动词/疑问词并剔除易误判的 `build`；路径匹配先剔除 URL；`classify_intent` 返回 `RouteDecision(mode, reason)`（可解包）而非裸字符串，原因文案用于 CLI 提示与 Web 处理过程；CLI 在 Agent 引擎不可用或判定异常时静默回退知识库问答；Web 意图判定在心跳桥接之外同步执行（LLM 兜底硬超时 5s）。
 >
@@ -47,6 +51,16 @@
 - CLI：`query_interface.py::parse_command/classify_mode/print_help/TUTORIAL_TEXT` + `cli_handlers.py::COMMAND_HANDLERS`。
 - 每阶段完成更新 `CHANGELOG.md [Unreleased]`、README 对应段落、本目录 `README.md` 与 `docs/features/README.md` 的状态。
 - Git：不得直接提交 master；改动前确认分支；完成后询问是否建 PR，不得自动建 PR。
+
+### 0.5 分块与代码文件（P4 已核实事实，2026-09-07）
+- 切分只有一处一种策略：`SentenceSplitter(CHUNK_SIZE=1024, CHUNK_OVERLAP=200)` 在 `build_index` 设为 `Settings.node_parser`（`src/rag_engine.py:204-208`）；`add_documents` 靠 `index.insert` 间接复用（`:480`）；**`load_index()` 未设置 parser**（`:373-393`），"加载已有索引后追加"走 llama-index 默认值而非 `.env`；`_register_file_metadata` 在 `add_documents` 路径重新 new 一个 `SentenceSplitter` 估算 `chunk_count`（`:282-291`）。
+- 代码后缀 `.py/.js/.ts/.java/.cpp/.c/.go/.rs` 全部映射 `FlatReader` 当纯文本（`src/document_loader.py:26-44`），无 `CodeSplitter`/tree-sitter；`ast_search` 用内置 `ast` 且与入库无关（`src/agent_tools.py:813-851`、`src/code_analyzer/ast_analyzer.py`）。
+- Document metadata：`file_name/file_path/file_type/source`（`document_loader.py:177-183`）；`query_with_sources` 只透出 `content/score/file/path`（`rag_engine.py:696-701`），BM25 entries 同（`:570-574`）；`format_kb_context` 只把文件名注入 prompt（`rag_pipeline.py:901-915`）。
+- BM25 从 Chroma `documents+metadatas` 全量重建（`rag_engine.py:559-576`），不感知切分方式；`_bm25_tokenize` 不拆 `snake_case/camelCase`（`:518-527`）；`rrf_fuse` 去重键 `(path|file, content[:500])`（`:615-616`）。
+- 白名单双源不一致：`config.ALLOWED_FILE_TYPES`（`config.py:222`，无 `c/yml/markdown`）与 `DocumentLoader.READERS`（含 `.c/.yml/.markdown`）。
+- `FileMetadata`（`src/file_metadata.py:24-36`）有 `document_count/chunk_count`，无分块策略字段。
+- 展示触点：CLI `/add`（`cli_handlers.py:249-273`，只印"已添加"）、`/file-list`（`:585-606`，无 chunk 数）、`/file-info`（`:609-637`，`🧩 Chunk数` 在 `:628`）、`/sources`（`query_interface.py:742-770`，4 列）、`/ask` 摘要行（`:1650-1656`）、`/stats` 遍历 `get_stats()`（`rag_engine.py:786-799`）；Web 上传/追加同步无进度（`services.py:813-873`，"片段"实为 Document 数）、文件表 `_FILE_HEADERS`（`app.py:1502-1514`，"片段"列 = chunk_count）、详情 `format_file_info`（`:470-489`）、来源 `format_sources`（`:119-139`）、系统页「分块大小 / 重叠」（`:511`，`services.env_info:1336-1337`）、统计卡 `format_stats_cards`（`:520-535`）、多 Agent `presenter.format_sources_md`（`collaboration/presenter.py:34-48`）、单 Agent 知识库工具 Observation（`agent_tools.py:462-484`）。`ProgressTracker`（`app.py:38-115`）已支持 `stage/current/total` 原地刷新但入库未接入。
+- 实测（本仓库 .py，macOS arm64）：`rag_engine.py` SentenceSplitter 13 块/均 3437 字/0 块以 def·class 开头；llama-index `CodeSplitter(max_chars=1500)` 51 块/均 718 字/23 块以 def·class 开头，但 9 块 <80 字（`'class RAGEngine:'`、`'@classmethod'`、单独签名）。`tree-sitter-language-pack 1.16.2`：wheel 覆盖 mac x86_64/arm64、manylinux_2_34 x86_64/aarch64、win amd64/arm64，磁盘 +5.3 MB，热导入 ≈15-25 ms、常驻 ≈40 MB，macOS 首次加载 Gatekeeper 校验 1-5 s；解析比 SentenceSplitter 快（4 ms vs 178 ms）。当前 venv / requirements 均未安装。
 
 ---
 
@@ -119,8 +133,67 @@
 
 ---
 
-## 5. 实施顺序与交付
-1. P0（含 P1-1 的 `allowed_tools/system_prompt_extra` 前置能力）→ 2. P1 → 3. P2 → 4. P3。
+## 5. P4 · 代码感知分块（方案 C：tree-sitter 多语言 + 碎片合并 + 展示联动）
+
+### 目标
+代码文件入库时按语法结构（函数 / 类 / 方法）切分，检索结果以完整符号为单位，引用可定位到 `文件 · 符号 · L起-止`；非代码文件流程不变；`tree-sitter-language-pack` 为**可选依赖**，缺失或解析失败自动回退 `SentenceSplitter` 且不产生错误级输出。
+
+### 范围
+- 范围内：`.py/.js/.ts/.java/.go/.rs/.c/.cpp`（`DocumentLoader.READERS` 现有代码后缀）；顺带修复 §0.5 的三个既有问题（`load_index` 未设 parser、`chunk_count` 估算与实际切分不一致、`ALLOWED_FILE_TYPES` 与 `READERS` 白名单不一致）。
+- 范围外：`.json/.yaml/.xml/.html` 仍走 `SentenceSplitter`；不做 Web 配置可编辑；不自动重切已入库文件（UI 提示重新入库即可）。
+
+### 需求
+- **P4-1 切分器** 新增 `src/code_chunker.py`：
+  - `LANGUAGE_MAP = {".py":"python", ".js":"javascript", ".ts":"typescript", ".java":"java", ".go":"go", ".rs":"rust", ".c":"c", ".cpp":"cpp"}` 为代码后缀**唯一来源**；`config.ALLOWED_FILE_TYPES` 默认值与 `DocumentLoader.READERS` 的代码部分由它派生（同时补齐 `c/yml/markdown` 不一致）。
+  - `LanguageAwareNodeParser(NodeParser)`：按 `doc.metadata["file_type"]` 分派——命中 `LANGUAGE_MAP` 且 `CODE_AWARE_CHUNKING=true` 且依赖可用 → 代码路径；否则 `SentenceSplitter(CHUNK_SIZE, CHUNK_OVERLAP)`。
+  - 代码路径：llama-index `CodeSplitter(language, max_chars=CODE_CHUNK_MAX_CHARS)` → **碎片合并**（块 `<CODE_CHUNK_MIN_CHARS` 或仅含签名/装饰器/`class X:` 行的块并入**下一块**，末尾碎片并入上一块；合并后允许超 `max_chars` 至 1.5 倍）→ **上下文补全**：用 tree-sitter 节点树反查块首所在最内层 `class/function` 祖先，写 metadata `symbol`（如 `RAGEngine._ensure_bm25`）、`start_line`、`end_line`、`language`、`chunk_strategy="code"`，块文本首行加注释头 `# {file_name} · {symbol} · L{start}-L{end}`（进 embedding 与 prompt）。文本路径块 `chunk_strategy="text"`。
+  - 单函数超 `max_chars×3` → 函数体交 `SentenceSplitter` 二次切，metadata 保留 `symbol` 并加 `part="i/n"`。
+  - tree-sitter `ERROR` 节点占比 >30% → 整文件回退文本路径，`chunk_strategy="text(fallback:parse_error)"`。
+  - `is_available() -> bool`、`availability_message() -> str`（缺依赖时给出 `pip install tree-sitter-language-pack`，三处 UI 同源文案）、`build_node_parser()` 工厂。
+  - 配置：`CODE_AWARE_CHUNKING`（默认 `true`）、`CODE_CHUNK_MAX_CHARS`（默认 `1500`，≈400 token，与 rerank 400 字截断对齐）、`CODE_CHUNK_MIN_CHARS`（默认 `120`）；`Config` dataclass 映射；`.env.example` 注释。
+- **P4-2 引擎接入** `rag_engine.py`：
+  - `build_index` / `load_index` / `add_documents` 统一使用 `self._node_parser = build_node_parser()`（`from_documents(..., transformations=[parser])`；`load_index_from_storage` 后设置 `index._transformations`），修复 `load_index` 缺失。
+  - `_register_file_metadata` 用同一 parser 计算 `chunk_count`，并写入 `FileMetadata.chunk_strategy`（`code(python)` / `text`）与 `symbol_count`；`FileMetadata` dataclass 加这两个字段（旧 JSON 缺字段按默认值读取）；`_backfill_file_metadata_from_vector_store` 从 node metadata 反推。
+  - `query_with_sources` 与 BM25 entries 透出 `symbol/start_line/end_line/language/chunk_strategy`；`add_documents(..., progress_callback=None)` 发 `stage="chunk"`（`current/total` 文件）与 `stage="embed"`（块数）事件供 CLI/Web 进度。
+  - `_bm25_tokenize` 拆 `snake_case` / `camelCase`（保留原 token + 子 token）；`rrf_fuse` 去重键改 `(path, start_line 或 content[:500])`。
+  - `get_stats()` 增 `code_chunking`（`"enabled (tree-sitter-language-pack x.y) · max 1500 chars"` / `"disabled: <原因>"`）。
+- **P4-3 RAG 管道** `rag_pipeline.py`：`format_kb_context` 对代码块输出 `[i]（来自 file · symbol · L12-L48）`，去掉块内注释头避免重复；`synthesize_prompt` 追加一条"引用代码时可注明函数名与行号"；`rerank / kb_merged` 进度事件 payload 带 `symbols`（命中代码块的符号名列表）以便前端文案显示符号而非文件名。
+- **P4-4 CLI**（不新增斜杠命令，开关走 `.env`）：
+  - `/add` 成功文案：`✅ 已入库 N 个文件 · M 个片段（其中 a 个代码文件按函数/类切分，共 s 个符号）`；缺依赖首次追加 dim 行 `💡 代码感知分块未启用（…）：pip install tree-sitter-language-pack`（进程内只提示一次）；追加入库接 rich `Progress`（`切分 [i/n 文件]` → `嵌入 [j/m 块]`），首次建库沿用 tqdm。
+  - `/file-list` 每文件加 dim 行 `🧩 片段: 27 · 分块: 代码(python)`；旧库无字段显示 `分块: 文本（重新 /add 可启用代码分块）`。
+  - `/file-info` 在 `🧩 Chunk数` 后加 `🧬 分块策略: 代码(python) · 27 个符号`。
+  - `/sources` 表「文件」列对代码块两行：文件名 + dim `symbol · L534-581`；内容片段剔除注释头。
+  - `/ask` 摘要行 `📚 基于知识库 5 个片段（3 个代码符号）`。
+  - `/stats` 自动显示 `code_chunking`；`--build-only` 补传 `file_paths`。
+  - `/help` 与 `TUTORIAL_TEXT`「📚 RAG 知识库」段加一句"代码文件按函数/类切分，引用可定位到行号"。
+- **P4-5 Web**（保持系统页只读、5 张统计卡不增卡、文件表不加列）：
+  - 知识库页上传/追加状态行同 CLI 文案（`_fmt_result` 换 emoji）；缺依赖第二行 `💡 代码感知分块未启用（缺依赖，见系统页）`；入库接 `ProgressTracker`（`stage=chunk|embed`，`current/total` 原地刷新），进行中禁用上传按钮。
+  - 文件表「片段」列改 `27 · 代码` / `12 · 文本`（`column_widths` 不变）；详情面板加 `分块策略` 与 `符号数` 两行，旧文件显示 `文本 · 重新入库可启用代码分块`。
+  - 聊天页来源：标题 `**[3] rag_engine.py** · \`RAGEngine._ensure_bm25\` · L534-581 （相似度 0.71）`；代码块内容按 `language` 用 ``` 围栏渲染，文本块仍 blockquote；面板整体仍默认折叠。「处理过程」`rerank` 文案命中代码块时显示符号名。
+  - 系统页「分块大小 / 重叠」拆两行：`文本分块 / 重叠：1024 / 200`、`代码分块：启用 · max 1500 字 · tree-sitter-language-pack 1.16.2`（或 `未启用：<原因>，pip install …`）；统计卡「分块 / 重叠」改 `分块：1024 / 代码 1500`。
+  - 多 Agent `presenter.format_sources_md` 与单 Agent `query_knowledge_base` Observation 每条带 `（symbol L12-48）`。
+- **P4-6 依赖与打包**：`requirements.txt` 加可选依赖注释块（同 cross-encoder 模式，不进必装列表）；`requirements-build.txt` 加 `tree-sitter-language-pack>=1.16,<2`（打包版内置）；`packaging/cerebro.spec` `collect_all("tree_sitter_language_pack")` 与 `collect_all("tree_sitter")`；macOS 签名脚本确认递归签到 `_native.abi3.so`；Linux 构建镜像 glibc ≥ 2.34（Ubuntu 22.04+）。
+
+### 验收
+- `tests/test_code_chunker.py`：语言分派、碎片合并（签名并入体 / 尾碎片并入前块）、metadata（symbol / 行号 / 注释头）、超大函数二次切分、语法错误回退、缺依赖回退（monkeypatch 导入失败）、`CODE_AWARE_CHUNKING=false`；真实解析用例 `pytest.importorskip("tree_sitter_language_pack")`，Mock 用例不依赖。
+- `tests/test_rag_engine.py`：`load_index` 设 parser、`chunk_count` 与实际切分一致、`_bm25_tokenize` 拆词、`rrf_fuse` 新去重键、sources 透出新字段、`get_stats().code_chunking`。
+- `tests/test_web_app.py` / `test_web_services.py` / CLI 处理器测试：新文案、文件表列、详情面板、来源渲染（代码围栏）、系统页两行、进度事件；`tests/test_document_loader.py` 白名单一致。
+- 覆盖率 ≥80%；`src/` 中 `SentenceSplitter(` 直接构造只剩 `code_chunker.py` 一处。
+- 手动：`/add src/rag_engine.py` 后提问"_ensure_bm25 做了什么"，`/sources` 显示 `RAGEngine._ensure_bm25 · L534-581` 且片段以 `def _ensure_bm25` 开头；Web 同一流程来源面板显示围栏代码块与行号，无 console error。
+
+### 风险与对策
+| 风险 | 对策 |
+|---|---|
+| 代码 chunk 数 ×3-4，embedding 时间同比增加 | 进度可见；`CODE_CHUNK_MAX_CHARS` 可调；文档说明 |
+| 旧库（文本块）与新库（代码块）混存 | 文件表/列表标注策略并提示重新入库；不强制重切 |
+| tree-sitter API 变动 | 锁 `>=1.16,<2`；只用 `get_parser` + 节点 `type/start_point/end_point/children` |
+| Linux 旧 glibc 无 wheel | 可选依赖 + 自动回退；打包镜像 22.04+ |
+| `TOP_K=10` 对小块偏紧 | 默认不改；验收用 `src/` 全库实测，必要时后续加 `KB_CODE_TOP_K` |
+
+---
+
+## 6. 实施顺序与交付
+1. P0（含 P1-1 的 `allowed_tools/system_prompt_extra` 前置能力）→ 2. P1 → 3. P2 → 4. P3 → 5. P4（P4-1 → P4-2 → P4-3 → P4-4 → P4-5 → P4-6，建议 3 个提交：核心 / 展示 / 打包与文档）。
 2. 每个 P 级完成后：全量测试通过、更新 CHANGELOG/README/本文件状态、提交（中文 commit，风格见 `git log -5`）、询问是否创建 PR（建议每个 P 级一个 PR，基于 `feat/agent-modes-optimization`）。
 3. 浏览器验证（Web 相关项）：`/tmp/pw/bin/python` + `p.chromium.launch(channel="chrome", headless=True)`；启动 `cd src && ../venv/bin/python -c "import web.app as a; a.launch(server_port=7861)"`。
 
@@ -167,4 +240,19 @@ type 只能取: code_generation|testing|documentation|knowledge_retrieval|audit|
 ```
 - 工具返回 [格式错误]/[用户拒绝]/[错误] 时，修正后重试一次；连续两次失败换方法或说明原因。
 - 相同工具与参数不要重复调用；已有结果直接使用。
+```
+**代码块上下文注入与综合（P4-3）**：P4 不新增独立 LLM 调用，只调整两处既有提示词。
+
+`format_kb_context` 中代码块的编号头（文本块保持 `[i]（来自 f）`）：
+```
+[{i}]（来自 {file_name} · {symbol} · L{start_line}-L{end_line}）
+{chunk 去掉首行注释头后的原文}
+```
+`synthesize_prompt` 规则列表末尾追加一条：
+```
+- 引用代码片段时，在 [i] 之外可注明函数/类名与行号（如 `_ensure_bm25`，L534-581），便于用户定位；不要编造片段中没有的行号。
+```
+块内注释头（进 embedding，不进 prompt，由 `code_chunker` 生成）：
+```
+# {file_name} · {symbol} · L{start_line}-L{end_line}
 ```

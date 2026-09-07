@@ -50,10 +50,15 @@ class FakeRAG:
             "sources": [{"content": "c", "score": 0.9, "file": "f.md", "path": "/f.md"}],
         }
 
-    def add_documents(self, docs, file_paths=None):
+    def add_documents(self, docs, file_paths=None, progress_callback=None):
         if self.raise_on_add:
             raise RuntimeError("add-fail")
         self.added.append((docs, file_paths))
+        if progress_callback:
+            progress_callback({"stage": "chunk", "message": "切分 a (1/1)", "current": 1, "total": 1})
+            progress_callback({"stage": "embed", "message": "生成向量 2/2", "current": 2, "total": 2})
+        # 模拟 P4 的按文件统计
+        self.last_ingest_stats = getattr(self, "ingest_stats", None) or {}
 
     def build_index(self, docs, file_paths=None):
         self.built = (docs, file_paths)
@@ -1904,3 +1909,109 @@ class TestChatAutoStream:
         events = list(svc.chat_auto_stream("什么是 RAG？", session_id=sid))
         assert events[-1].data["context"]  # 已写入会话并带上下文指标
         assert [m["content"] for m in svc.chat_history(sid)] == ["什么是 RAG？", "回答"]
+
+
+# ==================== F8 P4：代码感知分块（入库文案 / 进度流 / 文件元数据 / 系统页）====================
+
+class TestCodeAwareIngest:
+    def test_add_documents_summary_uses_ingest_stats(self):
+        rag = FakeRAG()
+        rag.ingest_stats = {
+            "/a.py": {"chunk_count": 10, "symbol_count": 8, "chunk_strategy": "code(python)"},
+            "/b.md": {"chunk_count": 3, "symbol_count": 0, "chunk_strategy": "text"},
+        }
+        svc = make_service(rag=rag)
+        msg = svc.add_documents(["/a.py", "/b.md"])
+        assert msg.startswith("[成功] 已入库 2 个文件 · 13 个片段")
+        assert "1 个代码文件按函数/类切分，共 8 个符号" in msg
+
+    def test_add_documents_hint_once_when_code_chunking_disabled(self, monkeypatch):
+        import code_chunker
+        code_chunker.reset_hint()
+        monkeypatch.setattr(code_chunker, "_load_pack", lambda: None)
+        monkeypatch.setattr(code_chunker, "CODE_AWARE_CHUNKING", True)
+        rag = FakeRAG()
+        rag.ingest_stats = {"/a.py": {"chunk_count": 2, "symbol_count": 0, "chunk_strategy": "text"}}
+        svc = make_service(rag=rag)
+        first = svc.add_documents(["/a.py"])
+        assert "💡" in first and "tree-sitter-language-pack" in first
+        second = svc.add_documents(["/a.py"])
+        assert "💡" not in second
+        # 非代码文件不提示
+        code_chunker.reset_hint()
+        rag.ingest_stats = {"/b.md": {"chunk_count": 2, "symbol_count": 0, "chunk_strategy": "text"}}
+        assert "💡" not in svc.add_documents(["/b.md"])
+        code_chunker.reset_hint()
+        code_chunker.reset_availability_cache()
+
+    def test_add_path_summary_and_graph_note(self):
+        rag = FakeRAG()
+        rag.ingest_stats = {"/d/x.py": {"chunk_count": 4, "symbol_count": 3, "chunk_strategy": "code(python)"}}
+        rag.last_graph_derived = True
+        svc = make_service(rag=rag)
+        msg = svc.add_path("/d")
+        assert msg.startswith("[成功] 已入库 1 个文件 · 4 个片段（其中 1 个代码文件")
+        assert "已同步更新知识图谱" in msg
+
+    def test_add_path_without_stats_keeps_legacy_text(self):
+        svc = make_service()
+        msg = svc.add_path("/d")
+        assert "已入库 1 个文件，共 1 个片段" in msg
+
+    def test_ingest_stream_upload_emits_progress_then_answer(self):
+        rag = FakeRAG()
+        rag.ingest_stats = {"/a.py": {"chunk_count": 2, "symbol_count": 1, "chunk_strategy": "code(python)"}}
+        svc = make_service(rag=rag)
+        events = list(svc.ingest_stream(file_paths=["/a.py"]))
+        kinds = [e.kind for e in events]
+        assert kinds.count("progress") == 2 and kinds[-1] == "answer"
+        stages = [e.data.get("stage") for e in events if e.kind == "progress"]
+        assert stages == ["chunk", "embed"]
+        assert events[-1].message.startswith("[成功]")
+        assert rag.added[0][1] == ["/a.py"]
+
+    def test_ingest_stream_path_mode_and_error(self):
+        svc = make_service()
+        events = list(svc.ingest_stream(path="/docs", file_types=".md"))
+        assert events[-1].kind == "answer" and "[成功]" in events[-1].message
+        rag = FakeRAG()
+        rag.raise_on_add = True
+        svc = make_service(rag=rag)
+        events = list(svc.ingest_stream(path="/docs"))
+        assert events[-1].kind == "answer" and events[-1].message.startswith("[错误]")
+
+    def test_ingest_stream_worker_exception_becomes_error_event(self):
+        def bad_loader(p, file_types=None):
+            raise SystemExit("boom")
+        svc = make_service(load_documents=bad_loader)
+        events = list(svc.ingest_stream(path="/docs"))
+        # add_path 捕获 BaseException 返回 [错误]；此处验证流不会中断
+        assert events[-1].kind in ("answer", "error")
+
+    def test_file_meta_dict_includes_chunking_fields(self):
+        from web.services import _describe_chunking
+        manager = MagicMock()
+        manager._format_size.return_value = "1 KB"
+        fm = MagicMock(file_path="/k/a.py", file_size=10, persistence_type="permanent", upload_time="2026-01-01T00:00:00",
+                       last_access="", access_count=1, document_count=1, chunk_count=9, tags=[], file_hash="h",
+                       chunk_strategy="code(python)", symbol_count=7)
+        d = WebService._file_meta_dict(manager, fm)
+        assert d["chunk_strategy"] == "code(python)" and d["symbol_count"] == 7
+        assert d["chunking"] == "代码(python) · 7 个符号" and d["chunking_short"] == "代码"
+        fm2 = MagicMock(file_path="/k/a.md", chunk_strategy="text", symbol_count=0)
+        assert _describe_chunking(fm2, short=True) == "文本"
+        assert _describe_chunking(fm2) == "文本"
+
+    def test_env_info_has_code_chunking(self):
+        svc = make_service()
+        info = svc.env_info()
+        assert "code_chunking" in info
+        assert info["code_chunking"].startswith("启用") or info["code_chunking"].startswith("未启用")
+
+    def test_code_chunking_env_text_disabled(self, monkeypatch):
+        import code_chunker
+        from web.services import _code_chunking_env_text
+        monkeypatch.setattr(code_chunker, "_load_pack", lambda: None)
+        code_chunker.reset_availability_cache()
+        assert _code_chunking_env_text().startswith("未启用：")
+        code_chunker.reset_availability_cache()

@@ -1,4 +1,4 @@
-# F8 启动提示词：三种对话模式优化（P0-P3）
+# F8 启动提示词：三种对话模式优化（P0-P4）
 
 > 用法：新开任务时把「提示词正文」整段贴给 Agent。需求细节与代码事实都在
 > `docs/features/f8-agent-modes-optimization/REQUIREMENTS.md`（下称 REQ），Agent 应先读它，**不要重复调研已核实事实**。
@@ -9,12 +9,12 @@
 ## 提示词正文
 
 ```
-# 任务：实现三种对话模式优化（RAG / 单 Agent / 多 Agent），按 P0→P1→P2→P3 顺序
+# 任务：实现三种对话模式优化（RAG / 单 Agent / 多 Agent），按 P0→P1→P2→P3→P4 顺序
 
-先完整阅读 docs/features/f8-agent-modes-optimization/REQUIREMENTS.md（REQ）。其 §0 是已核实的代码事实与文件:行号，直接采信，勿重复调研；§1-§4 是需求与验收；附录 A 是 LLM 提示词草案。
+先完整阅读 docs/features/f8-agent-modes-optimization/REQUIREMENTS.md（REQ）。其 §0 是已核实的代码事实与文件:行号，直接采信，勿重复调研；§1-§5 是需求与验收；附录 A 是 LLM 提示词草案。
 
 ## 本次范围
-P0 → P1 → P2 → P3 全部（若上下文不足，至少完成一个完整 P 级并提交，再在总结中说明下一步）。
+P0 → P1 → P2 → P3 → P4 全部（若上下文不足，至少完成一个完整 P 级并提交，再在总结中说明下一步）。P0-P3 已完成时只做 P4（REQ §5，事实见 §0.5）。
 
 ## 环境与规则
 - 分支：feat/agent-modes-optimization（已存在，直接提交，不新建）。禁止提交 master。
@@ -30,6 +30,7 @@ P0：P0-1 四个桩 Agent 委托 ReActEngine（需先做 P1-1 的 allowed_tools/
 P1：P1-1 提示分层 → P1-2 协议容错 → P1-3 步数耗尽总结 → P1-4 重复检测 → P1-5 本轮预算 → P1-6 知识库工具对齐 → P1-7 安全分级/路径边界 → P1-8 step_log 事件。验收：builtin 提示 ≤1.5K token（estimate_tokens）。
 P2：P2-1 rerank（llm 默认，cross-encoder 可选回退）→ P2-2 检索规划+多跳（与搜索规划合并为一次 LLM）→ P2-3 编号引用 + think 透出 → P2-4 BM25 hybrid → P2-5 fallback 提示。验收：简单问题 LLM 调用次数不增加。
 P3：P3-1 intent_router → P3-2 CLI /auto → P3-3 Web「自动」模式默认。
+P4：P4-1 code_chunker（LanguageAwareNodeParser + 碎片合并 + symbol/行号 metadata + 可选依赖回退）→ P4-2 rag_engine 统一 parser / chunk_count / sources 透出 / BM25 拆词 / RRF 键 → P4-3 format_kb_context 与综合 prompt → P4-4 CLI（/add 文案与进度、/file-list、/file-info、/sources、/ask 摘要、/stats、help）→ P4-5 Web（入库文案与进度、文件表、详情、来源围栏渲染、系统页、统计卡、presenter、agent_tools）→ P4-6 requirements / requirements-build / cerebro.spec。验收：`src/` 中 `SentenceSplitter(` 直接构造只剩 code_chunker.py；tree-sitter 未安装时全量测试仍通过（importorskip）。
 
 ## 完成后输出
 各 P 级：改动文件清单、新增测试数、覆盖率、验收项逐条结果、未完成/风险。

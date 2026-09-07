@@ -102,6 +102,10 @@ class TestRAGToolsWithEngine:
         # 超过 20 个文件折叠
         many = {"kind": "meta", "meta": {"files": [{"path": f"/f{i}.md", "size": "1K"} for i in range(25)]}}
         assert "另有 5 个文件" in format_kb_tool_result(many)
+        # P4：代码块带 符号 · 行号，便于模型 read_file 精确读取
+        code = format_kb_tool_result({"kind": "answer", "answer": "a", "kb_sources": [
+            {"file": "e.py", "content": "def run(): pass", "score": 0.8, "symbol": "E.run", "start_line": 10, "end_line": 20}]})
+        assert "[e.py · E.run L10-20]（相关度 0.80）" in code
 
     def test_add_with_engine(self, mock_rag_engine):
         set_rag_engine(mock_rag_engine)

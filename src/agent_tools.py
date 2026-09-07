@@ -482,7 +482,14 @@ def format_kb_tool_result(result: Dict[str, Any]) -> str:
             text = text[:KB_TOOL_SNIPPET_CHARS] + "…"
         score = src.get("score")
         score_s = f"（相关度 {float(score):.2f}）" if isinstance(score, (int, float)) else ""
-        lines.append(f"{i}. [{name}]{score_s} {text or '（无正文）'}")
+        # 代码块附 符号 · 行号：模型可据此 read_file 精确读取该行段
+        loc = ""
+        if src.get("symbol"):
+            loc += f" {src['symbol']}"
+        if src.get("start_line") is not None:
+            loc += f" L{src['start_line']}-{src.get('end_line') or src['start_line']}"
+        label = f"[{name}{' ·' + loc if loc else ''}]"
+        lines.append(f"{i}. {label}{score_s} {text or '（无正文）'}")
     return "\n".join(lines)
 
 

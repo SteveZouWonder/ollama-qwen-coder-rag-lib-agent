@@ -154,10 +154,14 @@ try:
     from rich import box
     from rich.table import Table
     from rich.prompt import Prompt
+    from rich.markup import escape
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
     print("[提示] 安装 rich 可获得更好的输出体验: pip install rich")
+
+    def escape(text):  # type: ignore[misc]  # pragma: no cover - rich 缺失时的兜底
+        return str(text)
 
 try:
     from prompt_toolkit import prompt as pt_prompt
@@ -295,7 +299,8 @@ TUTORIAL_TEXT = """
 
 1. 📚 RAG 知识库
    基于 LlamaIndex + ChromaDB 构建的个人文档检索系统。
-   支持 PDF、Markdown、论文、代码文件等 14 种格式。
+   支持 PDF、Markdown、论文、代码文件等 17 种格式。
+   代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）按函数/类切分，引用可定位到行号。
    上传文档后，可直接用自然语言查询内容。
 
 2. 🤖 ReAct Agent
@@ -610,7 +615,7 @@ def print_help():
   /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
   /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
-  /add <path>        添加文档到知识库（PDF/MD/TXT/代码等）
+  /add <path>        添加文档到知识库（PDF/MD/TXT/代码等；代码按函数/类切分，来源带 符号·行号）
   /stats             显示知识库统计
   /sources           显示上次知识库回答的来源
   /clear             清空屏幕
@@ -759,15 +764,39 @@ def print_rag_sources(sources: list):
             note = (src.get("rerank_note") or "").strip()
             if note:
                 content += f"\n[dim]相关性：{note}[/dim]"
-            table.add_row(ref, src['file'], score, content)
+            # 代码块：文件名下一行显示 符号 · 行号（可直接定位）
+            file_cell = escape(str(src.get('file', '未知')))
+            loc = _source_code_location(src)
+            if loc:
+                file_cell += f"\n[dim]{escape(loc)}[/dim]"
+            table.add_row(ref, file_cell, score, content)
         console.print(table)
     else:
         print("=== 参考来源 ===")
         for i, src in enumerate(sources, 1):
             ref = f"[{src.get('ref') or i}]"
             score = f"({src['score']:.3f})" if src.get('score') else ""
-            print(f"  {ref} {src['file']} {score}")
+            loc = _source_code_location(src)
+            head = f"{ref} {src['file']}" + (f" · {loc}" if loc else "")
+            print(f"  {head} {score}".rstrip())
             print(f"    {src['content'][:100]}...")
+
+
+def _source_code_location(src: dict) -> str:
+    """代码来源的 ``symbol · L起-止`` 文案；文本来源返回空串。"""
+    parts = []
+    if src.get("symbol"):
+        parts.append(str(src["symbol"]))
+    if src.get("start_line") is not None:
+        parts.append(f"L{src['start_line']}-{src.get('end_line') or src['start_line']}")
+    if src.get("part"):
+        parts.append(f"({src['part']})")
+    return " · ".join(parts)
+
+
+def count_code_sources(sources: list) -> int:
+    """来源中代码块（带 symbol）的数量，用于 /ask 摘要行。"""
+    return sum(1 for s in sources or [] if isinstance(s, dict) and s.get("symbol"))
 
 def print_knowledge_stats():
     global rag_engine
@@ -1648,7 +1677,9 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
 
     # 确定性双区块来源展示：明确区分知识库来源与网络来源
     if last_rag_sources:
-        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段", style="dim")
+        n_code = count_code_sources(last_rag_sources)
+        suffix = f"（{n_code} 个代码符号）" if n_code else ""
+        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}", style="dim")
     if last_web_sources:
         console.print()
         print_web_sources(last_web_sources)
@@ -1941,7 +1972,15 @@ def main():
             file_types = [t.strip() for t in args.types.split(",")]
         documents = load_documents(args.data, file_types)
         if documents:
-            rag_engine.build_index(documents)
+            # 传入 file_paths：文档缺 file_path 元数据时仍能登记文件元数据
+            rag_engine.build_index(documents, file_paths=[args.data])
+            try:
+                from code_chunker import format_ingest_summary
+                stats = getattr(rag_engine, "last_ingest_stats", None) or {}
+                if stats:
+                    console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
+            except Exception:  # noqa: BLE001
+                pass
         else:
             console.print("⚠️  未找到任何文档", style="yellow")
     else:

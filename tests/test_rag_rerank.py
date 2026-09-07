@@ -206,3 +206,22 @@ class TestCrossEncoder:
         kept = rag_rerank.rerank("q", _srcs(2), progress=cb, complete=lambda p: '{"keep":[1]}', kind="cross-encoder")
         assert [s["file"] for s in kept] == ["f1.md"]
         assert any(e["stage"] == "rerank_fallback" and "no gpu" in e["message"] for e in evts)
+
+
+class TestRerankCodeSymbols:
+    def test_prompt_labels_code_chunks_with_symbol(self):
+        from rag_rerank import build_rerank_prompt
+        p = build_rerank_prompt("q", [{"file": "a.py", "content": "x", "symbol": "A.run"}, {"file": "b.md", "content": "y"}])
+        assert "[1]（a.py · A.run）x" in p and "[2]（b.md）y" in p
+
+    def test_rerank_done_event_includes_symbols(self):
+        import rag_rerank
+        from unittest.mock import patch
+        events = []
+        srcs = [{"file": f"{i}.py", "content": "c", "score": 0.5, "symbol": f"s{i}"} for i in range(5)]
+        with patch.object(rag_rerank, "llm_rerank", return_value={"keep": [1, 2, 3, 4], "notes": {}}):
+            kept = rag_rerank.rerank("q", srcs, progress=events.append, kind="llm")
+        assert len(kept) == 4
+        done = [e for e in events if e.get("stage") == "rerank_done"]
+        assert done and done[0]["symbols"] == ["s0", "s1", "s2", "s3"]
+        assert "`s0`, `s1`, `s2` 等 4 个符号" in done[0]["message"]

@@ -167,6 +167,16 @@ RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 RAG_HYBRID = os.getenv("RAG_HYBRID", "true").strip().lower() in ("1", "true", "yes", "on")
 RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "20000"))
 
+# ==================== 代码感知分块（F8 P4）====================
+# CODE_AWARE_CHUNKING：代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）入库时按函数/类边界
+#   切分（tree-sitter），片段带 symbol / 行号元数据，引用可定位到 `文件 · 符号 · L起-止`。
+#   可选依赖 tree-sitter-language-pack 未安装或解析失败时自动回退通用 SentenceSplitter。
+CODE_AWARE_CHUNKING = os.getenv("CODE_AWARE_CHUNKING", "true").strip().lower() in ("1", "true", "yes", "on")
+# 单个代码片段的字符上限（≈400 token，与 rerank 的 400 字截断对齐）；超长函数体再二次切分。
+CODE_CHUNK_MAX_CHARS = int(os.getenv("CODE_CHUNK_MAX_CHARS", "1500"))
+# 小于该字符数的碎片（如单独的签名/装饰器/`class X:` 行）并入相邻片段。
+CODE_CHUNK_MIN_CHARS = int(os.getenv("CODE_CHUNK_MIN_CHARS", "120"))
+
 # ==================== 网络搜索配置 ====================
 # 此前网络搜索完全未设 region/backend，DuckDuckGo 默认 us-en，天然偏英文/海外
 # 结果，导致中国国内信息（中文网页、国行价格、国内新闻等）召回与准确率很差。
@@ -219,7 +229,12 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", "10485760"))  # 10MB
 MAX_TOTAL_SIZE = int(os.getenv("MAX_TOTAL_SIZE", "104857600"))  # 100MB
 
 # 文件类型控制
-ALLOWED_FILE_TYPES = os.getenv("ALLOWED_FILE_TYPES", "pdf,md,txt,py,js,ts,java,cpp,go,rs,html,json,yaml,xml").split(",")
+# 代码文件后缀（不带点）：与 code_chunker.LANGUAGE_MAP 一一对应，document_loader.READERS 与
+# ALLOWED_FILE_TYPES 默认值均由此派生，避免三处白名单不一致。
+CODE_FILE_EXTENSIONS = ("py", "js", "ts", "java", "go", "rs", "c", "cpp")
+DOC_FILE_EXTENSIONS = ("pdf", "md", "markdown", "txt", "html", "json", "yaml", "yml", "xml")
+_DEFAULT_ALLOWED_FILE_TYPES = ",".join(DOC_FILE_EXTENSIONS + CODE_FILE_EXTENSIONS)
+ALLOWED_FILE_TYPES = os.getenv("ALLOWED_FILE_TYPES", _DEFAULT_ALLOWED_FILE_TYPES).split(",")
 BLOCKED_FILE_PATTERNS = os.getenv("BLOCKED_FILE_PATTERNS", "*.tmp,*.cache,*.log,node_modules,__pycache__").split(",")
 
 # 文件去重和清理
@@ -334,6 +349,9 @@ class Config:
     AUTO_CONFIRM: bool = AUTO_CONFIRM
     AUTO_ROUTE: bool = AUTO_ROUTE
     WRITE_ALLOWED_DIRS: str = WRITE_ALLOWED_DIRS
+    CODE_AWARE_CHUNKING: bool = CODE_AWARE_CHUNKING
+    CODE_CHUNK_MAX_CHARS: int = CODE_CHUNK_MAX_CHARS
+    CODE_CHUNK_MIN_CHARS: int = CODE_CHUNK_MIN_CHARS
     READONLY_COMMANDS: tuple = READONLY_COMMANDS
     DANGEROUS_PATTERNS: tuple = DANGEROUS_PATTERNS
     FIRST_RUN_MARKER: str = FIRST_RUN_MARKER

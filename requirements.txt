@@ -25,6 +25,11 @@ rank_bm25>=0.2.2
 #   pip install sentence-transformers
 # 模型由 RERANKER_MODEL 指定，默认 BAAI/bge-reranker-v2-m3（首次使用自动下载）
 
+# 可选：代码感知分块（CODE_AWARE_CHUNKING=true 默认开启，缺依赖自动回退 SentenceSplitter）
+# 代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）按函数/类切分，引用可定位到符号与行号。
+# 预编译 wheel 约 5 MB（mac/linux glibc>=2.34/win），按需安装：
+#   pip install "tree-sitter-language-pack>=1.16,<2"
+
 # 文档处理
 pypdf>=6.15.0,<7
 pymupdf>=1.25.0  # PDF图像提取（兼容新版本，使用 import pymupdf as fitz）

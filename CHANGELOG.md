@@ -10,6 +10,28 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **代码感知分块（F8 P4）**：
+  - **按函数 / 类切分代码文件**：新增 `src/code_chunker.py::LanguageAwareNodeParser`，`.py/.js/.ts/.java/.go/.rs/.c/.cpp`
+    入库时用 tree-sitter 按语法结构切块（签名与函数体不分离、碎片并入相邻块、超长块按行二次切分、
+    块边界对齐行首），其余文件仍走 `SentenceSplitter`。每个代码片段带 `symbol`（如 `RAGEngine._ensure_bm25`）、
+    `start_line/end_line`、`language`、`chunk_strategy` 元数据与首行注释头（进 embedding 与 BM25），同一符号跨多块标
+    `part i/n`。依赖 `tree-sitter-language-pack` 为可选（`requirements.txt` 注释块；打包版内置）：未安装、
+    `CODE_AWARE_CHUNKING=false` 或语法错误占比 >30% 时整文件回退文本切分，只产生提示级文案。
+    新增环境变量 `CODE_AWARE_CHUNKING`（默认 true）/ `CODE_CHUNK_MAX_CHARS`（1500）/ `CODE_CHUNK_MIN_CHARS`（120）。
+  - **来源可定位到行号**：`query_with_sources` / BM25 来源透出 `symbol / start_line / end_line / language`；
+    综合 prompt 中代码片段编号头为 `[i]（来自 file · symbol · L起-止）`并允许回答注明函数名与行号；rerank
+    提示词与「处理过程」`rerank_done / kb_merged` 事件显示命中的符号名。CLI `/sources` 在文件名下显示
+    `symbol · L534-581`，`/ask` 摘要行显示「（N 个代码符号）」；Web 来源面板标题带 `` `symbol` · L起-止 ``，
+    代码内容按语言用代码块渲染；多 Agent 来源列表与单 Agent `query_knowledge_base` Observation 同样带符号与行号。
+  - **入库反馈与进度**：`/add` 与 Web 上传 / 路径追加完成后显示
+    「已入库 N 个文件 · M 个片段（其中 a 个代码文件按函数/类切分，共 s 个符号）」；含代码文件但代码分块未启用时
+    追加一次性提示（进程内仅一次，附安装命令）。`RAGEngine.build_index / add_documents` 新增 `progress_callback`
+    （`stage=chunk|embed`），CLI 追加入库显示 rich 进度条（切分 / 嵌入两行），Web 结果区实时显示
+    「⏳ 切分 x/y → 嵌入 m/n · 已用时」并在进行中禁用「追加入库」按钮。
+  - **分块策略可见**：`FileMetadata` 新增 `chunk_strategy` / `symbol_count`；`/file-list` 每文件多一行
+    「🧩 片段: 27 · 分块: 代码(python) · 15 个符号」，`/file-info` 显示「🧬 分块策略」；Web 文件表「片段」列改为
+    「27 · 代码 / 12 · 文本」，详情面板新增「分块策略 / 符号数」；旧库中的代码文件提示「重新入库可启用代码分块」。
+    `/stats`、Web 知识库统计与「系统」页显示代码分块状态（启用 · max 1500 字 · 依赖版本 / 未启用原因）。
 - **入口智能路由（F8 P3）**：
   - **意图判定** `src/intent_router.py::classify_intent(text, kb_available)`：规则优先——含文件/目录
     路径（`/x/y.py`、`./`、`~/`、`*.ext`）、代码围栏、命令式动词（修改/创建/运行/…、create/run/fix/…）
@@ -219,6 +241,13 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- BM25 分词对 `snake_case` / `camelCase` 标识符在保留原词的同时追加子词（`_ensure_bm25` → `ensure`、`bm25`），
+  代码问答中问"ensure bm25"也能关键词命中；RRF 融合与多跳合并对代码块改用 `(路径, 起始行)` 去重，避免相似函数头误合并。
+- `RAGEngine.build_index / add_documents` 改为"先统一切分、再建索引 / 分批 `insert_nodes`"，切分结果直接用于文件元数据
+  统计，`chunk_count` 与向量库中的实际片段数一致（此前登记时重切一次估算）。
+- 代码后缀白名单收敛为 `config.CODE_FILE_EXTENSIONS` 单一来源：`DocumentLoader.READERS` 与 `ALLOWED_FILE_TYPES`
+  默认值由此派生（补齐此前缺失的 `c` / `yml` / `markdown`）。
+- `/help`、`/tutorial` 的知识库说明补充代码分块与行号定位；`--build-only` 补传 `file_paths` 并打印入库摘要。
 - CLI `handle_agent` 优先使用 `CLIContext.react_engine`（无则回退模块级引擎），与其他处理器一致。
 - `/help`、`/tutorial` 补充自动路由说明与 `/auto` 用法；Web 对话页空态提示改为介绍「自动」模式。
 - `.devin/SYSTEM_PROMPT.md`（v4.3.0）清理错误指引：不再要求读取 `~/.config/devin/*` 全局配置、
@@ -327,6 +356,11 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- `RAGEngine.load_index()` 此前未设置切分器，"启动加载已有索引 → 追加文档"会落到 LlamaIndex 默认
+  `SentenceSplitter(1024/200)` 而非 `.env` 的 `CHUNK_SIZE / CHUNK_OVERLAP`；现三条路径共用同一切分器。
+- `requirements-build.txt` 漏掉 `rank_bm25`，打包版 hybrid 召回会静默回退纯向量；已补入，并在 PyInstaller spec 中
+  `collect_all` 收集 `rank_bm25` / `tree_sitter` / `tree_sitter_language_pack`。
+- `FileMetadata.from_dict` 忽略未知键，旧版 `metadata.json` 与新增字段互相兼容。
 - 单 Agent 此前把无 `Final Answer` 的裸文本 / 非 JSON 的 `Action Input` / `[错误] 模型调用失败`
   整段当作最终答案并写入会话、步数耗尽只返回固定警告丢弃全部中间结果、相同调用无限重复、
   本轮 ReAct 往返（≤50 步 × ≤5000 字符）无截断折叠——均已在 F8 P1 中修正。

@@ -129,12 +129,26 @@ def format_sources(sources: List[Dict[str, Any]]) -> str:
         file_name = src.get("file", "未知")
         content = (src.get("content") or "").strip()
         ref = str(src.get("ref") or i)
-        lines.append(f"**[{ref}] {file_name}** {score_str}".rstrip())
+        # 代码块：标题带 `符号` · L起-止，内容用对应语言的围栏渲染（可定位、可复制）
+        loc = ""
+        if src.get("symbol"):
+            loc += f" · `{src['symbol']}`"
+        if src.get("start_line") is not None:
+            loc += f" · L{src['start_line']}-{src.get('end_line') or src['start_line']}"
+        if src.get("part"):
+            loc += f"（{src['part']}）"
+        lines.append(f"**[{ref}] {file_name}**{loc} {score_str}".rstrip())
         note = (src.get("rerank_note") or "").strip()
         if note:
             lines.append(f"_相关性：{note}_")
         if content:
-            lines.append(f"> {content}")
+            if src.get("symbol") or str(src.get("chunk_strategy", "")).startswith("code"):
+                lang = str(src.get("language") or "")
+                lines.append(f"```{lang}")
+                lines.append(content.replace("```", "ˋˋˋ"))
+                lines.append("```")
+            else:
+                lines.append(f"> {content}")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -212,6 +226,7 @@ def format_stats(stats: Dict[str, Any]) -> str:
         f"- Embedding 模型: `{stats.get('embed_model', '?')}`\n"
         f"- 分块大小: {stats.get('chunk_size', '?')}\n"
         f"- 分块重叠: {stats.get('chunk_overlap', '?')}\n"
+        f"- 代码分块: {stats.get('code_chunking', '?')}\n"
         f"- 检索数量 TOP_K: {stats.get('top_k', '?')}"
     )
 
@@ -482,7 +497,10 @@ def format_file_info(info: Dict[str, Any]) -> str:
         ("访问次数", info.get("access_count", 0)),
         ("文档数", info.get("document_count", 0)),
         ("片段数", info.get("chunk_count", 0)),
+        ("分块策略", info.get("chunking", "") or "文本"),
     ]
+    if info.get("symbol_count"):
+        rows.append(("符号数", info.get("symbol_count", 0)))
     tags = info.get("tags") or []
     if tags:
         rows.append(("标签", ", ".join(map(str, tags))))
@@ -508,7 +526,8 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("向量库路径", f"`{info.get('vector_db_path', '')}`"),
         ("会话存储", f"`{info.get('session_storage', '')}`"),
         ("TOP_K", info.get("top_k", "")),
-        ("分块大小 / 重叠", f"{info.get('chunk_size', '')} / {info.get('chunk_overlap', '')}"),
+        ("文本分块 / 重叠", f"{info.get('chunk_size', '')} / {info.get('chunk_overlap', '')}"),
+        ("代码分块", info.get("code_chunking", "") or "—"),
         ("相似度阈值", info.get("similarity_cutoff", "")),
         ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
         ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
@@ -530,7 +549,9 @@ def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) 
     if file_count is not None:
         cards.append(card("已登记文件", file_count))
     cards.append(card("Embedding", stats.get("embed_model", "?"), small=True))
-    cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}", small=True))
+    code = str(stats.get("code_chunking", "") or "")
+    code_label = f" / 代码 {stats.get('code_chunk_max_chars', '')}".rstrip() if code.startswith("enabled") else ""
+    cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}{code_label}", small=True))
     cards.append(card("TOP_K", stats.get("top_k", "?")))
     return f'<div class="cb-cards">{"".join(cards)}</div>'
 
@@ -1256,6 +1277,53 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         msg = service.add_documents(file_paths or [])
         return msg, format_stats(service.get_stats())
 
+    def _ingest_stream(**kwargs):
+        """流式入库公共实现：yield (结果 Markdown, 统计卡片 HTML)。
+
+        进行中：结果区显示「⏳ 切分 x/y · 嵌入 m/n · 已用时」+ 处理过程；完成后显示
+        结果文案（含代码分块摘要与一次性缺依赖提示）并刷新统计卡片。
+        """
+        tracker = ProgressTracker()
+        tracker.current = "准备入库…"
+        cards = on_stats_cards()  # 进行中保持原卡片不变，完成后刷新
+        yield tracker.render_status(), cards
+        final = None
+        for evt in service.ingest_stream(**kwargs):
+            if evt.kind == "progress":
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield tracker.render_status() + "\n\n" + tracker.render_steps("入库进度"), cards
+            elif evt.kind == "heartbeat":
+                yield tracker.render_status() + "\n\n" + tracker.render_steps("入库进度"), cards
+            elif evt.kind == "answer":
+                final = evt
+            elif evt.kind == "cancelled":
+                yield tracker.render_status("cancelled"), cards
+                return
+            elif evt.kind == "error":
+                yield f"❌ {evt.message}", on_stats_cards()
+                return
+        if final is None:
+            yield tracker.render_status("error", "未获得结果"), on_stats_cards()
+            return
+        msg = _fmt_result(str(final.message or ""))
+        ok = msg.startswith("✅")
+        took = f" · 用时 {format_elapsed(tracker.elapsed())}" if ok else ""
+        yield msg + took, on_stats_cards()
+
+    def on_upload_stream(file_paths: Optional[List[str]]):
+        """上传入库（流式进度）。"""
+        if not file_paths:
+            yield "💡 未选择任何文件", on_stats_cards()
+            return
+        yield from _ingest_stream(file_paths=list(file_paths))
+
+    def on_add_path_stream(path: str, file_types: str = ""):
+        """从路径追加入库（流式进度，等价 CLI /add）。"""
+        if not (path or "").strip():
+            yield "💡 请输入文件或目录路径", on_stats_cards()
+            return
+        yield from _ingest_stream(path=path, file_types=file_types)
+
     def on_refresh_stats() -> str:
         return format_stats(service.get_stats())
 
@@ -1499,7 +1567,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         """追加服务器上的文件/目录入库（等价 CLI /add）。返回 (结果, 统计卡片)。"""
         return _fmt_result(service.add_path(path, file_types)), on_stats_cards()
 
-    _FILE_HEADERS = ["文件", "大小", "类型", "上传时间", "片段", "访问", "路径"]
+    _FILE_HEADERS = ["文件", "大小", "类型", "上传时间", "片段 · 分块", "访问", "路径"]
 
     def on_file_table() -> List[List[Any]]:
         """文件表：首列文件名便于浏览，末列完整路径供选中行取值。"""
@@ -1507,9 +1575,10 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         for f in service.file_list():
             path = str(f.get("path", ""))
             name = path.rsplit("/", 1)[-1] if "/" in path else path
+            chunking = str(f.get("chunking_short") or "文本")
             rows.append([
                 name, f.get("size", ""), f.get("type", ""),
-                f.get("upload_time", ""), f.get("chunk_count", 0), f.get("access_count", 0), path,
+                f.get("upload_time", ""), f"{f.get('chunk_count', 0)} · {chunking}", f.get("access_count", 0), path,
             ])
         return rows
 
@@ -1759,7 +1828,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_sidebar_archive": on_sidebar_archive,
         "on_sidebar_delete": on_sidebar_delete,
         "on_stats_cards": on_stats_cards,
-        "on_add_path": on_add_path,
+        "on_add_path": on_add_path, "on_add_path_stream": on_add_path_stream, "on_upload_stream": on_upload_stream,
         "on_file_table": on_file_table,
         "on_file_info": on_file_info,
         "on_file_stats_md": on_file_stats_md,
