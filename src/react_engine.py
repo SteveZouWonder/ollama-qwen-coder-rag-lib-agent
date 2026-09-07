@@ -6,6 +6,7 @@ ReAct 推理引擎 - 带迭代可视化和安全确认
 import re
 import ast
 import json
+import logging
 import requests
 import threading
 import os
@@ -14,6 +15,8 @@ from typing import List, Dict, Callable, Optional, Tuple
 from config import Config
 from agent_tools import registry, CommandSafetyChecker
 from conversation_context import estimate_tokens, estimate_messages_tokens
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- 本轮鲁棒性参数（均可用环境变量覆盖）----------
@@ -50,32 +53,41 @@ def _truncate_observation(text: str, limit: int = None) -> str:
     return text[:limit] + f"\n…（Observation 已截断：原长 {len(text)} 字符，省略 {len(text) - limit} 字符）"
 
 
-def read_system_prompt_from_file():
+def read_project_rules() -> Optional[str]:
+    """读取项目附加规范 ``prompts/system/PROJECT_RULES.md``（三层解析见 ``prompt_assets``）。
+
+    文件不存在或读取失败返回 None，此时系统提示只用内置模板（+ Skills）。
     """
-    从 .devin/SYSTEM_PROMPT.md 读取项目附加规范
-    如果文件不存在，返回None
-    """
-    prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
-    if os.path.exists(prompt_file):
-        try:
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception:
-            # 如果读取失败，返回None使用默认提示
-            return None
-    return None
+    try:
+        from prompt_assets import load_project_rules
+        return load_project_rules()
+    except Exception:  # noqa: BLE001
+        return None
 
 
-# 项目附加规范的模式：builtin（只用内置模板）| append（内置 + 追加项目规范，默认）
-# | replace（项目规范整体替换内置模板，旧行为）。
+# 兼容旧名：历史上项目规范位于 .devin/SYSTEM_PROMPT.md
+read_system_prompt_from_file = read_project_rules
+
+
+# 项目附加规范的模式：builtin（只用内置模板）| append（内置 + 追加项目规范，默认）。
+# 历史上的 replace（用项目规范整体替换内置模板）已移除：PROJECT_RULES.md 是补充而非完整
+# 提示，传入 replace 按 append 处理。Skills 层与该模式无关，始终注入（CODE_AGENT_SKILLS=off 关闭）。
 PROMPT_MODE_ENV = "CODE_AGENT_PROMPT_MODE"
+PROMPT_MODES = ("builtin", "append")
 # 追加模式下项目规范的最大字符数（超出截断），避免挤占本轮推理预算。
 SYSTEM_PROMPT_EXTRA_MAX_CHARS = int(os.getenv("SYSTEM_PROMPT_EXTRA_MAX_CHARS", "4000"))
 
 
+def _normalize_mode(mode: Optional[str]) -> str:
+    mode = (mode or "").strip().lower()
+    if mode == "replace":
+        logger.warning("CODE_AGENT_PROMPT_MODE=replace 已移除，按 append 处理")
+        return "append"
+    return mode if mode in PROMPT_MODES else "append"
+
+
 def _prompt_mode() -> str:
-    mode = os.getenv(PROMPT_MODE_ENV, "append").strip().lower()
-    return mode if mode in ("builtin", "append", "replace") else "append"
+    return _normalize_mode(os.getenv(PROMPT_MODE_ENV, "append"))
 
 
 def _extract_json_object(text: str) -> Optional[str]:
@@ -195,33 +207,52 @@ Action Input: {"path": "src/util.py", "content": "def add(a, b):\\n    return a 
 """
 
 
+def _render_skills(role: Optional[str]) -> str:
+    try:
+        from prompt_assets import render_skills
+        return render_skills(role)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"加载 Skills 失败，本次不注入: {exc}")
+        return ""
+
+
 def build_system_prompt(tools: Optional[set] = None, extra: Optional[str] = None,
-                        mode: Optional[str] = None) -> str:
-    """运行时组装分层系统提示：精简内置模板 + 可选项目附加规范。
+                        mode: Optional[str] = None, role: Optional[str] = None) -> str:
+    """运行时组装分层系统提示。
+
+    层次（自上而下）：
+
+    1. 内置模板（协议 / 格式 / 工具速查 / 安全规则）——始终存在；
+    2. ``=== Skills ===``：``prompts/skills/*/SKILL.md`` 中适用于 ``role`` 的通用行为
+       规范，所有模式（含子角色的 ``builtin``）都注入，``CODE_AGENT_SKILLS=off`` 关闭；
+    3. ``=== 项目附加规范 ===``：``prompts/system/PROJECT_RULES.md``，仅 ``append`` 模式，
+       截断到 ``SYSTEM_PROMPT_EXTRA_MAX_CHARS``；
+    4. ``=== 角色说明 ===``：多 Agent 子角色的 ``ROLE_PROMPT``，始终在最末。
 
     Args:
         tools: 允许的工具名集合（None 表示全部），工具速查只列出这些工具。
         extra: 角色附加提示（多 Agent 子角色注入），追加在最后。
-        mode: ``builtin`` 只用内置模板；``append``（默认）内置模板后追加
-            ``.devin/SYSTEM_PROMPT.md``（截断到 ``SYSTEM_PROMPT_EXTRA_MAX_CHARS``）；
-            ``replace`` 用该文件整体替换内置模板（旧行为）。
+        mode: ``builtin`` / ``append``（默认），见上；``replace`` 视为 ``append``。
+        role: Skill 过滤用的角色名：单 Agent 为 ``"agent"``（默认），子角色为
+            ``code`` / ``test`` / ``doc`` / ``audit``。
 
     系统提示不落盘：每次启动按当前工具表重新生成，避免与代码不同步。
     """
-    mode = mode or _prompt_mode()
+    mode = _normalize_mode(mode) if mode else _prompt_mode()
     tool_desc = registry.get_descriptions(names=tools, compact=True)
-    custom_prompt = read_system_prompt_from_file() if mode != "builtin" else None
+    custom_prompt = read_project_rules() if mode == "append" else None
 
-    if mode == "replace" and custom_prompt:
-        prompt = custom_prompt.replace(
-            "{tool_descriptions}", registry.get_descriptions(names=tools))
-    else:
-        prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
-        if mode == "append" and custom_prompt:
-            project = custom_prompt.replace("{tool_descriptions}", "（见上方工具列表）").strip()
-            if len(project) > SYSTEM_PROMPT_EXTRA_MAX_CHARS:
-                project = project[:SYSTEM_PROMPT_EXTRA_MAX_CHARS] + "\n…（项目规范已截断）"
-            prompt = prompt.rstrip() + "\n\n=== 项目附加规范 ===\n" + project + "\n"
+    prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
+
+    skills = _render_skills(role)
+    if skills:
+        prompt = prompt.rstrip() + "\n\n=== Skills ===\n" + skills + "\n"
+
+    if mode == "append" and custom_prompt:
+        project = custom_prompt.replace("{tool_descriptions}", "（见上方工具列表）").strip()
+        if len(project) > SYSTEM_PROMPT_EXTRA_MAX_CHARS:
+            project = project[:SYSTEM_PROMPT_EXTRA_MAX_CHARS] + "\n…（项目规范已截断）"
+        prompt = prompt.rstrip() + "\n\n=== 项目附加规范 ===\n" + project + "\n"
 
     if extra and extra.strip():
         prompt = prompt.rstrip() + "\n\n=== 角色说明 ===\n" + extra.strip() + "\n"
@@ -241,7 +272,7 @@ class ReActEngine:
                  on_step: Callable = None, on_confirm: Callable = None,
                  context=None, allowed_tools: Optional[set] = None,
                  system_prompt_extra: str = "", max_iterations: Optional[int] = None,
-                 prompt_mode: Optional[str] = None):
+                 prompt_mode: Optional[str] = None, role: Optional[str] = None):
         """
         Args:
             allowed_tools: 限定可用工具集（工具描述与可执行集合同时过滤）；
@@ -249,11 +280,14 @@ class ReActEngine:
             system_prompt_extra: 角色附加提示，追加到系统提示末尾（≤200 token 为宜）。
             max_iterations: 本实例的最大步数，默认 ``Config.MAX_ITERATIONS``。
             prompt_mode: 覆盖 ``CODE_AGENT_PROMPT_MODE``（builtin|append|replace）。
+            role: Skills 层的角色过滤名（``agent`` / ``code`` / ``test`` / ``doc`` /
+                ``audit``），默认 ``agent``。
         """
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
         self.allowed_tools: Optional[set] = set(allowed_tools) if allowed_tools is not None else None
         self.system_prompt_extra = system_prompt_extra or ""
+        self.role = (role or "agent").strip().lower()
         self.max_iterations = int(max_iterations) if max_iterations else int(Config.MAX_ITERATIONS)
         # 按所选模型自动推导安全的上下文窗口，避免大默认上下文撑爆显存导致卡顿。
         self.num_ctx = self._resolve_num_ctx(self.model)
@@ -267,7 +301,8 @@ class ReActEngine:
         # 会话上下文（可注入；为空时惰性取进程内单例，跟随"当前会话"）
         self._context = context
         self.system_prompt = build_system_prompt(
-            tools=self.allowed_tools, extra=self.system_prompt_extra, mode=prompt_mode)
+            tools=self.allowed_tools, extra=self.system_prompt_extra, mode=prompt_mode,
+            role=self.role)
         # 本轮的内存工作消息列表（系统提示 + 历史上下文 + 本轮 ReAct 往返）
         self.messages: List[Dict] = []
         self._stop_event = threading.Event()

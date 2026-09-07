@@ -1192,7 +1192,7 @@ class TestMainFunction(unittest.TestCase):
         # 模拟main函数的参数解析
         parser = argparse.ArgumentParser(description='知识库快照管理工具')
         parser.add_argument('--index-dir', default='./index_storage', help='索引目录')
-        parser.add_argument('--snapshot-dir', default='./.devin/knowledge/snapshots', help='快照目录')
+        parser.add_argument('--snapshot-dir', default='./.cerebro/knowledge/snapshots', help='快照目录')
         parser.add_argument('--max-snapshots', type=int, default=10, help='最大快照数量')
         parser.add_argument('--action', choices=['create', 'list', 'restore', 'delete', 'latest'], 
                           default='list', help='操作类型')

@@ -90,13 +90,13 @@ class FileMetadataManager:
     """文件元数据管理器"""
 
     def __init__(self, storage_path: str = None):
-        # 默认路径：打包运行时收纳到用户数据目录，源码运行时相对 cwd（保持原行为）。
+        # 默认路径：App 运行时状态目录 .cerebro/file_metadata（源码运行为项目根，打包为用户数据目录）。
         if storage_path is None:
             try:
-                from runtime_paths import cwd_data_dir
+                from runtime_paths import app_state_dir
             except ImportError:
-                from src.runtime_paths import cwd_data_dir  # type: ignore
-            self.storage_path = cwd_data_dir(".devin/file_metadata")
+                from src.runtime_paths import app_state_dir  # type: ignore
+            self.storage_path = app_state_dir("file_metadata")
         else:
             self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)

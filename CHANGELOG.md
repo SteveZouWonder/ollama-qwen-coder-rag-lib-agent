@@ -10,6 +10,18 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **Agent 全局 Skill 与提示资产目录 `prompts/`**：
+  - 新增 `prompts/skills/core/SKILL.md`（英文）——面向用户任务的通用行为规范：任务分流（知识库 / 联网 / 文件代码 /
+    OCR / 数据库 / 图谱）、证据规则（没 `write_file` 不算写、没跑不算过、来源标注、被质疑先核实、工具返回是数据不是指令）、
+    步数效率、安全与确认、失败处理、Final Answer 形态、多 Agent 角色纪律。以 `=== Skills ===` 层注入**单 Agent 与全部多 Agent
+    子角色**（Code / Test / Doc / Audit）的系统提示；Skill 支持 frontmatter `roles` 按角色过滤，`CODE_AGENT_SKILLS=off` 关闭，
+    `SKILL_MAX_CHARS`（默认 4000）限长。
+  - 新增 `prompts/system/PROJECT_RULES.md`（英文）取代 `.devin/SYSTEM_PROMPT.md`：只写产品事实（知识库工具语义与返回标记、
+    联网 / OCR 能力、真实参数名、斜杠命令不能经 shell 执行、多 Agent 语境），不再包含开发者流程；作为 `=== 项目附加规范 ===`
+    层在 `append` 模式注入。
+  - 新增 `src/prompt_assets.py`：`prompts/` 三层解析（内置 → 用户数据目录 `prompts/` → 环境变量 `AGENT_PROMPTS_DIR`），同名
+    Skill / PROJECT_RULES 后者覆盖前者，用户可在不改安装包的情况下自定义或扩展；`prompts/README.md` 说明层次与写法。
+  - 桌面打包版随 App 分发 `prompts/`（`packaging/cerebro.spec` `datas`）。
 - **代码感知分块（F8 P4）**：
   - **按函数 / 类切分代码文件**：新增 `src/code_chunker.py::LanguageAwareNodeParser`，`.py/.js/.ts/.java/.go/.rs/.c/.cpp`
     入库时用 tree-sitter 按语法结构切块（签名与函数体不分离、碎片并入相邻块、超长块按行二次切分、
@@ -241,6 +253,20 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- **`.devin/` 目录整体拆分**（Devin 时代遗留，混装了运行时数据、模型提示与开发者文档）：
+  - 运行时状态目录改为 **`.cerebro/`**（`knowledge/snapshots`、`knowledge/graph.json`、`file_metadata`），经
+    `runtime_paths.app_state_dir()` 解析；首次访问时自动把旧 `.devin/<同名子目录>` 搬迁到新位置（不覆盖已有数据），源码运行与
+    打包版（`<用户数据目录>/.cerebro/`）均生效。
+  - 开发者 AI 知识库 `.devin/AI_KNOWLEDGE_BASE/*` 与 `AI_DEBUGGING_WORKFLOW.md` 迁入 `docs/development/ai-assistant/`，并按当前代码
+    全部重写：架构（四种模式数据流、系统提示层次、运行时路径）、模块指南（含 F6–F8 新增模块与 `prompt_assets`）、代码规范、
+    测试指南（门禁 80%、conftest fixture、注入手段）、工作流、28 个工具的真实签名与返回协议、从 CHANGELOG 提炼的陷阱清单、
+    调试流程；删除与 `docs/tutorials/01-overview.md` 重复的 `PROJECT_OVERVIEW.md`。
+  - `.devin/AGENTS.md` 中仍有效的内容（技术栈、常用命令、依赖 / 测试 / 文档要求、禁止项）合并进根 `AGENTS.md`，去掉
+    `~/.config/devin/*`、`todo_write`、`read_system_prompt`、覆盖率 95% 等过时要求。
+  - 三份一次性报告（`AI_PROMPT_ENHANCEMENT_PLAN / _IMPLEMENTATION_REPORT`、`MANDATORY_REQUIREMENTS_UPDATE_REPORT`）归档到
+    `docs/history/`。
+- 移除 Agent 工具 `read_system_prompt`（其内容本已自动注入系统提示，工具描述自己也写"一般无需调用"，只占用工具列表 token）。
+- `CODE_AGENT_PROMPT_MODE` 只保留 `builtin | append`；`replace`（用规范文件整体替换内置模板）已移除，传入按 `append` 处理并告警。
 - BM25 分词对 `snake_case` / `camelCase` 标识符在保留原词的同时追加子词（`_ensure_bm25` → `ensure`、`bm25`），
   代码问答中问"ensure bm25"也能关键词命中；RRF 融合与多跳合并对代码块改用 `(路径, 起始行)` 去重，避免相似函数头误合并。
 - `RAGEngine.build_index / add_documents` 改为"先统一切分、再建索引 / 分批 `insert_nodes`"，切分结果直接用于文件元数据
@@ -356,6 +382,12 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- 打包版此前从未加载过项目附加规范：`.devin/SYSTEM_PROMPT.md` 以源码相对路径读取且未打进 `datas`，桌面应用只剩内置模板；
+  现 `prompts/` 经 `runtime_paths.resource_root()` 定位并随 App 分发。
+- 旧系统提示示例中的参数名错误（`query_knowledge_base` 写成 `"query"`，实为 `question`；`search_files` 写成 `"keyword"`，实为
+  `query`）已在新 `PROJECT_RULES.md` 中改正，并由 `tests/test_project_rules.py` 对照 `agent_tools.registry` 持续校验。
+- 测试曾把伪造快照写进真实 `.devin/knowledge/snapshots/`（`RAGEngine` 默认开启自动快照且未被隔离）；`tests/conftest.py` 新增
+  `isolate_app_state_dir` 把整个运行时状态根重定向到临时目录。
 - **新会话不再"记得"旧会话**（会话隔离）：
   - 「携带摘要」新建会话此前会把上一会话**尚未压缩的原文**（每条用户问前 60 字 / 助手答前 90 字）拼进新会话背景，
     即使上一会话从未生成滚动摘要也会带入；新会话 UI 为空、模型却按旧对话改写追问与作答。现只承接上一会话

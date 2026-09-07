@@ -93,14 +93,10 @@ safety-check.json
 /pytest.ini
 /coverage.xml
 
-/**/.devin/knowledge/snapshots/
-/.devin/knowledge/snapshots/
-
-# 文件元数据为本地运行时数据（含用户绝对路径），不纳入版本库
-/**/.devin/file_metadata/
-/.devin/file_metadata/
-
-# 知识图谱持久化文件为本地运行时数据，不纳入版本库
-/**/.devin/knowledge/graph.json
-/.devin/knowledge/graph.json
+# App 运行时状态（知识库快照、知识图谱、文件元数据；含用户绝对路径），不纳入版本库
+/**/.cerebro/
+/.cerebro/
+# 旧位置（已迁移到 .cerebro/，首次启动自动搬迁）
+/**/.devin/
+/.devin/
 /tests/coverage.xml

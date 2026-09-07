@@ -65,7 +65,7 @@ is_valid, message = validator.check_total_size(file_size)
 ```python
 from file_metadata import FileMetadataManager, FilePersistenceType
 
-manager = FileMetadataManager("./.devin/file_metadata")
+manager = FileMetadataManager()  # 默认 .cerebro/file_metadata（runtime_paths.app_state_dir）
 
 # 添加文件
 manager.add_file(

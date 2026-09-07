@@ -45,6 +45,7 @@ docs/
 - [TEST_DESIGN.md](development/TEST_DESIGN.md) - 测试 Mock 策略与可测性设计（初版，门禁现为 80%）
 - [CONTENT_SECURITY.md](development/CONTENT_SECURITY.md) - 内容安全扫描器 `content_security.py` 的 API 与集成
 - [DOCUMENTATION_WORKFLOW.md](development/DOCUMENTATION_WORKFLOW.md) - 代码变更后的文档更新与整理流程
+- [ai-assistant/](development/ai-assistant/README.md) - AI 编码助手的项目知识：架构、模块指南、代码规范、测试指南、工作流、工具参考、陷阱清单、调试流程（原 `.devin/AI_KNOWLEDGE_BASE`）
 
 ## 📜 归档 (history/)
 

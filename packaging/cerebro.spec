@@ -10,7 +10,8 @@
 设计要点：
 - 使用 collect_all / collect_submodules 处理 chromadb、llama_index 等
   存在大量动态导入的库，避免运行时 ImportError。
-- 通过 datas 打包 assets/（图标）与 config/（默认配置）。
+- 通过 datas 打包 assets/（图标）、config/（默认配置）与 prompts/（模型输入资产：
+  项目附加规范与 Skills，见 src/prompt_assets.py）。
 - 通过 excludes 排除测试与 OCR 等可选重依赖，控制体积。
 """
 import sys
@@ -37,13 +38,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 block_cipher = None
 
 # ---------------------------------------------------------------------------
-# 数据文件：图标、默认配置
+# 数据文件：图标、默认配置、模型输入资产（prompts/）
 # ---------------------------------------------------------------------------
 # 注意：数据目录目标名不能用 "config"，否则会与顶层模块 config.py 冲突
 # （src 内模块以顶层名导入：from config import ...）。改用 default_config。
 datas = [
     (str(PROJECT_ROOT / "assets"), "assets"),
     (str(PROJECT_ROOT / "config"), "default_config"),
+    # prompts/ 内没有 .py，目标名可与源目录同名；runtime_paths.resource_root()/prompts 直接可用
+    (str(PROJECT_ROOT / "prompts"), "prompts"),
 ]
 
 # ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ class KnowledgeGraphBuilder:
         """初始化知识图谱构建器。
 
         Args:
-            persist_path: 图谱持久化文件路径。默认 .devin/knowledge/graph.json
+            persist_path: 图谱持久化文件路径。默认 .cerebro/knowledge/graph.json
                 （打包运行收纳到用户数据目录）。
             auto_persist: 是否在图谱变更后自动保存、并在初始化时自动加载。
                 设为 False 可获得纯内存图谱（便于测试）。
@@ -91,10 +91,10 @@ class KnowledgeGraphBuilder:
             self.persist_path = Path(_DEFAULT_PERSIST_PATH_OVERRIDE)
         else:
             try:
-                from runtime_paths import cwd_data_dir
+                from runtime_paths import app_state_dir
             except ImportError:  # pragma: no cover - 包内相对导入回退
-                from src.runtime_paths import cwd_data_dir  # type: ignore
-            self.persist_path = cwd_data_dir(".devin/knowledge") / "graph.json"
+                from src.runtime_paths import app_state_dir  # type: ignore
+            self.persist_path = app_state_dir("knowledge/graph.json")
 
         # 启动时自动加载已持久化的图谱（损坏/缺失均不致命）
         if self.auto_persist and self.graph is not None:
