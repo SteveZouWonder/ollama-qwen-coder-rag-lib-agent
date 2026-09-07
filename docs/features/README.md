@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent） | ✅ P0 多 Agent 真实化、P1 单 Agent 鲁棒性与上下文、P2 RAG 推理与可核验性、P3 入口智能路由已完成（2026-09-06）；✅ P4 代码感知分块已完成（2026-09-07），分支 `feat/agent-modes-optimization` | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| — | （暂无；小项见下方「残留小项」） | | |
 
 ## 已实现
 
@@ -21,6 +21,7 @@
 | F5 | 跨平台桌面应用打包与发布 | [f5-desktop-packaging/](f5-desktop-packaging/) |
 | F6 | 系统能力增强（Agent 工具集） | [f6-capability-tools/](f6-capability-tools/) |
 | F7 | Web 界面（Gradio） | [f7-web-ui/](f7-web-ui/) |
+| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent）：P0 多 Agent 真实化 · P1 单 Agent 鲁棒性 · P2 RAG 推理与可核验性 · P3 入口智能路由 · P4 代码感知分块（2026-09-04 ~ 09-07，分支 `feat/agent-modes-optimization`） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
 
 ---
 

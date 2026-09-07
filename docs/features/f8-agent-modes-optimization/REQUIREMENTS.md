@@ -1,19 +1,24 @@
 # F8: 三种对话模式优化需求（RAG 检索 / 单 Agent / 多 Agent）
 
-> 功能编号：F8 · 状态：**P0 已完成（2026-09-04）、P1 已完成（2026-09-05）、P2 已完成（2026-09-06）、P3 已完成（2026-09-06）、P4 已完成（2026-09-07）—— 全部完成** · 分支 `feat/agent-modes-optimization` · 目标：提升任务质量、回答准确度与智能程度
+> 功能编号 F8 · 状态 **✅ 全部完成**（P0 09-04 · P1 09-05 · P2 09-06 · P3 09-06 · P4 09-07，2026 年）· 分支 `feat/agent-modes-optimization`
+> 目标：提升任务质量、回答准确度与智能程度。
 >
-> P4 实现记录：P4-1~P4-6 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：未复用 llama-index `CodeSplitter` 而直接基于 tree-sitter 节点树自研切分（原子→打包→合并，只在行首断块）；超长块按行贪心二次切分而非 `SentenceSplitter`；`part i/n` 对任何跨块符号标注；切分异常回退 LlamaIndex 内部路径；Web 入库进度以结果区 Markdown（`ProgressTracker`）呈现而非独立进度条组件。
->
-> P4 立项说明：原 `docs/features/README.md`「残留小项 · 代码感知分块（可选）」挂在 F8 P2 下评估。2026-09-07 评估结论（详见 §5 与 §0.5）：现有 `SentenceSplitter` 对代码切点全部落在语句中间；llama-index 自带 `CodeSplitter` 直接使用会产生大量碎片块（签名与函数体分离），须自研合并与上下文补全；采用**方案 C**（tree-sitter 多语言 + 碎片合并 + 符号/行号元数据 + CLI/Web 展示联动），可选依赖、缺失自动回退。
->
-> P3 实现记录：P3-1~P3-3 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：规则表在需求列举之外补充了常用中英文动词/疑问词并剔除易误判的 `build`；路径匹配先剔除 URL；`classify_intent` 返回 `RouteDecision(mode, reason)`（可解包）而非裸字符串，原因文案用于 CLI 提示与 Web 处理过程；CLI 在 Agent 引擎不可用或判定异常时静默回退知识库问答；Web 意图判定在心跳桥接之外同步执行（LLM 兜底硬超时 5s）。
->
-> P2 实现记录：P2-1~P2-5 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：rerank 的 LLM 调用走 `collaboration.llm_helper.complete_text`（`/api/chat` 直连，才能真正 `think=False` + `num_predict`；`Settings.llm.complete` 的 `think` kwarg 会被 `or self.thinking` 吞掉），解析失败回退 `judge_kb_relevance`；`plan_retrieval` 在关闭联网时**仍会调用一次**（为了分解），故 `enable_web_search=False` / `kb_only` 路径比改动前多 1 次规划调用（联网路径次数不变）；BM25-only 片段的 `score` 用 RRF 相对"两路均第 1"的归一值（上限 0.5：能过 0.45 粗筛、不会触发 0.6 跳过 rerank）；hybrid 补入 BM25 片段或多跳时不再走"沿用 LlamaIndex 原答案"的快路径而强制综合；`kind="fallback"` 只在知识库已初始化且无命中、网络也无结果时触发（知识库未初始化不算）。
->
-> P1 实现记录：P1-1~P1-8 全部落地（详见 [README.md 实现记录表](README.md#实现记录)）。与需求的差异：格式重试按**连续**次数计（合法步骤后重置）；重复检测为全局计数；`answer_question` 新增 `kb_only` 参数避免 0 命中时的无用网络回退；`curl … | sh` 由 critical 降为 high（需确认而非直接拦截，`| bash|zsh` 同级）；`write_file` / `add_to_knowledge_base` 越界拒绝对 Web「工具」页同样生效。
->
-> P0 实现记录：P0-1~P0-8 全部落地；同时前置完成 P1-1 的 `build_system_prompt(tools, extra, mode)` 分层、`allowed_tools` / `system_prompt_extra` / `max_iterations` 参数与 `CODE_AGENT_PROMPT_MODE`（`.devin/SYSTEM_PROMPT.md` 错误指引清理留在 P1）。与需求的差异：新增「未经验证」标记（子 Agent 未调用角色关键工具却给出结论时）；子 Agent 对白名单内需确认工具自动放行、`execute_command` 只放行 low/medium 风险（需求未规定确认策略）。
-> 启动提示词见 [PROMPT.md](PROMPT.md) · 功能索引见 [../README.md](../README.md)
+> 本文件只记录**需求与已核实的代码事实**；实现记录、与需求的差异、验证结果见 [README.md](README.md)；
+> 交给 Agent 的启动提示词见 [PROMPT.md](PROMPT.md)；功能索引见 [../README.md](../README.md)。
+> §0 中的 `文件:行号` 为**立项时**的位置，实现后已变动，仅作背景参考。
+
+## 目录
+
+| 章节 | 内容 |
+|---|---|
+| [§0 背景](#0-背景已核实的代码事实实施时勿重复调研) | 三种模式现状、单 Agent / 多 Agent 缺陷、路由与模型、分块与代码文件、工程约束 |
+| [§1 P0](#1-p0--多-agent-重做为真实-agent方案-a) | 多 Agent 重做为真实 Agent |
+| [§2 P1](#2-p1--单-agent-鲁棒性与上下文) | 单 Agent 鲁棒性与上下文 |
+| [§3 P2](#3-p2--rag-推理与可核验性) | RAG 推理与可核验性 |
+| [§4 P3](#4-p3--入口智能路由) | 入口智能路由 |
+| [§5 P4](#5-p4--代码感知分块方案-ctree-sitter-多语言--碎片合并--展示联动) | 代码感知分块 |
+| [§6](#6-实施顺序与交付) | 实施顺序与交付 |
+| [附录 A](#附录-a--新增修改的-llm-提示词草案实施时可微调保持简短) | LLM 提示词草案 |
 
 ## 0. 背景（已核实的代码事实，实施时勿重复调研）
 
@@ -45,14 +50,7 @@
 - 默认模型 `qwen3.5:4b`，`resolve_num_ctx`：≥12B→4096，≥7B→8192，其余→16384（`config.py:57-94`）；`LLM_THINK` 默认 false。
 - 会话上下文层 `src/conversation_context.py`：`ConversationContext.rewrite_question/history_text/build_messages/record`；`_default_complete :175-203` 直连 `/api/chat`。
 
-### 0.4 工程约束（沿用现有规范）
-- 测试：`./venv/bin/python -m pytest -q -n 4`，全量覆盖 ≥80%；新逻辑必须有单测（Mock Ollama/Chroma，模式见 `tests/test_react_engine.py`、`tests/test_rag_pipeline.py`、`tests/multi_agent/`、`tests/test_web_services.py`）。
-- Web 服务层 `src/web/services.py` 是唯一接引擎处；`src/web/app.py` 的 `format_*`/`build_handlers` 可单测；`src/web/ui/*` 标 `# pragma: no cover`。
-- CLI：`query_interface.py::parse_command/classify_mode/print_help/TUTORIAL_TEXT` + `cli_handlers.py::COMMAND_HANDLERS`。
-- 每阶段完成更新 `CHANGELOG.md [Unreleased]`、README 对应段落、本目录 `README.md` 与 `docs/features/README.md` 的状态。
-- Git：不得直接提交 master；改动前确认分支；完成后询问是否建 PR，不得自动建 PR。
-
-### 0.5 分块与代码文件（P4 已核实事实，2026-09-07）
+### 0.4 分块与代码文件（P4 立项时核实，2026-09-07）
 - 切分只有一处一种策略：`SentenceSplitter(CHUNK_SIZE=1024, CHUNK_OVERLAP=200)` 在 `build_index` 设为 `Settings.node_parser`（`src/rag_engine.py:204-208`）；`add_documents` 靠 `index.insert` 间接复用（`:480`）；**`load_index()` 未设置 parser**（`:373-393`），"加载已有索引后追加"走 llama-index 默认值而非 `.env`；`_register_file_metadata` 在 `add_documents` 路径重新 new 一个 `SentenceSplitter` 估算 `chunk_count`（`:282-291`）。
 - 代码后缀 `.py/.js/.ts/.java/.cpp/.c/.go/.rs` 全部映射 `FlatReader` 当纯文本（`src/document_loader.py:26-44`），无 `CodeSplitter`/tree-sitter；`ast_search` 用内置 `ast` 且与入库无关（`src/agent_tools.py:813-851`、`src/code_analyzer/ast_analyzer.py`）。
 - Document metadata：`file_name/file_path/file_type/source`（`document_loader.py:177-183`）；`query_with_sources` 只透出 `content/score/file/path`（`rag_engine.py:696-701`），BM25 entries 同（`:570-574`）；`format_kb_context` 只把文件名注入 prompt（`rag_pipeline.py:901-915`）。
@@ -61,6 +59,13 @@
 - `FileMetadata`（`src/file_metadata.py:24-36`）有 `document_count/chunk_count`，无分块策略字段。
 - 展示触点：CLI `/add`（`cli_handlers.py:249-273`，只印"已添加"）、`/file-list`（`:585-606`，无 chunk 数）、`/file-info`（`:609-637`，`🧩 Chunk数` 在 `:628`）、`/sources`（`query_interface.py:742-770`，4 列）、`/ask` 摘要行（`:1650-1656`）、`/stats` 遍历 `get_stats()`（`rag_engine.py:786-799`）；Web 上传/追加同步无进度（`services.py:813-873`，"片段"实为 Document 数）、文件表 `_FILE_HEADERS`（`app.py:1502-1514`，"片段"列 = chunk_count）、详情 `format_file_info`（`:470-489`）、来源 `format_sources`（`:119-139`）、系统页「分块大小 / 重叠」（`:511`，`services.env_info:1336-1337`）、统计卡 `format_stats_cards`（`:520-535`）、多 Agent `presenter.format_sources_md`（`collaboration/presenter.py:34-48`）、单 Agent 知识库工具 Observation（`agent_tools.py:462-484`）。`ProgressTracker`（`app.py:38-115`）已支持 `stage/current/total` 原地刷新但入库未接入。
 - 实测（本仓库 .py，macOS arm64）：`rag_engine.py` SentenceSplitter 13 块/均 3437 字/0 块以 def·class 开头；llama-index `CodeSplitter(max_chars=1500)` 51 块/均 718 字/23 块以 def·class 开头，但 9 块 <80 字（`'class RAGEngine:'`、`'@classmethod'`、单独签名）。`tree-sitter-language-pack 1.16.2`：wheel 覆盖 mac x86_64/arm64、manylinux_2_34 x86_64/aarch64、win amd64/arm64，磁盘 +5.3 MB，热导入 ≈15-25 ms、常驻 ≈40 MB，macOS 首次加载 Gatekeeper 校验 1-5 s；解析比 SentenceSplitter 快（4 ms vs 178 ms）。当前 venv / requirements 均未安装。
+
+### 0.5 工程约束（沿用现有规范）
+- 测试：`./venv/bin/python -m pytest -q -n 4`，全量覆盖 ≥80%；新逻辑必须有单测（Mock Ollama/Chroma，模式见 `tests/test_react_engine.py`、`tests/test_rag_pipeline.py`、`tests/multi_agent/`、`tests/test_web_services.py`）。
+- Web 服务层 `src/web/services.py` 是唯一接引擎处；`src/web/app.py` 的 `format_*`/`build_handlers` 可单测；`src/web/ui/*` 标 `# pragma: no cover`。
+- CLI：`query_interface.py::parse_command/classify_mode/print_help/TUTORIAL_TEXT` + `cli_handlers.py::COMMAND_HANDLERS`。
+- 每阶段完成更新 `CHANGELOG.md [Unreleased]`、README 对应段落、本目录 `README.md` 与 `docs/features/README.md` 的状态。
+- Git：不得直接提交 master；改动前确认分支；完成后询问是否建 PR，不得自动建 PR。
 
 ---
 
@@ -135,11 +140,14 @@
 
 ## 5. P4 · 代码感知分块（方案 C：tree-sitter 多语言 + 碎片合并 + 展示联动）
 
+### 立项背景
+原 `docs/features/README.md`「残留小项 · 代码感知分块（可选）」挂在 F8 P2 下评估。2026-09-07 评估结论（事实与实测数据见 §0.4）：现有 `SentenceSplitter` 对代码切点全部落在语句中间；llama-index 自带 `CodeSplitter` 直接使用会产生大量碎片块（签名与函数体分离），须自研合并与上下文补全；采用**方案 C**（tree-sitter 多语言 + 碎片合并 + 符号/行号元数据 + CLI/Web 展示联动），可选依赖、缺失自动回退。
+
 ### 目标
 代码文件入库时按语法结构（函数 / 类 / 方法）切分，检索结果以完整符号为单位，引用可定位到 `文件 · 符号 · L起-止`；非代码文件流程不变；`tree-sitter-language-pack` 为**可选依赖**，缺失或解析失败自动回退 `SentenceSplitter` 且不产生错误级输出。
 
 ### 范围
-- 范围内：`.py/.js/.ts/.java/.go/.rs/.c/.cpp`（`DocumentLoader.READERS` 现有代码后缀）；顺带修复 §0.5 的三个既有问题（`load_index` 未设 parser、`chunk_count` 估算与实际切分不一致、`ALLOWED_FILE_TYPES` 与 `READERS` 白名单不一致）。
+- 范围内：`.py/.js/.ts/.java/.go/.rs/.c/.cpp`（`DocumentLoader.READERS` 现有代码后缀）；顺带修复 §0.4 的三个既有问题（`load_index` 未设 parser、`chunk_count` 估算与实际切分不一致、`ALLOWED_FILE_TYPES` 与 `READERS` 白名单不一致）。
 - 范围外：`.json/.yaml/.xml/.html` 仍走 `SentenceSplitter`；不做 Web 配置可编辑；不自动重切已入库文件（UI 提示重新入库即可）。
 
 ### 需求

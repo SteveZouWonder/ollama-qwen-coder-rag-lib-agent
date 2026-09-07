@@ -14,7 +14,8 @@
 | 领域 | 内容 | 文档 |
 |---|---|---|
 | 知识库 | 14+ 格式入库、OCR（PaddleOCR / Tesseract）、快照管理、文件删除、Skills 生成 | [F1](f1-ocr-extract/)、[F3](f3-file-session-management/) |
-| 对话 | RAG 检索（联网回退）、单 Agent（ReAct，29 工具，危险命令拦截）、多 Agent（骨架）、连续对话上下文记忆与滚动压缩、思考模式开关、模型热切换 | [F2](f2-multiple-agent/)、CHANGELOG |
+| 对话 | RAG 检索（hybrid 召回、逐片段 rerank、复合问题多跳、编号引用、联网回退）、单 Agent（ReAct，29 工具，危险命令拦截、协议容错、上下文预算）、多 Agent（真实 Agent 委托、LLM 分解/整合/评审、真并行）、入口自动路由、连续对话上下文记忆与滚动压缩、思考模式开关、模型热切换 | [F2](f2-multiple-agent/)、[F8](f8-agent-modes-optimization/)、CHANGELOG |
+| 知识库（代码） | 代码文件按函数/类切分（tree-sitter 可选依赖），来源定位到 `文件 · 符号 · 行号`，入库进度与分块策略可见 | [F8 P4](f8-agent-modes-optimization/) |
 | Agent 工具 | 网络搜索、AST 分析、代码质量、Git 分析/提交信息、知识图谱（Plotly 3D/2D）、SQLite 数据库 | [F6](f6-capability-tools/) |
 | 入口 | CLI（几十个斜杠命令 + 智能命令推荐）、桌面托盘（状态监控 / 模型预热 / Ollama 引导）、Gradio Web UI（5 页、多主题、审批卡片） | [F4](f4-command-recommender/)、[F5](f5-desktop-packaging/)、[F7](f7-web-ui/) |
 | 发布 | GitHub Actions 打 tag 自动构建 dmg / Inno Setup exe / AppImage，自动 Release Notes 与 CHANGELOG 归档；CI 含 flake8 / pylint / bandit / pip-audit / pytest / codecov、PR 漏洞门禁 | [CI_CD.md](../development/CI_CD.md) |
@@ -25,8 +26,7 @@
 
 | 优先级 | 内容 | 文档 |
 |---|---|---|
-| 高 | **F8 三种对话模式优化**：多 Agent 真实化（P0）→ 单 Agent 鲁棒性与上下文预算（P1）→ RAG rerank / 多跳 / 编号引用 / hybrid 召回（P2）→ 入口自动路由（P3）→ 代码感知分块（P4） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
-| 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑（代码感知分块已并入 F8 P4） | [features/README.md](README.md)「残留小项」 |
+| 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑 | [features/README.md](README.md)「残留小项」 |
 
 ## 已明确不做
 
