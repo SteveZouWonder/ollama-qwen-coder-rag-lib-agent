@@ -669,7 +669,7 @@ ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（
 | `/file-cleanup` | - | 🆕 清理临时/重复文件 |
 | `/file-deduplicate` | - | 🆕 手动触发去重 |
 | `/file-stats` | - | 🆕 显示文件统计信息 |
-| `/session-new [title]` | - | 🆕 创建新会话 |
+| `/session-new [--carry] [title]` | - | 🆕 创建新会话（默认全新上下文；`--carry` 仅承接上一会话已压缩的滚动摘要） |
 | `/session-list` | - | 🆕 列出所有会话 |
 | `/session-switch <id>` | - | 🆕 切换到指定会话 |
 | `/session-archive <id>` | - | 🆕 归档会话 |
