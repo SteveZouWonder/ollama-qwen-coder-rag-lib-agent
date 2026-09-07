@@ -26,6 +26,7 @@
 
 | 优先级 | 内容 | 文档 |
 |---|---|---|
+| 高 | F9 Web「工具」页重构：P1 删网络搜索 / DB 连接透传修复 / Git 仪表盘 / 结果流转 · P2 代码助手 / NL→SQL / 工作区 / NL→命令 · P3 连接记忆 / 命令历史 / 一步提交 | [F9](f9-web-tools-revamp/) |
 | 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑 | [features/README.md](README.md)「残留小项」 |
 
 ## 已明确不做
