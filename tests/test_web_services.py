@@ -1308,13 +1308,34 @@ class TestSessionContextHelpers:
         monkeypatch.setattr(cc, "_default_complete", lambda prompt: "上一会话摘要")
         svc = make_service()
         sid = svc.ensure_session()
-        svc._context(sid).record("DJI OSMO 360 是什么", "一款全景相机")
+        ctx = svc._context(sid)
+        ctx.recent_turns = 1
+        ctx.record("DJI OSMO 360 是什么", "一款全景相机")
+        ctx.record("它多少钱", "2999 元")
+        ctx.compact()  # 产生滚动摘要
         new_sid = svc.create_session("新会话", carry_summary=True, from_session_id=sid)
         assert new_sid != sid
         m = svc.context_metrics(new_sid)
         assert "承接自上一会话" in m["summary"]
-        assert "DJI OSMO 360" in m["summary"]
+        assert "上一会话摘要" in m["summary"]
+        # 只承接已折叠的滚动摘要，不带 live 原文
+        assert "2999" not in m["summary"]
+        assert svc.carried_summary(new_sid) == "上一会话摘要"
         assert svc.chat_history(new_sid) == []
+
+    def test_create_session_with_carry_but_no_summary_is_clean(self):
+        """回归：上一会话没有滚动摘要时，携带摘要新建的会话必须完全干净。"""
+        svc = make_service()
+        sid = svc.ensure_session()
+        svc._context(sid).record("DJI OSMO 360 是什么", "一款全景相机")
+        new_sid = svc.create_session(None, carry_summary=True, from_session_id=sid)
+        assert new_sid != sid
+        assert svc.context_metrics(new_sid).get("summary", "") == ""
+        assert svc.carried_summary(new_sid) == ""
+        assert svc._context(new_sid).has_history() is False
+        assert svc.chat_history(new_sid) == []
+        # 旧会话不受影响
+        assert [m["content"] for m in svc.chat_history(sid)] == ["DJI OSMO 360 是什么", "一款全景相机"]
 
     def test_mark_suggested_and_continue(self, monkeypatch):
         svc = make_service()

@@ -17,11 +17,16 @@ from .services import WebService, get_web_service
 MODE_AUTO = "自动"
 
 try:  # 上下文状态/提示的纯格式化函数（核心层提供，前端只接线）
-    from conversation_context import format_context_status, format_suggest_hint, format_tokens
+    from conversation_context import (
+        CARRY_PREFIX, format_context_status, format_suggest_hint, format_tokens,
+    )
 except ImportError:  # pragma: no cover - 以 src.* 方式导入时的兜底
     from src.conversation_context import (  # type: ignore
-        format_context_status, format_suggest_hint, format_tokens,
+        CARRY_PREFIX, format_context_status, format_suggest_hint, format_tokens,
     )
+
+# "携带摘要"新建的会话在对话区顶部展示的可折叠说明标题
+CARRIED_TITLE = "🧳 承接自上一会话的摘要（非本会话对话，仅作背景）"
 
 
 # ==================== 进度跟踪（可测试）====================
@@ -343,8 +348,12 @@ def format_context_metrics(m: Dict[str, Any]) -> str:
         line += f" · 已压缩 {comp} 次"
     summary = (m.get("summary") or "").strip()
     if summary:
+        label = "📝 摘要"
+        if summary.startswith(CARRY_PREFIX):
+            label = "🧳 承接自上一会话"
+            summary = summary[len(CARRY_PREFIX):].strip()
         preview = summary if len(summary) <= 120 else summary[:120] + "…"
-        line += f"\n\n> 📝 摘要：{preview}"
+        line += f"\n\n> {label}：{preview}"
     return line
 
 
@@ -1029,12 +1038,28 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         hint = "🧠 思考模式已开（响应较慢）" if info.get("think") else ""
         return activity, hint
 
-    def _load_history(session_id: str) -> List[Dict[str, str]]:
+    def _load_history(session_id: str) -> List[Dict[str, Any]]:
         try:
             history = service.chat_history(session_id or None)
         except Exception:  # noqa: BLE001
             history = []
-        return list(history) if isinstance(history, list) else []
+        history = list(history) if isinstance(history, list) else []
+        # "携带摘要"新建的会话：把承接的背景作为一条可折叠的说明放在最前面，
+        # 让用户看得见模型"记得"什么（它不是本会话的真实对话）。
+        carried = _carried_summary(session_id)
+        if carried:
+            history.insert(0, {
+                "role": "assistant",
+                "content": carried,
+                "metadata": {"title": CARRIED_TITLE},
+            })
+        return history
+
+    def _carried_summary(session_id: str) -> str:
+        try:
+            return str(service.carried_summary(session_id or None) or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
 
     def _context_status(session_id: str) -> str:
         try:
@@ -1079,6 +1104,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         """
         message = (message or "").strip()
         session_id = (session_id or "").strip()
+        if not session_id:
+            # 标签页尚未完成会话绑定（如 app.load 未返回就发送）：先钉死到一个具体
+            # 会话，整轮对话都用它，避免中途"当前会话"指针被其他标签页改掉。
+            try:
+                session_id = service.ensure_session()
+            except Exception:  # noqa: BLE001
+                session_id = ""
         history = _load_history(session_id)
         if not message:
             yield history, "_请输入内容_", "", "", "", "", ""
@@ -1241,13 +1273,23 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
     def on_new_session(
         carry_summary: bool, from_session_id: str
-    ) -> Tuple[List[Tuple[str, str]], str, List[Dict[str, str]], str, str]:
-        """新建会话（可选携带摘要）：返回 (下拉选项, 新会话 id, 历史, 上下文状态, 清空的提示)。"""
+    ) -> Tuple[List[Tuple[str, str]], str, List[Dict[str, Any]], str, str, str]:
+        """新建会话（可选携带摘要）：返回 (下拉选项, 新会话 id, 历史, 上下文状态, 清空的提示, 状态行文案)。
+
+        「携带摘要」只承接上一会话**已折叠的滚动摘要**；上一会话没有摘要时新会话
+        完全干净，状态行会明确说明，避免用户误以为带了上下文。
+        """
         sid = service.create_session(
             None, carry_summary=bool(carry_summary),
             from_session_id=(from_session_id or "").strip() or None,
         )
-        return service.session_choices(), sid, _load_history(sid), _context_status(sid), ""
+        if not carry_summary:
+            status = "✨ 已新建会话"
+        elif _carried_summary(sid):
+            status = "✨ 已新建会话（已承接上一会话的滚动摘要，见对话区顶部说明）"
+        else:
+            status = "✨ 已新建会话（上一会话尚无滚动摘要，未承接任何内容）"
+        return service.session_choices(), sid, _load_history(sid), _context_status(sid), "", status
 
     def on_clear_context(session_id: str) -> Tuple[List[Dict[str, str]], str, str, str]:
         """清空当前会话上下文：返回 (历史, 状态行文案, 上下文状态, 清空的提示)。"""

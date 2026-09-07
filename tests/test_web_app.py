@@ -192,6 +192,9 @@ def make_service_mock():
     svc.is_running.return_value = False
     # current_model 返回非 dict 时按"无状态提示"处理
     svc.current_model.return_value = {"model": "qwen", "loaded": True, "think": False}
+    # 默认会话不是"携带摘要"新建的：无承接背景；标签页未绑定会话时钉到 "sid0"
+    svc.carried_summary.return_value = ""
+    svc.ensure_session.return_value = "sid0"
     return svc
 
 
@@ -690,7 +693,8 @@ class TestChatStream:
         self._collect(h["on_chat_stream"]("做事", "单 Agent"))
         _, kwargs = svc.agent_chat_stream.call_args
         assert kwargs["confirm_handler"] is None
-        assert kwargs["session_id"] is None
+        # 未传会话 id 时不再以 None 回落到"当前会话"指针，而是钉到 ensure_session() 的具体会话
+        assert kwargs["session_id"] == "sid0"
 
     def test_multi_agent_stream(self):
         svc = make_service_mock()
@@ -757,13 +761,50 @@ class TestSessionHandlers:
         svc.create_session.return_value = "new1"
         svc.session_choices.return_value = [("x", "new1")]
         svc.chat_history.return_value = []
+        svc.carried_summary.return_value = "要点"
         svc.context_metrics.return_value = {"turns": 0, "history_tokens": 60, "budget": 100,
                                             "summary": "（承接自上一会话）要点"}
         h = build_handlers(svc)
-        choices, sid, history, ctx_md, hint = h["on_new_session"](True, "old1")
+        choices, sid, history, ctx_md, hint, status = h["on_new_session"](True, "old1")
         assert sid == "new1" and hint == ""
         svc.create_session.assert_called_once_with(None, carry_summary=True, from_session_id="old1")
         assert "承接自上一会话" in ctx_md
+        assert "已承接上一会话的滚动摘要" in status
+        # 承接背景以可折叠说明的形式放在对话区顶部，让用户看得见模型"记得"什么
+        assert len(history) == 1 and history[0]["content"] == "要点"
+        assert history[0]["metadata"]["title"] == app.CARRIED_TITLE
+
+    def test_new_session_with_carry_but_no_summary(self):
+        svc = make_service_mock()
+        svc.create_session.return_value = "new1"
+        svc.session_choices.return_value = [("x", "new1")]
+        svc.chat_history.return_value = []
+        svc.context_metrics.return_value = {"turns": 0, "history_tokens": 0, "budget": 100}
+        h = build_handlers(svc)
+        choices, sid, history, ctx_md, hint, status = h["on_new_session"](True, "old1")
+        assert sid == "new1" and history == []
+        assert "未承接任何内容" in status
+
+    def test_new_session_without_carry(self):
+        svc = make_service_mock()
+        svc.create_session.return_value = "new1"
+        svc.session_choices.return_value = [("x", "new1")]
+        svc.chat_history.return_value = []
+        svc.context_metrics.return_value = {}
+        h = build_handlers(svc)
+        choices, sid, history, ctx_md, hint, status = h["on_new_session"](False, "old1")
+        svc.create_session.assert_called_once_with(None, carry_summary=False, from_session_id="old1")
+        assert history == [] and status == "✨ 已新建会话"
+
+    def test_chat_stream_pins_session_when_state_empty(self):
+        """标签页尚未绑定会话（sid 为空）时，整轮对话钉到 ensure_session() 返回的会话。"""
+        svc = make_service_mock()
+        svc.ensure_session.return_value = "pinned"
+        svc.chat_history.return_value = []
+        svc.agent_chat_stream.return_value = iter([StreamEvent("answer", "ok")])
+        h = build_handlers(svc)
+        list(h["on_chat_stream"]("写代码", "单 Agent", True, False, ""))
+        assert svc.agent_chat_stream.call_args.kwargs.get("session_id") == "pinned"
 
     def test_clear_context(self):
         svc = make_service_mock()
@@ -807,6 +848,13 @@ class TestContextFormatting:
         })
         assert "3 轮" in md and "3.2K / 4.8K" in md and "已压缩 1 次" in md
         assert "📝 摘要" in md and md.endswith("…")
+
+    def test_format_context_metrics_carried_summary(self):
+        md = app.format_context_metrics({
+            "turns": 0, "history_tokens": 60, "budget": 4800, "compressions": 0,
+            "summary": "（承接自上一会话）上一会话要点",
+        })
+        assert "🧳 承接自上一会话：上一会话要点" in md and "📝 摘要" not in md
 
     def test_with_context_status(self):
         assert app.with_context_status("✅ 完成", None) == "✅ 完成"

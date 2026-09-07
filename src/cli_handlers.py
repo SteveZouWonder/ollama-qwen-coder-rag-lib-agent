@@ -876,18 +876,23 @@ def handle_session_new(ctx, parsed):
     console = ctx.console
     title, carry = _parse_session_new_args(parsed.arg)
     try:
+        carried = ""
         if carry:
-            # 携带摘要：把当前会话的滚动摘要作为新会话的首条背景
+            # 携带摘要：只把当前会话「已折叠的滚动摘要」作为新会话的首条背景
             conv = _get_conversation_context()
             session = conv.new_session(title=title, carry_summary=True)
+            carried = conv.carried_summary()
         else:
             manager = _get_session_manager()
             session = manager.create_session(title=title)
         console.print(f"✅ 新会话已创建: {session.session_id}", style="green")
         console.print(f"📋 标题: {session.title}", style="dim")
         console.print(f"📅 创建时间: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-        if carry:
-            console.print("🧳 已携带上一会话的摘要作为背景", style="dim")
+        if carry and carried:
+            preview = carried if len(carried) <= 120 else carried[:120] + "…"
+            console.print(f"🧳 已承接上一会话的滚动摘要: {preview}", style="dim")
+        elif carry:
+            console.print("🧳 上一会话尚无滚动摘要，未承接任何内容（新会话为空）", style="dim")
         ctx.record_command("session_new", session.title if session.title else "")
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 创建会话失败: {e}", style="red")

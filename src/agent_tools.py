@@ -584,20 +584,6 @@ def check_knowledge_status() -> str:
         return "[错误] 状态检查失败: " + str(e)
 
 
-def read_system_prompt():
-    """读取系统提示文件（.devin/SYSTEM_PROMPT.md）"""
-    try:
-        prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
-        if os.path.exists(prompt_file):
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            return f"=== 系统提示内容 ===\n\n{content}\n\n=== 文件路径 ===\n{prompt_file}"
-        else:
-            return "[提示] 系统提示文件不存在，将使用内置默认提示"
-    except Exception as e:
-        return f"[错误] 读取系统提示文件失败: {str(e)}"
-
-
 # ========== 网络搜索工具 ==========
 
 def web_search(query: str, source: str = 'default', max_results: int = 10, use_cache: bool = True, enable_fallback: bool = True) -> str:
@@ -784,7 +770,6 @@ registry.register("analyze_project_structure", analyze_project_structure, "分�
 registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件",
                   {"query": "搜索关键字(必填)", "path": "搜索目录，默认当前目录", "max_results": "最大结果数，默认10"}, safe=True)
 registry.register("get_current_dir", get_current_dir, "获取当前工作目录路径", {}, safe=True)
-registry.register("read_system_prompt", read_system_prompt, "查看 .devin/SYSTEM_PROMPT.md 原文（其内容已自动注入系统提示，一般无需调用）", {}, safe=True)
 
 # RAG 工具
 registry.register("query_knowledge_base", query_knowledge_base, "查询个人知识库（PDF、论文、笔记、OCR识别的图片等文档）",

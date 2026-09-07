@@ -1,4 +1,4 @@
-"""ReActEngine 分层系统提示 / allowed_tools / max_iterations（P1-1 前置能力）。"""
+"""ReActEngine 分层系统提示（内置 / Skills / 项目附加规范 / 角色说明）、allowed_tools、max_iterations。"""
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,7 +28,17 @@ PROJECT_RULES = "# 项目规范\n必须遵守 X。\n{tool_descriptions}\n"
 
 @pytest.fixture
 def project_file(monkeypatch):
-    monkeypatch.setattr(react_engine, "read_system_prompt_from_file", lambda: PROJECT_RULES)
+    monkeypatch.setattr(react_engine, "read_project_rules", lambda: PROJECT_RULES)
+
+
+@pytest.fixture
+def no_skills(monkeypatch):
+    monkeypatch.setenv("CODE_AGENT_SKILLS", "off")
+
+
+@pytest.fixture
+def fake_skills(monkeypatch):
+    monkeypatch.setattr(react_engine, "_render_skills", lambda role: f"SKILL for {role}")
 
 
 class TestRegistryDescriptions:
@@ -48,59 +58,106 @@ class TestRegistryDescriptions:
         compact = registry.get_descriptions(compact=True)
         assert len(compact) < len(full) / 2
 
+    def test_read_system_prompt_tool_removed(self):
+        assert "read_system_prompt" not in registry.tools
+        assert "read_system_prompt" not in registry.get_descriptions(compact=True)
+
 
 class TestBuildSystemPrompt:
-    def test_builtin_under_budget(self):
+    def test_builtin_under_budget_without_skills(self, no_skills):
         prompt = build_system_prompt(mode="builtin")
         assert estimate_tokens(prompt) <= 1500
         assert "输出协议" in prompt and "安全规则" in prompt and "工具速查" in prompt
         assert "[格式错误]" in prompt and "不要重复调用" in prompt
-        assert "项目附加规范" not in prompt
+        assert "项目附加规范" not in prompt and "=== Skills ===" not in prompt
 
-    def test_builtin_ignores_project_file(self, project_file):
+    def test_builtin_ignores_project_file(self, project_file, no_skills):
         prompt = build_system_prompt(mode="builtin")
         assert "必须遵守 X" not in prompt
 
-    def test_append_adds_project_rules_after_builtin(self, project_file):
+    def test_skills_layer_between_builtin_and_rules(self, project_file, fake_skills):
+        prompt = build_system_prompt(mode="append", role="agent")
+        assert prompt.index("输出协议") < prompt.index("=== Skills ===") < prompt.index("=== 项目附加规范 ===")
+        assert "SKILL for agent" in prompt
+
+    def test_skills_injected_in_builtin_mode_for_sub_roles(self, project_file, fake_skills):
+        prompt = build_system_prompt(mode="builtin", role="code", extra="你是代码专家")
+        assert "=== Skills ===" in prompt and "SKILL for code" in prompt
+        assert "项目附加规范" not in prompt
+        assert prompt.index("=== Skills ===") < prompt.index("=== 角色说明 ===")
+
+    def test_skills_failure_is_tolerated(self, monkeypatch):
+        import prompt_assets
+        monkeypatch.setattr(prompt_assets, "render_skills", lambda role: (_ for _ in ()).throw(RuntimeError("x")))
+        prompt = build_system_prompt(mode="builtin")
+        assert "输出协议" in prompt and "=== Skills ===" not in prompt
+
+    def test_append_adds_project_rules_after_builtin(self, project_file, no_skills):
         prompt = build_system_prompt(mode="append")
         assert prompt.index("输出协议") < prompt.index("=== 项目附加规范 ===")
         assert "必须遵守 X" in prompt
-        # 项目文件里的占位符不再重复展开完整工具表
         assert "（见上方工具列表）" in prompt
 
-    def test_append_truncates(self, project_file, monkeypatch):
-        monkeypatch.setattr(react_engine, "read_system_prompt_from_file", lambda: "R" * 10000)
+    def test_append_truncates(self, no_skills, monkeypatch):
+        monkeypatch.setattr(react_engine, "read_project_rules", lambda: "R" * 10000)
         monkeypatch.setattr(react_engine, "SYSTEM_PROMPT_EXTRA_MAX_CHARS", 500)
         prompt = build_system_prompt(mode="append")
         assert "项目规范已截断" in prompt
         assert prompt.count("R") < 600
 
-    def test_replace_uses_project_file_wholesale(self, project_file):
+    def test_replace_mode_is_treated_as_append(self, project_file, no_skills):
         prompt = build_system_prompt(mode="replace")
-        assert prompt.startswith("# 项目规范")
-        assert "工具名: read_file" in prompt  # 完整格式展开
-        assert "输出协议" not in prompt
+        assert "输出协议" in prompt and "=== 项目附加规范 ===" in prompt
+        assert not prompt.startswith("# 项目规范")
 
-    def test_replace_without_file_falls_back_to_builtin(self, monkeypatch):
-        monkeypatch.setattr(react_engine, "read_system_prompt_from_file", lambda: None)
-        prompt = build_system_prompt(mode="replace")
-        assert "输出协议" in prompt
+    def test_append_without_file_is_builtin(self, no_skills, monkeypatch):
+        monkeypatch.setattr(react_engine, "read_project_rules", lambda: None)
+        prompt = build_system_prompt(mode="append")
+        assert "输出协议" in prompt and "项目附加规范" not in prompt
 
-    def test_tools_filter_and_extra(self):
+    def test_tools_filter_and_extra(self, no_skills):
         prompt = build_system_prompt(tools={"read_file"}, extra="你是审计员", mode="builtin")
         assert "- read_file(" in prompt and "- write_file(" not in prompt
         assert prompt.rstrip().endswith("=== 角色说明 ===\n你是审计员")
 
-    def test_env_mode(self, monkeypatch, project_file):
+    def test_env_mode(self, monkeypatch, project_file, no_skills):
         monkeypatch.setenv("CODE_AGENT_PROMPT_MODE", "builtin")
         assert "必须遵守 X" not in build_system_prompt()
         monkeypatch.setenv("CODE_AGENT_PROMPT_MODE", "append")
         assert "必须遵守 X" in build_system_prompt()
         monkeypatch.setenv("CODE_AGENT_PROMPT_MODE", "bogus")
         assert react_engine._prompt_mode() == "append"
+        monkeypatch.setenv("CODE_AGENT_PROMPT_MODE", "replace")
+        assert react_engine._prompt_mode() == "append"
 
     def test_template_placeholder(self):
         assert "{tool_descriptions}" in SYSTEM_PROMPT_TEMPLATE
+
+    def test_legacy_alias(self):
+        assert react_engine.read_system_prompt_from_file is react_engine.read_project_rules
+
+
+class TestRealPromptAssets:
+    """使用仓库内真实 prompts/ 目录（不 mock），保证资产与引擎接得上。"""
+
+    def test_default_agent_prompt_has_all_layers(self, monkeypatch):
+        monkeypatch.delenv("CODE_AGENT_SKILLS", raising=False)
+        monkeypatch.delenv("AGENT_PROMPTS_DIR", raising=False)
+        prompt = build_system_prompt(mode="append", role="agent")
+        assert "=== Skills ===" in prompt and "Core Skill" in prompt
+        assert "=== 项目附加规范 ===" in prompt and "Cerebro Project Rules" in prompt
+        assert "已截断" not in prompt and "truncated" not in prompt
+
+    def test_sub_role_prompt_has_skills_but_no_rules(self, monkeypatch):
+        monkeypatch.delenv("CODE_AGENT_SKILLS", raising=False)
+        prompt = build_system_prompt(mode="builtin", role="code", extra="R")
+        assert "=== Skills ===" in prompt and "项目附加规范" not in prompt
+
+    def test_total_prompt_within_reasonable_budget(self, monkeypatch):
+        monkeypatch.delenv("CODE_AGENT_SKILLS", raising=False)
+        prompt = build_system_prompt(mode="append", role="agent")
+        # 4B 模型 num_ctx=16384，系统提示应远低于 1/4
+        assert estimate_tokens(prompt) <= 3500
 
 
 class TestEngineParams:
@@ -109,8 +166,14 @@ class TestEngineParams:
         assert eng.allowed_tools is None
         assert eng.max_iterations == react_engine.Config.MAX_ITERATIONS
         assert eng.system_prompt_extra == ""
+        assert eng.role == "agent"
 
-    def test_allowed_tools_filter_prompt(self):
+    def test_role_passed_to_prompt(self, fake_skills):
+        eng = ReActEngine(context=FakeContext(), role="Audit", prompt_mode="builtin")
+        assert eng.role == "audit"
+        assert "SKILL for audit" in eng.system_prompt
+
+    def test_allowed_tools_filter_prompt(self, no_skills):
         eng = ReActEngine(context=FakeContext(), allowed_tools=["read_file"],
                           system_prompt_extra="角色 R", max_iterations=3, prompt_mode="builtin")
         assert eng.allowed_tools == {"read_file"}
@@ -135,7 +198,6 @@ class TestEngineParams:
         rejected = eng.step_log[0]
         assert rejected["confirmed"] is False
         assert "不在当前允许的工具集内" in rejected["observation"]
-        # 回灌的 Observation 提示可用工具
         obs_msgs = [m for m in eng.messages if m["role"] == "user" and "Observation" in m["content"]]
         assert "read_file" in obs_msgs[0]["content"]
 
@@ -146,7 +208,6 @@ class TestEngineParams:
             r.json.return_value = {"message": {"content": text}}
             return r
 
-        # 两步各读不同文件（避免触发重复检测），随后步数耗尽 → 强制总结再调一次模型
         mock_post.side_effect = [
             resp('Thought: t\nAction: read_file\nAction Input: {"path": "a"}'),
             resp('Thought: t\nAction: read_file\nAction Input: {"path": "b"}'),

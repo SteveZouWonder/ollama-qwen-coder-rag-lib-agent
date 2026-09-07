@@ -669,7 +669,7 @@ ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（
 | `/file-cleanup` | - | 🆕 清理临时/重复文件 |
 | `/file-deduplicate` | - | 🆕 手动触发去重 |
 | `/file-stats` | - | 🆕 显示文件统计信息 |
-| `/session-new [title]` | - | 🆕 创建新会话 |
+| `/session-new [--carry] [title]` | - | 🆕 创建新会话（默认全新上下文；`--carry` 仅承接上一会话已压缩的滚动摘要） |
 | `/session-list` | - | 🆕 列出所有会话 |
 | `/session-switch <id>` | - | 🆕 切换到指定会话 |
 | `/session-archive <id>` | - | 🆕 归档会话 |
@@ -1006,10 +1006,13 @@ export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
 # 入口智能路由：自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（默认 true；CLI 可 /auto on|off）
 export AUTO_ROUTE=true
-# Agent 系统提示分层：builtin 只用精简内置模板；append（默认）在其后追加 .devin/SYSTEM_PROMPT.md
-# （截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS，默认 4000 字符）；replace 用该文件整体替换（旧行为）
-export CODE_AGENT_PROMPT_MODE=append
+# Agent 系统提示分层（详见 prompts/README.md）：内置模板 → Skills（prompts/skills/*/SKILL.md，所有 Agent 角色）
+# → 项目附加规范（prompts/system/PROJECT_RULES.md，仅 append 模式，截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS）
+export CODE_AGENT_PROMPT_MODE=append          # builtin | append（默认）
 export SYSTEM_PROMPT_EXTRA_MAX_CHARS=4000
+export CODE_AGENT_SKILLS=on                   # off 关闭 Skills 层
+export SKILL_MAX_CHARS=4000                   # Skills 层总字符上限
+export AGENT_PROMPTS_DIR=~/my-prompts         # 额外 prompts 目录（冒号分隔，同名 Skill / PROJECT_RULES 覆盖内置）
 # 单 Agent 鲁棒性：连续格式错误重试次数 / 单条 Observation 最大字符数
 export MAX_FORMAT_RETRIES=2
 export OBSERVATION_MAX_CHARS=3000
