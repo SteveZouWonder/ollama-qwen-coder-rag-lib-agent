@@ -43,7 +43,7 @@ class TestRAGEngineInit:
         
         engine = RAGEngine()
         assert engine.index is None
-        assert engine.query_engine is None
+        assert engine.retriever is None
         mock_llm.assert_called_once()
         mock_embed.assert_called_once()
         mock_chroma.assert_called_once()
@@ -204,7 +204,7 @@ class TestRAGEngineAddDocuments:
 
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         with patch.object(engine, "_persist_index") as mock_persist:
             mock_doc = MagicMock()
@@ -223,7 +223,7 @@ class TestRAGEngineAddDocuments:
         mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
         events = []
         doc = Document(text="hello world. " * 400, metadata={"file_path": "/kb/x.txt", "file_name": "x.txt", "file_type": ".txt"})
         with patch.object(engine, "_persist_index"), patch.object(engine, "_register_file_metadata") as reg:
@@ -250,12 +250,13 @@ class TestRAGEngineQuery:
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
         engine = RAGEngine()
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = "这是回答"
-
-        result = engine.query("什么是RAG？")
+        engine.retriever = MagicMock()
+        # F9 P0-1：query() 委托共享编排层（kb_only），答案由忠实性 prompt 综合
+        with patch("rag_pipeline.answer_question", return_value={"answer": "这是回答", "kb_sources": []}) as aq:
+            result = engine.query("什么是RAG？")
         assert result == "这是回答"
-        engine.query_engine.query.assert_called_once()
+        aq.assert_called_once()
+        assert aq.call_args.kwargs["kb_only"] is True and aq.call_args.kwargs["enable_web_search"] is False
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -272,210 +273,135 @@ class TestRAGEngineQuery:
 
 
 class TestRAGEngineQueryWithSources:
-    """测试带来源查询"""
+    """测试带来源查询（F9 P0-1：检索-only，不生成答案）"""
+
+    @staticmethod
+    def _node(content="片段内容", fname="test.pdf", score=0.85):
+        n = MagicMock()
+        n.node.get_content.return_value = content
+        n.node.metadata = {"file_name": fname, "file_path": f"/tmp/{fname}"}
+        n.score = score
+        return n
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources(self, mock_chroma, mock_embed, mock_llm):
-        
-        # Mock chroma client's methods to avoid side effects
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
-        mock_response = MagicMock()
-        mock_node = MagicMock()
-        mock_node.node.get_content.return_value = "片段内容"
-        mock_node.node.metadata = {"file_name": "test.pdf", "file_path": "/tmp/test.pdf"}
-        mock_node.score = 0.85
-        mock_response.source_nodes = [mock_node]
-        mock_response.__str__ = lambda self: "回答内容"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node()]
 
         result = engine.query_with_sources("test")
-        assert result["answer"] == "回答内容"
+        # answer 键保留但恒为空：答案由 rag_pipeline 单次综合
+        assert result["answer"] == ""
         assert len(result["sources"]) == 1
         assert result["sources"][0]["file"] == "test.pdf"
         assert result["sources"][0]["score"] == 0.85
+        engine.retriever.retrieve.assert_called_once_with("test")
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_applies_similarity_postprocessor(self, mock_chroma, mock_embed, mock_llm):
+        """检索器之后应用相似度阈值后处理（等价此前 as_query_engine 的 node_postprocessors）。"""
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node(fname="hi.md", score=0.9), self._node(fname="lo.md", score=0.05)]
+        pp = MagicMock()
+        pp.postprocess_nodes.side_effect = lambda nodes, query_str=None: [n for n in nodes if n.score >= 0.3]
+        engine.node_postprocessors = [pp]
+        result = engine.query_with_sources("test")
+        assert [s["file"] for s in result["sources"]] == ["hi.md"]
+        pp.postprocess_nodes.assert_called_once()
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_postprocessor_failure_keeps_raw_nodes(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node()]
+        pp = MagicMock()
+        pp.postprocess_nodes.side_effect = RuntimeError("boom")
+        engine.node_postprocessors = [pp]
+        assert len(engine.query_with_sources("test")["sources"]) == 1
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources_no_nodes(self, mock_chroma, mock_embed, mock_llm):
-        
-        # Mock chroma client's methods to avoid side effects
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
-        mock_response = MagicMock()
-        mock_response.source_nodes = []
-        mock_response.__str__ = lambda self: "无来源回答"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
-
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = []
         result = engine.query_with_sources("test")
-        assert result["sources"] == []
+        assert result["sources"] == [] and result["answer"] == ""
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_query_with_sources_uninitialized_raises(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
+        engine = RAGEngine()
+        with pytest.raises(RuntimeError):
+            engine.query_with_sources("test")
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources_with_progress_callback(self, mock_chroma, mock_embed, mock_llm):
-        """测试带进度回调的查询"""
-        
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
+        """进度回调：embedding + retrieving + scoring（1 个节点）= 3 次，不再有 generating。"""
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
-        mock_response = MagicMock()
-        mock_node = MagicMock()
-        mock_node.node.get_content.return_value = "片段内容"
-        mock_node.node.metadata = {"file_name": "test.pdf", "file_path": "/tmp/test.pdf"}
-        mock_node.score = 0.85
-        mock_response.source_nodes = [mock_node]
-        mock_response.__str__ = lambda self: "回答内容"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
-
-        # 创建进度回调 mock
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node()]
         progress_callback = MagicMock()
-        
+
         result = engine.query_with_sources("test", progress_callback=progress_callback)
-        
-        # 验证结果
-        assert result["answer"] == "回答内容"
-        assert len(result["sources"]) == 1
-        
-        # 验证进度回调被调用
-        # embedding + retrieving + scoring (1个节点) + generating = 4次
-        assert progress_callback.call_count == 4
-        
-        # 验证回调参数
-        calls = progress_callback.call_args_list
-        assert calls[0][0][0]["phase"] == "embedding"
-        assert calls[1][0][0]["phase"] == "retrieving"
-        assert calls[2][0][0]["phase"] == "scoring"
-        assert calls[3][0][0]["phase"] == "generating"
+        assert result["answer"] == "" and len(result["sources"]) == 1
+        assert progress_callback.call_count == 3
+        phases = [c[0][0]["phase"] for c in progress_callback.call_args_list]
+        assert phases == ["embedding", "retrieving", "scoring"]
+        assert "generating" not in phases
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
     def test_query_with_sources_progress_callback_scoring(self, mock_chroma, mock_embed, mock_llm):
-        """测试进度回调的评分阶段"""
-        
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
-        mock_response = MagicMock()
-        # 创建多个节点
-        mock_nodes = []
-        for i in range(3):
-            mock_node = MagicMock()
-            mock_node.node.get_content.return_value = f"片段内容{i}"
-            mock_node.node.metadata = {"file_name": f"test{i}.pdf", "file_path": f"/tmp/test{i}.pdf"}
-            mock_node.score = 0.8 + i * 0.05
-            mock_nodes.append(mock_node)
-        
-        mock_response.source_nodes = mock_nodes
-        mock_response.__str__ = lambda self: "回答内容"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
-
-        # 创建进度回调 mock
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node(f"片段{i}", f"test{i}.pdf", 0.8 + i * 0.05) for i in range(3)]
         progress_callback = MagicMock()
-        
+
         result = engine.query_with_sources("test", progress_callback=progress_callback)
-        
-        # 验证结果
-        assert result["answer"] == "回答内容"
         assert len(result["sources"]) == 3
-        
-        # 验证进度回调被调用
-        # embedding + retrieving + 3次scoring + generating = 6次
-        assert progress_callback.call_count == 6
-        
-        # 验证评分回调
-        calls = progress_callback.call_args_list
-        scoring_calls = [c for c in calls if c[0][0].get("phase") == "scoring"]
+        # embedding + retrieving + 3 次 scoring = 5 次
+        assert progress_callback.call_count == 5
+        scoring_calls = [c for c in progress_callback.call_args_list if c[0][0].get("phase") == "scoring"]
         assert len(scoring_calls) == 3
-        assert scoring_calls[0][0][0]["current"] == 1
-        assert scoring_calls[0][0][0]["total"] == 3
-        assert scoring_calls[1][0][0]["current"] == 2
+        assert scoring_calls[0][0][0]["current"] == 1 and scoring_calls[0][0][0]["total"] == 3
         assert scoring_calls[2][0][0]["current"] == 3
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
-    def test_query_with_sources_without_progress_callback(self, mock_chroma, mock_embed, mock_llm):
-        """测试不使用进度回调的查询"""
-        
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
+    def test_query_with_sources_score_none_tolerated(self, mock_chroma, mock_embed, mock_llm):
+        mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
-        mock_response = MagicMock()
-        mock_node = MagicMock()
-        mock_node.node.get_content.return_value = "片段内容"
-        mock_node.node.metadata = {"file_name": "test.pdf", "file_path": "/tmp/test.pdf"}
-        mock_node.score = 0.85
-        mock_response.source_nodes = [mock_node]
-        mock_response.__str__ = lambda self: "回答内容"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
-
-        # 不传入进度回调
-        result = engine.query_with_sources("test")
-        
-        # 验证结果正常返回
-        assert result["answer"] == "回答内容"
-        assert len(result["sources"]) == 1
-
-    @patch("rag_engine.Ollama")
-    @patch("rag_engine.OllamaEmbedding")
-    @patch("rag_engine.chromadb.PersistentClient")
-    def test_query_with_sources_progress_callback_with_multiple_nodes(self, mock_chroma, mock_embed, mock_llm):
-        """测试进度回调处理多个文档节点"""
-        
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-
-        engine = RAGEngine()
-        mock_response = MagicMock()
-        # 创建5个节点
-        mock_nodes = []
-        for i in range(5):
-            mock_node = MagicMock()
-            mock_node.node.get_content.return_value = f"片段内容{i}"
-            mock_node.node.metadata = {"file_name": f"test{i}.pdf", "file_path": f"/tmp/test{i}.pdf"}
-            mock_node.score = 0.7 + i * 0.04
-            mock_nodes.append(mock_node)
-        
-        mock_response.source_nodes = mock_nodes
-        mock_response.__str__ = lambda self: "回答内容"
-
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = mock_response
-
-        # 创建进度回调 mock
-        progress_callback = MagicMock()
-        
-        result = engine.query_with_sources("test", progress_callback=progress_callback)
-        
-        # 验证结果
-        assert result["answer"] == "回答内容"
-        assert len(result["sources"]) == 5
-        
-        # 验证进度回调被调用次数
-        # embedding + retrieving + 5次scoring + generating = 8次
-        assert progress_callback.call_count == 8
+        engine.hybrid_enabled = False
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = [self._node(score=None)]
+        assert engine.query_with_sources("test")["sources"][0]["score"] is None
 
 
 class TestRAGEngineAgentTools:
@@ -490,14 +416,14 @@ class TestRAGEngineAgentTools:
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
         engine = RAGEngine()
-        engine.query_engine = MagicMock()
-        mock_response = MagicMock()
-        mock_response.source_nodes = []
-        mock_response.__str__ = lambda self: "工具回答"
-        engine.query_engine.query.return_value = mock_response
-
-        result = engine.query_tool("问题")
-        assert "工具回答" in result
+        engine.retriever = MagicMock()
+        # F9 P0-1：query_tool 委托 answer_question(kb_only=True)
+        with patch("rag_pipeline.answer_question", return_value={
+            "answer": "工具回答", "kb_sources": [{"file": "a.md", "score": 0.9}],
+        }) as aq:
+            result = engine.query_tool("问题")
+        assert "工具回答" in result and "[参考来源]" in result and "a.md" in result
+        assert aq.call_args.kwargs["kb_only"] is True
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -521,10 +447,9 @@ class TestRAGEngineAgentTools:
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
         engine = RAGEngine()
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.side_effect = Exception("query failed")
-
-        result = engine.query_tool("问题")
+        engine.retriever = MagicMock()
+        with patch("rag_pipeline.answer_question", side_effect=Exception("query failed")):
+            result = engine.query_tool("问题")
         assert "[错误] 知识库查询失败" in result
 
     @patch("rag_engine.Ollama")
@@ -536,7 +461,7 @@ class TestRAGEngineAgentTools:
 
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         path = temp_dir / "test.txt"
         path.write_text("hello")
@@ -568,7 +493,7 @@ class TestRAGEngineAgentTools:
 
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         path = temp_dir / "test.txt"
         path.write_text("hello")
@@ -588,7 +513,7 @@ class TestRAGEngineAgentTools:
 
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         path = temp_dir / "test.txt"
         path.write_text("hello")
@@ -649,15 +574,15 @@ class TestRAGEngineSetModel:
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
     @patch("rag_engine.chromadb.PersistentClient")
-    def test_set_model_rebuilds_llm_and_query_engine(self, mock_chroma, mock_embed, mock_llm):
+    def test_set_model_rebuilds_llm_and_retriever(self, mock_chroma, mock_embed, mock_llm):
         mock_collection = MagicMock()
         mock_collection.count.return_value = 1
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
         engine = RAGEngine()
-        # 模拟已加载索引：query_engine 应被重建
+        # 模拟已加载索引：检索器应被重建（F9 P0-1：不再构造 as_query_engine）
         engine.index = MagicMock()
-        engine.index.as_query_engine.return_value = "new-qe"
+        engine.index.as_retriever.return_value = "new-retriever"
 
         ctx = engine.set_model("qwen3.5:9b")
 
@@ -668,7 +593,10 @@ class TestRAGEngineSetModel:
         assert kwargs["model"] == "qwen3.5:9b"
         assert kwargs["context_window"] == 8192
         assert kwargs["additional_kwargs"] == {"num_ctx": 8192}
-        assert engine.query_engine == "new-qe"
+        assert engine.retriever == "new-retriever"
+        assert engine.query_engine == "new-retriever"  # 兼容别名
+        engine.index.as_query_engine.assert_not_called()
+        assert len(engine.node_postprocessors) == 1
         assert engine.get_stats()["llm_model"] == "qwen3.5:9b"
         assert "qwen3.5:9b" in engine.get_stats_tool()
 
@@ -680,7 +608,7 @@ class TestRAGEngineSetModel:
         engine = RAGEngine()
         assert engine.index is None
         engine.set_model("qwen3.5:9b")
-        assert engine.query_engine is None
+        assert engine.retriever is None
 
     @patch("rag_engine.Ollama")
     @patch("rag_engine.OllamaEmbedding")
@@ -691,14 +619,14 @@ class TestRAGEngineSetModel:
         mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.index.as_query_engine.return_value = "qe2"
+        engine.index.as_retriever.return_value = "qe2"
 
         assert engine.set_think(True) is True
         kwargs = mock_llm.call_args.kwargs
         assert kwargs["thinking"] is True
         assert kwargs["model"] == "qwen3.5:4b"
         assert kwargs["context_window"] == 16384
-        assert engine.query_engine == "qe2"
+        assert engine.retriever == "qe2"
         assert engine.get_stats()["llm_think"] is True
 
         # 切换模型时保留思考开关状态
@@ -731,11 +659,11 @@ class TestRAGEngineClear:
 
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         engine.clear_index()
         assert engine.index is None
-        assert engine.query_engine is None
+        assert engine.retriever is None
 
 
 class TestBuildKnowledgeBase:
@@ -1044,7 +972,7 @@ class TestRAGEngineDeriveKnowledgeGraph:
         mock_chroma.return_value.get_or_create_collection.return_value = MagicMock()
         engine = RAGEngine()
         engine.index = MagicMock()
-        engine.query_engine = MagicMock()
+        engine.retriever = MagicMock()
 
         with patch.object(engine, "_persist_index"), patch.object(
             engine, "_register_file_metadata"
@@ -1097,8 +1025,8 @@ def _mk_engine(mock_chroma, count=3, docs=None, metas=None):
 
 
 def _dense_response(items):
-    """items: [(content, score, file_name, file_path)]"""
-    resp = MagicMock()
+    """items: [(content, score, file_name, file_path)] → 检索器 ``retrieve`` 返回的 NodeWithScore 列表
+    （F9 P0-1：引擎只检索不生成，故不再有 ``source_nodes``/``__str__`` 的 Response 对象）。"""
     nodes = []
     for content, score, fname, fpath in items:
         n = MagicMock()
@@ -1106,9 +1034,7 @@ def _dense_response(items):
         n.node.metadata = {"file_name": fname, "file_path": fpath}
         n.score = score
         nodes.append(n)
-    resp.source_nodes = nodes
-    resp.__str__ = lambda self: "回答"
-    return resp
+    return nodes
 
 
 class TestRRFFuse:
@@ -1191,8 +1117,8 @@ class TestHybridQuery:
         pytest.importorskip("rank_bm25")
         engine, coll = _mk_engine(mock_chroma)
         engine.hybrid_enabled = True
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([
             ("Cloudflare Tunnel 配置指南", 0.5, "cf.md", "/d/cf.md"),
         ])
         events = []
@@ -1214,8 +1140,8 @@ class TestHybridQuery:
         pytest.importorskip("rank_bm25")
         engine, coll = _mk_engine(mock_chroma)
         engine.hybrid_enabled = True
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([])
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([])
         engine.query_with_sources("售价")
         engine.query_with_sources("售价")
         assert coll.get.call_count == 1  # 第二次复用缓存
@@ -1254,8 +1180,8 @@ class TestHybridQuery:
         pytest.importorskip("rank_bm25")
         engine, coll = _mk_engine(mock_chroma, count=20001)
         engine.hybrid_enabled = True
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         events = []
         result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
         assert result["hybrid"] is False
@@ -1273,8 +1199,8 @@ class TestHybridQuery:
         monkeypatch.setitem(sys.modules, "rank_bm25", None)
         engine, coll = _mk_engine(mock_chroma)
         engine.hybrid_enabled = True
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         events = []
         result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
         assert result["hybrid"] is False
@@ -1288,8 +1214,8 @@ class TestHybridQuery:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_hybrid_explicit_false_and_env_default(self, mock_chroma, mock_embed, mock_llm):
         engine, coll = _mk_engine(mock_chroma)
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         result = engine.query_with_sources("q", hybrid=False)
         assert result["hybrid"] is False
         coll.get.assert_not_called()
@@ -1303,8 +1229,8 @@ class TestHybridQuery:
         pytest.importorskip("rank_bm25")
         engine, coll = _mk_engine(mock_chroma, docs=[], metas=[])
         engine.hybrid_enabled = True
-        engine.query_engine = MagicMock()
-        engine.query_engine.query.return_value = _dense_response([("x", 0.5, "a", "/a")])
+        engine.retriever = MagicMock()
+        engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         assert engine.query_with_sources("q")["hybrid"] is False
         # get() 抛错 → 记录原因、回退 dense
         engine.invalidate_bm25()

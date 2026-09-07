@@ -32,9 +32,9 @@ class FakeRAG:
         self.raise_on_add = False
         self.raise_on_stats = False
         self.raise_on_clear = False
-        # 共享编排层 rag_pipeline.answer_question 会检查 query_engine 判断
+        # 共享编排层 rag_pipeline.answer_question 会检查 retriever 判断
         # 知识库是否已初始化；桩默认设为真值，走"知识库检索"分支。
-        self.query_engine = object()
+        self.retriever = object()
 
     def load_index(self):
         return None
@@ -177,6 +177,10 @@ class TestLazyProperties:
 # ==================== RAG 检索 ====================
 
 class TestRagQuery:
+    @pytest.fixture(autouse=True)
+    def _synth(self, stub_synthesis):
+        """F9 P0-1：检索层不再生成答案，综合由打桩的 llm_direct_answer 产出 ``答案:<问题>``。"""
+
     def test_stream_empty_question(self):
         svc = make_service()
         events = list(svc.rag_query_stream("   "))
@@ -1129,7 +1133,7 @@ class TestConversationContextWiring:
         assert history[0]["content"] == "什么是RAG"
         assert answer.data["rewritten"] is None
 
-    def test_rag_stream_rewrites_followup_with_history(self, monkeypatch):
+    def test_rag_stream_rewrites_followup_with_history(self, monkeypatch, stub_synthesis):
         """会话有历史 + 追问句式 → 改写为独立问题用于检索，并透出 rewritten。"""
         import conversation_context as cc
 
@@ -1140,7 +1144,7 @@ class TestConversationContextWiring:
         events = list(svc.rag_query_stream("它多少钱", enable_web_search=False, session_id=sid))
         answer = events[-1]
         assert answer.data["rewritten"] == "DJI OSMO 360 多少钱"
-        # 检索用的是改写后的问题（FakeRAG 把问题回显进答案）
+        # 检索用的是改写后的问题（综合桩把 prompt 中的问题回显进答案）
         assert "DJI OSMO 360 多少钱" in answer.message
         assert any(e.kind == "progress" and "结合上下文" in e.message for e in events)
         # 会话中记录的是原问题，并附带改写结果
@@ -1148,6 +1152,31 @@ class TestConversationContextWiring:
         user_msgs = [m for m in session.messages if m["role"] == "user"]
         assert user_msgs[-1]["content"] == "它多少钱"
         assert user_msgs[-1]["rewritten"] == "DJI OSMO 360 多少钱"
+
+    def test_rag_stream_records_warn_notices_in_session(self, monkeypatch):
+        """F9 P0-5：会话记录 = 正文 + warn 级 notice 各一行 ``[code] text``；answer 事件带 notices 等字段。"""
+        import rag_pipeline
+
+        svc = make_service()
+        sid = svc.ensure_session()
+        monkeypatch.setattr(rag_pipeline, "answer_question", lambda *a, **k: {
+            "kind": "fallback", "answer": "模型自答", "kb_sources": [], "web_sources": [], "meta": None,
+            "rewritten": None, "fallback_question": "冷门", "citation_check": None, "model": "m",
+            "notices": [
+                {"level": "warn", "code": "no_evidence", "text": "无资料依据 · 模型自身知识 · 请自行核实", "position": "before"},
+                {"level": "info", "code": "fallback", "text": "建议：/agent 冷门", "position": "after"},
+            ],
+        })
+        events = list(svc.rag_query_stream("冷门", enable_web_search=False, session_id=sid))
+        answer = events[-1]
+        assert answer.message == "模型自答"
+        assert answer.data["notices"][0]["code"] == "no_evidence"
+        assert answer.data["citation_check"] is None and answer.data["model"] == "m"
+        history = svc.chat_history(sid)
+        recorded = history[-1]["content"]
+        assert recorded.startswith("模型自答")
+        assert "[no_evidence] 无资料依据 · 模型自身知识 · 请自行核实" in recorded
+        assert "[fallback]" not in recorded  # info 级不入会话
 
     def test_rag_meta_query_recorded_as_overview(self, monkeypatch):
         import sys
@@ -1882,7 +1911,7 @@ class TestChatAutoStream:
         monkeypatch.setattr(intent_router, "_llm_complete",
                             MagicMock(side_effect=AssertionError("不应调用 LLM")))
         rag = FakeRAG()
-        rag.query_engine = None
+        rag.retriever = None
         svc = make_service(rag=rag)
         assert svc.kb_available() is False
         events = list(svc.chat_auto_stream("helloworld"))

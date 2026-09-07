@@ -31,6 +31,23 @@ def _agent_line(r: Dict[str, Any], task_desc: str = "") -> List[str]:
     return lines
 
 
+def format_notices_md(notices: List[Dict[str, Any]]) -> str:
+    """把 RAGAgent 透传的结构化提示渲染为 blockquote（与 Web 对话页同款，F9 P0-5）。
+
+    warn → ``> ⚠️ text``，info → ``> 💡 text``；``fallback`` 不渲染。空列表返回空串。
+    """
+    lines = []
+    for n in notices or []:
+        if not isinstance(n, dict) or n.get("code") == "fallback":
+            continue
+        text = str(n.get("text") or "").strip()
+        if not text:
+            continue
+        icon = "⚠️" if n.get("level") == "warn" else "💡"
+        lines.append(f"> {icon} {text}")
+    return "\n".join(lines)
+
+
 def format_sources_md(sources: List[Dict[str, Any]]) -> str:
     """渲染结构化来源列表（kb / web）。"""
     if not sources:
@@ -117,6 +134,11 @@ def format_multi_agent_result(result: Dict[str, Any]) -> str:
                     lines.append("")
                     lines.append(f"> {output}")
 
+    # F9 P0-5：RAGAgent 透传的 notices 以 blockquote 置于来源之前
+    notices_md = format_notices_md(result.get("notices") or [])
+    if notices_md:
+        lines.append("")
+        lines.append(notices_md)
     src_md = format_sources_md(result.get("sources") or [])
     if src_md:
         lines.append("")

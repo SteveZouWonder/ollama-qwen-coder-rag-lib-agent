@@ -13,8 +13,8 @@ import rag_pipeline
 
 
 class FakeRAG:
-    def __init__(self, query_engine=object(), result=None):
-        self.query_engine = query_engine
+    def __init__(self, retriever=object(), result=None):
+        self.retriever = retriever
         self._result = result or {
             "answer": "答案", "sources": [{"content": "c", "file": "f.md"}]
         }
@@ -75,7 +75,9 @@ class TestMetaQuery:
 # ==================== 生成回答 ====================
 
 class TestAnswerQuestion:
-    def test_kb_hit_no_web(self):
+    def test_kb_hit_no_web(self, monkeypatch):
+        # F9 P0-1：命中后一律经 synthesize_prompt 单次综合（不再沿用检索层原始答案）
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "答案")
         result = rag_pipeline.answer_question(
             FakeRAG(), "问题", enable_web_search=False,
         )
@@ -83,6 +85,7 @@ class TestAnswerQuestion:
         assert result["answer"] == "答案"
         assert result["kb_sources"][0]["file"] == "f.md"
         assert result["web_sources"] == []
+        assert result["notices"] == [] and "citation_check" in result and "model" in result
 
     def test_kb_empty_fallback_to_model(self, monkeypatch):
         # 空命中：sources 为空
@@ -94,10 +97,14 @@ class TestAnswerQuestion:
         result = rag_pipeline.answer_question(
             rag, "冷门问题", enable_web_search=False,
         )
-        # P2-5：知识库无相关片段且网络无结果 → kind="fallback"，答案末尾附 /agent 建议
+        # P2-5：知识库无相关片段且网络无结果 → kind="fallback"；F9 P0-5：/agent 建议不再
+        # 拼进 answer，而是 code=="fallback" 的 notice
         assert result["kind"] == "fallback"
-        assert "模型回答" in result["answer"]
-        assert "/agent 冷门问题" in result["answer"]
+        assert result["answer"] == "模型回答"
+        assert "/agent" not in result["answer"] and not result["answer"].startswith("⚠️")
+        fb = [n for n in result["notices"] if n["code"] == "fallback"]
+        assert fb and "/agent 冷门问题" in fb[0]["text"] and fb[0]["position"] == "after"
+        assert any(n["code"] == "no_evidence" and n["level"] == "warn" for n in result["notices"])
         assert result["fallback_question"] == "冷门问题"
         assert result["kb_sources"] == []
 
@@ -117,13 +124,14 @@ class TestAnswerQuestion:
         assert "kb_empty" in events
 
     def test_kb_only_uninitialized_returns_empty(self, monkeypatch):
-        rag = FakeRAG(query_engine=None)
+        rag = FakeRAG(retriever=None)
         monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: pytest.fail("不应调用模型"))
         result = rag_pipeline.answer_question(rag, "问题", enable_web_search=False, kb_only=True)
         assert result["answer"] == "" and result["kb_sources"] == []
 
-    def test_kb_only_hit_returns_sources(self):
-        rag = FakeRAG(result={"answer": "命中答案", "sources": [{"content": "相关", "file": "d.md", "score": 0.8}]})
+    def test_kb_only_hit_returns_sources(self, monkeypatch):
+        rag = FakeRAG(result={"answer": "", "sources": [{"content": "相关", "file": "d.md", "score": 0.8}]})
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "命中答案")
         result = rag_pipeline.answer_question(rag, "问题", enable_web_search=False, kb_only=True)
         assert result["answer"] == "命中答案" and len(result["kb_sources"]) == 1
 
@@ -149,16 +157,19 @@ class TestAnswerQuestion:
     def test_relevant_source_kept(self, monkeypatch):
         """高相关片段（>= 阈值）应保留并命中知识库。"""
         rag = FakeRAG(result={
-            "answer": "知识库原始答案",
+            "answer": "",
             "sources": [{"content": "相关内容", "file": "doc.md", "score": 0.72}],
         })
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "综合答案[1]")
         result = rag_pipeline.answer_question(
             rag, "相关问题", enable_web_search=False,
         )
         assert len(result["kb_sources"]) == 1
         assert result["kb_sources"][0]["score"] == 0.72
-        # 无过滤、无网络 → 快路径沿用原始答案
-        assert result["answer"] == "知识库原始答案"
+        # F9 P0-1：无过滤、无网络也不再有快路径，一律经忠实性 prompt 单次综合
+        assert result["answer"] == "综合答案[1]"
+        assert len(prompts) == 1 and "忠实提取" in prompts[0] and "相关内容" in prompts[0]
 
     def test_progress_events_emitted(self, monkeypatch):
         rag = FakeRAG()
@@ -195,10 +206,11 @@ class TestAnswerQuestion:
     def test_edge_score_relevant_kept(self, monkeypatch):
         """同为边缘分数（0.452），但 LLM 判为相关时应保留并用知识库回答。"""
         rag = FakeRAG(result={
-            "answer": "知识库答案",
+            "answer": "",
             "sources": [{"content": "相关内容", "file": "doc.md", "score": 0.452}],
         })
         monkeypatch.setattr(rag_pipeline, "judge_kb_relevance", lambda q, s: True)
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "知识库答案")
         result = rag_pipeline.answer_question(
             rag, "相关问题", enable_web_search=False,
         )
@@ -306,6 +318,21 @@ class TestHelpers:
         assert not rag_pipeline.is_empty_rag_result(
             {"answer": "x", "sources": [{"file": "f"}]}
         )
+
+    def test_is_empty_rag_result_only_looks_at_sources(self):
+        """F9 P0-1：检索-only 后 answer 恒为空，判空只看 sources。"""
+        assert not rag_pipeline.is_empty_rag_result({"answer": "", "sources": [{"file": "f"}]})
+        assert not rag_pipeline.is_empty_rag_result({"answer": "Empty Response", "sources": [{"file": "f"}]})
+        assert rag_pipeline.is_empty_rag_result({"answer": "有答案但无来源", "sources": []})
+        assert rag_pipeline.is_empty_rag_result({})
+        assert rag_pipeline.is_empty_rag_result(None)
+
+    def test_kb_ready_uses_retriever_sentinel(self):
+        from types import SimpleNamespace
+        assert rag_pipeline.kb_ready(SimpleNamespace(retriever=object()))
+        assert not rag_pipeline.kb_ready(SimpleNamespace(retriever=None))
+        assert not rag_pipeline.kb_ready(SimpleNamespace())
+        assert not rag_pipeline.kb_ready(None)
 
     def test_synthesize_prompt_contains_sections(self):
         p = rag_pipeline.synthesize_prompt("问题", "KB内容", "网络内容")
@@ -682,8 +709,9 @@ class TestLLMCallBudgetAndMultiHop:
         assert rag.queries == ["简单问题"]  # 单跳：只检索一次
         assert len(settings_calls) == 1     # 规划 1 次（分解 + 搜索规划合并）
         assert len(rerank_calls) == 1       # rerank 1 次
-        assert direct == []                 # 快路径：无过滤/无网络 → 不再综合
-        assert result["answer"] == "原答案"
+        # F9 P0-1：检索层不再生成，综合恰好 1 次（此前为"检索层 1 + 快路径 0 / 综合 1"）
+        assert len(direct) == 1 and "忠实提取" in direct[0]
+        assert result["answer"] == "综合"
         assert result["kb_sources"][0]["ref"] == "1" and result["kb_sources"][0]["rerank_note"] == "相关"
 
     def test_complex_question_multi_hop_dedup(self, monkeypatch):
@@ -735,7 +763,7 @@ class TestLLMCallBudgetAndMultiHop:
     def test_kb_uninitialized_web_off_skips_planning(self, monkeypatch):
         _patch_settings_llm(monkeypatch, lambda p: pytest.fail("不应规划"))
         monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型回答")
-        result = rag_pipeline.answer_question(FakeRAG(query_engine=None), "q", enable_web_search=False)
+        result = rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=False)
         assert result["kind"] == "answer" and "模型回答" in result["answer"]
 
     def test_rerank_drops_some_then_synthesizes(self, monkeypatch):
@@ -929,7 +957,10 @@ class TestFallbackKind:
         events = []
         result = rag_pipeline.answer_question(rag, "冷门", enable_web_search=False, progress=lambda e: events.append(e))
         assert result["kind"] == "fallback"
-        assert result["answer"].rstrip().endswith(rag_pipeline.fallback_suggestion("冷门"))
+        # F9 P0-5：建议文案在 fallback notice 中，answer 只含正文
+        assert result["answer"] == "模型自答"
+        assert any(n["code"] == "fallback" and n["text"] == rag_pipeline.fallback_suggestion("冷门")
+                   for n in result["notices"])
         assert result["fallback_question"] == "冷门"
         assert any(e["stage"] == "fallback" and e["question"] == "冷门" for e in events)
 
@@ -940,6 +971,9 @@ class TestFallbackKind:
         result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
         assert result["kind"] == "answer" and "fallback_question" not in result
         assert "/agent" not in result["answer"]
+        # F9 P0-5：web_only 声明走 notice，answer 不再带 ⚠️ 前缀
+        assert result["answer"] == "网络答"
+        assert any(n["code"] == "web_only" and n["position"] == "before" for n in result["notices"])
 
     def test_kb_only_miss_is_not_fallback(self, monkeypatch):
         rag = FakeRAG(result={"answer": "Empty Response", "sources": []})
@@ -948,5 +982,208 @@ class TestFallbackKind:
 
     def test_uninitialized_kb_no_web_is_plain_answer(self, monkeypatch):
         monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型答")
-        result = rag_pipeline.answer_question(FakeRAG(query_engine=None), "q", enable_web_search=False)
+        result = rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=False)
         assert result["kind"] == "answer"
+
+
+# ==================== F9 P0：单次综合 / 忠实性条款 / notices / 引用校验 ====================
+
+class TestF9SingleSynthesis:
+    def test_simple_question_exactly_one_llm_complete(self, monkeypatch):
+        """F9 P0-1 验收：简单问题恰好 1 次 ``llm.complete``（规划打桩、rerank 走高分直通）。"""
+        calls = []
+        _patch_settings_llm(monkeypatch, lambda p: calls.append(p) or "综合答案[1]")
+        monkeypatch.setattr(rag_pipeline, "plan_retrieval",
+                            lambda q, progress=None: {"complex": False, "subquestions": [], "needs_search": False, "queries": []})
+        import rag_rerank
+        monkeypatch.setattr(rag_rerank, "rerank", lambda q, srcs, progress=None: srcs)
+        rag = FakeRAG(result={"answer": "", "sources": [{"content": "c", "file": "f.md", "score": 0.9}]})
+        result = rag_pipeline.answer_question(rag, "简单问题", enable_web_search=True)
+        assert len(calls) == 1
+        assert "忠实提取" in calls[0] and "[1]（来自 f.md）" in calls[0]
+        assert result["answer"] == "综合答案[1]"
+
+    def test_no_fast_path_even_when_nothing_dropped(self, monkeypatch):
+        """无过滤 / 无网络 / 非多跳 / 无 BM25 补充时也必须走综合 prompt。"""
+        prompts = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: prompts.append(p) or "答")
+        rag = FakeRAG(result={"answer": "LlamaIndex 默认模板答案", "sources": [{"content": "c", "file": "f.md", "score": 0.9}]})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
+        assert result["answer"] == "答" and len(prompts) == 1
+        assert "LlamaIndex 默认模板答案" not in result["answer"]
+
+    def test_multi_hop_merge_ignores_answers(self):
+        merged = rag_pipeline._merge_multi_hop([
+            {"answer": "a1", "sources": [{"content": "x", "file": "f", "score": 0.5}]},
+            {"answer": "a2", "sources": [{"content": "x", "file": "f", "score": 0.4}, {"content": "y", "file": "g", "score": 0.9}]},
+        ])
+        assert merged["answer"] == ""
+        assert [s["file"] for s in merged["sources"]] == ["g", "f"]
+
+    def test_result_has_citation_check_and_model(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "答[1]")
+        rag = FakeRAG(result={"answer": "", "sources": [{"content": "c", "file": "f.md", "score": 0.9}]})
+        rag.llm_model = "any-model:7b"
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
+        assert result["model"] == "any-model:7b"
+        assert result["citation_check"]["total_refs"] == 1 and result["citation_check"]["invalid"] == []
+        assert result["kb_sources"][0]["cited"] == 1
+
+    def test_model_falls_back_to_config(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "答")
+        import config
+        result = rag_pipeline.answer_question(FakeRAG(), "q", enable_web_search=False)
+        assert result["model"] == config.LLM_MODEL
+
+    def test_kb_retrieving_message_no_longer_mentions_generation(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "答")
+        events = []
+        rag_pipeline.answer_question(FakeRAG(), "q", enable_web_search=False, progress=lambda e: events.append(e))
+        msg = next(e["message"] for e in events if e["stage"] == "kb_retrieving")
+        assert "生成初步回答" not in msg
+
+
+class TestF9FaithfulnessRules:
+    def test_constant_has_ten_rules_and_three_new_clauses(self):
+        rules = rag_pipeline.FAITHFULNESS_RULES
+        assert isinstance(rules, list) and len(rules) == 10
+        joined = "\n".join(rules)
+        assert "前提核对" in joined and "资料未提及" in joined
+        assert "冲突处理" in joined and "并列列出" in joined
+        assert "被质疑时" in joined and "不要仅因被反驳而改口" in joined
+        # 追加部分 ≤120 汉字（按 REQ P0-2）
+        appended = "".join(rules[7:])
+        assert len(appended) <= 200  # 含标点/编号的宽松上限
+
+    def test_prompt_embeds_rules_and_keeps_legacy_assertions(self):
+        p = rag_pipeline.synthesize_prompt("q", "kb", "web")
+        for rule in rag_pipeline.FAITHFULNESS_RULES:
+            assert rule in p
+        assert "忠实提取" in p and "不要脑补" in p and "无法确定" in p
+        assert "[1]、[2]" in p and "[W1]、[W2]" in p
+        assert "前提核对" in p and "被质疑时" in p
+
+
+class TestF9Notices:
+    def test_make_notice_and_lines(self):
+        n = rag_pipeline.make_notice("web_only", "文案")
+        assert n == {"level": "warn", "code": "web_only", "text": "文案", "position": "before"}
+        i = rag_pipeline.make_notice("citation", "x", level="info", position="after")
+        assert rag_pipeline.notice_lines([n, i]) == ["[web_only] 文案"]
+        assert rag_pipeline.notice_lines([n, i], "info") == ["[citation] x"]
+        assert rag_pipeline.answer_with_notices("正文", [n, i]) == "正文\n\n[web_only] 文案"
+        assert rag_pipeline.answer_with_notices("正文", []) == "正文"
+        assert all(c in rag_pipeline.NOTICE_CODES for c in ("kb_uninitialized", "web_only", "no_evidence", "fallback", "citation"))
+
+    def test_kb_uninitialized_paths_use_notice_not_prefix(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "模型答")
+        # 无网络
+        result = rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=False)
+        assert result["answer"] == "模型答" and not result["answer"].startswith("⚠️")
+        assert [n["code"] for n in result["notices"]] == ["kb_uninitialized"]
+        assert result["notices"][0]["level"] == "warn" and result["notices"][0]["position"] == "before"
+        # 有网络：文案提到网络搜索，且引用校验对 W 编号生效
+        monkeypatch.setattr(rag_pipeline, "augment_with_web_search",
+                            lambda q, **k: "1. 标题\n   URL: http://x\n   摘要: 2999")
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "售价 2999[W1]，另见[W9]")
+        result = rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=True)
+        assert result["answer"] == "售价 2999[W1]，另见[?]"
+        kb = [n for n in result["notices"] if n["code"] == "kb_uninitialized"]
+        assert kb and "网络搜索" in kb[0]["text"]
+        assert result["citation_check"]["invalid"] == ["W9"]
+        assert result["web_sources"][0]["cited"] == 1
+
+    def test_web_only_path_notice(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "网络答[W1]")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "1. t\n   URL: http://x\n   摘要: y")
+        result = rag_pipeline.answer_question(FakeRAG(result={"answer": "", "sources": []}), "q", enable_web_search=False)
+        assert result["answer"] == "网络答[W1]"
+        assert "⚠️ 知识库中无相关内容" not in result["answer"]
+        codes = [n["code"] for n in result["notices"]]
+        assert codes == ["web_only"]
+        assert result["citation_check"]["valid"] == 1
+
+    def test_fallback_path_notices_and_single_call(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: calls.append(p) or "自答")
+        monkeypatch.setattr(rag_pipeline, "simple_web_search", lambda q: "")
+        result = rag_pipeline.answer_question(FakeRAG(result={"answer": "", "sources": []}), "冷门", enable_web_search=False)
+        assert len(calls) == 1
+        assert result["kind"] == "fallback" and result["answer"] == "自答"
+        assert "建议：/agent" not in result["answer"]
+        by_code = {n["code"]: n for n in result["notices"]}
+        assert by_code["no_evidence"]["level"] == "warn" and by_code["no_evidence"]["position"] == "before"
+        assert by_code["fallback"]["position"] == "after" and "/agent 冷门" in by_code["fallback"]["text"]
+        assert result["citation_check"] is None  # 无来源不校验
+
+    def test_kb_only_paths_have_empty_notices(self, monkeypatch):
+        assert rag_pipeline.answer_question(FakeRAG(retriever=None), "q", enable_web_search=False, kb_only=True)["notices"] == []
+        assert rag_pipeline.answer_question(FakeRAG(result={"answer": "", "sources": []}), "q",
+                                            enable_web_search=False, kb_only=True)["notices"] == []
+
+    def test_think_tags_stripped_before_check(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "<think>[9] 想一想</think>答[1]")
+        result = rag_pipeline.answer_question(FakeRAG(result={"answer": "", "sources": [{"content": "c", "file": "f", "score": 0.9}]}),
+                                              "q", enable_web_search=False)
+        assert result["answer"] == "答[1]" and result["citation_check"]["invalid"] == []
+
+
+class TestF9VerifyCitations:
+    def _srcs(self):
+        kb = [{"ref": "1", "file": "a"}, {"ref": "2", "file": "b"}]
+        web = [{"ref": "W1", "url": "u"}]
+        return kb, web
+
+    def test_invalid_ref_rewritten_and_cited_backfilled(self):
+        kb, web = self._srcs()
+        out = rag_pipeline.verify_citations("甲[1]。乙[1][W1]。丙[5]。丁[W3]。", kb, web)
+        assert out["answer"] == "甲[1]。乙[1][W1]。丙[?]。丁[?]。"
+        assert out["invalid"] == ["5", "W3"] and out["invalid_count"] == 2
+        assert out["total_refs"] == 5 and out["valid"] == 3
+        assert kb[0]["cited"] == 2 and kb[1]["cited"] == 0 and web[0]["cited"] == 1
+
+    def test_code_fence_and_inline_code_ignored(self):
+        kb, web = self._srcs()
+        text = "见[1]。\n```python\nx = arr[7]\nprint(a[1])\n```\n行内 `b[9]` 不算。\n真无效[8]。"
+        out = rag_pipeline.verify_citations(text, kb, web)
+        assert "arr[7]" in out["answer"] and "`b[9]`" in out["answer"]
+        assert out["invalid"] == ["8"] and out["total_refs"] == 2
+
+    def test_unsupported_numeric_sentences(self):
+        kb, web = self._srcs()
+        text = "售价 2999 元[1]。\n版本 v3.2 已发布。\n没有数字的句子。\n1. 列表项无数字。\n共 5 个模块[9]。"
+        out = rag_pipeline.verify_citations(text, kb, web)
+        # 「版本 v3.2 已发布」与「共 5 个模块[9]」（编号无效）含数字且无合法编号
+        assert out["unsupported_numeric"] == 2
+
+    def test_numeric_inside_citation_or_code_not_counted(self):
+        kb, web = self._srcs()
+        out = rag_pipeline.verify_citations("结论见[1]。\n```\n1 2 3\n```", kb, web)
+        assert out["unsupported_numeric"] == 0
+
+    def test_no_sources_skips_numeric_count_and_marks_all_invalid(self):
+        out = rag_pipeline.verify_citations("售价 2999 元[1]。", [], [])
+        assert out["unsupported_numeric"] == 0
+        assert out["invalid"] == ["1"] and out["answer"] == "售价 2999 元[?]。"
+
+    def test_empty_answer(self):
+        kb, web = self._srcs()
+        out = rag_pipeline.verify_citations("", kb, web)
+        assert out == {"answer": "", "invalid": [], "invalid_count": 0, "valid": 0, "unsupported_numeric": 0, "total_refs": 0}
+        assert kb[0]["cited"] == 0
+
+    def test_citation_notices(self):
+        assert rag_pipeline.citation_notices(None) == []
+        assert rag_pipeline.citation_notices({"invalid": [], "unsupported_numeric": 0}) == []
+        out = rag_pipeline.citation_notices({"invalid": ["5"], "unsupported_numeric": 2})
+        assert [n["level"] for n in out] == ["info", "info"]
+        assert all(n["code"] == "citation" and n["position"] == "after" for n in out)
+        assert "[?]" in out[0]["text"] and "2 句含数字但未标来源" == out[1]["text"]
+
+    def test_pipeline_emits_citation_notices(self, monkeypatch):
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", lambda p: "甲[1]。售价 2999 元。乙[7]。")
+        rag = FakeRAG(result={"answer": "", "sources": [{"content": "c", "file": "f", "score": 0.9}]})
+        result = rag_pipeline.answer_question(rag, "q", enable_web_search=False)
+        assert result["answer"] == "甲[1]。售价 2999 元。乙[?]。"
+        texts = [n["text"] for n in result["notices"] if n["code"] == "citation"]
+        assert any("[?]" in t for t in texts) and any("1 句含数字但未标来源" == t for t in texts)

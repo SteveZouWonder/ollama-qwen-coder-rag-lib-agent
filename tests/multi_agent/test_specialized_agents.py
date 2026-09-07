@@ -261,16 +261,18 @@ class TestRAGAgent:
                     "literature_review", "general"):
             assert cap in agent.capabilities
 
-    def test_rag_agent_process_knowledge_retrieval(self):
-        """复用 rag_pipeline，注入桩引擎；来源结构化到 sources。"""
+    def test_rag_agent_process_knowledge_retrieval(self, stub_synthesis):
+        """复用 rag_pipeline，注入桩引擎；来源结构化到 sources；notices 透传到 metadata。"""
         import agent_tools
 
+        stub_synthesis("针对")  # F9 P0-1：答案由综合桩生成（检索层只返回 sources）
+
         class _StubEngine:
-            query_engine = object()
+            retriever = object()
 
             def query_with_sources(self, question, progress_callback=None):
                 return {
-                    "answer": f"针对『{question}』的检索答案",
+                    "answer": "",
                     "sources": [{"content": "c", "file": "ml.md", "score": 0.72}],
                 }
 
@@ -286,6 +288,7 @@ class TestRAGAgent:
             assert result.sources[0]["file"] == "ml.md"
             assert result.sources[0]["score"] == 0.72
             assert result.metadata["kb_hits"] == 1
+            assert result.metadata["notices"] == []
         finally:
             agent_tools.set_rag_engine(None)
 
@@ -331,7 +334,7 @@ class TestRAGAgent:
         import rag_pipeline
 
         class _NoiseEngine:
-            query_engine = object()
+            retriever = object()
 
             def query_with_sources(self, question, progress_callback=None):
                 return {

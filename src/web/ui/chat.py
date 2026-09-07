@@ -109,7 +109,8 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
                     )
             with gr.Accordion("⚙️ 处理过程", open=True):
                 process_box = gr.Markdown(elem_classes=["cb-result"])
-            with gr.Accordion("📎 引用来源 / 结果明细", open=False):
+            # F9 P0-3：引用校验发现无效编号时由 on_chat_stream 第 8 位输出 gr.update(open=True) 自动展开
+            with gr.Accordion("📎 引用来源 / 结果明细", open=False) as sources_acc:
                 sources_box = gr.Markdown(elem_classes=["cb-result"])
             with gr.Accordion("ℹ️ 会话详情", open=False):
                 session_info_md = gr.Markdown(elem_classes=["cb-kv"])
@@ -135,17 +136,18 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     pending_msg = gr.State("")
     _chat_outputs = [
         chatbot, status_box, process_box, sources_box, hint_box, hint_row, approval_md, approval_row,
-        retry_box, retry_row,
+        retry_box, retry_row, sources_acc,
     ]
 
     def _chat_stream_ui(message, mode_v, web_v, confirm_v, sid, collab_v):
-        for history, status, process, sources, hint, confirm, retry in handlers["on_chat_stream"](
+        for history, status, process, sources, hint, confirm, retry, sources_open in handlers["on_chat_stream"](
             message, mode_v, web_v, confirm_v, sid, collab_v
         ):
             yield (
                 history, status, process, sources, hint, gr.update(visible=bool(hint)),
                 confirm, gr.update(visible=bool(confirm)),
                 retry, gr.update(visible=bool(retry)),
+                sources_open,
             )
 
     def _begin(message: str):

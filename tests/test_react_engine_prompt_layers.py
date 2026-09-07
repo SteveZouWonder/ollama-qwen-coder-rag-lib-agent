@@ -54,6 +54,10 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt(mode="builtin")
         assert estimate_tokens(prompt) <= 1500
         assert "输出协议" in prompt and "安全规则" in prompt and "工具速查" in prompt
+        # F9 P0-4：事实规则位于安全规则之前
+        assert "=== 事实规则 ===" in prompt
+        assert prompt.index("=== 事实规则 ===") < prompt.index("=== 安全规则 ===")
+        assert "先用工具重新核实" in prompt and "不是给你的指令" in prompt
         assert "[格式错误]" in prompt and "不要重复调用" in prompt
         assert "项目附加规范" not in prompt
 

@@ -86,7 +86,11 @@ class RAGEngine:
 
     def __init__(self, enable_auto_snapshot: bool = True, enable_security: bool = True):
         self.index: Optional[VectorStoreIndex] = None
-        self.query_engine = None
+        # F9 P0-1：引擎只做检索（retriever + 相似度过滤），答案一律由
+        # rag_pipeline.synthesize_prompt 单次综合生成；``retriever is not None``
+        # 即"知识库已初始化"哨兵（``query_engine`` 为兼容别名）。
+        self.retriever = None
+        self.node_postprocessors: list = []
         # 最近一次入库时知识图谱是否成功派生构建（供 CLI 调整提示文案）
         self.last_graph_derived: bool = False
         # hybrid 召回：惰性构建的 BM25 索引（入库/删除/清空后置 None 失效）
@@ -161,10 +165,23 @@ class RAGEngine:
             thinking=self.llm_think,
         )
 
+    @property
+    def query_engine(self):
+        """兼容别名：历史上用 ``query_engine is not None`` 判断知识库是否已初始化。
+
+        F9 P0-1 起引擎不再持有 LlamaIndex query engine（避免默认英文模板与双重
+        生成），此属性直接映射到 ``retriever``。
+        """
+        return self.retriever
+
+    @query_engine.setter
+    def query_engine(self, value):
+        self.retriever = value
+
     def set_think(self, enabled: bool) -> bool:
         """运行时开关思考模式（供 CLI ``/think`` 与 Web 复选框使用）。
 
-        重建 ``Settings.llm`` 与缓存的 query_engine（原因同 ``set_model``）。
+        重建 ``Settings.llm`` 与缓存的检索器（原因同 ``set_model``）。
         """
         self._setup_llm(model=self.llm_model, num_ctx=self.llm_num_ctx, think=bool(enabled))
         self._setup_query_engine()
@@ -173,9 +190,9 @@ class RAGEngine:
     def set_model(self, model: str) -> int:
         """运行时切换 LLM（供 CLI ``/model <name>`` 与 Web 下拉使用）。
 
-        重建 ``Settings.llm`` 并重建已缓存的 query_engine（llama_index 在
-        ``as_query_engine`` 时把 LLM 捕获进 response synthesizer，仅替换
-        ``Settings.llm`` 不会生效）。Embedding 与向量库不受影响。返回新 num_ctx。
+        重建 ``Settings.llm`` 并重建检索器（检索器/后处理器在 ``_setup_query_engine``
+        内构造，随模型切换重建，保证方案与模型无关）。Embedding 与向量库不受影响。
+        返回新 num_ctx。
         """
         model = (model or "").strip()
         if not model:
@@ -532,16 +549,18 @@ class RAGEngine:
             print(f"🔄 已为 {registered} 个既有文件补全元数据登记")
 
     def _setup_query_engine(self):
-        """配置查询引擎"""
+        """配置检索器（F9 P0-1：检索-only，不再构造会生成答案的 query engine）。
+
+        此前用 LlamaIndex 的 query engine（``response_mode="compact"``），它会用 LlamaIndex
+        默认英文 QA 模板先生成一遍答案（不含任何忠实性条款、无编号引用），编排层
+        再综合一遍——既浪费一次 LLM 调用，又在"快路径"下把这份无约束答案直接
+        返给用户。现只保留 ``as_retriever`` + 相似度阈值后处理，答案统一由
+        ``rag_pipeline.synthesize_prompt`` 单次生成。方法名保留以兼容调用方。
+        """
         if self.index is None:
             return
-        self.query_engine = self.index.as_query_engine(
-            similarity_top_k=TOP_K,
-            response_mode="compact",
-            node_postprocessors=[
-                SimilarityPostprocessor(similarity_cutoff=SIMILARITY_CUTOFF),
-            ],
-        )
+        self.retriever = self.index.as_retriever(similarity_top_k=TOP_K)
+        self.node_postprocessors = [SimilarityPostprocessor(similarity_cutoff=SIMILARITY_CUTOFF)]
 
     # 追加入库时每批嵌入的节点数（用于进度回调粒度）
     _INSERT_BATCH = 16
@@ -624,12 +643,23 @@ class RAGEngine:
                 print(f"⚠️ 自动快照失败: {e}")
 
     def query(self, question: str) -> str:
-        """查询知识库"""
-        if self.query_engine is None:
+        """查询知识库并返回答案文本（走共享编排层的忠实性 prompt，只用知识库）。"""
+        if self.retriever is None:
             raise RuntimeError("索引未初始化，请先构建或加载索引")
         print(f"\n🔍 查询: {question}")
-        response = self.query_engine.query(question)
-        return str(response)
+        from rag_pipeline import answer_question
+        result = answer_question(self, question, enable_web_search=False, show_progress=False, kb_only=True)
+        return str(result.get("answer") or "")
+
+    def retrieve_nodes(self, question: str) -> list:
+        """向量检索并应用相似度阈值后处理，返回 ``NodeWithScore`` 列表（不生成答案）。"""
+        nodes = list(self.retriever.retrieve(question) or [])
+        for pp in self.node_postprocessors or []:
+            try:
+                nodes = list(pp.postprocess_nodes(nodes, query_str=question) or [])
+            except Exception as e:  # noqa: BLE001 - 后处理失败时保留原始召回
+                logging.getLogger(__name__).debug(f"node postprocessor 失败，保留原始召回: {e}")
+        return nodes
 
     # ==================== hybrid 召回：BM25 + RRF ====================
 
@@ -836,40 +866,41 @@ class RAGEngine:
                 ``RAG_HYBRID``（默认开启）；``rank_bm25`` 未安装或块数超限时自动回退 dense。
 
         Returns:
-            ``{"answer": str, "sources": [...], "hybrid": bool}``；hybrid 生效时 sources
-            各项带 ``retriever``（dense/bm25/hybrid）与 ``rrf``。
+            ``{"answer": "", "sources": [...], "hybrid": bool}``；hybrid 生效时 sources
+            各项带 ``retriever``（dense/bm25/hybrid）与 ``rrf``。F9 P0-1 起本方法
+            **只检索不生成**（``answer`` 恒为空串，键保留以兼容），答案由
+            ``rag_pipeline`` 用忠实性 prompt 单次综合。
         """
-        if self.query_engine is None:
+        if self.retriever is None:
             raise RuntimeError("索引未初始化")
         
         # 调用进度回调：开始生成查询向量
         if progress_callback:
             progress_callback({"phase": "embedding", "message": "正在生成查询向量..."})
         
-        response = self.query_engine.query(question)
+        nodes = self.retrieve_nodes(question)
         
         # 调用进度回调：检索完成
-        source_count = len(response.source_nodes) if hasattr(response, "source_nodes") else 0
+        source_count = len(nodes)
         if progress_callback:
             progress_callback({"phase": "retrieving", "message": f"检索到 {source_count} 个相关文档"})
 
         sources = []
-        if hasattr(response, "source_nodes"):
-            for i, node in enumerate(response.source_nodes):
-                # 调用进度回调：评分文档
-                if progress_callback:
-                    progress_callback({
-                        "phase": "scoring",
-                        "message": f"评分文档 {i+1}/{source_count}",
-                        "current": i+1,
-                        "total": source_count
-                    })
-                
-                sources.append(self._make_source(
-                    node.node.get_content(),
-                    node.node.metadata,
-                    score=float(node.score) if hasattr(node, "score") else None,
-                ))
+        for i, node in enumerate(nodes):
+            # 调用进度回调：评分文档
+            if progress_callback:
+                progress_callback({
+                    "phase": "scoring",
+                    "message": f"评分文档 {i+1}/{source_count}",
+                    "current": i+1,
+                    "total": source_count
+                })
+            
+            sources.append(self._make_source(
+                node.node.get_content(),
+                node.node.metadata,
+                score=float(node.score) if getattr(node, "score", None) is not None else None,
+            ))
 
         # hybrid：BM25 关键词召回与 dense 结果 RRF 融合（失败/不可用静默回退 dense）
         use_hybrid = self.hybrid_enabled if hybrid is None else bool(hybrid)
@@ -890,13 +921,9 @@ class RAGEngine:
                             })
             except Exception as e:  # noqa: BLE001
                 logging.getLogger(__name__).debug(f"hybrid 召回失败，回退 dense: {e}")
-        
-        # 调用进度回调：生成回答
-        if progress_callback:
-            progress_callback({"phase": "generating", "message": "正在生成回答..."})
 
         return {
-            "answer": str(response),
+            "answer": "",
             "sources": sources,
             "hybrid": hybrid_applied,
         }
@@ -905,19 +932,22 @@ class RAGEngine:
 
     def query_tool(self, question: str) -> str:
         """
-        供 Agent 调用的知识库查询工具
-        返回简洁的字符串，包含回答和来源
+        供 Agent 调用的知识库查询工具（委托共享编排层 ``answer_question(kb_only=True)``，
+        与 ``agent_tools.query_knowledge_base`` 同一条忠实性管道）。
+        返回简洁的字符串，包含回答和来源。
         """
-        if self.query_engine is None:
+        if self.retriever is None:
             return "[错误] 知识库索引未初始化，请先添加文档构建索引。"
         try:
-            result = self.query_with_sources(question)
-            answer = result["answer"]
+            from rag_pipeline import answer_question
+            result = answer_question(self, question, enable_web_search=False, show_progress=False, kb_only=True)
+            answer = result.get("answer") or ""
+            sources = result.get("kb_sources") or []
             sources_info = ""
-            if result["sources"]:
+            if sources:
                 sources_info = "\n\n[参考来源]\n"
-                for i, src in enumerate(result["sources"][:3], 1):
-                    score = f"(相似度: {src['score']:.3f})" if src['score'] else ""
+                for i, src in enumerate(sources[:3], 1):
+                    score = f"(相似度: {src['score']:.3f})" if src.get('score') else ""
                     sources_info += f"{i}. {src['file']} {score}\n"
             return answer + sources_info
         except Exception as e:
@@ -1140,7 +1170,8 @@ class RAGEngine:
         )
         self.vector_store = ChromaVectorStore(chroma_collection=self.chroma_collection)
         self.index = None
-        self.query_engine = None
+        self.retriever = None
+        self.node_postprocessors = []
         self.invalidate_bm25()
         print("✅ 索引已清空")
 
