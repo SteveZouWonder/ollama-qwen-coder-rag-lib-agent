@@ -314,6 +314,11 @@ python launcher.py --web        # 默认 http://127.0.0.1:7860
 展示上下文用量、处理过程与引用来源，单 Agent 遇到危险操作会弹出「允许 / 拒绝」审批卡片；
 右上角可切换 6 套主题色（跟随系统深浅色）。功能面与 CLI 命令一一对应，见「系统 → 帮助」。
 
+工具页分 **代码 | Git | 数据库 | 工作区** 四个子页：Git 是仪表盘（分支 / 变更 / 最近提交 / 提交者卡片与表格，
+一键 AI 生成提交信息）；数据库连接 SQLite 后列出全部表、点表看 列 / 类型 / 约束、查询结果表格化（写语句需二步确认）；
+工作区保留命令分析→执行与文件读写。每个结果面板下都有 **「用 AI 解读」**（流式、可停止）与 **「发送到对话」**
+（把结果填入对话输入框并切到对话页继续追问）。网络搜索缓存管理在「系统 → 运行环境」。
+
 知识库页的文件 / 快照表格末列有「⋯」：点击任意单元格即选中该行并弹出操作条——文件可
 **查看详情 / 删除文件**（删向量片段 + 图谱来源 + 元数据，不删磁盘文件，二步确认并预览影响），
 快照可 **详情 / 恢复（追加）/ 恢复（替换）/ 生成脚本 / 删除**，并可一键清理多余的自动快照。
@@ -661,6 +666,13 @@ ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（
 | `/clear` | - | 清屏 |
 | `/reset` | Agent | 重置对话上下文 |
 | `/pwd` / `/cd` | - | 目录操作 |
+| `/db-connect <database>` | - | 🆕 连接 SQLite 并设为当前连接（默认 sqlite；`/db-connect sqlite x.db` 仍兼容） |
+| `/db-query <sql>` / `/db-execute <sql>` | - | 在当前连接上查询 / 执行写语句（执行需确认） |
+| `/db-schema [table]` | - | 🆕 查看表结构；不带参数列出当前库全部表 |
+| `/db-create-table <table> <json>` / `/db-insert <table> <json>` | - | 建表 / 插入（JSON 参数，需确认） |
+| `/git-analyze [history\|status\|authors]` / `/git-commit-gen` | - | Git 分析 / AI 生成提交信息 |
+| `/code-ast <pattern>` / `/code-quality <path>` | - | 符号搜索 / 代码质量检查 |
+| `/web-search <query>` / `/web-extract <url>` / `/web-cache [status\|clear]` | - | 网络搜索 / 正文提取 / 缓存管理 |
 | `/file-list` | - | 🆕 列出知识库中的所有文件 |
 | `/file-info <path>` | - | 🆕 查看文件详细信息 |
 | `/file-delete <path>` | RAG | 🆕 从知识库删除文件（向量 + 图谱来源 + 元数据，不删磁盘文件） |

@@ -275,4 +275,6 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
         "init": _init, "init_outputs": init_outputs,
         "load_session": _load_session, "load_outputs": load_outputs,
         "chatbot": chatbot, "status_box": status_box,
+        # 供工具页「发送到对话」回填输入框 / 切换模式
+        "msg_box": msg_box, "mode": mode, "mode_auto": MODE_AUTO,
     }

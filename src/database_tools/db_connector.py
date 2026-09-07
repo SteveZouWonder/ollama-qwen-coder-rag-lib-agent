@@ -6,6 +6,7 @@
 """
 
 import logging
+import threading
 from enum import Enum
 from typing import Optional, Dict, Any
 from contextlib import contextmanager
@@ -37,25 +38,29 @@ class DatabaseConnector:
         self.connection_params = connection_params
         self._connection = None
         self._connection_pool = None
+        # 连接器会被进程级「当前连接」缓存并跨线程复用（Web 请求线程池），
+        # sqlite 连接需要 check_same_thread=False 并用锁串行化访问。
+        self._lock = threading.RLock()
         
         logger.info(f"初始化数据库连接器: {db_type.value}")
     
     @contextmanager
     def get_connection(self):
         """
-        获取数据库连接（上下文管理器）
+        获取数据库连接（上下文管理器；同一连接器内串行访问）
         
         Yields:
             数据库连接对象
         """
-        if self._connection is None:
-            self._connection = self._create_connection()
-        
-        try:
-            yield self._connection
-        except Exception as e:
-            logger.error(f"数据库操作失败: {e}")
-            raise
+        with self._lock:
+            if self._connection is None:
+                self._connection = self._create_connection()
+            
+            try:
+                yield self._connection
+            except Exception as e:
+                logger.error(f"数据库操作失败: {e}")
+                raise
     
     def _create_connection(self):
         """
@@ -67,7 +72,7 @@ class DatabaseConnector:
         try:
             if self.db_type == DatabaseType.SQLITE:
                 database_path = self.connection_params.get('database', ':memory:')
-                connection = sqlite3.connect(database_path)
+                connection = sqlite3.connect(database_path, check_same_thread=False)
                 connection.row_factory = sqlite3.Row
                 logger.info("SQLite数据库连接成功")
                 return connection
@@ -107,13 +112,14 @@ class DatabaseConnector:
     
     def close(self):
         """关闭数据库连接"""
-        if self._connection is not None:
-            try:
-                self._connection.close()
-                self._connection = None
-                logger.info("数据库连接已关闭")
-            except Exception as e:
-                logger.error(f"关闭数据库连接失败: {e}")
+        with self._lock:
+            if self._connection is not None:
+                try:
+                    self._connection.close()
+                    self._connection = None
+                    logger.info("数据库连接已关闭")
+                except Exception as e:
+                    logger.error(f"关闭数据库连接失败: {e}")
     
     def __enter__(self):
         """支持上下文管理器"""

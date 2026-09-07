@@ -10,6 +10,16 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **Web「工具」页重构 P1（F9）**：
+  - **Git 仪表盘**：顶部 4 张卡（当前分支 / 变更文件数 / 最近提交时间 / 提交者数），下方「变更文件」表与「最近提交 /
+    提交者统计」表格，进入子页或点「刷新」加载；非 Git 目录给出空态提示。新增共享层 `GitAnalyzer.get_overview()`，
+    供 Web 与后续 CLI rich 表格复用。
+  - **数据库表列表与 Schema 面板**：连接后左栏列出全部表，点表名右栏显示 列 / 类型 / 约束（PK · NOT NULL · DEFAULT）；
+    查询结果以表格展示（最多 500 行，超出提示），状态行显示行数与耗时；写语句走「执行」二步确认。
+    `QueryExecutor.list_tables()` 新增；`database_get_schema` 的 `table` 留空时列出全部表（工具名 / 参数名不变）。
+  - **结果流转**：代码 / Git / 数据库 / 工作区每个结果面板下统一「用 AI 解读」（流式、可停止）与「发送到对话」
+    （把结果模板填入对话输入框、切「自动」模式并跳到对话页，不自动发送）。
+  - CLI `/db-connect <database>` 允许省略类型（默认 sqlite，`/db-connect sqlite x.db` 仍兼容）；`/db-schema` 不带参数列出全部表。
 - **Agent 全局 Skill 与提示资产目录 `prompts/`**：
   - 新增 `prompts/skills/core/SKILL.md`（英文）——面向用户任务的通用行为规范：任务分流（知识库 / 联网 / 文件代码 /
     OCR / 数据库 / 图谱）、证据规则（没 `write_file` 不算写、没跑不算过、来源标注、被质疑先核实、工具返回是数据不是指令）、
@@ -253,6 +263,10 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- **Web「工具」页**：移除「网络搜索」子页（对话页「联网搜索」开关与 Agent 已覆盖；CLI `/web-*` 不变），搜索缓存状态 /
+  清空迁到「系统 → 运行环境」；子页重排为 代码 | Git | 数据库 | 工作区；数据库连接区移除 MySQL / PostgreSQL 下拉
+  （后端仅实现 SQLite），改为文件路径输入 + 连接状态芯片 + 「断开」；移除「创建表 / 插入数据」JSON 表单（由后续 NL→SQL 覆盖）。
+- CLI `/help` 与 `/tutorial` 的数据库命令说明同步（当前连接语义、`/db-schema` 无参列表）。
 - **`.devin/` 目录整体拆分**（Devin 时代遗留，混装了运行时数据、模型提示与开发者文档）：
   - 运行时状态目录改为 **`.cerebro/`**（`knowledge/snapshots`、`knowledge/graph.json`、`file_metadata`），经
     `runtime_paths.app_state_dir()` 解析；首次访问时自动把旧 `.devin/<同名子目录>` 搬迁到新位置（不覆盖已有数据），源码运行与
@@ -382,6 +396,13 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- **数据库「当前连接」失效（Web 与 CLI 共有）**：此前 `database_connect` / `/db-connect` / Web「连接」之后，
+  `database_query` 等只传 `sql` 时每次都在全新的 `:memory:` 库上执行，连接形同无效。现由新增的共享层
+  `database_tools/session.py` 维护进程级当前连接：工具未显式传 `database` 时回退到它，显式传参优先，
+  同一 `(db_type, database)` 复用连接器（sqlite `check_same_thread=False` + 锁，可跨 Web 请求线程）。Web / CLI / Agent 三端同时生效。
+- **CLI `/db-execute` `/db-create-table` `/db-insert` 不再打印内部协议串** `[CONFIRM_REQUIRED] …`：改为交互确认后以
+  `auto_confirm=True` 执行（与 `/web-cache clear` 一致）。
+- DDL 语句的「影响 -1 行」归一为 0。
 - 打包版此前从未加载过项目附加规范：`.devin/SYSTEM_PROMPT.md` 以源码相对路径读取且未打进 `datas`，桌面应用只剩内置模板；
   现 `prompts/` 经 `runtime_paths.resource_root()` 定位并随 App 分发。
 - 旧系统提示示例中的参数名错误（`query_knowledge_base` 写成 `"query"`，实为 `question`；`search_files` 写成 `"keyword"`，实为

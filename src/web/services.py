@@ -43,6 +43,13 @@ def _default_react_factory(on_step=None, on_confirm=None, context=None):
     return ReActEngine(on_step=on_step, on_confirm=on_confirm, context=context)
 
 
+def _default_complete_text(prompt: str, **kwargs) -> str:
+    """一次性短补全（``think=False``），用于「用 AI 解读」等工具性调用。"""
+    from collaboration.llm_helper import complete_text
+
+    return complete_text(prompt, **kwargs)
+
+
 def _default_model_switcher():
     """返回 model_switcher 模块（便于测试注入替身）。"""
     import model_switcher
@@ -187,6 +194,7 @@ class WebService:
         load_documents: Callable = _default_load_documents,
         resolve_mode: Callable = _default_collaboration_mode,
         model_switcher_factory: Callable = _default_model_switcher,
+        complete_text: Callable = _default_complete_text,
     ):
         self._rag_factory = rag_factory
         self._react_factory = react_factory
@@ -197,6 +205,7 @@ class WebService:
         self._load_documents = load_documents
         self._resolve_mode = resolve_mode
         self._model_switcher_factory = model_switcher_factory
+        self._complete_text = complete_text
 
         self._rag_engine = None
         self._session_manager = None
@@ -1149,9 +1158,9 @@ class WebService:
                  auto_confirm: bool = False) -> str:
         """通用工具执行入口，桥接 agent_tools 全局注册表。
 
-        CLI 的 /web-search、/code-*、/git-*、/db-* 等命令底层都调用
-        ``registry.execute(tool, args)``；Web 侧此前无直接入口，只能靠 Agent
-        间接触发。此方法把这些工具直接暴露给 Web，与 CLI 命令面对齐。
+        CLI 的 /code-*、/git-*、/db-*、/exec、/file 等命令底层都调用
+        ``registry.execute(tool, args)``；此方法把这些工具直接暴露给 Web，
+        与 CLI 命令面对齐。
         """
         try:
             import agent_tools
@@ -1163,19 +1172,7 @@ class WebService:
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 工具 {tool_name} 执行失败: {exc}"
 
-    # -- 网络搜索 --
-    def web_search(self, query: str) -> str:
-        query = (query or "").strip()
-        if not query:
-            return "[提示] 请输入搜索查询"
-        return self.run_tool("web_search", {"query": query})
-
-    def web_extract(self, url: str) -> str:
-        url = (url or "").strip()
-        if not url:
-            return "[提示] 请输入 URL"
-        return self.run_tool("web_content_extract", {"url": url})
-
+    # -- 网络搜索缓存（系统页 · 运行环境；搜索本身由对话页「联网搜索」与 Agent 覆盖）--
     def web_cache_status(self) -> str:
         return self.run_tool("web_cache_status", {})
 
@@ -1205,27 +1202,196 @@ class WebService:
     def git_commit_gen(self, repo_path: str = ".") -> str:
         return self.run_tool("git_commit_gen", {"repo_path": repo_path or ".", "use_ai": True})
 
-    # -- 数据库 --
-    def db_connect(self, db_type: str, database: str) -> str:
-        db_type = (db_type or "").strip()
+    def git_overview(self, repo_path: str = ".", max_commits: int = 20) -> Dict[str, Any]:
+        """Git 仪表盘数据（结构化，来自共享层 ``GitAnalyzer.get_overview``）。
+
+        返回 ``is_repo / branch / changed / commits / authors / last_commit_at``；
+        异常时 ``is_repo=False`` 并附 ``error``。
+        """
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            return GitAnalyzer(repo_path or ".").get_overview(max_commits=max_commits)
+        except BaseException as exc:  # noqa: BLE001
+            return {"is_repo": False, "branch": "", "changed": [], "commits": [], "authors": [],
+                    "last_commit_at": "", "error": str(exc)}
+
+    # -- 结果流转：用 AI 解读（工具页各子页共用）--
+
+    AI_EXPLAIN_LEADS: Dict[str, str] = {
+        "code": "解读下面的代码分析结果，指出最值得关注的问题与下一步。",
+        "git": "解读下面的 Git 信息，总结近期改动主题、活跃度与潜在风险。",
+        "db": "解读下面的 SQL 与查询结果，说明数据含义与异常值。",
+        "shell": "解读下面的命令与输出，说明结果含义与可能的问题。",
+        "file": "总结下面文件的用途、结构与关键点。",
+    }
+    AI_EXPLAIN_MAX_PAYLOAD = 6000
+    AI_EXPLAIN_NUM_PREDICT = 768
+
+    def build_explain_prompt(self, kind: str, payload: str, question: str = "") -> str:
+        """按 ``kind`` 组装「用 AI 解读」提示词（附录 A-5）；未知 kind 回退 ``code``。"""
+        lead = self.AI_EXPLAIN_LEADS.get((kind or "").strip().lower(), self.AI_EXPLAIN_LEADS["code"])
+        payload = (payload or "").strip()[: self.AI_EXPLAIN_MAX_PAYLOAD]
+        question = (question or "").strip()
+        parts = [lead, "内容：", payload]
+        if question:
+            parts.append(f"问题：{question}")
+        parts.append("要求：中文，≤300 字，先结论后依据；有风险或异常先说。")
+        return "\n".join(parts)
+
+    def ai_explain_stream(self, kind: str, payload: str, question: str = "") -> Iterator[StreamEvent]:
+        """用当前模型解读工具页结果（流式：heartbeat → answer / error / cancelled）。
+
+        经 ``_bridge`` 运行，可被 ``stop_current`` 取消；已有任务在跑时直接产出 ``error``。
+        """
+        if self.is_running():
+            yield StreamEvent("error", "有任务进行中，请先停止或等待完成")
+            return
+        if not (payload or "").strip():
+            yield StreamEvent("error", "没有可解读的内容，请先执行一次操作")
+            return
+        prompt = self.build_explain_prompt(kind, payload, question)
+
+        def run(q: "queue.Queue", cancel: threading.Event):
+            q.put(StreamEvent("progress", "正在解读…"))
+            return self._complete_text(prompt, num_predict=self.AI_EXPLAIN_NUM_PREDICT)
+
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                yield StreamEvent("error", f"解读失败: {error_holder['error']}")
+                return
+            text = str(result_holder.get("result") or "").strip()
+            if not text:
+                yield StreamEvent("error", "模型没有返回内容")
+                return
+            yield StreamEvent("answer", text, {"kind": kind})
+            yield StreamEvent("done", "")
+
+        yield from self._bridge(run, on_finish)
+
+    # -- 数据库（SQLite；「当前连接」由共享层 database_tools.session 维护，Web / CLI / Agent 共用）--
+
+    DB_MAX_ROWS = 500
+    """查询结果最多返回的行数（超出部分截断并在 ``truncated`` 标记）。"""
+
+    _DB_READ_PREFIXES = ("select", "with", "pragma", "explain", "values")
+
+    @staticmethod
+    def _db_session():
+        from database_tools import session as db_session
+
+        return db_session
+
+    def db_current(self) -> Dict[str, Any]:
+        """当前连接：``{connected, db_type, database, label}``。"""
+        try:
+            sess = self._db_session()
+            cur = sess.get_current()
+        except BaseException as exc:  # noqa: BLE001
+            return {"connected": False, "db_type": "", "database": "", "label": "", "error": str(exc)}
+        if not cur:
+            return {"connected": False, "db_type": "", "database": "", "label": ""}
+        return {"connected": True, "db_type": cur.get("db_type", ""), "database": cur.get("database", ""),
+                "label": sess.describe(cur)}
+
+    def _db_executor(self):
+        """当前连接的 ``QueryExecutor``；未连接返回 None。"""
+        from database_tools import QueryExecutor
+
+        connector = self._db_session().current_connector()
+        return QueryExecutor(connector) if connector is not None else None
+
+    def db_connect(self, database: str, db_type: str = "sqlite") -> str:
+        """连接 SQLite 库并设为当前连接（等价 CLI ``/db-connect <database>``）。"""
         database = (database or "").strip()
-        if not db_type or not database:
-            return "[提示] 请提供数据库类型和路径"
-        return self.run_tool("database_connect", {"db_type": db_type, "database": database})
+        if not database:
+            return "[提示] 请输入 SQLite 数据库文件路径"
+        return self.run_tool("database_connect", {"db_type": (db_type or "sqlite").strip() or "sqlite",
+                                                  "database": database})
 
-    def db_query(self, sql: str) -> str:
-        sql = (sql or "").strip()
-        if not sql:
-            return "[提示] 请输入 SQL 查询语句"
-        return self.run_tool("database_query", {"sql": sql})
+    def db_disconnect(self) -> str:
+        """断开当前连接（关闭缓存的连接器）。"""
+        try:
+            self._db_session().clear_current()
+            return "[成功] 已断开当前连接"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 断开失败: {exc}"
 
-    def db_execute(self, sql: str) -> str:
+    def db_tables(self) -> Dict[str, Any]:
+        """当前库的表名列表：``{tables: [...], error?}``。"""
+        try:
+            executor = self._db_executor()
+            if executor is None:
+                return {"tables": [], "error": "尚未连接数据库"}
+            return {"tables": executor.list_tables()}
+        except BaseException as exc:  # noqa: BLE001
+            return {"tables": [], "error": str(exc)}
+
+    def db_table_schema(self, table: str) -> Dict[str, Any]:
+        """单表结构：``{table, columns: [{name, type, not_null, default_value, primary_key}], error?}``。"""
+        table = (table or "").strip()
+        if not table:
+            return {"table": "", "columns": [], "error": "请选择表"}
+        try:
+            executor = self._db_executor()
+            if executor is None:
+                return {"table": table, "columns": [], "error": "尚未连接数据库"}
+            schema = executor.get_table_schema(table) or {}
+            columns = list(schema.get("columns") or [])
+            if not columns:
+                return {"table": table, "columns": [], "error": f"表 {table} 不存在或没有列"}
+            return {"table": table, "columns": columns}
+        except BaseException as exc:  # noqa: BLE001
+            return {"table": table, "columns": [], "error": str(exc)}
+
+    def db_query(self, sql: str) -> Dict[str, Any]:
+        """在当前连接上执行只读查询，返回结构化结果。
+
+        ``{sql, columns, rows(list of list), row_count, execution_time, truncated, error?}``；
+        ``rows`` 最多 ``DB_MAX_ROWS`` 行。非 SELECT 类语句提示改用「执行」。
+        """
         sql = (sql or "").strip()
+        base = {"sql": sql, "columns": [], "rows": [], "row_count": 0, "execution_time": 0.0, "truncated": False}
         if not sql:
-            return "[提示] 请输入 SQL 语句"
-        return self.run_tool("database_execute", {"sql": sql})
+            return {**base, "error": "请输入 SQL 查询语句"}
+        head = sql.lstrip("(").split(None, 1)[0].lower() if sql.split() else ""
+        if head not in self._DB_READ_PREFIXES:
+            return {**base, "error": "「查询」只接受 SELECT 等只读语句；写操作请使用「执行」"}
+        try:
+            executor = self._db_executor()
+            if executor is None:
+                return {**base, "error": "尚未连接数据库，请先连接"}
+            result = executor.execute_query(sql)
+        except BaseException as exc:  # noqa: BLE001
+            return {**base, "error": str(exc)}
+        if not result.success:
+            return {**base, "execution_time": result.execution_time, "error": result.error_message or "查询失败"}
+        columns = list(result.columns)
+        rows = [[r.get(c) for c in columns] for r in result.rows[: self.DB_MAX_ROWS]]
+        return {
+            **base, "columns": columns, "rows": rows, "row_count": result.row_count,
+            "execution_time": result.execution_time, "truncated": result.row_count > len(rows),
+        }
+
+    def db_execute(self, sql: str) -> Dict[str, Any]:
+        """在当前连接上执行写语句：``{sql, affected_rows, execution_time, error?}``（调用方负责确认）。"""
+        sql = (sql or "").strip()
+        base = {"sql": sql, "affected_rows": 0, "execution_time": 0.0}
+        if not sql:
+            return {**base, "error": "请输入 SQL 语句"}
+        try:
+            executor = self._db_executor()
+            if executor is None:
+                return {**base, "error": "尚未连接数据库，请先连接"}
+            result = executor.execute_update(sql)
+        except BaseException as exc:  # noqa: BLE001
+            return {**base, "error": str(exc)}
+        if not result.success:
+            return {**base, "execution_time": result.execution_time, "error": result.error_message or "执行失败"}
+        return {**base, "affected_rows": int(result.affected_rows), "execution_time": result.execution_time}
 
     def db_schema(self, table: str = "") -> str:
+        """文本版表结构 / 表列表（沿用 registry 工具，供 Agent 与旧调用方）。"""
         return self.run_tool("database_get_schema", {"table": (table or "").strip()})
 
     # -- 知识图谱构建 --
@@ -1285,42 +1451,6 @@ class WebService:
             return f"[提示] 文件内容为空: {file_path}"
         doc_type = "code" if path.suffix.lower() in self._CODE_SUFFIXES else "text"
         return self.graph_build(text, doc_id=path.name, doc_type=doc_type)
-
-    # -- 数据库（写操作）--
-    @staticmethod
-    def _parse_json_object(raw: str, what: str) -> Tuple[Optional[Dict[str, Any]], str]:
-        import json
-
-        raw = (raw or "").strip() or "{}"
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return None, f"[错误] {what}必须是有效的 JSON 对象: {exc}"
-        if not isinstance(data, dict):
-            return None, f"[错误] {what}必须是 JSON 对象（{{...}}）"
-        return data, ""
-
-    def db_create_table(self, table: str, columns_json: str) -> str:
-        """创建表（等价 CLI ``/db-create-table``；列定义为 JSON 对象）。"""
-        table = (table or "").strip()
-        if not table:
-            return "[提示] 请输入表名"
-        columns, err = self._parse_json_object(columns_json, "列定义")
-        if err:
-            return err
-        return self.run_tool(
-            "database_create_table", {"table": table, "columns": columns}, auto_confirm=True,
-        )
-
-    def db_insert(self, table: str, data_json: str) -> str:
-        """插入一行数据（等价 CLI ``/db-insert``；数据为 JSON 对象）。"""
-        table = (table or "").strip()
-        if not table:
-            return "[提示] 请输入表名"
-        data, err = self._parse_json_object(data_json, "数据")
-        if err:
-            return err
-        return self.run_tool("database_insert", {"table": table, "data": data}, auto_confirm=True)
 
     # -- 工具清单 / Shell / 文件读写 / 工作目录（对齐 CLI /tools /exec /file /write /pwd /cd）--
 

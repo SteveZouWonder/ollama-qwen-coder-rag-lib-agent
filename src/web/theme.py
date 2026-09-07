@@ -256,6 +256,12 @@ button.stop:hover { background: #fecaca !important; }
 .cb-risk-medium { color: #d97706; font-weight: 700; }
 .cb-risk-high, .cb-risk-critical { color: #dc2626; font-weight: 700; }
 .cb-empty { text-align: center; padding: 28px 12px; opacity: .8; }
+/* 工具页：结果流转行 + AI 解读输出 */
+.cb-result-actions { margin-top: 4px; align-items: center !important; }
+.cb-result-actions > .cb-btn { flex: 0 0 auto !important; }
+.cb-ai-explain { min-height: 0; }
+.cb-ai-explain:has(p, ul, ol, pre, h1, h2, h3, blockquote) { padding: 10px 12px; border-radius: var(--cb-radius);
+  background: var(--background-fill-secondary); border-left: 3px solid var(--cb-accent); }
 .cb-empty h3 { margin: 0 0 6px; }
 .cb-kv table { width: 100%; border-collapse: collapse; }
 .cb-kv th, .cb-kv td { border: none !important; border-bottom: 1px solid var(--border-color-primary) !important;

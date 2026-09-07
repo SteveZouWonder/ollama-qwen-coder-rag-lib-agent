@@ -396,6 +396,11 @@ Git 命令：
   /git-analyze <type>         Git 分析（history/status/authors）
   /git-commit-gen             AI 生成提交信息
 
+数据库命令（SQLite）：
+  /db-connect <database>      连接并设为当前连接，之后 /db-query /db-execute /db-schema 作用于该库
+  /db-query <sql>             执行查询
+  /db-schema [table]          查看表结构；不带参数列出全部表
+
 知识图谱命令：
   /graph-query <文本>         按实体名模糊查询（默认）
   /graph-query type:<类型>    列出某类型实体（如 type:tool）
@@ -661,13 +666,13 @@ def print_help():
   /graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops 1|2]
                             导出自包含的交互式 HTML 图谱并在浏览器打开
 
-数据库管理命令（新功能）：
-  /db-connect <type> <database>  连接数据库
-  /db-query <sql>               执行SQL查询
-  /db-execute <sql>             执行SQL语句（INSERT/UPDATE/DELETE）
-  /db-create-table <table>      创建数据库表
-  /db-insert <table> <data>     插入数据
-  /db-schema <table>            查看表结构
+数据库管理命令（SQLite）：
+  /db-connect <database>        连接数据库并设为当前连接（默认 sqlite；也可 /db-connect sqlite <database>）
+  /db-query <sql>               在当前连接上执行SQL查询
+  /db-execute <sql>             在当前连接上执行SQL语句（INSERT/UPDATE/DELETE/DDL）
+  /db-create-table <table> <columns_json>  创建数据库表
+  /db-insert <table> <data_json>           插入数据
+  /db-schema [table]            查看表结构；不带参数列出全部表
 
 文件管理命令（新功能）：
   /file-list           列出知识库中的所有文件

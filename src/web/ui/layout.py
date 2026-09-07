@@ -74,7 +74,10 @@ def build_layout(service, handlers: Dict[str, Callable]) -> gr.Blocks:  # pragma
         with gr.Column(visible=False) as graph_col:
             graph = build_graph_page(service, handlers)
         with gr.Column(visible=False) as tools_col:
-            build_tools_page(service, handlers)
+            build_tools_page(service, handlers, {
+                "msg_box": chat["msg_box"], "mode": chat["mode"], "mode_auto": chat["mode_auto"],
+                "nav": nav, "nav_chat": NAV_CHAT,
+            })
         with gr.Column(visible=False) as system_col:
             system = build_system_page(service, handlers, sidebar)
 

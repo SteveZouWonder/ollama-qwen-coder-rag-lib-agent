@@ -67,12 +67,14 @@
 
 | 工具 | 参数 | 确认 | 说明 |
 |---|---|---|---|
-| `database_connect` | `db_type`(sqlite), `database`(:memory:) | | 连接按 `(db_type, database)` 缓存；mysql / postgresql / mssql 需额外驱动 |
-| `database_query` | `sql*`, `db_type`, `database` | | SELECT |
-| `database_execute` | `sql*`, `db_type`, `database` | ✔ | INSERT / UPDATE / DELETE |
-| `database_create_table` | `table*`, `columns*`(dict), `db_type`, `database` | ✔ | |
-| `database_insert` | `table*`, `data*`(dict), `db_type`, `database` | ✔ | |
-| `database_get_schema` | `table*`, `db_type`, `database` | | |
+| `database_connect` | `db_type`(sqlite), `database`(:memory:) | | 成功后 `database_tools.session.set_current`：设为进程级**当前连接**；只实现 sqlite（mysql / postgresql / mssql 抛 NotImplementedError） |
+| `database_query` | `sql*`, `db_type`, `database` | | SELECT。未显式传 `database`（仍为默认 `:memory:`）时回退到当前连接，显式传参优先 |
+| `database_execute` | `sql*`, `db_type`, `database` | ✔ | INSERT / UPDATE / DELETE / DDL（DDL 的 affected_rows 归一为 0）；同上回退 |
+| `database_create_table` | `table*`, `columns*`(dict), `db_type`, `database` | ✔ | 同上回退 |
+| `database_insert` | `table*`, `data*`(dict), `db_type`, `database` | ✔ | 同上回退 |
+| `database_get_schema` | `table`, `db_type`, `database` | | `table` 留空 → 列出全部表名（`QueryExecutor.list_tables`）；同上回退 |
+
+连接复用：`database_tools/session.py` 按 `(db_type, database)` 缓存 `DatabaseConnector`（sqlite `check_same_thread=False` + 连接器内 RLock，可跨 Web 请求线程），`clear_current()` 关闭全部。Web `WebService.db_*`、CLI `/db-*`、Agent 三端共用同一当前连接；测试用 `session.clear_current()` 隔离（`tests/conftest.py` autouse 已处理）。
 
 ## 3. `CommandSafetyChecker.analyze(command)` 四级判定
 

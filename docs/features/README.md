@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F9 | Web「工具」页重构：删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· 代码助手 / NL→SQL / 工作区 / NL→命令 · CLI rich 表格（P1 高 · P2 中 · P3 低，分支 `feat/web-tools-revamp`） | ⏳ 待实现 | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
+| F9 | Web「工具」页重构：删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· 代码助手 / NL→SQL / 工作区 / NL→命令 · CLI rich 表格（P1 高 · P2 中 · P3 低，分支 `feat/web-tools-revamp`） | 🚧 P1 已完成（2026-09-07），P2 / P3 待实现 | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
 
 ## 已实现
 
@@ -56,4 +56,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-07（F9 立项）
+**最后更新**: 2026-09-07（F9 P1 完成）

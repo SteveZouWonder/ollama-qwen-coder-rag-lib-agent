@@ -1619,13 +1619,24 @@ def handle_git_commit_gen(ctx, parsed):
 
 # ==================== 数据库管理命令 ====================
 
+# database_connect 支持的类型名（用于区分 ``/db-connect sqlite`` 与 ``/db-connect <path>``）
+_DB_TYPES = {"sqlite", "mysql", "postgresql", "mssql"}
+
+
 def handle_db_connect(ctx, parsed):
+    """连接数据库并设为当前连接：``/db-connect <database>``（默认 sqlite）或 ``/db-connect <type> <database>``。"""
     console = ctx.console
     args = parsed.arg.strip().split() if parsed.arg.strip() else []
-    if len(args) < 2:
-        console.print("❌ 请提供数据库类型和路径: /db-connect <type> <database>", style="yellow")
+    if not args or (len(args) == 1 and args[0].lower() in _DB_TYPES):
+        console.print(
+            "❌ 请提供数据库路径: /db-connect <database>（默认 sqlite；也可 /db-connect sqlite <database>）",
+            style="yellow",
+        )
         return False
-    db_type, database = args[0], args[1]
+    if len(args) == 1:
+        db_type, database = "sqlite", args[0]
+    else:
+        db_type, database = args[0], args[1]
     try:
         console.print(f"🔗 正在连接数据库: {db_type} @ {database}", style="cyan")
         result = ctx.registry.execute("database_connect", {"db_type": db_type, "database": database})
@@ -1633,6 +1644,7 @@ def handle_db_connect(ctx, parsed):
             console.print(result, style="red")
             return False
         console.print(result, style="green")
+        console.print("💡 之后的 /db-query /db-execute /db-schema 将自动作用于该库", style="dim")
         ctx.record_command("db_connect", f"{db_type} {database}")
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 数据库连接失败: {e}", style="red")
@@ -1666,9 +1678,14 @@ def handle_db_execute(ctx, parsed):
     if not sql:
         console.print("❌ 请提供SQL语句: /db-execute <sql>", style="yellow")
         return False
+    # database_execute 标记为 safe=False：用户显式发起的命令需先交互确认，
+    # 再以 auto_confirm=True 执行，避免把内部协议串 [CONFIRM_REQUIRED] 打印给用户。
+    if not _confirm(console, f"确认执行写操作? {sql[:80]} (y/n): "):
+        console.print("[dim]已取消[/dim]")
+        return False
     try:
         console.print("⚡ 正在执行SQL语句", style="cyan")
-        result = ctx.registry.execute("database_execute", {"sql": sql})
+        result = ctx.registry.execute("database_execute", {"sql": sql}, auto_confirm=True)
         if result.startswith("[错误]"):
             console.print(result, style="red")
             return False
@@ -1693,9 +1710,14 @@ def handle_db_create_table(ctx, parsed):
     except json.JSONDecodeError:
         console.print("❌ 列定义必须是有效的JSON格式", style="yellow")
         return False
+    if not _confirm(console, f"确认创建表 {table}? (y/n): "):
+        console.print("[dim]已取消[/dim]")
+        return False
     try:
         console.print(f"🔨 正在创建表: {table}", style="cyan")
-        result = ctx.registry.execute("database_create_table", {"table": table, "columns": columns})
+        result = ctx.registry.execute(
+            "database_create_table", {"table": table, "columns": columns}, auto_confirm=True
+        )
         if result.startswith("[错误]"):
             console.print(result, style="red")
             return False
@@ -1720,9 +1742,12 @@ def handle_db_insert(ctx, parsed):
     except json.JSONDecodeError:
         console.print("❌ 数据必须是有效的JSON格式", style="yellow")
         return False
+    if not _confirm(console, f"确认向表 {table} 插入数据? (y/n): "):
+        console.print("[dim]已取消[/dim]")
+        return False
     try:
         console.print(f"➕ 正在插入数据到表: {table}", style="cyan")
-        result = ctx.registry.execute("database_insert", {"table": table, "data": data})
+        result = ctx.registry.execute("database_insert", {"table": table, "data": data}, auto_confirm=True)
         if result.startswith("[错误]"):
             console.print(result, style="red")
             return False
@@ -1735,22 +1760,26 @@ def handle_db_insert(ctx, parsed):
 
 
 def handle_db_schema(ctx, parsed):
+    """查看表结构：``/db-schema <table>``；无参数时列出当前库全部表。"""
     console = ctx.console
     table = parsed.arg.strip()
-    if not table:
-        console.print("❌ 请提供表名: /db-schema <table>", style="yellow")
-        return False
     try:
-        console.print(f"🔍 正在获取表结构: {table}", style="cyan")
+        if table:
+            console.print(f"🔍 正在获取表结构: {table}", style="cyan")
+        else:
+            console.print("🔍 正在列出当前库的全部表", style="cyan")
         result = ctx.registry.execute("database_get_schema", {"table": table})
         if result.startswith("[错误]"):
             console.print(result, style="red")
             return False
-        console.print(result, style="green")
-        ctx.record_command("db_schema", table)
+        if result.startswith("[提示]"):
+            console.print(result, style="yellow")
+        else:
+            console.print(result, style="green")
+        ctx.record_command("db_schema", table or "(all)")
     except Exception as e:  # noqa: BLE001
         console.print(f"❌ 获取表结构失败: {e}", style="red")
-        ctx.record_command("db_schema", table, "failed", str(e))
+        ctx.record_command("db_schema", table or "(all)", "failed", str(e))
     return True
 
 

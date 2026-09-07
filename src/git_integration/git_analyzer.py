@@ -81,7 +81,8 @@ class GitAnalyzer:
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                stdin=subprocess.DEVNULL,  # 避免 shortlog 等命令在非 tty 下读 stdin 阻塞
             )
             
             if result.returncode != 0:
@@ -278,6 +279,77 @@ class GitAnalyzer:
         
         return stats
     
+    # ``git status --porcelain`` 状态码 → 中文标签（取 X/Y 两位中更有信息量的一位）
+    STATUS_LABELS = {
+        "?": "未跟踪", "M": "修改", "A": "新增", "D": "删除", "R": "重命名",
+        "C": "复制", "U": "冲突", "T": "类型变更", "!": "忽略",
+    }
+
+    def is_repo(self) -> bool:
+        """当前路径是否位于 Git 工作区内（含子目录）。"""
+        return self._run_git_command(['rev-parse', '--is-inside-work-tree']) == "true"
+
+    def get_overview(self, max_commits: int = 20) -> Dict[str, Any]:
+        """仪表盘用的结构化概览（Web 工具页 / CLI ``/git-analyze`` 共用）。
+
+        返回::
+
+            {
+              "is_repo": bool, "branch": str,
+              "changed": [{"status": "M", "label": "修改", "path": "a.py"}, ...],
+              "commits": [{"hash7", "author", "date", "subject"}, ...],   # 最近 max_commits
+              "authors": [{"name", "commits"}, ...],                      # 按提交数降序
+              "last_commit_at": "YYYY-MM-DD HH:MM:SS +ZZZZ" | "",
+            }
+
+        非 git 目录只返回 ``is_repo=False`` 与空集合；不抛异常。
+        """
+        empty: Dict[str, Any] = {
+            "is_repo": False, "branch": "", "changed": [], "commits": [],
+            "authors": [], "last_commit_at": "",
+        }
+        if not self.is_repo():
+            return empty
+        overview = dict(empty)
+        overview["is_repo"] = True
+        overview["branch"] = self.get_current_branch() or ""
+
+        changed = []
+        # porcelain 每行 ``XY<空格>path``；_run_git_command 会 strip 整体输出（首行前导空格丢失），
+        # 故按"首个空格"切分状态码与路径，而非固定列位。
+        for line in self._run_git_command(['status', '--porcelain']).split('\n'):
+            xy, _, path = line.strip().partition(' ')
+            path = path.lstrip()
+            if not xy or not path:
+                continue
+            code = xy[:1]
+            if ' -> ' in path:
+                path = path.split(' -> ', 1)[1]
+            changed.append({"status": xy, "label": self.STATUS_LABELS.get(code, code), "path": path})
+        overview["changed"] = changed
+
+        sep = "\x1f"
+        raw = self._run_git_command([
+            'log', f'-{int(max_commits)}', f'--pretty=format:%h{sep}%an{sep}%ad{sep}%s', '--date=short',
+        ])
+        commits = []
+        for line in raw.split('\n'):
+            parts = line.split(sep)
+            if len(parts) == 4:
+                commits.append({"hash7": parts[0], "author": parts[1], "date": parts[2], "subject": parts[3]})
+        overview["commits"] = commits
+
+        # 作者统计：用 git log 而非 shortlog（shortlog 无 revision 且 stdin 非 tty 时会读 stdin 阻塞）
+        names = [n for n in self._run_git_command(['log', '--pretty=format:%an', '--no-merges']).split('\n') if n]
+        counts: Dict[str, int] = {}
+        for n in names:
+            counts[n] = counts.get(n, 0) + 1
+        overview["authors"] = [
+            {"name": n, "commits": c} for n, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+        overview["last_commit_at"] = self._run_git_command(['log', '-1', '--format=%ci']) if commits else ""
+        return overview
+
     def analyze_code_frequency(self, file_path: str, days: int = 30) -> Dict[str, int]:
         """分析代码变更频率"""
         since_date = datetime.now().replace(day=datetime.now().day - days).strftime('%Y-%m-%d')

@@ -1286,14 +1286,6 @@ class TestNewHandlers:
         assert h["on_graph_build_any"]("文本", "abc") == "built-text"
         assert h["on_graph_build_any"]("文件路径", "/a.py") == "built-file"
 
-    def test_db_write_handlers(self):
-        svc = make_service_mock()
-        svc.db_create_table.return_value = "[成功] ok"
-        svc.db_insert.return_value = "[错误] bad"
-        h = build_handlers(svc)
-        assert h["on_db_create_table"]("t", "{}").startswith("✅")
-        assert h["on_db_insert"]("t", "{}").startswith("❌")
-
     def test_exec_handlers(self):
         svc = make_service_mock()
         h = build_handlers(svc)
@@ -1662,3 +1654,180 @@ class TestCodeAwareRendering:
         assert list(h["on_add_path_stream"]("/d"))[-1][0].startswith("⏹️")
         svc.ingest_stream.return_value = iter([])
         assert "未获得结果" in list(h["on_add_path_stream"]("/d"))[-1][0]
+
+
+# ==================== F9 P1：工具页（Git 仪表盘 / 数据库表格 / 结果流转）====================
+
+class TestGitFormatters:
+    OV = {
+        "is_repo": True, "branch": "main", "last_commit_at": "2026-09-07 10:20:30 +0800",
+        "changed": [{"status": "M", "label": "修改", "path": "a.py"}, {"status": "??", "label": "未跟踪", "path": "b"}],
+        "commits": [{"hash7": "abc1234", "author": "T", "date": "2026-09-07", "subject": "feat: x <b>"}],
+        "authors": [{"name": "T", "commits": 3}, {"name": "U", "commits": 1}],
+    }
+
+    def test_cards(self):
+        from web.app import format_git_cards
+        html = format_git_cards(self.OV)
+        assert "cb-cards" in html and html.count("cb-card") >= 4
+        assert ">main<" in html and ">2<" in html and "2026-09-07 10:20" in html and ">2</div>" in html
+
+    def test_cards_detached_and_non_repo(self):
+        from web.app import format_git_cards
+        html = format_git_cards({**self.OV, "branch": "", "last_commit_at": ""})
+        assert "分离 HEAD" in html and ">—<" in html
+        empty = format_git_cards({"is_repo": False})
+        assert "cb-empty" in empty and "不是 Git 仓库" in empty
+        assert "git-boom" in format_git_cards({"is_repo": False, "error": "git-boom"})
+        assert "cb-empty" in format_git_cards({})
+
+    def test_rows(self):
+        from web.app import git_authors_rows, git_changes_rows, git_commits_rows
+        assert git_changes_rows(self.OV) == [["修改", "a.py"], ["未跟踪", "b"]]
+        assert git_commits_rows(self.OV) == [["abc1234", "T", "2026-09-07", "feat: x <b>"]]
+        assert git_authors_rows(self.OV) == [["T", 3], ["U", 1]]
+        assert git_changes_rows({}) == [] and git_commits_rows(None) == [] and git_authors_rows({}) == []
+        # label 缺失时回退状态码
+        assert git_changes_rows({"changed": [{"status": "D", "path": "x"}]}) == [["D", "x"]]
+
+    def test_payload(self):
+        from web.app import format_git_payload
+        text = format_git_payload(self.OV)
+        assert "分支: main" in text and "修改 a.py" in text and "abc1234" in text and "T(3)" in text
+        assert format_git_payload({"is_repo": False}) == ""
+
+    def test_handler(self):
+        svc = make_service_mock()
+        svc.git_overview.return_value = self.OV
+        cards, changes, commits, authors, payload = build_handlers(svc)["on_git_overview"]()
+        assert "cb-cards" in cards and len(changes) == 2 and len(commits) == 1 and len(authors) == 2
+        assert "分支: main" in payload
+        svc.git_commit_gen.return_value = "[成功] feat: x"
+        assert build_handlers(svc)["on_git_commit_gen"]().startswith("✅")
+
+
+class TestDbFormatters:
+    def test_status_chip(self):
+        from web.app import format_db_status
+        assert "dot off" in format_db_status({"connected": False}) and "未连接" in format_db_status({})
+        html = format_db_status({"connected": True, "database": "/x/a.db"})
+        assert "已连接" in html and "<code>/x/a.db</code>" in html and "dot off" not in html
+
+    def test_tables_and_schema_rows(self):
+        from web.app import db_schema_rows, db_tables_rows
+        assert db_tables_rows({"tables": ["a", "b"]}) == [["a"], ["b"]]
+        assert db_tables_rows({}) == []
+        rows = db_schema_rows({"columns": [
+            {"name": "id", "type": "INTEGER", "not_null": True, "default_value": None, "primary_key": True},
+            {"name": "n", "type": "", "not_null": False, "default_value": "'x'", "primary_key": False},
+        ]})
+        assert rows == [["id", "INTEGER", "PK · NOT NULL"], ["n", "—", "DEFAULT 'x'"]]
+        assert db_schema_rows({}) == []
+
+    def test_query_status(self):
+        from web.app import format_db_query_status
+        assert format_db_query_status({}) == ""
+        assert format_db_query_status({"error": "bad"}) == "❌ bad"
+        assert format_db_query_status({"row_count": 2, "rows": [[1], [2]], "execution_time": 0.0012}) == "✅ 返回 2 行 · 0.001s"
+        out = format_db_query_status({"row_count": 900, "rows": [[1]] * 500, "execution_time": 0.5, "truncated": True})
+        assert "共 900 行" in out and "前 500 行" in out
+
+    def test_execute_status(self):
+        from web.app import format_db_execute_status
+        assert format_db_execute_status({}) == ""
+        assert format_db_execute_status({"error": "x"}) == "❌ x"
+        assert format_db_execute_status({"affected_rows": 3, "execution_time": 0.01}) == "✅ 执行成功，影响 3 行 · 0.010s"
+
+    def test_payload(self):
+        from web.app import format_db_payload
+        assert format_db_payload({}) == ""
+        assert format_db_payload({"sql": "x", "error": "e"}) == "SQL: x\n错误: e"
+        assert "影响行数: 2" in format_db_payload({"sql": "del", "affected_rows": 2})
+        text = format_db_payload({"sql": "select", "columns": ["a", "b"], "rows": [[1, None]] * 60, "row_count": 60})
+        assert "a | b" in text and text.count("1 | ") == 50 and "前 50 行" in text
+        assert "共 1 行" in format_db_payload({"sql": "s", "columns": ["a"], "rows": [[1]], "row_count": 1})
+
+    def test_handlers(self):
+        svc = make_service_mock()
+        svc.db_connect.return_value = "[成功] ok"
+        svc.db_current.return_value = {"connected": True, "database": "a.db"}
+        svc.db_tables.return_value = {"tables": ["t"]}
+        h = build_handlers(svc)
+        msg, chip, rows = h["on_db_connect"]("a.db")
+        assert msg.startswith("✅") and "已连接" in chip and rows == [["t"]]
+        svc.db_disconnect.return_value = "[成功] 已断开"
+        svc.db_current.return_value = {"connected": False}
+        msg, chip, rows = h["on_db_disconnect"]()
+        assert msg.startswith("✅") and "未连接" in chip and rows == []
+        assert h["on_db_status"]() == chip and h["on_db_tables"]() == [["t"]]
+
+    def test_schema_handler(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_db_table_schema"]("") == ("", [])
+        svc.db_table_schema.return_value = {"error": "nope"}
+        assert h["on_db_table_schema"]("x")[0].startswith("❌")
+        svc.db_table_schema.return_value = {"table": "t", "columns": [{"name": "id", "type": "INT", "primary_key": True}]}
+        title, rows = h["on_db_table_schema"]("t")
+        assert "**t**" in title and "1 列" in title and rows == [["id", "INT", "PK"]]
+
+    def test_query_and_execute_handlers(self):
+        svc = make_service_mock()
+        svc.db_query.return_value = {"sql": "select 1", "columns": ["a"], "rows": [[1]], "row_count": 1,
+                                     "execution_time": 0.002, "truncated": False}
+        svc.db_tables.return_value = {"tables": ["t"]}
+        h = build_handlers(svc)
+        status, headers, rows = h["on_db_query"]("select 1")
+        assert status.startswith("✅") and headers == ["a"] and rows == [[1]]
+        svc.db_query.return_value = {"error": "尚未连接数据库"}
+        status, headers, rows = h["on_db_query"]("select 1")
+        assert status.startswith("❌") and headers == [] and rows == []
+        svc.db_execute.return_value = {"affected_rows": 1, "execution_time": 0.001}
+        status, tables = h["on_db_execute"]("insert")
+        assert status.startswith("✅") and tables == [["t"]]
+        payload = h["on_db_payload"]("select 1", ["a"], [[1]])
+        assert payload.startswith("SQL: select 1") and "a" in payload and payload.endswith("1")
+        assert h["on_db_payload"]("s", None, None).startswith("SQL: s")
+
+
+class TestResultFlow:
+    def test_send_to_chat_template(self):
+        from web.app import SEND_TO_CHAT_MAX, format_send_to_chat
+        text = format_send_to_chat("数据库", "SELECT 1")
+        assert text.startswith("以下是工具页「数据库」的结果") and "```\nSELECT 1\n```" in text and text.endswith("我的问题：")
+        assert format_send_to_chat("Git", "   ") == ""
+        long = format_send_to_chat("代码", "x" * (SEND_TO_CHAT_MAX + 10))
+        assert "已截断" in long and long.count("x") == SEND_TO_CHAT_MAX
+        assert build_handlers(make_service_mock())["on_send_to_chat"]("Git", "log") .startswith("以下是工具页「Git」")
+
+    def test_ai_explain_handler_stream(self):
+        svc = make_service_mock()
+        svc.ai_explain_stream.return_value = iter([
+            StreamEvent("progress", "正在解读…"), StreamEvent("heartbeat", "", {"elapsed": 1.0}),
+            StreamEvent("answer", "结论：正常"), StreamEvent("done", ""),
+        ])
+        out = list(build_handlers(svc)["on_ai_explain"]("db", "payload", ""))
+        assert out[0].startswith("⏳") and out[-1] == "结论：正常"
+        svc.ai_explain_stream.assert_called_with("db", "payload", "")
+
+    def test_ai_explain_handler_error_and_cancel(self):
+        svc = make_service_mock()
+        svc.ai_explain_stream.return_value = iter([StreamEvent("error", "有任务进行中")])
+        assert list(build_handlers(svc)["on_ai_explain"]("git", "x"))[-1] == "❌ 有任务进行中"
+        svc.ai_explain_stream.return_value = iter([StreamEvent("progress", "p"), StreamEvent("cancelled", "已停止")])
+        assert list(build_handlers(svc)["on_ai_explain"]("git", "x"))[-1] == "⏹️ 已停止"
+
+    def test_removed_handlers(self):
+        h = build_handlers(make_service_mock())
+        for name in ("on_web_search", "on_web_extract", "on_db_create_table", "on_db_insert", "on_git_analyze", "on_db_schema"):
+            assert name not in h
+        for name in ("on_web_cache_status", "on_web_cache_clear", "on_git_overview", "on_db_connect", "on_ai_explain", "on_send_to_chat"):
+            assert name in h
+        assert h["headers"]["db_schema"] == ["列", "类型", "约束"] and h["headers"]["git_commits"][0] == "提交"
+
+    def test_web_cache_handlers(self):
+        svc = make_service_mock()
+        svc.web_cache_status.return_value = "[成功] 缓存 3 条"
+        svc.web_cache_clear.return_value = "[成功] 已清空"
+        h = build_handlers(svc)
+        assert h["on_web_cache_status"]().startswith("✅") and h["on_web_cache_clear"]().startswith("✅")

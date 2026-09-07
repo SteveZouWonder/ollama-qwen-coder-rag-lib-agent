@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict
 
 import gradio as gr
 
-from .common import page_title, result_md, section, table
+from .common import Confirm, page_title, result_md, section, table
 
 HELP_MD = """
 ### 页面导航
@@ -16,8 +16,8 @@ HELP_MD = """
 | 侧栏 · 会话 | 新建（可携带摘要）/ 切换 / 搜索 / 归档 / 删除，详情见对话页右侧 | `/session-*` |
 | 📚 知识库 | 上传或按路径追加入库、重建 / 清空索引、文件管理（表格行「⋯」：详情 / 删除文件，清理 / 去重）、快照（「⋯」：详情 / 恢复追加或替换 / 生成脚本 / 删除，批量清理自动快照）、Skills 与摘要 | `/add` `/stats` `/file-*` `/file-delete` `/snapshot-*` `/generate-skills` `/knowledge-summary` |
 | 🕸️ 知识图谱 | 3D / 2D 交互式图谱视图（类型 / 置信度 / 节点数 / 聚焦实体筛选）、概览卡片，实体 / 类型 / 邻居 / 路径 / 相似查询，从文本或文件构建 | `/graph-query` `/graph-build` `/graph-summary` `/graph-export` |
-| 🧰 工具 | 网络搜索与正文提取、AST 搜索与质量检查、Git 分析与提交信息、数据库读写、Shell 与文件读写 | `/web-*` `/code-*` `/git-*` `/db-*` `/exec` `/file` `/write` |
-| ⚙️ 系统 | 模型热切换与思考模式、运行环境、工作目录、工具清单 | `/model` `/think` `/pwd` `/cd` `/tools` |
+| 🧰 工具 | 代码符号搜索与质量检查、Git 仪表盘（分支 / 变更 / 提交 / 作者）与 AI 提交信息、SQLite 连接 / 表结构 / 查询表格、工作区命令与文件读写；每个结果可「用 AI 解读」或「发送到对话」 | `/code-*` `/git-*` `/db-*` `/exec` `/file` `/write` |
+| ⚙️ 系统 | 模型热切换与思考模式、运行环境（工作目录、网络搜索缓存）、工具清单 | `/model` `/think` `/pwd` `/cd` `/web-cache` `/tools` |
 
 ### 对话小贴士
 
@@ -95,6 +95,14 @@ def build_system_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]
             def _cd(path):
                 msg, cwd = handlers["on_chdir"](path)
                 return msg, cwd, handlers["on_env_info"]()
+
+            section("网络搜索缓存（对话页「联网搜索」与 Agent 共用；等价 CLI /web-cache）")
+            with gr.Row(elem_classes=["cb-inline-actions"]):
+                wc_status_btn = gr.Button("缓存状态", elem_classes=["cb-btn"], min_width=96)
+                wc_clear = Confirm("清空缓存", "清空全部搜索缓存？", min_width=100)
+                wc_result = gr.Markdown(elem_classes=["cb-status"], scale=1)
+            wc_status_btn.click(handlers["on_web_cache_status"], None, wc_result)
+            wc_clear.bind(handlers["on_web_cache_clear"], None, wc_result)
 
             section("配置概览（来自环境变量 / .env，只读）")
             env_md = gr.Markdown(handlers["on_env_info"](), elem_classes=["cb-kv"])

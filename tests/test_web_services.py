@@ -4,9 +4,15 @@
 服务层是 Web 界面唯一与核心引擎交互的层。通过依赖注入把各引擎替换为
 MagicMock/桩对象，在不启动真实 Ollama/ChromaDB 的前提下覆盖全部分支。
 """
+import subprocess
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+# conftest 的 autouse fixture 会把 subprocess.run 全局 Mock 掉；Git 概览测试需要真实 git，
+# 在模块导入（collection）阶段先把真实实现留存，用例内通过 monkeypatch 临时还原。
+_REAL_SUBPROCESS_RUN = subprocess.run
+_REAL_SUBPROCESS_POPEN = subprocess.Popen
 
 import pytest
 
@@ -911,16 +917,12 @@ class TestToolCommands:
         out = svc.run_tool("web_search", {"query": "x"})
         assert out.startswith("[错误]")
 
-    def test_web_search_empty(self):
-        svc = make_service()
-        assert svc.web_search("  ").startswith("[提示]")
-
-    def test_web_search_calls_tool(self, monkeypatch):
-        reg = _FakeRegistry("命中")
+    def test_web_cache_status_calls_tool(self, monkeypatch):
+        reg = _FakeRegistry("状态")
         self._patch_registry(monkeypatch, reg)
         svc = make_service()
-        assert svc.web_search("python") == "命中"
-        assert reg.calls[0] == ("web_search", {"query": "python"}, False)
+        assert svc.web_cache_status() == "状态"
+        assert reg.calls[0] == ("web_cache_status", {}, False)
 
     def test_web_cache_clear_auto_confirm(self, monkeypatch):
         reg = _FakeRegistry("cleared")
@@ -949,14 +951,15 @@ class TestToolCommands:
 
     def test_db_query_empty(self):
         svc = make_service()
-        assert svc.db_query("").startswith("[提示]")
+        assert svc.db_query("")["error"] == "请输入 SQL 查询语句"
 
     def test_db_connect_calls_tool(self, monkeypatch):
         reg = _FakeRegistry("connected")
         self._patch_registry(monkeypatch, reg)
         svc = make_service()
-        svc.db_connect("sqlite", "/tmp/a.db")
-        assert reg.calls[0][0] == "database_connect"
+        svc.db_connect("/tmp/a.db")
+        assert reg.calls[0] == ("database_connect", {"db_type": "sqlite", "database": "/tmp/a.db"}, False)
+        assert svc.db_connect("  ").startswith("[提示]")
 
     def test_graph_build_empty(self):
         svc = make_service()
@@ -1531,28 +1534,244 @@ class TestGraphTyped:
         assert svc.graph_build_file("").startswith("[提示]")
 
 
-class TestDbWrite:
-    def _svc(self, monkeypatch, reg):
+class TestDbStructured:
+    """F9 P1-2/3/4：Web 数据库操作作用于共享层「当前连接」，并返回结构化结果。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from database_tools import session
+
+        session.clear_current()
+        yield
+        session.clear_current()
+
+    def _connected(self, tmp_path, name="w.db"):
+        svc = make_service()
+        out = svc.db_connect(str(tmp_path / name))
+        assert out.startswith("[成功]")
+        return svc
+
+    def test_not_connected_errors(self):
+        svc = make_service()
+        assert svc.db_current() == {"connected": False, "db_type": "", "database": "", "label": ""}
+        assert "尚未连接" in svc.db_tables()["error"]
+        assert "尚未连接" in svc.db_table_schema("t")["error"]
+        assert "尚未连接" in svc.db_query("select 1")["error"]
+        assert "尚未连接" in svc.db_execute("create table t(x)")["error"]
+
+    def test_connect_then_query_uses_connected_db(self, tmp_path):
+        svc = self._connected(tmp_path)
+        cur = svc.db_current()
+        assert cur["connected"] and cur["database"].endswith("w.db") and "sqlite" in cur["label"]
+        r = svc.db_execute("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'x')")
+        assert "error" not in r
+        assert svc.db_execute("INSERT INTO t(name) VALUES ('a'), ('b')")["affected_rows"] == 2
+        q = svc.db_query("SELECT id, name FROM t ORDER BY id")
+        assert q["columns"] == ["id", "name"] and q["rows"] == [[1, "a"], [2, "b"]]
+        assert q["row_count"] == 2 and q["truncated"] is False and "error" not in q
+        # 另一个 WebService 实例也看到同一当前连接（进程级）
+        assert make_service().db_tables() == {"tables": ["t"]}
+
+    def test_tables_and_schema(self, tmp_path):
+        svc = self._connected(tmp_path)
+        assert svc.db_tables() == {"tables": []}
+        svc.db_execute("CREATE TABLE b(x INTEGER)")
+        svc.db_execute("CREATE TABLE a(id INTEGER PRIMARY KEY, n TEXT NOT NULL, d REAL DEFAULT 1.5)")
+        assert svc.db_tables()["tables"] == ["a", "b"]
+        sc = svc.db_table_schema("a")
+        assert sc["table"] == "a" and [c["name"] for c in sc["columns"]] == ["id", "n", "d"]
+        assert sc["columns"][0]["primary_key"] is True and sc["columns"][1]["not_null"] is True
+        assert sc["columns"][2]["default_value"] == "1.5"
+        assert "不存在" in svc.db_table_schema("zzz")["error"]
+        assert svc.db_table_schema("")["error"] == "请选择表"
+
+    def test_query_rejects_write_and_reports_sql_error(self, tmp_path):
+        svc = self._connected(tmp_path)
+        assert "只接受 SELECT" in svc.db_query("DELETE FROM t")["error"]
+        r = svc.db_query("SELECT * FROM nope")
+        assert "no such table" in r["error"] and r["rows"] == []
+        e = svc.db_execute("INSERT INTO nope VALUES (1)")
+        assert "no such table" in e["error"]
+        assert svc.db_execute("")["error"] == "请输入 SQL 语句"
+
+    def test_query_truncates_rows(self, tmp_path, monkeypatch):
+        svc = self._connected(tmp_path)
+        monkeypatch.setattr(WebService, "DB_MAX_ROWS", 3)
+        svc.db_execute("CREATE TABLE n(x INTEGER)")
+        svc.db_execute("INSERT INTO n VALUES (1),(2),(3),(4),(5)")
+        q = svc.db_query("SELECT x FROM n")
+        assert len(q["rows"]) == 3 and q["row_count"] == 5 and q["truncated"] is True
+
+    def test_read_prefixes_accept_with_and_pragma(self, tmp_path):
+        svc = self._connected(tmp_path)
+        assert "error" not in svc.db_query("WITH c AS (SELECT 1 AS v) SELECT v FROM c")
+        assert "error" not in svc.db_query("PRAGMA table_info(sqlite_master)")
+
+    def test_disconnect(self, tmp_path):
+        svc = self._connected(tmp_path)
+        assert svc.db_disconnect().startswith("[成功]")
+        assert svc.db_current()["connected"] is False
+
+    def test_db_schema_text_passthrough(self, monkeypatch):
+        reg = _FakeRegistry("[表] t")
         import sys as _sys
         fake_at = MagicMock()
         fake_at.registry = reg
         monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
-        return make_service()
+        svc = make_service()
+        assert svc.db_schema(" t ") == "[表] t"
+        assert reg.calls[0] == ("database_get_schema", {"table": "t"}, False)
 
-    def test_create_table(self, monkeypatch):
-        reg = _FakeRegistry("ok")
-        svc = self._svc(monkeypatch, reg)
-        assert svc.db_create_table("t", '{"id": "INTEGER"}') == "ok"
-        assert reg.calls[0] == ("database_create_table", {"table": "t", "columns": {"id": "INTEGER"}}, True)
-        assert svc.db_create_table("", "{}").startswith("[提示]")
-        assert "JSON" in svc.db_create_table("t", "{bad")
-        assert "JSON 对象" in svc.db_create_table("t", "[1]")
+    def test_errors_wrapped(self, monkeypatch):
+        svc = make_service()
+        monkeypatch.setattr(svc, "_db_executor", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert svc.db_tables()["error"] == "boom"
+        assert svc.db_table_schema("t")["error"] == "boom"
+        assert svc.db_query("select 1")["error"] == "boom"
+        assert svc.db_execute("delete from t")["error"] == "boom"
+        monkeypatch.setattr(svc, "_db_session", lambda: (_ for _ in ()).throw(RuntimeError("s-boom")))
+        assert svc.db_current()["error"] == "s-boom"
+        assert svc.db_disconnect().startswith("[错误]")
 
-    def test_insert(self, monkeypatch):
-        reg = _FakeRegistry("ok")
-        svc = self._svc(monkeypatch, reg)
-        assert svc.db_insert("t", '{"a": 1}') == "ok"
-        assert reg.calls[0][0] == "database_insert" and reg.calls[0][2] is True
+
+def _init_git_repo(path, commits=2, author="Tester"):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", author)
+    for i in range(commits):
+        (path / f"f{i}.txt").write_text(f"v{i}\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-q", "-m", f"commit {i}")
+    return git
+
+
+class TestGitOverview:
+    @pytest.fixture(autouse=True)
+    def _real_git(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", _REAL_SUBPROCESS_RUN)
+        monkeypatch.setattr(subprocess, "Popen", _REAL_SUBPROCESS_POPEN)
+
+    def test_overview_fields(self, tmp_path):
+        git = _init_git_repo(tmp_path, commits=3)
+        (tmp_path / "f0.txt").write_text("changed\n", encoding="utf-8")   # 修改
+        (tmp_path / "new.txt").write_text("n\n", encoding="utf-8")        # 未跟踪
+        svc = make_service()
+        ov = svc.git_overview(str(tmp_path))
+        assert ov["is_repo"] is True and ov["branch"] == "main"
+        assert len(ov["commits"]) == 3 and ov["commits"][0]["subject"] == "commit 2"
+        assert set(ov["commits"][0]) == {"hash7", "author", "date", "subject"}
+        assert len(ov["commits"][0]["hash7"]) >= 7
+        assert ov["authors"] == [{"name": "Tester", "commits": 3}]
+        assert ov["last_commit_at"]
+        changed = {c["path"]: c["label"] for c in ov["changed"]}
+        assert changed == {"f0.txt": "修改", "new.txt": "未跟踪"}
+
+    def test_overview_rename_uses_new_path(self, tmp_path):
+        git = _init_git_repo(tmp_path, commits=1)
+        git("mv", "f0.txt", "renamed.txt")
+        ov = make_service().git_overview(str(tmp_path))
+        assert ov["changed"] == [{"status": "R", "label": "重命名", "path": "renamed.txt"}]
+
+    def test_overview_max_commits(self, tmp_path):
+        _init_git_repo(tmp_path, commits=5)
+        ov = make_service().git_overview(str(tmp_path), max_commits=2)
+        assert len(ov["commits"]) == 2 and ov["authors"][0]["commits"] == 5
+
+    def test_non_repo(self, tmp_path):
+        ov = make_service().git_overview(str(tmp_path))
+        assert ov == {"is_repo": False, "branch": "", "changed": [], "commits": [], "authors": [], "last_commit_at": ""}
+
+    def test_empty_repo_without_commits(self, tmp_path):
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        ov = make_service().git_overview(str(tmp_path))
+        assert ov["is_repo"] is True and ov["commits"] == [] and ov["last_commit_at"] == ""
+
+    def test_exception_wrapped(self, monkeypatch):
+        import sys as _sys
+
+        broken = MagicMock()
+        broken.GitAnalyzer.side_effect = RuntimeError("git-boom")
+        monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", broken)
+        ov = make_service().git_overview(".")
+        assert ov["is_repo"] is False and ov["error"] == "git-boom"
+
+
+class TestAiExplain:
+    def test_prompt_by_kind(self):
+        svc = make_service()
+        p = svc.build_explain_prompt("db", "SELECT 1", "为什么")
+        assert p.startswith("解读下面的 SQL") and "SELECT 1" in p and "问题：为什么" in p and "≤300 字" in p
+        assert svc.build_explain_prompt("unknown", "x").startswith("解读下面的代码分析结果")
+        assert "问题：" not in svc.build_explain_prompt("git", "x")
+
+    def test_payload_truncated(self):
+        svc = make_service()
+        p = svc.build_explain_prompt("file", "a" * 10000)
+        assert p.count("a") == WebService.AI_EXPLAIN_MAX_PAYLOAD
+
+    def test_stream_answer_and_done(self):
+        calls = []
+
+        def fake_complete(prompt, **kw):
+            calls.append((prompt, kw))
+            return "  这是解读  "
+
+        svc = make_service(complete_text=fake_complete)
+        events = list(svc.ai_explain_stream("git", "log…"))
+        kinds = [e.kind for e in events]
+        assert kinds[0] == "progress" and kinds[-2:] == ["answer", "done"]
+        answer = events[-2]
+        assert answer.message == "这是解读" and answer.data == {"kind": "git"}
+        assert calls[0][1] == {"num_predict": WebService.AI_EXPLAIN_NUM_PREDICT}
+        assert not svc.is_running()
+
+    def test_stream_empty_payload(self):
+        svc = make_service(complete_text=lambda p, **k: pytest.fail("不应调用"))
+        events = list(svc.ai_explain_stream("code", "   "))
+        assert events == [StreamEvent("error", "没有可解读的内容，请先执行一次操作")]
+
+    def test_stream_busy(self):
+        svc = make_service(complete_text=lambda p, **k: pytest.fail("不应调用"))
+        svc._running = True
+        events = list(svc.ai_explain_stream("code", "x"))
+        assert len(events) == 1 and events[0].kind == "error" and "进行中" in events[0].message
+
+    def test_stream_llm_error_and_empty(self):
+        def boom(p, **k):
+            raise RuntimeError("ollama down")
+
+        svc = make_service(complete_text=boom)
+        events = list(svc.ai_explain_stream("shell", "ls"))
+        assert events[-1].kind == "error" and "ollama down" in events[-1].message
+        svc = make_service(complete_text=lambda p, **k: "")
+        events = list(svc.ai_explain_stream("shell", "ls"))
+        assert events[-1] == StreamEvent("error", "模型没有返回内容")
+
+    def test_stream_cancel(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow(p, **k):
+            started.set()
+            release.wait(5)
+            return "late"
+
+        svc = make_service(complete_text=slow)
+        svc.heartbeat_interval = 0.01
+        gen = svc.ai_explain_stream("db", "sql")
+        first = next(gen)
+        assert first.kind == "progress"
+        started.wait(2)
+        assert svc.stop_current()
+        rest = list(gen)
+        release.set()
+        assert any(e.kind == "cancelled" for e in rest)
+        assert not any(e.kind == "answer" for e in rest)
 
 
 class TestShellAndFiles:
