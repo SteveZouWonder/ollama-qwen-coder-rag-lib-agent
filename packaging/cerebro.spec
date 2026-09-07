@@ -76,6 +76,12 @@ for pkg in (
     "gradio_client",
     "safehttpx",
     "groovy",
+    # 代码感知分块（F8 P4）：tree-sitter 核心 + 预编译语言包（单个原生 _native.abi3.so，
+    # 含全部语法）。可选依赖：未安装时 collect_all 抛异常被跳过，运行时自动回退文本切分。
+    "tree_sitter",
+    "tree_sitter_language_pack",
+    # hybrid 召回 BM25（此前打包依赖漏掉 rank_bm25，打包版会静默回退 dense）
+    "rank_bm25",
 ):
     try:
         d, b, h = collect_all(pkg)

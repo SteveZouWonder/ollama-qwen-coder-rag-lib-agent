@@ -1,22 +1,58 @@
 """
 任务分解器 - 将复杂任务分解为可管理的子任务
+
+分解策略：先调用一次 LLM（``think=False``、``num_predict≤512``）输出 JSON 子任务
+列表；解析失败 / 超时 / 未开启 LLM 时回退到关键词表。``last_method`` 记录本次
+实际使用的方法（``"llm"`` / ``"rules"``），供协调层如实展示进度文案。
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Callable
 import uuid
 import logging
 from agents.agent_types import AgentTask
+from .llm_helper import complete_json, truncate
+
+
+# 子任务类型 → (required_capabilities, priority)
+TASK_TYPE_SPECS: Dict[str, Dict[str, Any]] = {
+    "code_generation": {"capabilities": ["code_generation"], "priority": 7},
+    "testing": {"capabilities": ["testing"], "priority": 6},
+    "documentation": {"capabilities": ["documentation"], "priority": 5},
+    "knowledge_retrieval": {"capabilities": ["knowledge_retrieval"], "priority": 8},
+    "audit": {"capabilities": ["audit"], "priority": 4},
+    "general": {"capabilities": ["general"], "priority": 5},
+}
+
+DECOMPOSE_PROMPT = """把用户请求拆成可独立执行的子任务，只输出 JSON，不要解释。
+type 只能取: code_generation|testing|documentation|knowledge_retrieval|audit|general
+纯问答/查资料/总结/比较 → 只给 1 个 knowledge_retrieval；单一意图不要拆，最多 5 个。
+depends_on 填被依赖子任务的序号（从 0 开始），如测试依赖代码。
+{{"subtasks":[{{"type":"...","description":"独立可执行的描述","depends_on":[]}}]}}
+用户请求：{request}"""
+
+MAX_SUBTASKS = 5
 
 
 class TaskDecomposer:
     """任务分解器，将复杂任务分解为子任务"""
     
-    def __init__(self):
-        """初始化任务分解器"""
+    def __init__(self, complete: Optional[Callable[[str], str]] = None,
+                 use_llm: bool = True, llm_timeout: int = 60):
+        """初始化任务分解器
+
+        Args:
+            complete: 可注入的 LLM 补全函数（测试用）；None 时用全局模型。
+            use_llm: 是否先尝试 LLM 分解；False 则只用关键词表。
+            llm_timeout: LLM 分解调用超时（秒）。
+        """
         self.logger = logging.getLogger("TaskDecomposer")
+        self._complete = complete
+        self.use_llm = use_llm
+        self.llm_timeout = llm_timeout
+        self.last_method: str = "rules"
     
     def decompose(self, request: str, available_agents: List[Any] = None) -> List[AgentTask]:
         """
-        分解用户请求为子任务
+        分解用户请求为子任务：LLM 优先，失败回退关键词表。
         
         Args:
             request: 用户请求
@@ -26,12 +62,77 @@ class TaskDecomposer:
             List[AgentTask]: 分解后的子任务列表
         """
         self.logger.info(f"Decomposing request: {request[:100]}...")
+
+        tasks: List[AgentTask] = []
+        if self.use_llm and (request or "").strip():
+            tasks = self._decompose_with_llm(request, available_agents)
+        if tasks:
+            self.last_method = "llm"
+        else:
+            self.last_method = "rules"
+            tasks = self._analyze_and_decompose(request, available_agents)
         
-        # 简化的任务分解逻辑
-        # 实际应用中可以使用LLM来智能分解任务
-        tasks = self._analyze_and_decompose(request, available_agents)
-        
-        self.logger.info(f"Decomposed into {len(tasks)} subtasks")
+        self.logger.info(f"Decomposed into {len(tasks)} subtasks via {self.last_method}")
+        return tasks
+
+    # ---------- LLM 分解 ----------
+
+    @staticmethod
+    def _available_capabilities(available_agents: Optional[List[Any]]) -> set:
+        caps = set()
+        for agent in available_agents or []:
+            caps.update(getattr(agent, "capabilities", []) or [])
+        return caps
+
+    def _decompose_with_llm(self, request: str, available_agents: Optional[List[Any]]) -> List[AgentTask]:
+        """一次 LLM 调用得到子任务 JSON；任何异常/不合法输出返回 []（触发回退）。"""
+        prompt = DECOMPOSE_PROMPT.format(request=truncate(request, 1500))
+        data = complete_json(prompt, complete=self._complete, num_predict=512,
+                             timeout=self.llm_timeout)
+        if not data:
+            return []
+        raw_items = data.get("subtasks")
+        if not isinstance(raw_items, list) or not raw_items:
+            return []
+
+        caps = self._available_capabilities(available_agents)
+        specs: List[Dict[str, Any]] = []
+        for item in raw_items[:MAX_SUBTASKS]:
+            if not isinstance(item, dict):
+                continue
+            ttype = str(item.get("type", "")).strip().lower()
+            desc = str(item.get("description", "")).strip()
+            if ttype not in TASK_TYPE_SPECS or not desc:
+                continue
+            # 该类型所需能力无可用 Agent 时降级为 general（由 RAGAgent 兜底）
+            need = TASK_TYPE_SPECS[ttype]["capabilities"]
+            if available_agents and not set(need).issubset(caps):
+                if "general" not in caps:
+                    continue
+                ttype = "general"
+            deps = item.get("depends_on") or []
+            deps = [int(d) for d in deps if isinstance(d, (int, float)) and int(d) >= 0]
+            specs.append({"type": ttype, "description": desc, "depends_on": deps})
+
+        if not specs:
+            return []
+
+        tasks: List[AgentTask] = []
+        for spec in specs:
+            spec_def = TASK_TYPE_SPECS[spec["type"]]
+            tasks.append(AgentTask(
+                task_id=str(uuid.uuid4()),
+                task_type=spec["type"],
+                description=spec["description"],
+                required_capabilities=list(spec_def["capabilities"]),
+                input_data={"request": spec["description"], "original_request": request},
+                priority=spec_def["priority"],
+                metadata={"decomposed_by": "llm"},
+            ))
+        # 依赖：序号 → task_id（忽略越界与自引用）
+        for idx, spec in enumerate(specs):
+            deps = [tasks[d].task_id for d in spec["depends_on"] if d < len(tasks) and d != idx]
+            tasks[idx].dependencies = deps
         return tasks
     
     def _analyze_and_decompose(self, request: str, available_agents: List[Any] = None) -> List[AgentTask]:
@@ -63,7 +164,7 @@ class TaskDecomposer:
                 task_type="code_generation",
                 description=f"代码相关任务: {request}",
                 required_capabilities=["code_generation"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=7
             )
             if "code_generation" in available_capabilities or not available_agents:
@@ -76,7 +177,7 @@ class TaskDecomposer:
                 task_type="testing",
                 description=f"测试相关任务: {request}",
                 required_capabilities=["testing"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=6
             )
             if "testing" in available_capabilities or not available_agents:
@@ -89,7 +190,7 @@ class TaskDecomposer:
                 task_type="documentation",
                 description=f"文档相关任务: {request}",
                 required_capabilities=["documentation"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=5
             )
             if "documentation" in available_capabilities or not available_agents:
@@ -102,7 +203,7 @@ class TaskDecomposer:
                 task_type="knowledge_retrieval",
                 description=f"知识库检索任务: {request}",
                 required_capabilities=["knowledge_retrieval"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=8
             )
             if "knowledge_retrieval" in available_capabilities or not available_agents:
@@ -115,7 +216,7 @@ class TaskDecomposer:
                 task_type="audit",
                 description=f"审计相关任务: {request}",
                 required_capabilities=["audit"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=4
             )
             if "audit" in available_capabilities or not available_agents:
@@ -128,7 +229,7 @@ class TaskDecomposer:
                 task_type="general",
                 description=f"通用任务: {request}",
                 required_capabilities=["general"],
-                input_data={"request": request},
+                input_data={"request": request, "original_request": request},
                 priority=5
             )
             tasks.append(task)

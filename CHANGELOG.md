@@ -10,6 +10,127 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+- **代码感知分块（F8 P4）**：
+  - **按函数 / 类切分代码文件**：新增 `src/code_chunker.py::LanguageAwareNodeParser`，`.py/.js/.ts/.java/.go/.rs/.c/.cpp`
+    入库时用 tree-sitter 按语法结构切块（签名与函数体不分离、碎片并入相邻块、超长块按行二次切分、
+    块边界对齐行首），其余文件仍走 `SentenceSplitter`。每个代码片段带 `symbol`（如 `RAGEngine._ensure_bm25`）、
+    `start_line/end_line`、`language`、`chunk_strategy` 元数据与首行注释头（进 embedding 与 BM25），同一符号跨多块标
+    `part i/n`。依赖 `tree-sitter-language-pack` 为可选（`requirements.txt` 注释块；打包版内置）：未安装、
+    `CODE_AWARE_CHUNKING=false` 或语法错误占比 >30% 时整文件回退文本切分，只产生提示级文案。
+    新增环境变量 `CODE_AWARE_CHUNKING`（默认 true）/ `CODE_CHUNK_MAX_CHARS`（1500）/ `CODE_CHUNK_MIN_CHARS`（120）。
+  - **来源可定位到行号**：`query_with_sources` / BM25 来源透出 `symbol / start_line / end_line / language`；
+    综合 prompt 中代码片段编号头为 `[i]（来自 file · symbol · L起-止）`并允许回答注明函数名与行号；rerank
+    提示词与「处理过程」`rerank_done / kb_merged` 事件显示命中的符号名。CLI `/sources` 在文件名下显示
+    `symbol · L534-581`，`/ask` 摘要行显示「（N 个代码符号）」；Web 来源面板标题带 `` `symbol` · L起-止 ``，
+    代码内容按语言用代码块渲染；多 Agent 来源列表与单 Agent `query_knowledge_base` Observation 同样带符号与行号。
+  - **入库反馈与进度**：`/add` 与 Web 上传 / 路径追加完成后显示
+    「已入库 N 个文件 · M 个片段（其中 a 个代码文件按函数/类切分，共 s 个符号）」；含代码文件但代码分块未启用时
+    追加一次性提示（进程内仅一次，附安装命令）。`RAGEngine.build_index / add_documents` 新增 `progress_callback`
+    （`stage=chunk|embed`），CLI 追加入库显示 rich 进度条（切分 / 嵌入两行），Web 结果区实时显示
+    「⏳ 切分 x/y → 嵌入 m/n · 已用时」并在进行中禁用「追加入库」按钮。
+  - **分块策略可见**：`FileMetadata` 新增 `chunk_strategy` / `symbol_count`；`/file-list` 每文件多一行
+    「🧩 片段: 27 · 分块: 代码(python) · 15 个符号」，`/file-info` 显示「🧬 分块策略」；Web 文件表「片段」列改为
+    「27 · 代码 / 12 · 文本」，详情面板新增「分块策略 / 符号数」；旧库中的代码文件提示「重新入库可启用代码分块」。
+    `/stats`、Web 知识库统计与「系统」页显示代码分块状态（启用 · max 1500 字 · 依赖版本 / 未启用原因）。
+- **入口智能路由（F8 P3）**：
+  - **意图判定** `src/intent_router.py::classify_intent(text, kb_available)`：规则优先——含文件/目录
+    路径（`/x/y.py`、`./`、`~/`、`*.ext`）、代码围栏、命令式动词（修改/创建/运行/…、create/run/fix/…）
+    判为 Agent；疑问句、"总结/比较/解释/区别/优缺点"、以"什么是"开头判为 RAG；两类都命中或都不
+    命中时一次 LLM 一词判定（`think=False`、`num_predict=4`、超时 5s），异常/超时/乱输出回退 RAG；
+    知识库不可用且模糊直接走 Agent（不调 LLM）。返回 `(mode, reason)`，规则表为模块常量便于扩展。
+  - **CLI 自动路由**：不加斜杠的自然语言输入先判定意图，判为 Agent 时打印
+    「🤖 已按 Agent 模式处理（原因；用 /ask 强制知识库；/auto off 关闭自动路由）」后走 Agent；
+    新增 `/auto`（显示状态）/ `/auto on|off`（运行时开关）与环境变量 `AUTO_ROUTE`（默认 true）。
+    `/ask`、`/agent` 显式命令不判定；Agent 引擎不可用或判定失败自动回退知识库问答。
+  - **Web「自动」模式**：对话页模式分段新增「自动」并设为默认（同时显示「联网搜索」与「自动确认」）；
+    服务层 `chat_auto_stream` 判定后分发到 RAG / 单 Agent（确认策略与单 Agent 一致），处理过程先
+    出现「🧭 自动路由：按 RAG/Agent 处理（原因）」，`answer` 事件携带 `routed_mode` / `route_reason`；
+    完成后按实际模式渲染（RAG 来源面板 / Agent 执行摘要），状态行追加「· 实际模式：RAG 检索|单 Agent」。
+    手动选 RAG / 单 Agent / 多 Agent 时不判定；RAG 失败回退的「用单 Agent 重试」按钮在自动模式下仍可用。
+- **RAG 推理与可核验性（F8 P2）**：
+  - **逐片段相关性筛选（rerank）**：新增 `src/rag_rerank.py`，替代原"整批一词判定"。默认
+    `RERANKER=llm`：一次 LLM 调用（`think=False`、`num_predict≤320`，片段各截 400 字）输出
+    `{"keep":[序号],"notes":{序号:"一句理由"}}`，逐片段剔除噪音并给出保留理由（来源面板显示
+    「相关性：…」）；解析失败 / 超时回退原整体判定（保守保留，不误杀）。可选
+    `RERANKER=cross-encoder`（`sentence-transformers` + `RERANKER_MODEL`，默认
+    `BAAI/bge-reranker-v2-m3`），依赖未安装自动回退 llm 并在处理过程中提示。最高分 ≥0.6 仍跳过
+    模型判定；阈值 0.45 粗筛保留。
+  - **复合问题分解与多跳检索**：`plan_retrieval` 把"是否拆子问题 / 子问题（≤3）/ 是否联网 /
+    搜索词"合并为**一次** LLM 调用（`plan_web_search` 保留为兼容封装）。`complex=true` 时对每个
+    子问题分别检索，按 `(文件, 内容)` 去重合并后再 rerank 与综合；简单问题走原路径，LLM 调用
+    次数不增加。关闭联网 / `kb_only` 时仍可分解但不搜索。
+  - **带编号引用的综合答案**：知识库片段以 `[1]..[k]`、网络来源以 `[W1]..` 编号送入综合 prompt，
+    要求关键结论句末标注依据编号；返回的 `kb_sources[i].ref="1"` / `web_sources[j].ref="W1"`。
+    Web 来源面板与 CLI `/sources` 按编号显示，可与答案中的 `[i]`/`[Wj]` 一一对应。
+  - **思维链透出**：`/think on` 时从模型响应取出思维链，以 `stage="thinking"` 进度事件推送
+    （截断 800 字）——Web「处理过程」显示「🧠 模型思考：…」，CLI 以 dim 样式打印。
+  - **hybrid 召回（dense + BM25）**：`RAGEngine` 惰性构建 BM25 索引（入库 / 删除 / 清空后自动
+    失效重建），`query_with_sources(hybrid=None)` 用 RRF（k=60）融合向量与关键词两路 top-k；仅
+    关键词命中的片段标 `retriever="bm25"`（来源面板显示「关键词命中」）。`RAG_HYBRID`
+    默认开启，文档块数 >20000 自动关闭并提示；`rank_bm25` 未安装静默回退纯向量。
+  - **失败回退提示**：知识库无相关片段且网络也无结果时 `kind="fallback"`，答案末尾追加
+    「建议：/agent <原问题> 让 Agent 用工具进一步查找」；Web 状态行下出现「用单 Agent 重试」
+    按钮（一键切模式并用同一问题重发），CLI 提示 `/agent <原问题>`。
+- **单 Agent 鲁棒性与上下文预算（F8 P1）**：
+  - **协议容错**：模型输出没有 `Action` / `Final Answer`、`Action Input` 不是合法 JSON 对象、
+    或调用了不存在的工具时，不再把整段文本当作最终答案，而是回灌
+    `Observation: [格式错误] …请严格按协议重新输出` 连续重试最多 `MAX_FORMAT_RETRIES`（默认 2）
+    次，仍失败才按现有文本收尾并标注「（格式异常，可能不完整）」；模型调用本身失败
+    （`[错误] …` 连不上 / 超时）直接返回错误，不写入会话。
+  - **步数耗尽强制总结**：达到最大步数时追加一条「步数已用尽，请基于以上 Observation 总结：
+    已完成/未完成/建议」再调一次模型（`think=False`，`num_predict=1024`），以「⚠️ 未完成」为
+    前缀返回总结，不再丢弃全部中间结果；模型失败时回退为执行摘要。
+  - **重复调用检测**：按 `(tool, 参数规范化 JSON)` 计数，第 2 次完全相同的调用不再执行、回灌
+    「已有结果，请换方法或给出答案」，第 3 次触发强制总结并结束。
+  - **本轮上下文预算**：`turn_budget = num_ctx − 系统提示 − 历史 − 4096 预留`；单条 Observation
+    超过 `OBSERVATION_MAX_CHARS`（默认 3000）截断并注明；本轮往返超预算时从最早一步起把
+    Observation 折叠为一行「（第 k 步 tool=x 结果已折叠，要点：前 200 字）」，始终保留系统
+    提示与最近 3 步完整。
+  - **知识库工具对齐 RAG 模式**：`query_knowledge_base` 改走 `rag_pipeline.answer_question`
+    （0.45 相关性阈值 + 模型相关性判定，`kb_only` 不联网不兜底），返回「答案 + 相关性结论 +
+    top-3 片段原文（每条 ≤300 字，含文件名）」；不相关时明确返回 `[知识库无相关内容]`，
+    内置提示据此引导模型转 `web_search`；元查询返回文件清单概览。
+  - **命令安全分级补洞**：`pip/npm/yarn/pnpm/brew/apt install`、`git push/commit/reset/checkout/
+    rebase/merge`、`python x.py`、`node x.js`、`make`、`docker run/exec` 由免确认 low 升为
+    **medium（需确认）**；`curl|wget … | sh|bash|zsh` 为 **high**（需确认；此前 `| sh` 被
+    直接拦截、`| bash` 却是 low）。`write_file` / `add_to_knowledge_base` 的路径解析后必须
+    位于当前工作目录或 `WRITE_ALLOWED_DIRS`（环境变量，冒号分隔）内，否则返回
+    `[错误] 路径超出允许范围`。
+  - **可观测**：`step_log` 新增 `format_retry` / `repeat` / `budget_fold` / `forced_summary` /
+    `error` 事件，Web「处理过程」与执行摘要、CLI 进度行（`[~]` `[R]` `[F]` `[!!]` `[E]`）与
+    `/summary` 同步显示；会话执行摘要追加「格式重试 n 次 / 重复调用 n 次 / 上下文折叠 n 次 /
+    强制总结收尾」。
+- **多 Agent 协作重做为真实 Agent（F8 P0）**：Code / Test / Doc / Audit 四个专业 Agent 不再返回
+  硬编码假数据，而是各自构造一个**受限工具集**的 ReActEngine 真实执行子任务（Code：读写文件 /
+  运行命令 / 搜索 / AST；Test：读写 / 运行 / 质量检查；Doc：读写 / 知识库 / 联网；Audit：只读
+  审查），角色附加提示 ≤200 token；子 Agent 在白名单内自动放行需确认工具，`execute_command`
+  只放行 low / medium 风险命令。RAGAgent 的 document_search / knowledge_extraction /
+  literature_review 改为 `answer_question` 的提问变体并补传会话上下文。
+- **LLM 任务分解**：`TaskDecomposer` 先用一次 LLM（`think=False`，`num_predict≤512`）输出 JSON
+  子任务列表（类型 / 独立描述 / 依赖序号），每个子任务带独立 `request` 与 `original_request`；
+  解析失败 / 超时自动回退关键词表，进度文案如实显示「模型推理」或「规则回退」。纯问答只产生
+  1 个子任务，不再因"检查"等关键词误触发审计。
+- **LLM 结果整合与竞争评审**：整合结果新增面向用户的 `answer`（LLM 综合各子任务输出，失败回退
+  按子任务拼接；单一子任务直接采用其输出不额外调用）、合并去重的结构化 `sources`
+  （kb / web）；COMPETITIVE 模式由 LLM 评审候选选优（`{"best", "reason"}`），失败回退"最长成功
+  输出"而非最短耗时，`selection_criteria` 如实描述。会话记录 `answer` 而非统计句。
+- **真并行与超时**：PARALLEL 模式按依赖分波、同一波内用线程池并发（受 `max_parallel_tasks`
+  限制），下游子任务可看到上游输出；COMPETITIVE 候选并行执行；`execute_task_with_timeout`
+  真正按超时返回 `error="timeout"` 并通知 Agent 中止；Agent 失败 / 超时后状态恢复 IDLE，
+  不再永久卡在 ERROR。`AgentConfig` 的 model / timeout / max_iterations 真正传入实例，
+  `specialized_tools` 改为真实工具名白名单。
+- **CLI `/multi <任务> [--mode hierarchy|parallel|sequential|competitive]`**：多 Agent 协作进入
+  命令行，实时打印分解 → 调度 → 执行（含各 Agent 的 ReAct 步骤）→ 整合进度，结果渲染与 Web
+  一致（共用 `collaboration/presenter.py`），并接入帮助与教程。
+- Web 多 Agent 结果面板重做：先展示综合回答，再列各 Agent 摘要（步数 / 实际调用工具 / 耗时 /
+  未完成 / 未经验证标记）与来源列表，兼容 COMPETITIVE 的 `best_result` / `all_results`；
+  「处理过程」实时显示每个子 Agent 的执行步骤。
+- ReActEngine 新增 `allowed_tools`（工具描述与可执行集合同时过滤，越界调用回灌错误提示）、
+  `system_prompt_extra`（角色附加提示）、`max_iterations`、`prompt_mode` 参数。
+- **系统提示分层**：内置模板精简为 ≈1.1K token（紧凑工具速查、协议与格式规则合并、示例
+  各 1 个），`.devin/SYSTEM_PROMPT.md` 改为**追加**（截断到 `SYSTEM_PROMPT_EXTRA_MAX_CHARS`，
+  默认 4000 字符）而非整体替换；新增 `CODE_AGENT_PROMPT_MODE=builtin|append|replace`
+  （默认 `append`）。
 - **知识库文件删除**：CLI 新增 `/file-delete <path>`，Web 文件管理表格末列新增「⋯」，点击任意
   单元格即选中该行并在右侧弹出操作条（📄 文件名 [查看详情] [删除文件]）。删除会一次清掉该
   文件在向量库中的全部片段（含 docstore）、知识图谱中仅由该文件贡献的节点与边、以及文件
@@ -120,6 +241,24 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- BM25 分词对 `snake_case` / `camelCase` 标识符在保留原词的同时追加子词（`_ensure_bm25` → `ensure`、`bm25`），
+  代码问答中问"ensure bm25"也能关键词命中；RRF 融合与多跳合并对代码块改用 `(路径, 起始行)` 去重，避免相似函数头误合并。
+- `RAGEngine.build_index / add_documents` 改为"先统一切分、再建索引 / 分批 `insert_nodes`"，切分结果直接用于文件元数据
+  统计，`chunk_count` 与向量库中的实际片段数一致（此前登记时重切一次估算）。
+- 代码后缀白名单收敛为 `config.CODE_FILE_EXTENSIONS` 单一来源：`DocumentLoader.READERS` 与 `ALLOWED_FILE_TYPES`
+  默认值由此派生（补齐此前缺失的 `c` / `yml` / `markdown`）。
+- `/help`、`/tutorial` 的知识库说明补充代码分块与行号定位；`--build-only` 补传 `file_paths` 并打印入库摘要。
+- CLI `handle_agent` 优先使用 `CLIContext.react_engine`（无则回退模块级引擎），与其他处理器一致。
+- `/help`、`/tutorial` 补充自动路由说明与 `/auto` 用法；Web 对话页空态提示改为介绍「自动」模式。
+- `.devin/SYSTEM_PROMPT.md`（v4.3.0）清理错误指引：不再要求读取 `~/.config/devin/*` 全局配置、
+  不再要求用 `read_system_prompt` 重复读取本提示（引擎已自动注入）、移除不存在的
+  `todo_write` 任务工具、明确斜杠命令（`/snapshot-create` 等）不能通过 `execute_command`
+  执行；`read_system_prompt` 工具描述改为「一般无需调用」。原文备份为 `.devin/SYSTEM_PROMPT.md.bak`。
+- `rag_pipeline.answer_question` / `generate_answer` 新增 `kb_only` 参数：只取知识库结论，
+  未初始化或未命中时不做网络回退、不调模型兜底（供 Agent 工具使用，RAG 模式行为不变）。
+- 多 Agent 子 Agent 若从未真正调用角色关键工具（如测试 Agent 没有 `write_file` /
+  `execute_command`）却给出结论，结果标记「⚠️ 未经验证」并在输出前注明为模型自述，避免把编造
+  的"已完成"当成事实；Agent 摘要中的工具列表只统计真正执行过的工具。
 - 知识图谱构建器新增 `remove_document`（文档删除时同步移除其在节点 / 边 `documents` 中的
   贡献，为空则删除）与 `subgraph_for_view` / `layout_positions`（可视化子图抽取与带缓存
   的 spring 布局），图谱变更时自动失效布局缓存。
@@ -217,6 +356,22 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- `RAGEngine.load_index()` 此前未设置切分器，"启动加载已有索引 → 追加文档"会落到 LlamaIndex 默认
+  `SentenceSplitter(1024/200)` 而非 `.env` 的 `CHUNK_SIZE / CHUNK_OVERLAP`；现三条路径共用同一切分器。
+- `requirements-build.txt` 漏掉 `rank_bm25`，打包版 hybrid 召回会静默回退纯向量；已补入，并在 PyInstaller spec 中
+  `collect_all` 收集 `rank_bm25` / `tree_sitter` / `tree_sitter_language_pack`。
+- `FileMetadata.from_dict` 忽略未知键，旧版 `metadata.json` 与新增字段互相兼容。
+- 单 Agent 此前把无 `Final Answer` 的裸文本 / 非 JSON 的 `Action Input` / `[错误] 模型调用失败`
+  整段当作最终答案并写入会话、步数耗尽只返回固定警告丢弃全部中间结果、相同调用无限重复、
+  本轮 ReAct 往返（≤50 步 × ≤5000 字符）无截断折叠——均已在 F8 P1 中修正。
+- `python x.py`、`pip/npm install`、`git push/commit` 等此前落入默认 low 免确认，
+  `curl … | bash` 未被识别，`write_file` 可写任意路径——已补安全分级与路径边界。
+- 多 Agent 模式此前 4/5 专业 Agent 返回固定假文本且 `success=True`、PARALLEL 实际串行、
+  COMPETITIVE 按最快耗时选优、超时不生效、失败后 Agent 卡在 ERROR、进度文案「分解任务
+  （模型推理）」与实现不符（实际为关键词匹配）——均已在 F8 P0 中修正。
+- `.devin/SYSTEM_PROMPT.md`（≈6.2K token 的本机开发规范）不再整体替换内置系统提示占满 40%
+  上下文；多 Agent 子角色默认只用精简内置提示，避免被"必须先读系统提示文件"等规范诱导去调用
+  白名单外的工具。
 - 打包构建补齐 Gradio：`requirements-build.txt` 加入 `gradio`，PyInstaller spec 以
   `collect_all` 收集 gradio / gradio_client 及其静态前端与数据文件，修复打包版托盘
   「打开 Web UI」与 `--web` 因缺少前端资源而打不开页面的问题。

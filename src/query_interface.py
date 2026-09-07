@@ -154,10 +154,14 @@ try:
     from rich import box
     from rich.table import Table
     from rich.prompt import Prompt
+    from rich.markup import escape
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
     print("[提示] 安装 rich 可获得更好的输出体验: pip install rich")
+
+    def escape(text):  # type: ignore[misc]  # pragma: no cover - rich 缺失时的兜底
+        return str(text)
 
 try:
     from prompt_toolkit import prompt as pt_prompt
@@ -295,7 +299,8 @@ TUTORIAL_TEXT = """
 
 1. 📚 RAG 知识库
    基于 LlamaIndex + ChromaDB 构建的个人文档检索系统。
-   支持 PDF、Markdown、论文、代码文件等 14 种格式。
+   支持 PDF、Markdown、论文、代码文件等 17 种格式。
+   代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）按函数/类切分，引用可定位到行号。
    上传文档后，可直接用自然语言查询内容。
 
 2. 🤖 ReAct Agent
@@ -314,6 +319,14 @@ TUTORIAL_TEXT = """
   >>> /agent 检查 src/main.py 第 20-50 行是否有内存泄漏
   >>> /agent 搜索项目中所有硬编码的 API Key
 
+  # 多 Agent 协作（代码/测试/文档/审计/知识库专家分工）
+  >>> /multi 写一个快速排序保存到 sort.py 并为它写测试
+  >>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
+
+  # 自动路由（默认开）：不加斜杠直接输入，自动判定走知识库还是 Agent
+  >>> 什么是 RAG？                    → 知识库问答
+  >>> 修改 main.py 加上日志           → Agent 处理（用 /ask 可强制知识库）
+
   # 快捷命令
   >>> /file main.py          快速读取文件
   >>> /exec git status       执行命令
@@ -325,6 +338,7 @@ TUTORIAL_TEXT = """
   /tutorial  重新显示本教程
   /ask       直接查询知识库
   /agent     进入 Agent 任务模式
+  /multi     多 Agent 协作模式
   /tools     查看所有可用工具
   /add       添加文档到知识库
   /stats     知识库统计
@@ -339,6 +353,7 @@ TUTORIAL_TEXT = """
   /cd        切换目录
   /model     显示模型信息；/model <name> 热切换模型
   /think     显示/开关思考模式（/think on|off）
+  /auto      显示/开关自动路由（/auto on|off；开时自然语言自动判定走知识库还是 Agent）
   /reset     重置 Agent 对话上下文
   /quit      退出
 
@@ -417,6 +432,34 @@ _progress_state = {
     "current_thinking_dots": 0
 }
 
+# ReAct 步骤阶段 → CLI 标记 / 颜色（含 P1-8 鲁棒性事件：格式重试、重复、折叠、强制总结、错误）
+STEP_PHASE_EMOJI = {
+    "thinking": "[*]",
+    "action": "[>]",
+    "executing": "[!]",
+    "observed": "[=]",
+    "blocked": "[X]",
+    "rejected": "[-]",
+    "final": "[OK]",
+    "format_retry": "[~]",
+    "repeat": "[R]",
+    "budget_fold": "[F]",
+    "forced_summary": "[!!]",
+    "error": "[E]",
+}
+STEP_PHASE_COLOR = {
+    "thinking": "cyan",
+    "executing": "yellow",
+    "blocked": "red",
+    "rejected": "red",
+    "final": "green",
+    "format_retry": "yellow",
+    "repeat": "yellow",
+    "budget_fold": "magenta",
+    "forced_summary": "red",
+    "error": "red",
+}
+
 def on_step_callback(data: dict):
     from config import Config
     
@@ -428,26 +471,12 @@ def on_step_callback(data: dict):
     phase = data.get("phase", "?")
     msg = data.get("message", "")
 
-    phase_emoji = {
-        "thinking": "[*]",
-        "action": "[>]",
-        "executing": "[!]",
-        "observed": "[=]",
-        "blocked": "[X]",
-        "rejected": "[-]",
-        "final": "[OK]"
-    }.get(phase, "[?]")
+    phase_emoji = STEP_PHASE_EMOJI.get(phase, "[?]")
 
     if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
         from rich.console import Console as RichConsole
         
-        color = {
-            "thinking": "cyan",
-            "executing": "yellow",
-            "blocked": "red",
-            "rejected": "red",
-            "final": "green"
-        }.get(phase, "white")
+        color = STEP_PHASE_COLOR.get(phase, "white")
         
         # 计算进度百分比
         if step != "?" and total != "?":
@@ -584,8 +613,9 @@ def print_help():
   /tutorial          显示使用指引教程
   /ask <question>    直接查询知识库（基于上传的文档）
   /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
+  /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
-  /add <path>        添加文档到知识库（PDF/MD/TXT/代码等）
+  /add <path>        添加文档到知识库（PDF/MD/TXT/代码等；代码按函数/类切分，来源带 符号·行号）
   /stats             显示知识库统计
   /sources           显示上次知识库回答的来源
   /clear             清空屏幕
@@ -601,6 +631,8 @@ def print_help():
   /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
   /think             显示思考模式状态（默认关，响应快）
   /think on|off      运行时开关思考模式（开启需模型支持，如 qwen3.5）
+  /auto              显示自动路由状态（默认开：自然语言先判定走知识库还是 Agent）
+  /auto on|off       运行时开关自动路由（关闭后自然语言一律走知识库问答）
   /context           查看当前会话上下文（轮数/估算 token/预算/压缩次数/摘要）
   /compact           手动压缩当前会话历史（最旧轮次折叠进滚动摘要）
   /reset             清空当前会话上下文（消息与滚动摘要，三种模式共用）
@@ -608,6 +640,8 @@ def print_help():
 
 连续对话：/ask、自然语言输入与 /agent 都会记住当前会话的上下文，可直接追问
 （如"它多少钱"）；历史超出预算时自动压缩，对话过长会提示新建会话。
+自动路由：不加斜杠的自然语言输入会先判定意图——含路径/代码/命令式动词走 Agent，
+疑问/总结类走知识库；/ask、/agent 显式命令不判定。可用 /auto off 关闭（或环境变量 AUTO_ROUTE=false）。
 
 知识库管理命令（新功能）：
   /generate-skills   将知识库内容转化为Skills
@@ -715,22 +749,54 @@ def print_rag_sources(sources: list):
         console.print("⚠️  没有来源信息", style="yellow")
         return
     if HAS_RICH:
-        table = Table(title="📚 参考来源", show_lines=True)
+        table = Table(title="📚 参考来源（编号与回答中的 [n] 对应）", show_lines=True)
+        table.add_column("#", style="bold", justify="right", no_wrap=True)
         table.add_column("文件", style="cyan", no_wrap=True)
         table.add_column("相似度", style="green", justify="right")
         table.add_column("内容片段", style="white")
 
-        for src in sources:
-            score = f"{src['score']:.3f}" if src['score'] else "N/A"
+        for i, src in enumerate(sources, 1):
+            ref = f"[{src.get('ref') or i}]"
+            score = f"{src['score']:.3f}" if src.get('score') else "N/A"
+            if src.get("retriever") == "bm25":
+                score += " (关键词)"
             content = src['content'][:100] + "..." if len(src['content']) > 100 else src['content']
-            table.add_row(src['file'], score, content)
+            note = (src.get("rerank_note") or "").strip()
+            if note:
+                content += f"\n[dim]相关性：{note}[/dim]"
+            # 代码块：文件名下一行显示 符号 · 行号（可直接定位）
+            file_cell = escape(str(src.get('file', '未知')))
+            loc = _source_code_location(src)
+            if loc:
+                file_cell += f"\n[dim]{escape(loc)}[/dim]"
+            table.add_row(ref, file_cell, score, content)
         console.print(table)
     else:
         print("=== 参考来源 ===")
-        for src in sources:
-            score = f"({src['score']:.3f})" if src['score'] else ""
-            print(f"  {src['file']} {score}")
+        for i, src in enumerate(sources, 1):
+            ref = f"[{src.get('ref') or i}]"
+            score = f"({src['score']:.3f})" if src.get('score') else ""
+            loc = _source_code_location(src)
+            head = f"{ref} {src['file']}" + (f" · {loc}" if loc else "")
+            print(f"  {head} {score}".rstrip())
             print(f"    {src['content'][:100]}...")
+
+
+def _source_code_location(src: dict) -> str:
+    """代码来源的 ``symbol · L起-止`` 文案；文本来源返回空串。"""
+    parts = []
+    if src.get("symbol"):
+        parts.append(str(src["symbol"]))
+    if src.get("start_line") is not None:
+        parts.append(f"L{src['start_line']}-{src.get('end_line') or src['start_line']}")
+    if src.get("part"):
+        parts.append(f"({src['part']})")
+    return " · ".join(parts)
+
+
+def count_code_sources(sources: list) -> int:
+    """来源中代码块（带 symbol）的数量，用于 /ask 摘要行。"""
+    return sum(1 for s in sources or [] if isinstance(s, dict) and s.get("symbol"))
 
 def print_knowledge_stats():
     global rag_engine
@@ -841,6 +907,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("model", user_input)
     if user_input == "/think":
         return ParsedCommand("think", user_input)
+    if user_input == "/auto":
+        return ParsedCommand("auto", user_input)
 
     # 带参数命令（至少一个空格分隔）
     parts = user_input.split(None, 1)
@@ -851,12 +919,18 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("ask", user_input, arg)
     if cmd == "/agent":
         return ParsedCommand("agent", user_input, arg)
+    if cmd == "/multi":
+        # /multi <任务> [--mode hierarchy|parallel|sequential|competitive]
+        return ParsedCommand("multi", user_input, arg)
     if cmd == "/model":
         # /model <name> 运行时热切换；/model list 列出可选模型
         return ParsedCommand("model", user_input, arg)
     if cmd == "/think":
         # /think on|off 运行时开关思考模式
         return ParsedCommand("think", user_input, arg)
+    if cmd == "/auto":
+        # /auto on|off 运行时开关入口自动路由
+        return ParsedCommand("auto", user_input, arg)
     if cmd == "/add":
         return ParsedCommand("add", user_input, arg)
     if cmd == "/file":
@@ -982,7 +1056,7 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
     # 纯命令，不走任何引擎
     if cmd_type in ("help", "tutorial", "tools", "stats", "sources",
                      "clear", "history", "summary", "reset", "context", "compact",
-                     "pwd", "cd", "model", "quit", "empty", "unknown_cmd",
+                     "pwd", "cd", "model", "think", "auto", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
                      "snapshot_restore", "snapshot_info", "snapshot_delete", "snapshot_prune",
                      "knowledge_summary",
@@ -995,7 +1069,7 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
                      "session_delete", "session_info", "session_search", "session_current",
                      "session_compress", "web_search", "web_cache", "web_extract",
                      "code_ast", "code_quality", "git_analyze", "git_commit_gen",
-                     "graph_query", "graph_build"):
+                     "graph_query", "graph_build", "multi"):
         return "cmd"
 
     # 明确指定 RAG
@@ -1170,8 +1244,14 @@ def _cli_ask_progress(event: dict):
         "context_rewritten": "cyan",
     }
     style = style_map.get(stage, "dim")
-    if stage in ("kb_retrieving", "synthesizing", "model_thinking",
-                 "context_compress", "context_compressed"):
+    if stage == "thinking":
+        # /think on：模型思维链（已截断 800 字），dim 样式、转义避免被当作 Rich 标记
+        from rich.markup import escape as _escape
+        console.print(f"[dim]{_escape(msg)}[/dim]")
+    elif stage == "fallback":
+        console.print(msg, style="yellow")  # 具体 /agent 提示在回答渲染后由 _run_ask 打印
+    elif stage in ("kb_retrieving", "synthesizing", "model_thinking", "rerank",
+                   "context_compress", "context_compressed"):
         # 这些"进行中"提示走安静的 dim 行，避免打断 status
         console.print(f"[dim]{msg}[/dim]")
     elif msg:
@@ -1214,17 +1294,19 @@ def print_web_sources(sources: list):
     if not sources:
         return
     if HAS_RICH:
-        table = Table(title="🌐 网络来源", show_lines=False)
+        table = Table(title="🌐 网络来源（编号与回答中的 [Wn] 对应）", show_lines=False)
         table.add_column("#", style="dim", justify="right", no_wrap=True)
         table.add_column("标题", style="cyan")
         table.add_column("链接", style="blue")
         for i, src in enumerate(sources, 1):
-            table.add_row(str(i), src.get("title", ""), src.get("url", ""))
+            ref = f"[{src.get('ref') or f'W{i}'}]"
+            table.add_row(ref, src.get("title", ""), src.get("url", ""))
         console.print(table)
     else:
         print("=== 🌐 网络来源 ===")
         for i, src in enumerate(sources, 1):
-            print(f"  {i}. {src.get('title', '')}")
+            ref = f"[{src.get('ref') or f'W{i}'}]"
+            print(f"  {ref} {src.get('title', '')}")
             print(f"     {src.get('url', '')}")
 
 
@@ -1494,6 +1576,40 @@ def handle_think(ctx, parsed):
     return True
 
 
+def handle_auto(ctx, parsed):
+    """``/auto`` 显示自动路由状态；``/auto on|off`` 运行时开关（F8 P3-2）。
+
+    开启时自然语言输入先由 ``intent_router.classify_intent`` 判定走知识库还是
+    Agent；关闭后一律走知识库问答（等价 ``/ask``）。显式命令不受影响。
+    """
+    import model_switcher
+
+    arg = (parsed.arg or "").strip()
+    record_command_execution("auto")
+
+    if not arg:
+        state = "开" if Config.AUTO_ROUTE else "关"
+        console.print(f"[green]自动路由: {state}[/green]")
+        console.print(
+            "[dim]开启时自然语言输入先判定意图：含路径/代码/命令式动词走 Agent，疑问/总结类走知识库，"
+            "模糊时由模型一词判定；关闭后一律走知识库问答。/ask、/agent 显式命令不判定。"
+            "用法: /auto on | /auto off[/dim]"
+        )
+        return True
+
+    flag = model_switcher.parse_think_flag(arg)
+    if flag is None:
+        console.print(f"[red]无法识别参数 '{arg}'，请使用 /auto on 或 /auto off[/red]")
+        return True
+
+    Config.AUTO_ROUTE = flag
+    if flag:
+        console.print("[green]自动路由已开启：自然语言输入将自动判定走知识库还是 Agent[/green]")
+    else:
+        console.print("[green]自动路由已关闭：自然语言输入一律走知识库问答（/agent 可显式使用 Agent）[/green]")
+    return True
+
+
 def handle_ask(ctx, parsed):
     """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。
 
@@ -1561,12 +1677,19 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
 
     # 确定性双区块来源展示：明确区分知识库来源与网络来源
     if last_rag_sources:
-        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段", style="dim")
+        n_code = count_code_sources(last_rag_sources)
+        suffix = f"（{n_code} 个代码符号）" if n_code else ""
+        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}", style="dim")
     if last_web_sources:
         console.print()
         print_web_sources(last_web_sources)
     if last_rag_sources or last_web_sources:
-        console.print("[dim]输入 /sources 查看完整来源明细[/dim]")
+        console.print("[dim]输入 /sources 查看完整来源明细（编号与回答中的 [n]/[Wn] 对应）[/dim]")
+
+    # 失败回退：知识库与网络均无结果 → 提示改用单 Agent 工具进一步查找
+    if result.get("kind") == "fallback":
+        fq = result.get("fallback_question") or original_question
+        console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
 
     record_command_execution(cmd_name, original_question)
     record_conversation(
@@ -1634,12 +1757,13 @@ def _answer_question(question: str, original_question: str, web_search_result: s
 def handle_agent(ctx, parsed):
     task = parsed.arg
     answer = ""
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
     pre_health = _health_before(task)
     try:
-        answer = react_engine.chat(task)
+        answer = engine.chat(task)
     except KeyboardInterrupt:
         console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
-        react_engine.stop()
+        engine.stop()
         return False
     except Exception as e:  # noqa: BLE001
         console.print(f"[red]错误: {e}[/red]")
@@ -1655,8 +1779,8 @@ def handle_agent(ctx, parsed):
         print(answer)
         print("=" * 50 + "\n")
 
-    if len(react_engine.step_log) > 1:
-        console.print(f"[dim]本次共执行 {len(react_engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+    if len(engine.step_log) > 1:
+        console.print(f"[dim]本次共执行 {len(engine.step_log)} 步，输入 /summary 查看详情[/dim]")
     # ReAct 引擎已在 chat() 结束时把本轮（任务 + 最终答案 + 执行摘要）写回会话
     record_command_execution("agent", task)
     _print_health_hint(pre_health, task)
@@ -1670,12 +1794,42 @@ def handle_natural(ctx, parsed):
     未初始化时只能提示；现统一到 ``_run_ask``（知识库为空时由编排层自动
     回退到网络/模型回答），追问同样能结合上下文理解。
     """
+    text = parsed.arg
+    engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else rag_engine
+    kb_available = bool(engine is not None and getattr(engine, "query_engine", None) is not None)
+
+    # F8 P3-2：自动路由——先判定意图，再决定走知识库问答还是 Agent
+    if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
+        return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
+
     if rag_engine is not None and rag_engine.query_engine is None:
         console.print(
             "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
             "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
         )
-    return _run_ask(ctx, parsed.arg, cmd_name="natural")
+    return _run_ask(ctx, text, cmd_name="natural")
+
+
+def _route_natural_to_agent(ctx, text: str, kb_available: bool) -> bool:
+    """自动路由判定：返回 True 表示应按 Agent 处理（并已打印状态行）。
+
+    判定失败或 Agent 引擎不可用时返回 False（走知识库问答），不影响主流程。
+    """
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
+    if engine is None:
+        return False
+    try:
+        from intent_router import classify_intent
+        decision = classify_intent(text, kb_available=kb_available)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("自动路由判定失败，回退知识库问答: %s", e)
+        return False
+    if decision.mode != "agent":
+        return False
+    console.print(
+        f"[cyan]🤖 已按 Agent 模式处理（{decision.reason}；用 /ask 强制知识库；/auto off 关闭自动路由）[/cyan]"
+    )
+    return True
 
 
 def handle_unknown_cmd(ctx, parsed):
@@ -1696,6 +1850,7 @@ _ENGINE_HANDLERS = {
     "cd": handle_cd,
     "model": handle_model,
     "think": handle_think,
+    "auto": handle_auto,
     "ask": handle_ask,
     "agent": handle_agent,
     "natural": handle_natural,
@@ -1817,7 +1972,15 @@ def main():
             file_types = [t.strip() for t in args.types.split(",")]
         documents = load_documents(args.data, file_types)
         if documents:
-            rag_engine.build_index(documents)
+            # 传入 file_paths：文档缺 file_path 元数据时仍能登记文件元数据
+            rag_engine.build_index(documents, file_paths=[args.data])
+            try:
+                from code_chunker import format_ingest_summary
+                stats = getattr(rag_engine, "last_ingest_stats", None) or {}
+                if stats:
+                    console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
+            except Exception:  # noqa: BLE001
+                pass
         else:
             console.print("⚠️  未找到任何文档", style="yellow")
     else:

@@ -239,7 +239,7 @@ class TestResultIntegrator:
                 task_id="task_001",
                 agent_id="agent_001",
                 success=True,
-                output="方案1",
+                output="方案1（更完整）",
                 metadata={"approach": "A"},
                 execution_time=2.0
             ),
@@ -266,8 +266,11 @@ class TestResultIntegrator:
         assert result["success"] is True
         assert "best_result" in result
         assert "all_results" in result
-        # 应该选择执行时间最短的结果
-        assert result["best_result"]["agent_id"] == "agent_002"
+        # LLM 评审不可用（网络被拦截）→ 回退"最长成功输出"，而不是最短耗时
+        assert result["best_result"]["agent_id"] == "agent_001"
+        assert "回退" in result["selection_criteria"]
+        assert result["answer"] == "方案1（更完整）"
+        assert result["mode"] == "competitive"
     
     def test_integrate_competitive_all_failed(self):
         """测试竞争整合所有结果都失败"""
@@ -290,15 +293,17 @@ class TestResultIntegrator:
                 output="",
                 metadata={},
                 execution_time=1.5,
-                error_message="失败2"
+                error_message="失败2：详细原因"
             )
         ]
         
         result = integrator.integrate_competitive(results)
         
         assert result["success"] is False
-        # 应该选择执行时间最短的失败结果
-        assert result["best_result"]["execution_time"] == 1.5
+        # 全部失败：展示错误信息最详细者
+        assert result["best_result"]["agent_id"] == "agent_002"
+        assert "全部候选失败" in result["selection_criteria"]
+        assert result["answer"] == ""
     
     def test_integrate_hierarchical(self):
         """测试层级整合"""

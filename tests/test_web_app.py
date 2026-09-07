@@ -89,6 +89,38 @@ class TestFormatMultiAgent:
         out = format_multi_agent_result({"success": True})
         assert "协作完成" in out
 
+    def test_answer_agent_summary_and_sources(self):
+        """P0-6：渲染综合回答 + 各 Agent 摘要（步数/工具）+ 结构化来源。"""
+        out = format_multi_agent_result({
+            "success": True, "summary": "执行了 2 个任务，成功 2 个。", "answer": "快排已实现并测试通过。",
+            "successful_results": 2, "total_results": 2,
+            "tasks": [{"task_id": "a", "description": "写快排"}],
+            "results": [
+                {"success": True, "agent_id": "code_agent_1", "task_id": "a", "output": "raw",
+                 "metadata": {"steps": 3, "tools": ["write_file", "execute_command"]}},
+            ],
+            "sources": [{"kind": "kb", "file": "算法.md", "score": 0.81},
+                        {"kind": "web", "title": "Wiki", "url": "https://w"}],
+        })
+        assert out.startswith("快排已实现并测试通过。")
+        assert "code_agent_1** · 写快排（3 步，工具: write_file、execute_command）" in out
+        assert "📄 算法.md（相似度 0.810）" in out
+        assert "[Wiki](https://w)" in out
+        assert "> raw" not in out
+
+    def test_competitive_best_result(self):
+        best = {"success": True, "agent_id": "b", "output": "B", "metadata": {}}
+        out = format_multi_agent_result({
+            "success": True, "summary": "竞争完成", "answer": "B",
+            "best_result": best, "all_results": [{"success": True, "agent_id": "a", "output": "A", "metadata": {}}, best],
+            "selection_criteria": "LLM 评审选优：更完整",
+        })
+        assert "🏆 选用：**b** — LLM 评审选优：更完整" in out
+        assert "其他候选" in out and "**a**" in out
+
+    def test_non_dict(self):
+        assert "协作失败" in format_multi_agent_result(None)
+
 
 class TestFormatSessions:
     def test_empty(self):
@@ -434,7 +466,7 @@ def _rag_answer(msg="答案", **data):
 
 
 class TestChatStream:
-    """``on_chat_stream`` yield 六元组 (history, status, process, sources, hint, confirm)。
+    """``on_chat_stream`` yield 七元组 (history, status, process, sources, hint, confirm, retry)。
 
     ``history`` 为 Chatbot（messages 格式）的完整多轮列表：既有会话历史 + 本轮
     用户消息，完成后追加助手回答。
@@ -443,7 +475,7 @@ class TestChatStream:
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 6, f"应为六元组: {item!r}"
+            assert len(item) == 7, f"应为七元组: {item!r}"
             assert isinstance(item[0], list)
         return out
 
@@ -481,7 +513,7 @@ class TestChatStream:
         assert "已用时" in out[0][1]
         assert [m["content"] for m in out[0][0]] == ["旧问", "旧答", "问题"]
         # 最终一条：追加助手回答 + 完成状态 + 已完成的处理过程
-        history, status, process, _, hint, _ = out[-1]
+        history, status, process, _, hint, _, _ = out[-1]
         assert self._last_assistant(history) == "答案"
         assert len(history) == 4
         assert status.startswith("✅ 完成")
@@ -530,8 +562,8 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        assert any("网络搜索中" in process for _, _, process, _, _, _ in out)
-        history, _, _, sources, _, _ = out[-1]
+        assert any("网络搜索中" in process for _, _, process, _, _, _, _ in out)
+        history, _, _, sources, _, _, _ = out[-1]
         assert self._last_assistant(history) == "最终"
         assert "f.md" in sources and "http://x" in sources
 
@@ -549,7 +581,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("它多少钱", "RAG 检索"))
-        history, status, process, _, hint, _ = out[-1]
+        history, status, process, _, hint, _, _ = out[-1]
         content = self._last_assistant(history)
         assert content.startswith("> 🔗 已理解为：DJI OSMO 360 多少钱")
         assert content.endswith("2999 元")
@@ -603,7 +635,7 @@ class TestChatStream:
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, _, _, _, _ = out[-1]
+        history, status, _, _, _, _, _ = out[-1]
         assert "检索炸了" in self._last_assistant(history)
         assert status.startswith("❌")
 
@@ -615,7 +647,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, process, _, _, _ = out[-1]
+        history, status, process, _, _, _, _ = out[-1]
         assert "已停止" in status
         assert "规划搜索" in process
         # 未产出回答：历史只到用户消息
@@ -638,11 +670,11 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True, "sid2"))
-        assert any("第一步" in process for _, _, process, _, _, _ in out)
+        assert any("第一步" in process for _, _, process, _, _, _, _ in out)
         # 心跳出现在状态行，但不进入执行过程列表
-        assert any("模型推理中" in status for _, status, _, _, _, _ in out)
-        assert not any("模型推理中" in process for _, _, process, _, _, _ in out)
-        history, status, process, _, _, _ = out[-1]
+        assert any("模型推理中" in status for _, status, _, _, _, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _, _, _, _ in out)
+        history, status, process, _, _, _, _ = out[-1]
         assert self._last_assistant(history) == "完成"
         assert "执行过程" in process
         assert "上下文 10 / 100" in status
@@ -671,9 +703,9 @@ class TestChatStream:
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
         # 中间能看到分解/执行阶段
-        assert any("分解任务" in process for _, _, process, _, _, _ in out)
-        assert any("执行子任务" in process for _, _, process, _, _, _ in out)
-        history, status, process, _, _, _ = out[-1]
+        assert any("分解任务" in process for _, _, process, _, _, _, _ in out)
+        assert any("执行子任务" in process for _, _, process, _, _, _, _ in out)
+        history, status, process, _, _, _, _ = out[-1]
         content = self._last_assistant(history)
         assert "协作完成" in content and "已理解为：帮我总结 X" in content
         assert status.startswith("✅")
@@ -969,6 +1001,30 @@ class TestNewFormatters:
         assert app.format_step_log([]) == ""
         assert app.format_step_log([{"phase": "thinking"}]) == ""
 
+    def test_format_step_log_robustness_events(self):
+        """P1-8：格式重试 / 重复 / 折叠 / 强制总结 / 错误 事件在「处理过程」中可见。"""
+        out = app.format_step_log([
+            {"step": 1, "phase": "format_retry", "reason": "输出中既没有 Action 也没有 Final Answer", "retry": 1},
+            {"step": 2, "phase": "repeat", "tool": "read_file", "count": 2},
+            {"step": 5, "phase": "budget_fold", "folded_steps": [1, 2]},
+            {"step": 6, "phase": "forced_summary", "reason": "max_iterations"},
+            {"step": 6, "phase": "final", "answer": "⚠️ 未完成…", "forced": "max_iterations"},
+        ])
+        assert "🔁 输出格式错误，回灌重试（第 1 次）：输出中既没有 Action" in out
+        assert "♻️ 重复调用 `read_file`（第 2 次相同参数）" in out
+        assert "🗜️ 上下文超预算，已折叠第 1、2 步的 Observation" in out
+        assert "⚠️ 步数已用尽，请模型总结" in out
+        assert "⚠️ 未完成，强制总结收尾" in out
+
+        out2 = app.format_step_log([
+            {"step": 3, "phase": "forced_summary", "reason": "repeat"},
+            {"step": 3, "phase": "final", "answer": "x", "format_abnormal": True},
+            {"step": 4, "phase": "error", "message": "[错误] 模型响应超时"},
+        ])
+        assert "重复调用终止" in out2
+        assert "🏁 格式异常，按现有文本收尾" in out2
+        assert "❌ [错误] 模型响应超时" in out2
+
     def test_format_confirm_request(self):
         out = app.format_confirm_request({
             "tool": "execute_command", "command": "rm -r build", "safety": {"risk_level": "high"},
@@ -1235,3 +1291,326 @@ class TestNewHandlers:
         assert h["on_model_table"]() == [["m", "✔", ""]]
         assert h["on_collab_choices"]() == [("自动", "")]
         assert "cb-status-chip" in h["on_model_chip"]()
+
+
+# ==================== F8 P2：编号来源 / thinking / fallback 重试 ====================
+
+class TestNumberedSourcesAndFallback:
+    def test_format_sources_uses_ref_and_note(self):
+        from web.app import format_sources as fs
+        out = fs([
+            {"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "rerank_note": "含售价"},
+            {"file": "k.md", "score": 0.49, "content": "乙", "ref": "2", "retriever": "bm25"},
+        ])
+        assert "**[1] a.md**" in out and "_相关性：含售价_" in out
+        assert "**[2] k.md**" in out and "关键词命中" in out
+
+    def test_format_sources_without_ref_falls_back_to_index(self):
+        from web.app import format_sources as fs
+        assert "**[1] a.md**" in fs([{"file": "a.md", "content": "x"}])
+
+    def test_format_web_sources_uses_w_ref(self):
+        from web.app import format_web_sources as fw
+        out = fw([{"title": "T", "url": "http://x", "ref": "W1"}, {"title": "U"}])
+        assert "- **[W1]** [T](http://x)" in out and "- **[W2]** U" in out
+        assert fw([]) == ""
+
+    def test_format_fallback_hint(self):
+        from web.app import format_fallback_hint
+        assert "/agent 冷门问题" in format_fallback_hint("冷门问题")
+        assert format_fallback_hint("") == ""
+
+    def test_fallback_answer_yields_retry_hint(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            _rag_answer("⚠️ 知识库中无相关内容…\n\n建议：/agent 冷门问题 让 Agent 用工具进一步查找",
+                        kind="fallback", fallback_question="冷门问题"),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("冷门问题", "RAG 检索"))
+        assert all(len(o) == 7 for o in out)
+        history, status, _, _, _, _, retry = out[-1]
+        assert "完成" in status
+        assert "/agent 冷门问题" in retry and "用工具进一步查找" in retry
+        # 过程中的帧不显示重试提示
+        assert all(o[6] == "" for o in out[:-1])
+
+    def test_normal_answer_has_no_retry_hint(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("答", kind="answer")])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        assert out[-1][6] == ""
+
+    def test_thinking_progress_appears_in_process(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "🧠 模型思考：先看知识库…", {"stage": "thinking", "thinking": "先看知识库…"}),
+            StreamEvent("progress", "🔎 逐片段校验相关性（2 个片段，模型判定）...", {"stage": "rerank"}),
+            _rag_answer("答[1]", sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1"}]),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        _, _, process, sources, _, _, _ = out[-1]
+        assert "模型思考" in process and "逐片段校验" in process
+        assert "**[1] a.md**" in sources
+
+
+# ==================== F8 P3-3：「自动」模式 ====================
+
+def _route_evt(mode, reason="规则：动词「修改」"):
+    label = "Agent" if mode == "agent" else "RAG"
+    return StreamEvent("progress", f"🧭 自动路由：按 {label} 处理（{reason}）",
+                       {"phase": "route", "routed_mode": mode, "route_reason": reason})
+
+
+class TestAutoModeStream:
+    def _collect(self, gen):
+        out = list(gen)
+        for item in out:
+            assert len(item) == 7, f"应为七元组: {item!r}"
+        return out
+
+    def test_mode_auto_constant(self):
+        from web.app import MODE_AUTO
+        from web.ui.chat import MODE_AUTO as UI_MODE_AUTO
+        assert MODE_AUTO == "自动" == UI_MODE_AUTO
+
+    def test_auto_routed_rag_renders_sources_and_status(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag", "规则：疑问句"),
+            StreamEvent("progress", "检索知识库...", {"stage": "kb_retrieving"}),
+            _rag_answer("答[1]", sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1"}],
+                        routed_mode="rag", route_reason="规则：疑问句", context={}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("什么是 RAG？", "自动", True, False, "sid1"))
+        history, status, process, sources, _, confirm, retry = out[-1]
+        assert history[-1]["content"] == "答[1]"
+        assert status.startswith("✅ 完成") and "实际模式：RAG 检索" in status
+        assert "自动路由：按 RAG 处理" in process and "检索知识库" in process
+        assert "**[1] a.md**" in sources
+        assert "执行摘要" not in process
+        assert confirm == "" and retry == ""
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["session_id"] == "sid1" and kwargs["enable_web_search"] is True
+        assert kwargs["auto_confirm"] is False and kwargs["interactive_confirm"] is True
+        svc.rag_query_stream.assert_not_called()
+        svc.agent_chat_stream.assert_not_called()
+
+    def test_auto_routed_agent_renders_step_log_and_status(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("step", "读取 main.py", {"phase": "action"}),
+            StreamEvent("answer", "已加日志", {
+                "step_log": [{"step": 1, "phase": "action", "tool": "read_file"}, {"step": 2, "phase": "final"}],
+                "context": {}, "routed_mode": "agent", "route_reason": "规则：动词「修改」",
+            }),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("修改 main.py 加日志", "自动", True, True, "sid1"))
+        history, status, process, sources, _, _, retry = out[-1]
+        assert history[-1]["content"] == "已加日志"
+        assert "实际模式：单 Agent" in status
+        assert "自动路由：按 Agent 处理" in process and "执行摘要" in process
+        assert sources == "" and retry == ""
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["auto_confirm"] is True
+
+    def test_auto_confirm_card_passthrough(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("confirm", "确认?", {"tool": "execute_command", "command": "rm x",
+                                             "safety": {"risk_level": "high"}}),
+            StreamEvent("answer", "done", {"step_log": [], "context": {}, "routed_mode": "agent"}),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("删除 x", "自动"))
+        assert any("rm x" in o[5] for o in out)
+        assert out[-1][5] == ""
+
+    def test_auto_rag_fallback_keeps_retry_button(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"),
+            _rag_answer("无相关内容", kind="fallback", fallback_question="冷门", routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("冷门", "自动"))
+        assert "/agent 冷门" in out[-1][6]
+
+    def test_auto_meta_answer(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"),
+            _rag_answer("[知识库概览]", kind="meta", meta={"total_documents": 3, "files": []}, routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("知识库里有什么", "自动"))
+        assert "实际模式：RAG 检索" in out[-1][1]
+        assert out[-1][0][-1]["content"]  # 概览内容非空
+
+    def test_auto_missing_routed_mode_defaults_rag(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([_rag_answer("答")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("q", "自动"))
+        assert "实际模式：RAG 检索" in out[-1][1]
+
+    def test_auto_error_event(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([_route_evt("agent"), StreamEvent("error", "炸了")])
+        h = build_handlers(svc)
+        out = self._collect(h["on_chat_stream"]("修改 x.py", "自动"))
+        assert "[错误] 炸了" in out[-1][0][-1]["content"]
+
+    def test_manual_modes_do_not_call_auto_stream(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("a")])
+        svc.agent_chat_stream.return_value = iter([StreamEvent("answer", "b", {})])
+        svc.multi_agent_stream.return_value = iter([StreamEvent("answer", "c", {"success": True, "summary": "c"})])
+        h = build_handlers(svc)
+        list(h["on_chat_stream"]("修改 x.py", "RAG 检索"))
+        list(h["on_chat_stream"]("什么是 RAG？", "单 Agent"))
+        list(h["on_chat_stream"]("什么是 RAG？", "多 Agent 协作"))
+        svc.chat_auto_stream.assert_not_called()
+        svc.classify_intent.assert_not_called()
+        # 手动模式的状态行不带"实际模式"
+        svc.rag_query_stream.return_value = iter([_rag_answer("a")])
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        assert "实际模式" not in out[-1][1]
+
+
+class TestAutoModeNonStream:
+    def test_on_chat_auto_rag(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag", "规则：疑问句"),
+            _rag_answer("回答", sources=[{"file": "f.md", "score": 0.5, "content": "c"}], routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("什么是 RAG？", "自动")
+        assert answer == "回答"
+        assert "自动路由：按 RAG 处理" in side and "f.md" in side
+        _, kwargs = svc.chat_auto_stream.call_args
+        assert kwargs["interactive_confirm"] is False
+
+    def test_on_chat_auto_agent(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("agent"),
+            StreamEvent("step", "思考中"),
+            StreamEvent("answer", "最终答案", {"routed_mode": "agent", "step_log": []}),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("修改 main.py", "自动", True, True)
+        assert answer == "最终答案"
+        assert "自动路由：按 Agent 处理" in side and "执行过程" in side and "思考中" in side
+        assert svc.chat_auto_stream.call_args[1]["auto_confirm"] is True
+
+    def test_on_chat_auto_meta_and_errors(self):
+        svc = make_service_mock()
+        svc.chat_auto_stream.return_value = iter([
+            _route_evt("rag"), _rag_answer("[概览]", kind="meta", meta={"total_documents": 1, "files": []},
+                                          routed_mode="rag"),
+        ])
+        h = build_handlers(svc)
+        answer, side = h["on_chat"]("知识库里有什么", "自动")
+        assert answer and "自动路由" in side
+
+        svc.chat_auto_stream.return_value = iter([StreamEvent("error", "炸了")])
+        assert h["on_chat"]("q", "自动") == ("", "[错误] 炸了")
+
+        svc.chat_auto_stream.return_value = iter([_route_evt("rag")])
+        assert h["on_chat"]("q", "自动") == ("", "[错误] 未获得回答")
+
+
+# ==================== F8 P4：代码感知分块的展示 ====================
+
+class TestCodeAwareRendering:
+    def test_format_sources_code_block_has_symbol_lines_and_fence(self):
+        from web.app import format_sources as fs
+        out = fs([
+            {"file": "rag_engine.py", "score": 0.71, "content": "def _ensure_bm25(self):\n    pass", "ref": "3",
+             "symbol": "RAGEngine._ensure_bm25", "start_line": 534, "end_line": 581, "language": "python",
+             "chunk_strategy": "code(python)", "part": "1/2"},
+            {"file": "a.md", "score": 0.5, "content": "文本片段", "ref": "4"},
+        ])
+        assert "**[3] rag_engine.py** · `RAGEngine._ensure_bm25` · L534-581（1/2） （相似度 0.710）" in out
+        assert "```python\ndef _ensure_bm25(self):\n    pass\n```" in out
+        assert "> 文本片段" in out and "```\n> 文本片段" not in out
+
+    def test_format_sources_code_block_escapes_inner_fence(self):
+        from web.app import format_sources as fs
+        out = fs([{"file": "a.md", "content": "```\nx\n```", "symbol": "f", "language": ""}])
+        assert out.count("```") == 2 and "ˋˋˋ" in out
+
+    def test_format_file_info_chunking_rows(self):
+        out = app.format_file_info({"path": "/a.py", "chunk_count": 9, "chunking": "代码(python) · 7 个符号", "symbol_count": 7})
+        assert "| 分块策略 | 代码(python) · 7 个符号 |" in out and "| 符号数 | 7 |" in out
+        out2 = app.format_file_info({"path": "/a.md", "chunk_count": 2})
+        assert "| 分块策略 | 文本 |" in out2 and "符号数" not in out2
+
+    def test_format_env_info_code_chunking_rows(self):
+        out = app.format_env_info({"chunk_size": 1024, "chunk_overlap": 200, "code_chunking": "启用 · max 1500 字"})
+        assert "| 文本分块 / 重叠 | 1024 / 200 |" in out and "| 代码分块 | 启用 · max 1500 字 |" in out
+        assert "| 代码分块 | — |" in app.format_env_info({"chunk_size": 1})
+
+    def test_format_stats_cards_code_label_and_stats_md(self):
+        stats = {"total_documents": 5, "embed_model": "e", "chunk_size": 1024, "chunk_overlap": 200, "top_k": 3,
+                 "code_chunking": "enabled (x 1.16)", "code_chunk_max_chars": 1500}
+        out = app.format_stats_cards(stats)
+        assert "1024 / 200 / 代码 1500" in out and out.count('class="cb-card"') == 4
+        off = app.format_stats_cards({**stats, "code_chunking": "disabled: x"})
+        assert "代码 1500" not in off
+        assert "- 代码分块: enabled (x 1.16)" in app.format_stats(stats)
+
+    def test_file_table_chunking_column(self):
+        svc = make_service_mock()
+        svc.file_list.return_value = [{"path": "/x/a.py", "size": "1 KB", "type": "permanent", "upload_time": "t",
+                                       "chunk_count": 12, "access_count": 0, "chunking_short": "代码"},
+                                      {"path": "/x/b.md", "chunk_count": 3}]
+        h = build_handlers(svc)
+        rows = h["on_file_table"]()
+        assert rows[0][4] == "12 · 代码" and rows[1][4] == "3 · 文本"
+        assert h["headers"]["files"][4] == "片段 · 分块"
+
+    def test_upload_and_add_path_stream_handlers(self):
+        from web.services import StreamEvent
+        svc = make_service_mock()
+        svc.get_stats.return_value = {"total_documents": 1}
+        svc.file_list.return_value = []
+        svc.ingest_stream.return_value = iter([
+            StreamEvent("progress", "切分 a.py (1/1)", {"stage": "chunk", "current": 1, "total": 1}),
+            StreamEvent("heartbeat", "", {"elapsed": 1.0}),
+            StreamEvent("progress", "生成向量 3/3", {"stage": "embed", "current": 3, "total": 3}),
+            StreamEvent("answer", "[成功] 已入库 1 个文件 · 3 个片段（其中 1 个代码文件按函数/类切分，共 2 个符号）", {}),
+        ])
+        h = build_handlers(svc)
+        outs = list(h["on_upload_stream"](["/a.py"]))
+        assert outs[0][0].startswith("⏳") and "cb-cards" in outs[0][1]
+        assert any("入库进度" in o[0] and "切分 a.py" in o[0] for o in outs)
+        assert outs[-1][0].startswith("✅ 已入库 1 个文件 · 3 个片段") and "用时" in outs[-1][0]
+        svc.ingest_stream.assert_called_with(file_paths=["/a.py"])
+
+        svc.ingest_stream.return_value = iter([StreamEvent("error", "入库失败: boom", {})])
+        outs = list(h["on_add_path_stream"]("/docs", ".md"))
+        assert outs[-1][0] == "❌ 入库失败: boom"
+        svc.ingest_stream.assert_called_with(path="/docs", file_types=".md")
+
+        assert list(h["on_upload_stream"]([]))[0][0].startswith("💡")
+        assert list(h["on_add_path_stream"](" "))[0][0].startswith("💡")
+
+    def test_stream_handler_cancelled_and_no_result(self):
+        from web.services import StreamEvent
+        svc = make_service_mock()
+        svc.get_stats.return_value = {"total_documents": 1}
+        svc.file_list.return_value = []
+        h = build_handlers(svc)
+        svc.ingest_stream.return_value = iter([StreamEvent("cancelled", "", {})])
+        assert list(h["on_add_path_stream"]("/d"))[-1][0].startswith("⏹️")
+        svc.ingest_stream.return_value = iter([])
+        assert "未获得结果" in list(h["on_add_path_stream"]("/d"))[-1][0]

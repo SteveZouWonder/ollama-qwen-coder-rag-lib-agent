@@ -16,6 +16,11 @@ llama-index-vector-stores-chroma
 chromadb
 posthog>=3.0.0,<4.0.0
 
+# RAG hybrid 召回（BM25）
+rank_bm25>=0.2.2
+# 代码感知分块（打包版内置；源码安装为可选依赖）
+tree-sitter-language-pack>=1.16,<2
+
 pypdf>=6.15.0,<7
 pymupdf>=1.25.0
 

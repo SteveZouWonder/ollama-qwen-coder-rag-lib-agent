@@ -13,12 +13,47 @@ from typing import List, Dict, Callable, Optional, Tuple
 
 from config import Config
 from agent_tools import registry, CommandSafetyChecker
+from conversation_context import estimate_tokens, estimate_messages_tokens
+
+
+# ---------- 本轮鲁棒性参数（均可用环境变量覆盖）----------
+# 协议格式错误（无 Action/Final Answer、Action Input 非 JSON、未知工具）允许连续重试次数
+MAX_FORMAT_RETRIES = int(os.getenv("MAX_FORMAT_RETRIES", "2"))
+# 单条 Observation 回灌模型前的最大字符数（工具本身上限 5000，这里再收紧）
+OBSERVATION_MAX_CHARS = int(os.getenv("OBSERVATION_MAX_CHARS", "3000"))
+# 每次模型调用预留的生成 token 数（也是本轮预算计算中的 reserve）
+NUM_PREDICT = 4096
+# 强制总结（步数耗尽/重复终止）时的生成上限：只要一段总结，不必给满
+SUMMARY_NUM_PREDICT = 1024
+# 预算折叠时始终保留完整 Observation 的最近步数
+KEEP_RECENT_STEPS = 3
+# 本轮预算下限：num_ctx 极小或历史很长时也至少给 ReAct 往返留这么多 token
+MIN_TURN_BUDGET = 1024
+# 折叠摘要保留的 Observation 前缀字符数
+FOLD_GIST_CHARS = 200
+
+
+def _canonical_json(args: Dict) -> str:
+    """把工具参数序列化为键序稳定的 JSON，作为重复检测的 key。"""
+    try:
+        return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return repr(args)
+
+
+def _truncate_observation(text: str, limit: int = None) -> str:
+    """Observation 超长时截断并注明原长，避免单步结果吃掉整轮预算。"""
+    limit = OBSERVATION_MAX_CHARS if limit is None else limit
+    text = text if isinstance(text, str) else str(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…（Observation 已截断：原长 {len(text)} 字符，省略 {len(text) - limit} 字符）"
 
 
 def read_system_prompt_from_file():
     """
-    从 .devin/SYSTEM_PROMPT.md 读取系统提示
-    如果文件不存在，返回None，使用内置的默认提示
+    从 .devin/SYSTEM_PROMPT.md 读取项目附加规范
+    如果文件不存在，返回None
     """
     prompt_file = os.path.join(os.path.dirname(__file__), '..', '.devin', 'SYSTEM_PROMPT.md')
     if os.path.exists(prompt_file):
@@ -30,10 +65,19 @@ def read_system_prompt_from_file():
             return None
     return None
 
-# 内置后备系统提示（fallback）。
-# 仅当 .devin/SYSTEM_PROMPT.md 读取失败时使用，因此保持精简：
-# 只保留驱动本地小模型（如 qwen3.5:4b）做 ReAct 工具调用所必需的内容。
-# 完整的开发规范/工作流/多 Agent 协作说明见 .devin/SYSTEM_PROMPT.md。
+
+# 项目附加规范的模式：builtin（只用内置模板）| append（内置 + 追加项目规范，默认）
+# | replace（项目规范整体替换内置模板，旧行为）。
+PROMPT_MODE_ENV = "CODE_AGENT_PROMPT_MODE"
+# 追加模式下项目规范的最大字符数（超出截断），避免挤占本轮推理预算。
+SYSTEM_PROMPT_EXTRA_MAX_CHARS = int(os.getenv("SYSTEM_PROMPT_EXTRA_MAX_CHARS", "4000"))
+
+
+def _prompt_mode() -> str:
+    mode = os.getenv(PROMPT_MODE_ENV, "append").strip().lower()
+    return mode if mode in ("builtin", "append", "replace") else "append"
+
+
 def _extract_json_object(text: str) -> Optional[str]:
     """
     从 `Action Input:` 之后的文本中提取第一个完整的 JSON 对象。
@@ -106,85 +150,82 @@ def _parse_action_input(raw: str) -> dict:
         return {}
 
 
-SYSTEM_PROMPT_TEMPLATE = """你是一个专业的代码助手 Agent，名为 CodeAgent，运行在 ReAct 工具调用框架中。
+SYSTEM_PROMPT_TEMPLATE = """你是代码助手 CodeAgent，运行在 ReAct 工具调用框架中。能力：代码生成/重构/审查/调试、测试、文件操作与搜索、个人知识库检索（RAG）、图片/PDF OCR、网络搜索。这些功能均已启用；工具失败时分析原因，不要声称功能不存在或"无法访问互联网"。
 
-你的能力：代码生成与重构、代码审查与调试、测试生成与执行、文件操作与搜索、
-个人知识库检索（RAG，数据持久化于 index_storage）、图片/扫描件 OCR 识别（默认 Tesseract）、
-网络搜索（ddgs，Wikipedia 备用）、多 Agent 协作。这些功能均已启用——
-若工具调用失败应分析原因（配置/依赖问题），不要声称功能不存在或"无法访问互联网"。
-
-=== 可用工具（只能调用以下列出的工具）===
+=== 可用工具（只能调用以下工具；参数名后带 ? 表示可选）===
 {tool_descriptions}
 
-=== ReAct 输出格式（严格遵守）===
-每一步输出一个 Thought，然后**要么**调用一个工具，**要么**给出最终答案：
-
-调用工具时，严格输出（Action 与 Action Input 必须成对，且后面不要有多余文字）：
-Thought: <你的推理>
+=== 输出协议（严格遵守）===
+每步先写 Thought，然后要么调用一个工具，要么给出最终答案：
+Thought: <推理>
 Action: <工具名>
 Action Input: <一行合法 JSON 对象>
+（停止输出，等待 Observation）
 
 任务完成时：
-Thought: <你的推理>
+Thought: <推理>
 Final Answer: <给用户的最终回答>
 
-=== 格式硬性规则 ===
-1. Action Input 必须是**合法 JSON**，键和字符串值都用双引号，且写在**一行内**。
-   - 正确：Action Input: {"path": "test.py"}
-   - 正确：Action Input: {}   （无参数时用空对象）
-   - 错误：Action Input: {path: test.py}        （缺少引号）
-   - 错误：Action Input: {'path': 'test.py'}     （用了单引号）
-2. 每次**只能调用一个工具**；调用工具后**立即停止输出**，等待 Observation，不要自己编造 Observation。
-3. 不要在同一次回复里既输出 Action 又输出 Final Answer。
-4. 写多行代码到文件时，把代码作为 JSON 字符串值，用 \\n 表示换行、\\" 转义引号，整体仍是一行 JSON。
-   若代码较长，优先拆成多次小步骤，避免单条 Action Input 过长。
+=== 格式规则 ===
+1. Action Input 必须是一行合法 JSON：键和字符串值用双引号；无参数写 {}。
+   错误示例：{path: test.py}、{'path': 'test.py'}、跨多行。
+2. 每次只调用一个工具，Action 之后不要再写解释或 Final Answer，也不要自己编造 Observation。
+3. 多行代码作为 JSON 字符串值，用 \\n 表示换行、\\" 转义引号；代码较长时拆成多次小步骤。
+4. 工具返回 [格式错误]/[用户拒绝]/[错误] 时，修正后重试一次；连续两次失败换方法或说明原因。
+5. 相同工具与参数不要重复调用；已有结果直接使用。
 
-=== 正确示例：读取并分析文件 ===
-Thought: 需要先读取文件内容
-Action: read_file
-Action Input: {"path": "src/app.py"}
-（停止，等待 Observation）
-
-=== 正确示例：写代码并验证 ===
-Thought: 先写入文件
+=== 示例 ===
+Thought: 先写入文件再运行验证
 Action: write_file
 Action Input: {"path": "src/util.py", "content": "def add(a, b):\\n    return a + b\\n"}
-（Observation 返回成功后，再用 execute_command 运行测试）
 
-=== 常见错误示例（不要这样做）===
-✗ 一次输出多个 Action
-✗ Action Input 跨多行或用单引号 / 无引号
-✗ Action 之后又写解释文字或 Final Answer
-✗ 自己编写 Observation 内容
-
-=== 工具选择速查 ===
-- 写代码 → write_file，然后 execute_command 运行验证
-- 看代码 → read_file
-- 搜代码 → search_files；确认当前目录 → get_current_dir
-- 列目录 → list_directory（分析项目结构时先列目录，不要把目录当文件读）
-- 文档/论文/笔记内容 → query_knowledge_base；添加文档 → add_to_knowledge_base（支持 PDF/图片/文本）
-- 用户给出图片/PDF 路径 → 先 add_to_knowledge_base，再 query_knowledge_base（查询时带上文件名提高精度）
-- 知识库状态 → get_knowledge_stats / check_knowledge_status
-- 最新信息/实时数据（版本、新闻、价格等）→ web_search；指定网址提取内容 → web_content_extract
+=== 工具速查 ===
+- 写代码 → write_file，再 execute_command 运行验证；看代码 → read_file；搜代码 → search_files
+- 列目录 → list_directory（不要把目录当文件读）；当前目录 → get_current_dir
+- 文档/论文/笔记内容 → query_knowledge_base；添加文档 → add_to_knowledge_base（PDF/图片/文本）
+- 用户给出图片/PDF 路径 → 先 add_to_knowledge_base 再 query_knowledge_base（带文件名）
+- 最新/实时信息（版本、新闻、价格）→ web_search；指定网址 → web_content_extract
+- 知识库无相关内容（返回 [知识库无相关内容]）→ 转 web_search
 
 === 安全规则 ===
 - 不执行危险命令（如 rm -rf /）；可能修改系统的命令先说明意图等待确认
-- 写文件前确认路径正确
+- 写文件前确认路径正确，只在项目目录内写文件
 
-回答保持简洁专业，代码块用 markdown。不需要工具时直接给出 Final Answer。
+回答简洁专业，代码块用 markdown。不需要工具时直接给出 Final Answer。
 """
 
 
-def build_system_prompt() -> str:
-    """运行时组装系统提示（优先 .devin/SYSTEM_PROMPT.md，其次内置模板）。
+def build_system_prompt(tools: Optional[set] = None, extra: Optional[str] = None,
+                        mode: Optional[str] = None) -> str:
+    """运行时组装分层系统提示：精简内置模板 + 可选项目附加规范。
 
-    系统提示不再落盘到历史文件：每次启动按当前工具表重新生成，避免旧提示
-    被持久化后与代码不同步。
+    Args:
+        tools: 允许的工具名集合（None 表示全部），工具速查只列出这些工具。
+        extra: 角色附加提示（多 Agent 子角色注入），追加在最后。
+        mode: ``builtin`` 只用内置模板；``append``（默认）内置模板后追加
+            ``.devin/SYSTEM_PROMPT.md``（截断到 ``SYSTEM_PROMPT_EXTRA_MAX_CHARS``）；
+            ``replace`` 用该文件整体替换内置模板（旧行为）。
+
+    系统提示不落盘：每次启动按当前工具表重新生成，避免与代码不同步。
     """
-    tool_desc = registry.get_descriptions()
-    custom_prompt = read_system_prompt_from_file()
-    template = custom_prompt if custom_prompt else SYSTEM_PROMPT_TEMPLATE
-    return template.replace("{tool_descriptions}", tool_desc)
+    mode = mode or _prompt_mode()
+    tool_desc = registry.get_descriptions(names=tools, compact=True)
+    custom_prompt = read_system_prompt_from_file() if mode != "builtin" else None
+
+    if mode == "replace" and custom_prompt:
+        prompt = custom_prompt.replace(
+            "{tool_descriptions}", registry.get_descriptions(names=tools))
+    else:
+        prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_descriptions}", tool_desc)
+        if mode == "append" and custom_prompt:
+            project = custom_prompt.replace("{tool_descriptions}", "（见上方工具列表）").strip()
+            if len(project) > SYSTEM_PROMPT_EXTRA_MAX_CHARS:
+                project = project[:SYSTEM_PROMPT_EXTRA_MAX_CHARS] + "\n…（项目规范已截断）"
+            prompt = prompt.rstrip() + "\n\n=== 项目附加规范 ===\n" + project + "\n"
+
+    if extra and extra.strip():
+        prompt = prompt.rstrip() + "\n\n=== 角色说明 ===\n" + extra.strip() + "\n"
+    return prompt
 
 
 class ReActEngine:
@@ -198,9 +239,22 @@ class ReActEngine:
 
     def __init__(self, model: str = None, host: str = None,
                  on_step: Callable = None, on_confirm: Callable = None,
-                 context=None):
+                 context=None, allowed_tools: Optional[set] = None,
+                 system_prompt_extra: str = "", max_iterations: Optional[int] = None,
+                 prompt_mode: Optional[str] = None):
+        """
+        Args:
+            allowed_tools: 限定可用工具集（工具描述与可执行集合同时过滤）；
+                None 表示全部工具。多 Agent 子角色据此收窄能力。
+            system_prompt_extra: 角色附加提示，追加到系统提示末尾（≤200 token 为宜）。
+            max_iterations: 本实例的最大步数，默认 ``Config.MAX_ITERATIONS``。
+            prompt_mode: 覆盖 ``CODE_AGENT_PROMPT_MODE``（builtin|append|replace）。
+        """
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
+        self.allowed_tools: Optional[set] = set(allowed_tools) if allowed_tools is not None else None
+        self.system_prompt_extra = system_prompt_extra or ""
+        self.max_iterations = int(max_iterations) if max_iterations else int(Config.MAX_ITERATIONS)
         # 按所选模型自动推导安全的上下文窗口，避免大默认上下文撑爆显存导致卡顿。
         self.num_ctx = self._resolve_num_ctx(self.model)
         # 是否启用模型"思考模式"：ReAct 的 Thought/Action 协议本身就是显式推理，
@@ -212,13 +266,20 @@ class ReActEngine:
             self.think = False
         # 会话上下文（可注入；为空时惰性取进程内单例，跟随"当前会话"）
         self._context = context
-        self.system_prompt = build_system_prompt()
+        self.system_prompt = build_system_prompt(
+            tools=self.allowed_tools, extra=self.system_prompt_extra, mode=prompt_mode)
         # 本轮的内存工作消息列表（系统提示 + 历史上下文 + 本轮 ReAct 往返）
         self.messages: List[Dict] = []
         self._stop_event = threading.Event()
         self.on_step = on_step
         self.on_confirm = on_confirm
         self.step_log: List[Dict] = []
+        # ---- 本轮鲁棒性状态（每次 chat() 重置）----
+        self._turn_start = 0            # messages 中本轮往返的起始下标（其前为系统提示 + 历史）
+        self.turn_budget = 0            # 本轮往返可用 token 预算
+        self._format_retries = 0        # 连续格式错误次数
+        self._call_counts: Dict[Tuple[str, str], int] = {}  # (tool, canonical_json) → 次数
+        self._obs_index: List[Dict] = []  # 本轮各步 Observation 在 messages 中的位置（供折叠）
 
     @property
     def context(self):
@@ -282,11 +343,81 @@ class ReActEngine:
             if self.on_step:
                 self.on_step({"step": "?", "phase": "context", "message": f"⚠️ 读取会话上下文失败: {e}"})
         self.messages = list(base) + [{"role": "user", "content": user_input}]
+        self._turn_start = len(base)
+        self.turn_budget = self._compute_turn_budget(base)
+
+    # ---------- 本轮预算（P1-5） ----------
+
+    def _compute_turn_budget(self, base: List[Dict]) -> int:
+        """turn_budget = num_ctx − 系统提示 − 历史（摘要 + 最近轮次）− 生成预留。"""
+        system_tokens = estimate_tokens(self.system_prompt)
+        history = [
+            m for m in base
+            if not (m.get("role") == "system" and m.get("content") == self.system_prompt)
+        ]
+        history_tokens = estimate_messages_tokens(history)
+        budget = int(self.num_ctx) - system_tokens - history_tokens - NUM_PREDICT
+        return max(budget, MIN_TURN_BUDGET)
+
+    def _turn_tokens(self) -> int:
+        """本轮往返（用户问题 + Thought/Action/Observation）当前估算 token。"""
+        return estimate_messages_tokens(self.messages[self._turn_start:])
+
+    def _enforce_budget(self, step: int) -> List[int]:
+        """本轮消息超预算时，从最早一步起把 Observation 折叠为一行摘要。
+
+        始终保留系统提示与最近 ``KEEP_RECENT_STEPS`` 步的完整 Observation；
+        折叠一步后立即复算，够用即停。返回本次被折叠的步号列表。
+        """
+        if self._turn_tokens() <= self.turn_budget:
+            return []
+        protected = {e["step"] for e in self._obs_index[-KEEP_RECENT_STEPS:]}
+        folded: List[int] = []
+        for entry in self._obs_index:
+            if entry["folded"] or entry["step"] in protected:
+                continue
+            gist = re.sub(r"\s+", " ", entry["text"]).strip()[:FOLD_GIST_CHARS]
+            self.messages[entry["index"]]["content"] = (
+                f"Observation: （第 {entry['step']} 步 tool={entry['tool']} 结果已折叠，要点：{gist}）"
+            )
+            entry["folded"] = True
+            folded.append(entry["step"])
+            if self._turn_tokens() <= self.turn_budget:
+                break
+        if folded:
+            self.step_log.append({
+                "step": step, "phase": "budget_fold", "folded_steps": folded,
+                "turn_tokens": self._turn_tokens(), "budget": self.turn_budget,
+            })
+            self._emit(step, "budget_fold",
+                       f"Step {step}: 本轮上下文超预算，已折叠第 {'、'.join(map(str, folded))} 步的 Observation")
+        return folded
+
+    def _push_observation(self, step: int, tool: Optional[str], response: str,
+                          observation: str, hint: str) -> None:
+        """记录一步往返：assistant 原文 + Observation 回灌；有工具名的步骤登记为可折叠。"""
+        self._push("assistant", response)
+        if tool:
+            self._obs_index.append({
+                "index": len(self.messages), "step": step, "tool": tool,
+                "text": observation, "folded": False,
+            })
+        self._push("user", "Observation: " + observation + ("\n" + hint if hint else ""))
+        self._enforce_budget(step)
+
+    # ---------- 事件 ----------
+
+    def _emit(self, step, phase: str, message: str, **extra) -> None:
+        if self.on_step:
+            evt = {"step": step, "phase": phase, "message": message}
+            evt.update(extra)
+            self.on_step(evt)
 
     def _trace_summary(self) -> str:
         """把本轮中间步骤折叠为一句执行摘要（不含 Observation 正文）。"""
         tools: List[str] = []
-        blocked = rejected = 0
+        blocked = rejected = retries = repeats = folds = 0
+        forced = False
         for log in self.step_log:
             phase = log.get("phase")
             if phase == "action":
@@ -299,14 +430,30 @@ class ReActEngine:
                 blocked += 1
             elif phase == "rejected":
                 rejected += 1
+            elif phase == "format_retry":
+                retries += 1
+            elif phase == "repeat":
+                repeats += 1
+            elif phase == "budget_fold":
+                folds += 1
+            elif phase == "forced_summary":
+                forced = True
         steps = len([l for l in self.step_log if l.get("phase") == "action"])
-        if not steps:
+        if not steps and not (retries or repeats or forced):
             return ""
         parts = [f"共 {steps} 步", "调用 " + "、".join(tools) if tools else ""]
         if blocked:
             parts.append(f"拦截危险命令 {blocked} 次")
         if rejected:
             parts.append(f"用户拒绝 {rejected} 次")
+        if retries:
+            parts.append(f"格式重试 {retries} 次")
+        if repeats:
+            parts.append(f"重复调用 {repeats} 次")
+        if folds:
+            parts.append(f"上下文折叠 {folds} 次")
+        if forced:
+            parts.append("强制总结收尾")
         return "，".join(p for p in parts if p)
 
     def _record_turn(self, user_input: str, answer: str) -> None:
@@ -322,165 +469,272 @@ class ReActEngine:
     def chat(self, user_input: str) -> str:
         self.reset_stop()
         self.step_log = []
+        self._format_retries = 0
+        self._call_counts = {}
+        self._obs_index = []
         self._load_context(user_input)
 
-        for step in range(1, Config.MAX_ITERATIONS + 1):
+        max_iter = self.max_iterations
+        for step in range(1, max_iter + 1):
             if self._stop_event.is_set():
                 return "[用户中断] 任务已停止。"
 
-            if self.on_step:
-                self.on_step({
-                    "step": step,
-                    "total": Config.MAX_ITERATIONS,
-                    "phase": "thinking",
-                    "message": f"Step {step}/{Config.MAX_ITERATIONS}: 模型推理中..."
-                })
+            self._emit(step, "thinking", f"Step {step}/{max_iter}: 模型推理中...", total=max_iter)
 
             response = self._call_model()
 
-            action_match = re.search(r'Action:\s*(\w+)', response)
-            # 定位 "Action Input:" 后的文本，再用括号配对提取完整 JSON 对象，
-            # 以正确处理嵌套对象与含 "}" 的多行代码（非贪婪正则会过早截断）。
-            input_label = re.search(r'Action Input:\s*', response)
-            json_str = None
-            if input_label:
-                json_str = _extract_json_object(response[input_label.end():])
+            # P1-2：模型调用本身失败（连不上 / 超时 / 异常）→ 直接返回错误，不写入会话
+            if response.startswith("[错误]"):
+                self.step_log.append({"step": step, "phase": "error", "message": response})
+                self._emit(step, "error", f"Step {step}: 模型调用失败，{response}")
+                return response
 
-            if action_match and json_str:
-                tool_name = action_match.group(1).strip()
-                tool_input = _parse_action_input(json_str)
+            parsed = self._parse_response(response)
+            kind = parsed["kind"]
 
-                thought_match = re.search(r'Thought:\s*(.*?)(?=Action:|$)', response, re.DOTALL)
-                thought = thought_match.group(1).strip() if thought_match else ""
+            if kind == "format_error":
+                answer = self._handle_format_error(step, response, parsed["reason"])
+                if answer is None:
+                    continue
+                return self._finish(user_input, step, answer, format_abnormal=True)
 
-                step_record = {
-                    "step": step,
-                    "phase": "action",
-                    "thought": thought,
-                    "tool": tool_name,
-                    "input": tool_input,
-                    "observation": "",
-                    "confirmed": True
-                }
+            if kind == "final":
+                self._format_retries = 0
+                return self._finish(user_input, step, parsed["answer"])
 
-                if tool_name == "execute_command":
-                    cmd = tool_input.get("command", "")
-                    safety = CommandSafetyChecker.analyze(cmd)
-                    step_record["safety"] = safety
+            # ---- kind == "action" ----
+            self._format_retries = 0
+            tool_name, tool_input, thought = parsed["tool"], parsed["input"], parsed["thought"]
 
-                    if safety["is_dangerous"]:
-                        step_record["observation"] = f"[安全拦截] 检测到危险命令: {cmd}\n原因: {', '.join(safety['danger_reasons'])}\n该命令被拒绝执行。"
-                        step_record["confirmed"] = False
-                        self.step_log.append(step_record)
-                        self._push("assistant", response)
-                        self._push("user", "Observation: " + step_record['observation'] + "\n请使用安全的方式完成任务，或向用户解释风险。")
-                        if self.on_step:
-                            self.on_step({
-                                "step": step,
-                                "phase": "blocked",
-                                "message": f"Step {step}: 危险命令已拦截 [{cmd}]"
-                            })
-                        continue
+            step_record = {
+                "step": step,
+                "phase": "action",
+                "thought": thought,
+                "tool": tool_name,
+                "input": tool_input,
+                "observation": "",
+                "confirmed": True
+            }
 
-                    elif safety["needs_confirm"] and not Config.AUTO_CONFIRM:
-                        step_record["confirmed"] = False
-                        self.step_log.append(step_record)
+            if self.allowed_tools is not None and tool_name not in self.allowed_tools:
+                obs = (f"[错误] 工具 {tool_name} 不在当前允许的工具集内，"
+                       f"可用: {', '.join(sorted(self.allowed_tools))}")
+                step_record["observation"] = obs
+                step_record["confirmed"] = False
+                self.step_log.append(step_record)
+                self._push_observation(step, tool_name, response, obs, "请改用允许的工具，或直接给出最终答案。")
+                continue
 
-                        if self.on_confirm:
-                            confirmed = self.on_confirm({
-                                "step": step,
-                                "tool": tool_name,
-                                "command": cmd,
-                                "safety": safety,
-                                "message": f"即将执行命令: {cmd}\n风险等级: {safety['risk_level']}\n是否确认执行? (y/n)"
-                            })
-                        else:
-                            confirmed = False
+            # P1-4：相同 (tool, 参数) 重复调用检测——第 2 次回灌提示，第 3 次强制总结收尾
+            repeat = self._check_repeat(step, tool_name, tool_input, response)
+            if repeat == "continue":
+                continue
+            if repeat == "stop":
+                return self._forced_summary(user_input, step, reason="repeat")
 
-                        if not confirmed:
-                            obs = f"[用户拒绝] 命令未执行: {cmd}"
-                            step_record["observation"] = obs
-                            step_record["confirmed"] = False
-                            self._push("assistant", response)
-                            self._push("user", "Observation: " + obs + "\n请尝试其他方法，或向用户解释为什么需要这个命令。")
-                            if self.on_step:
-                                self.on_step({
-                                    "step": step,
-                                    "phase": "rejected",
-                                    "message": f"Step {step}: 用户拒绝执行 [{cmd}]"
-                                })
-                            continue
-                        else:
-                            step_record["confirmed"] = True
+            if tool_name == "execute_command":
+                cmd = tool_input.get("command", "")
+                safety = CommandSafetyChecker.analyze(cmd)
+                step_record["safety"] = safety
 
-                if self.on_step:
-                    self.on_step({
-                        "step": step,
-                        "phase": "executing",
-                        "message": f"Step {step}: 执行 {tool_name}..."
-                    })
-
-                observation = registry.execute(tool_name, tool_input, auto_confirm=Config.AUTO_CONFIRM)
-
-                if observation.startswith("[CONFIRM_REQUIRED]"):
+                if safety["is_dangerous"]:
+                    step_record["observation"] = f"[安全拦截] 检测到危险命令: {cmd}\n原因: {', '.join(safety['danger_reasons'])}\n该命令被拒绝执行。"
                     step_record["confirmed"] = False
                     self.step_log.append(step_record)
+                    self._push_observation(step, tool_name, response, step_record["observation"],
+                                           "请使用安全的方式完成任务，或向用户解释风险。")
+                    self._emit(step, "blocked", f"Step {step}: 危险命令已拦截 [{cmd}]")
+                    continue
+
+                elif safety["needs_confirm"] and not Config.AUTO_CONFIRM:
+                    step_record["confirmed"] = False
+                    self.step_log.append(step_record)
+
                     if self.on_confirm:
-                        parts = observation.split("|", 1)
-                        args = json.loads(parts[1]) if len(parts) > 1 else {}
                         confirmed = self.on_confirm({
                             "step": step,
                             "tool": tool_name,
-                            "args": args,
-                            "message": f"即将执行 {tool_name}: {json.dumps(args, ensure_ascii=False)}\n是否确认? (y/n)"
+                            "command": cmd,
+                            "safety": safety,
+                            "message": f"即将执行命令: {cmd}\n风险等级: {safety['risk_level']}\n是否确认执行? (y/n)"
                         })
                     else:
                         confirmed = False
 
                     if not confirmed:
-                        obs = f"[用户拒绝] {tool_name} 未执行"
+                        obs = f"[用户拒绝] 命令未执行: {cmd}"
                         step_record["observation"] = obs
-                        self._push("assistant", response)
-                        self._push("user", "Observation: " + obs + "\n请尝试其他方法。")
+                        step_record["confirmed"] = False
+                        self._push_observation(step, tool_name, response, obs,
+                                               "请尝试其他方法，或向用户解释为什么需要这个命令。")
+                        self._emit(step, "rejected", f"Step {step}: 用户拒绝执行 [{cmd}]")
                         continue
                     else:
-                        observation = registry.execute(tool_name, tool_input, auto_confirm=True)
                         step_record["confirmed"] = True
 
-                step_record["observation"] = observation
+            self._emit(step, "executing", f"Step {step}: 执行 {tool_name}...")
+
+            observation = registry.execute(tool_name, tool_input, auto_confirm=Config.AUTO_CONFIRM)
+
+            if observation.startswith("[CONFIRM_REQUIRED]"):
+                step_record["confirmed"] = False
                 self.step_log.append(step_record)
-
-                if self.on_step:
-                    self.on_step({
+                if self.on_confirm:
+                    parts = observation.split("|", 1)
+                    args = json.loads(parts[1]) if len(parts) > 1 else {}
+                    confirmed = self.on_confirm({
                         "step": step,
-                        "phase": "observed",
-                        "message": f"Step {step}: {tool_name} 执行完成"
+                        "tool": tool_name,
+                        "args": args,
+                        "message": f"即将执行 {tool_name}: {json.dumps(args, ensure_ascii=False)}\n是否确认? (y/n)"
                     })
-
-                self._push("assistant", response)
-                self._push("user", "Observation: " + observation + "\n请继续下一步，或直接给出最终答案。")
-            else:
-                final_match = re.search(r'Final Answer:\s*(.*)', response, re.DOTALL)
-                if final_match:
-                    answer = final_match.group(1).strip()
                 else:
-                    answer = response.strip()
+                    confirmed = False
 
-                self.step_log.append({"step": step, "phase": "final", "answer": answer})
-                self._push("assistant", answer)
-                # 折叠本轮：只把"任务 + 最终答案 + 一句执行摘要"写回会话
-                self._record_turn(user_input, answer)
-                return answer
+                if not confirmed:
+                    obs = f"[用户拒绝] {tool_name} 未执行"
+                    step_record["observation"] = obs
+                    self._push_observation(step, tool_name, response, obs, "请尝试其他方法。")
+                    continue
+                else:
+                    observation = registry.execute(tool_name, tool_input, auto_confirm=True)
+                    step_record["confirmed"] = True
 
-        warning = "[警告] 达到最大迭代次数，任务可能未完成。请简化需求重试。"
-        self._record_turn(user_input, warning)
-        return warning
+            # P1-5：单条 Observation 截断
+            observation = _truncate_observation(observation)
+            step_record["observation"] = observation
+            self.step_log.append(step_record)
+
+            self._emit(step, "observed", f"Step {step}: {tool_name} 执行完成")
+
+            self._push_observation(step, tool_name, response, observation, "请继续下一步，或直接给出最终答案。")
+
+        # P1-3：步数耗尽 → 让模型基于已有 Observation 做一次总结，而不是丢弃全部中间结果
+        return self._forced_summary(user_input, max_iter, reason="max_iterations")
+
+    # ---------- 协议解析与容错（P1-2） ----------
+
+    @staticmethod
+    def _parse_response(response: str) -> Dict:
+        """把模型输出解析为 action / final / format_error 三类之一。"""
+        action_match = re.search(r'Action:\s*(\w+)', response)
+        # 定位 "Action Input:" 后的文本，再用括号配对提取完整 JSON 对象，
+        # 以正确处理嵌套对象与含 "}" 的多行代码（非贪婪正则会过早截断）。
+        input_label = re.search(r'Action Input:\s*', response)
+        json_str = _extract_json_object(response[input_label.end():]) if input_label else None
+
+        if action_match:
+            tool_name = action_match.group(1).strip()
+            if not json_str:
+                return {"kind": "format_error",
+                        "reason": f"Action {tool_name} 缺少 Action Input，或 Action Input 不是 JSON 对象"}
+            tool_input = _parse_action_input(json_str)
+            if not tool_input and re.sub(r"\s", "", json_str) != "{}":
+                return {"kind": "format_error",
+                        "reason": f"Action Input 不是合法 JSON 对象：{json_str[:120]}"}
+            known = getattr(registry, "tools", None)
+            if isinstance(known, dict) and tool_name not in known:
+                return {"kind": "format_error", "reason": f"未知工具 {tool_name}，只能调用工具列表中的工具"}
+            thought_match = re.search(r'Thought:\s*(.*?)(?=Action:|$)', response, re.DOTALL)
+            thought = thought_match.group(1).strip() if thought_match else ""
+            return {"kind": "action", "tool": tool_name, "input": tool_input, "thought": thought}
+
+        final_match = re.search(r'Final Answer:\s*(.*)', response, re.DOTALL)
+        if final_match:
+            return {"kind": "final", "answer": final_match.group(1).strip()}
+        return {"kind": "format_error", "reason": "输出中既没有 Action 也没有 Final Answer"}
+
+    def _handle_format_error(self, step: int, response: str, reason: str) -> Optional[str]:
+        """格式错误：连续 ≤MAX_FORMAT_RETRIES 次回灌重试；超过则把本段文本作为答案收尾。
+
+        Returns:
+            None 表示已回灌、调用方应 continue；否则返回带标注的最终答案文本。
+        """
+        self._format_retries += 1
+        if self._format_retries <= MAX_FORMAT_RETRIES:
+            self.step_log.append({"step": step, "phase": "format_retry",
+                                  "reason": reason, "retry": self._format_retries})
+            self._emit(step, "format_retry",
+                       f"Step {step}: 输出格式错误（{reason}），回灌重试 {self._format_retries}/{MAX_FORMAT_RETRIES}")
+            obs = f"[格式错误] {reason}"
+            self._push_observation(
+                step, None, response, obs,
+                "请严格按协议重新输出：Thought → Action + Action Input（一行合法 JSON 对象），"
+                "或 Thought → Final Answer。")
+            return None
+        text = re.sub(r"^\s*Thought:\s*", "", response.strip())
+        return (text or "（模型未给出有效输出）") + "\n\n（格式异常，可能不完整）"
+
+    def _finish(self, user_input: str, step: int, answer: str, format_abnormal: bool = False) -> str:
+        """给出最终答案：记 step_log、写回会话（任务 + 最终答案 + 执行摘要）。"""
+        record = {"step": step, "phase": "final", "answer": answer}
+        if format_abnormal:
+            record["format_abnormal"] = True
+            self._emit(step, "final", f"Step {step}: 连续格式错误超过 {MAX_FORMAT_RETRIES} 次，按现有文本收尾（可能不完整）")
+        self.step_log.append(record)
+        self._push("assistant", answer)
+        self._record_turn(user_input, answer)
+        return answer
+
+    # ---------- 重复检测（P1-4） ----------
+
+    def _check_repeat(self, step: int, tool_name: str, tool_input: Dict, response: str) -> str:
+        """返回 ``"ok"``（首次）/ ``"continue"``（第 2 次，已回灌提示）/ ``"stop"``（第 3 次）。"""
+        key = (tool_name, _canonical_json(tool_input))
+        count = self._call_counts.get(key, 0) + 1
+        self._call_counts[key] = count
+        if count < 2:
+            return "ok"
+        self.step_log.append({"step": step, "phase": "repeat", "tool": tool_name,
+                              "input": tool_input, "count": count})
+        if count == 2:
+            self._emit(step, "repeat", f"Step {step}: 重复调用 {tool_name}（与之前参数完全相同），已提示模型换方法")
+            self._push_observation(
+                step, None, response,
+                f"[重复调用] {tool_name} 的本次调用与之前完全相同且已有结果，不再重复执行。",
+                "请直接使用已有结果，换用其他方法，或给出最终答案。")
+            return "continue"
+        self._emit(step, "repeat", f"Step {step}: 第 {count} 次重复调用 {tool_name}，终止并强制总结")
+        self._push("assistant", response)
+        return "stop"
+
+    # ---------- 强制总结（P1-3） ----------
+
+    _FORCED_PROMPTS = {
+        "max_iterations": "步数已用尽，请基于以上 Observation 总结：已完成/未完成/建议。不要再调用工具，直接输出总结。",
+        "repeat": "检测到连续重复相同的工具调用，任务已终止。请基于以上 Observation 总结：已完成/未完成/建议。不要再调用工具，直接输出总结。",
+    }
+    _FORCED_HEADERS = {
+        "max_iterations": "⚠️ 未完成（已达最大步数 {n}）",
+        "repeat": "⚠️ 未完成（检测到重复调用，已终止）",
+    }
+
+    def _forced_summary(self, user_input: str, step: int, reason: str) -> str:
+        """追加一条 user 消息请模型总结已完成/未完成/建议，作为最终答案（前缀 ⚠️ 未完成）。"""
+        self.step_log.append({"step": step, "phase": "forced_summary", "reason": reason})
+        self._emit(step, "forced_summary",
+                   f"Step {step}: {'步数已用尽' if reason == 'max_iterations' else '重复调用终止'}，请模型总结已完成/未完成/建议")
+        self._push("user", self._FORCED_PROMPTS.get(reason, self._FORCED_PROMPTS["max_iterations"]))
+        resp = self._call_model(num_predict=SUMMARY_NUM_PREDICT, think=False)
+        if resp.startswith("[错误]") or not resp.strip():
+            body = (f"模型总结失败（{resp.strip() or '空响应'}）。"
+                    f"执行摘要：{self._trace_summary() or '无工具调用'}")
+        else:
+            m = re.search(r'Final Answer:\s*(.*)', resp, re.DOTALL)
+            body = m.group(1).strip() if m else re.sub(r"^\s*Thought:\s*", "", resp.strip())
+        header = self._FORCED_HEADERS.get(reason, self._FORCED_HEADERS["max_iterations"]).format(n=self.max_iterations)
+        answer = header + "\n\n" + body
+        self.step_log.append({"step": step, "phase": "final", "answer": answer, "forced": reason})
+        self._push("assistant", answer)
+        self._record_turn(user_input, answer)
+        return answer
 
     def _push(self, role: str, content: str) -> None:
         """追加到本轮内存工作列表（不落盘；中间往返在轮末被折叠）。"""
         self.messages.append({"role": role, "content": content})
 
-    def _call_model(self, messages: Optional[List[Dict]] = None) -> str:
+    def _call_model(self, messages: Optional[List[Dict]] = None,
+                    num_predict: int = NUM_PREDICT, think: Optional[bool] = None) -> str:
         messages = self.messages if messages is None else messages
         clean_messages = []
         for m in messages:
@@ -520,11 +774,11 @@ class ReActEngine:
                     "stream": False,
                     # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
                     # 不支持的模型 Ollama 会忽略该字段。
-                    "think": self.think,
+                    "think": self.think if think is None else bool(think),
                     "options": {
                         "temperature": 0.3,
                         "num_ctx": self.num_ctx,
-                        "num_predict": 4096
+                        "num_predict": int(num_predict)
                     }
                 },
                 timeout=Config.TIMEOUT
@@ -569,6 +823,23 @@ class ReActEngine:
                 lines.append(f"Step {step}: [拦截] 危险命令被拒绝")
             elif phase == "rejected":
                 lines.append(f"Step {step}: [拒绝] 用户取消执行")
+            elif phase == "format_retry":
+                lines.append(f"Step {step}: [格式重试 {log.get('retry', '?')}/{MAX_FORMAT_RETRIES}] {log.get('reason', '')}")
+            elif phase == "repeat":
+                lines.append(f"Step {step}: [重复] {log.get('tool', '?')} 第 {log.get('count', '?')} 次相同调用")
+            elif phase == "budget_fold":
+                folded = "、".join(str(s) for s in log.get("folded_steps", []))
+                lines.append(f"Step {step}: [折叠] 上下文超预算，已折叠第 {folded} 步的 Observation")
+            elif phase == "forced_summary":
+                why = "步数已用尽" if log.get("reason") == "max_iterations" else "重复调用终止"
+                lines.append(f"Step {step}: [强制总结] {why}，请模型总结已完成/未完成/建议")
+            elif phase == "error":
+                lines.append(f"Step {step}: [错误] {log.get('message', '')}")
             elif phase == "final":
-                lines.append(f"Step {step}: [完成] 给出最终答案")
+                if log.get("forced"):
+                    lines.append(f"Step {step}: [未完成] 强制总结收尾")
+                elif log.get("format_abnormal"):
+                    lines.append(f"Step {step}: [完成] 格式异常，按现有文本收尾（可能不完整）")
+                else:
+                    lines.append(f"Step {step}: [完成] 给出最终答案")
         return "\n".join(lines)

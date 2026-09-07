@@ -7,6 +7,7 @@ import gradio as gr
 
 from .common import Confirm
 
+MODE_AUTO = "自动"  # 与 web/app.py 的 MODE_AUTO 一致：先判定意图再分发到 RAG / 单 Agent
 MODE_RAG = "RAG 检索"
 MODE_AGENT = "单 Agent"
 MODE_MULTI = "多 Agent 协作"
@@ -28,12 +29,12 @@ def _placeholder(service) -> str:
             "### 👋 欢迎使用 Cerebro\n\n"
             "知识库还是空的。你可以：\n\n"
             "1. 到左侧「📚 知识库」上传文档或追加目录；\n"
-            "2. 直接提问——「RAG 检索」模式勾选联网后可搜索网络；\n"
-            "3. 切到「单 Agent」让它读写文件、执行命令完成任务。"
+            "2. 直接提问——默认「自动」模式会判定走知识库还是 Agent（勾选联网后可搜索网络）；\n"
+            "3. 也可手动切到「RAG 检索」/「单 Agent」（读写文件、执行命令）/「多 Agent 协作」。"
         )
     return (
         f"### 开始对话\n\n知识库已有 **{total}** 个片段。输入问题即可检索，支持追问（如“它多少钱”）。\n\n"
-        "切换上方模式可让 Agent 调用工具，或让多个 Agent 协作处理复杂任务。"
+        "默认「自动」模式会按意图判定走知识库还是 Agent；也可手动切换模式让 Agent 调用工具，或让多个 Agent 协作处理复杂任务。"
     )
 
 
@@ -44,8 +45,8 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     # ---- 顶部：模式分段 + 协作模式 + 上下文胶囊 ----
     with gr.Row(elem_classes=["cb-toolbar"]):
         mode = gr.Radio(
-            [MODE_RAG, MODE_AGENT, MODE_MULTI], value=MODE_RAG, show_label=False,
-            container=False, elem_classes=["cb-segment"], scale=0, min_width=360,
+            [MODE_AUTO, MODE_RAG, MODE_AGENT, MODE_MULTI], value=MODE_AUTO, show_label=False,
+            container=False, elem_classes=["cb-segment"], scale=0, min_width=440,
         )
         collab_dd = gr.Dropdown(
             choices=handlers["on_collab_choices"](), value="", show_label=False, container=False,
@@ -78,7 +79,7 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
                         )
                         auto_confirm = gr.Checkbox(
                             value=False, label="自动确认危险操作（等价 --yes）", container=False, scale=0,
-                            min_width=0, visible=False,
+                            min_width=0, visible=True,  # 默认「自动」模式下与联网开关同时显示
                         )
                     with gr.Row(scale=0, elem_classes=["cb-composer-actions"]):
                         stop_btn = gr.Button("停止", scale=0, min_width=88, interactive=False, elem_classes=["cb-btn"])
@@ -89,6 +90,13 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
                 hint_box = gr.Markdown(scale=1)
                 hint_new_btn = gr.Button("新建会话", size="sm", elem_classes=["cb-btn"], min_width=90)
                 hint_continue_btn = gr.Button("继续当前会话", size="sm", elem_classes=["cb-btn"], min_width=110)
+            # RAG 失败回退（知识库与网络均无结果）：切到单 Agent 用同一问题重发
+            with gr.Row(visible=False, elem_classes=["cb-hint", "cb-retry"], elem_id="retry-row") as retry_row:
+                retry_box = gr.Markdown(scale=1)
+                retry_agent_btn = gr.Button(
+                    "用单 Agent 重试", size="sm", variant="primary", elem_classes=["cb-btn"],
+                    min_width=120, elem_id="retry-agent-btn",
+                )
 
         # ---- 右：侧面板 ----
         with gr.Column(scale=3, min_width=280, elem_classes=["cb-side-panel"]):
@@ -109,11 +117,11 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
 
     # ================== 事件 ==================
 
-    # 模式切换：只显示与当前模式相关的开关
+    # 模式切换：只显示与当前模式相关的开关（「自动」可能走 RAG 也可能走 Agent，两者都显示）
     def _mode_changed(m):
         return (
-            gr.update(visible=(m == MODE_RAG)),
-            gr.update(visible=(m == MODE_AGENT)),
+            gr.update(visible=(m in (MODE_RAG, MODE_AUTO))),
+            gr.update(visible=(m in (MODE_AGENT, MODE_AUTO))),
             gr.update(visible=(m == MODE_MULTI)),
         )
 
@@ -127,15 +135,17 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     pending_msg = gr.State("")
     _chat_outputs = [
         chatbot, status_box, process_box, sources_box, hint_box, hint_row, approval_md, approval_row,
+        retry_box, retry_row,
     ]
 
     def _chat_stream_ui(message, mode_v, web_v, confirm_v, sid, collab_v):
-        for history, status, process, sources, hint, confirm in handlers["on_chat_stream"](
+        for history, status, process, sources, hint, confirm, retry in handlers["on_chat_stream"](
             message, mode_v, web_v, confirm_v, sid, collab_v
         ):
             yield (
                 history, status, process, sources, hint, gr.update(visible=bool(hint)),
                 confirm, gr.update(visible=bool(confirm)),
+                retry, gr.update(visible=bool(retry)),
             )
 
     def _begin(message: str):
@@ -174,9 +184,21 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     )
     example_chain.then(_end, session_state, _end_outputs)
 
+    # 「用单 Agent 重试」：切模式为单 Agent、隐藏提示，再用 pending_msg 里的同一问题重发
+    def _retry_begin():
+        return (
+            gr.update(value=MODE_AGENT), "", gr.update(visible=False),
+            gr.update(interactive=False), gr.update(interactive=True),
+        )
+
+    retry_chain = retry_agent_btn.click(
+        _retry_begin, None, [mode, retry_box, retry_row, send_btn, stop_btn],
+    ).then(_chat_stream_ui, _chat_inputs, _chat_outputs)
+    retry_chain.then(_end, session_state, _end_outputs)
+
     stop_btn.click(
         handlers["on_stop"], None, status_box,
-        cancels=[send_chain, submit_chain, example_chain],
+        cancels=[send_chain, submit_chain, example_chain, retry_chain],
     ).then(_end, session_state, _end_outputs)
 
     # 审批卡片

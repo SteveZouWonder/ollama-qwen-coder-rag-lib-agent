@@ -17,30 +17,26 @@ from config import TESSERACT_PATH, TESSERACT_LANG
 from config import OCR_PREPROCESS, OCR_DENOISE, OCR_BINARIZE, OCR_DESKEW, OCR_ENHANCE_CONTRAST
 from config import PDF_EXTRACT_IMAGES, PDF_MIN_IMAGE_SIZE
 from config import OCR_CACHE_ENABLED, OCR_QUALITY_THRESHOLD, OCR_MAX_IMAGE_SIZE
+from config import CODE_FILE_EXTENSIONS
 
 
 class DocumentLoader:
     """统一文档加载器"""
 
     # 支持的文件类型映射
+    # 代码后缀由 config.CODE_FILE_EXTENSIONS 派生（与 code_chunker.LANGUAGE_MAP 一致），
+    # 入库时由 rag_engine 的 LanguageAwareNodeParser 按函数/类切分（F8 P4）。
     READERS = {
         ".pdf": PDFReader,
         ".md": MarkdownReader,
         ".markdown": MarkdownReader,
         ".txt": FlatReader,
-        ".py": FlatReader,
-        ".js": FlatReader,
-        ".ts": FlatReader,
-        ".java": FlatReader,
-        ".cpp": FlatReader,
-        ".c": FlatReader,
-        ".go": FlatReader,
-        ".rs": FlatReader,
         ".html": FlatReader,
         ".json": FlatReader,
         ".yaml": FlatReader,
         ".yml": FlatReader,
         ".xml": FlatReader,
+        **{f".{ext}": FlatReader for ext in CODE_FILE_EXTENSIONS},
     }
     
     # 图片文件类型（需要 OCR）

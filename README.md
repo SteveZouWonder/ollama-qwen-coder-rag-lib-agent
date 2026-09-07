@@ -40,7 +40,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        统一 CLI 交互层                               │
-│         /ask /agent /multi-agent  /file /exec ...                     │
+│         /ask /agent /multi  /file /exec ...                           │
 │         智能命令推荐系统 (工作流+状态+历史混合推荐)                  │
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -309,7 +309,8 @@ python query_interface.py --agent "检查 main.py 的语法错误"
 python launcher.py --web        # 默认 http://127.0.0.1:7860
 ```
 界面为「左侧栏导航 + 主区 + 右侧面板」：左侧栏切换 **对话 / 知识库 / 知识图谱 / 工具 / 系统**
-五个页面并管理会话；对话页支持 RAG / 单 Agent / 多 Agent（可选协作模式）三种模式，右侧面板
+五个页面并管理会话；对话页默认「自动」模式（按意图判定走 RAG 还是单 Agent，状态行显示实际模式），
+也可手动选 RAG / 单 Agent / 多 Agent（可选协作模式），右侧面板
 展示上下文用量、处理过程与引用来源，单 Agent 遇到危险操作会弹出「允许 / 拒绝」审批卡片；
 右上角可切换 6 套主题色（跟随系统深浅色）。功能面与 CLI 命令一一对应，见「系统 → 帮助」。
 
@@ -450,6 +451,25 @@ export TESSERACT_LANG=chi_sim+eng
 
 ## 三模式使用指南
 
+### 🧭 自动路由（默认）：不用记模式，直接输入
+
+CLI 中不加斜杠的自然语言输入、Web 对话页默认的「自动」模式，都会先由 `src/intent_router.py`
+判定意图再分发：
+
+| 输入特征 | 走向 | 示例 |
+|---------|------|------|
+| 文件/目录路径（`/x/y.py`、`./src`、`~/`、`*.log`）、代码围栏、命令式动词（修改/创建/运行/删除/安装/实现/修复/重构/部署、create/run/fix/refactor/…） | 🤖 Agent | `修改 main.py 加上日志` |
+| 疑问句（？/吗/呢/什么/为什么/如何理解/是否）、"总结/比较/解释/介绍/区别/优缺点"、以"什么是"开头 | 📚 RAG | `什么是 RAG？` `总结这份文档` |
+| 两类都命中或都不命中（模糊） | 一次 LLM 一词判定（`think=False`、`num_predict=4`、5s 超时；失败回退 RAG） | `你好啊` |
+| 模糊且知识库为空 | 🤖 Agent（不调 LLM） | — |
+
+- CLI 判为 Agent 时会提示「🤖 已按 Agent 模式处理（原因；用 /ask 强制知识库；/auto off 关闭自动路由）」；
+  `/ask` / `/agent` / `/multi` 显式命令**不判定**。`/auto` 查看状态，`/auto on|off` 运行时开关，
+  环境变量 `AUTO_ROUTE=false` 可默认关闭（关闭后自然语言一律走知识库问答）。
+- Web「自动」模式下同时显示「联网搜索增强」与「自动确认危险操作」两个开关；处理过程首行为
+  「🧭 自动路由：按 RAG/Agent 处理（原因）」，完成后状态行追加「· 实际模式：RAG 检索 | 单 Agent」，
+  并按实际模式渲染来源面板 / 执行摘要。手动切到其他模式即不再判定。
+
 ### 📚 模式一：RAG 知识库查询
 
 适合基于上传的 **PDF、论文、笔记、文档** 回答问题。
@@ -470,6 +490,33 @@ python query_interface.py --data ./data
 ```
 
 **支持的格式**：PDF、Markdown、TXT、Python、JS/TS、Java、C/C++、Go、Rust、HTML、JSON、YAML、XML
+
+**检索与推理链路（F8 P2）**：
+- **hybrid 召回**：向量检索 + BM25 关键词检索用 RRF 融合，型号 / 术语等精确词也能召回
+  （`RAG_HYBRID`，默认开；文档块数 >20000 自动关闭；`rank_bm25` 未安装自动回退纯向量）。
+- **复合问题分解**：一次模型调用同时判断"是否拆子问题 / 是否联网 / 搜索词"；"A 与 B 的价格差多少"
+  会拆为 ≤3 个子问题分别检索、去重合并后再综合，简单问题不增加调用。
+- **逐片段 rerank**：对通过阈值的片段逐条判定"是否真能回答问题"并给出一句理由，剔除话题不搭的
+  噪音（`RERANKER=llm` 默认；`RERANKER=cross-encoder` 可选，见下方环境变量）。
+- **编号引用**：答案中的关键结论句末标注 `[1]`（知识库片段）/ `[W1]`（网络来源），`/sources`
+  与 Web 来源面板按同一编号显示，可逐条核验。
+- **思维链透出**：`/think on` 时模型思考过程（截断 800 字）显示在 Web「处理过程」/ CLI dim 行。
+- **失败回退**：知识库与网络都没有结果时，答案末尾提示 `建议：/agent <原问题>`，Web 出现
+  「用单 Agent 重试」按钮一键切模式重发。
+
+**代码感知分块（F8 P4）**：代码文件（`.py/.js/.ts/.java/.go/.rs/.c/.cpp`）入库时不再按 token 数硬切，
+而是用 tree-sitter 按函数 / 类 / 方法边界切分，签名与函数体不分离；每个片段带 `符号 · L起-止` 元数据：
+- `/add` 后显示 `已入库 N 个文件 · M 个片段（其中 a 个代码文件按函数/类切分，共 s 个符号）`，追加入库有
+  「切分 → 嵌入」进度条（Web 同样实时显示）；
+- `/sources` 与 Web 来源面板对代码片段显示 `RAGEngine._ensure_bm25 · L534-581`，Web 以对应语言的代码块渲染；
+  综合回答可在 `[i]` 之外注明函数名与行号；
+- `/file-list`、`/file-info`、Web 文件表与详情显示每个文件的分块策略（`代码(python) · 27 个符号` / `文本`），
+  旧库中的代码文件提示「重新入库可启用代码分块」；
+- 依赖 `tree-sitter-language-pack` 为**可选**（`pip install "tree-sitter-language-pack>=1.16,<2"`，约 5 MB
+  预编译 wheel，桌面打包版已内置）；未安装、`CODE_AWARE_CHUNKING=false` 或语法错误过多时自动回退通用切分，
+  只在首次入库代码文件时给一行提示，`/stats` 与 Web「系统」页显示当前状态。
+- 注意：代码文件的片段数约为原来的 3-4 倍，入库时的 embedding 时间同比增加；已入库的代码文件需重新 `/add`
+  才会按新方式切分。
 
 **OCR 增强功能**（需要安装 OCR 依赖）：
 - 扫描版 PDF 自动识别
@@ -509,6 +556,28 @@ Agent 会自动：
 [OK] [7/50] Step 7/50: 给出最终答案
 ```
 
+**鲁棒性保护（自动生效，进度行 / Web「处理过程」/ `/summary` 中可见）：**
+
+| 标记 | 场景 | 行为 |
+|---|---|---|
+| `[~]` 格式重试 | 模型输出没有 `Action` / `Final Answer`、`Action Input` 不是 JSON、调用了不存在的工具 | 回灌 `[格式错误]` 提示连续重试最多 2 次（`MAX_FORMAT_RETRIES`），仍失败则按现有文本收尾并标注「（格式异常，可能不完整）」 |
+| `[R]` 重复调用 | 相同工具 + 相同参数第 2 次出现 | 不再执行，回灌「已有结果，请换方法」；第 3 次终止并强制总结 |
+| `[F]` 上下文折叠 | 本轮往返超出 `num_ctx − 系统提示 − 历史 − 4096` 的预算 | 单条 Observation 超过 `OBSERVATION_MAX_CHARS`（默认 3000）先截断；仍超预算则把最早步骤的 Observation 折叠为一行摘要，最近 3 步始终完整 |
+| `[!!]` 强制总结 | 步数用尽（`MAX_ITERATIONS`）或重复调用终止 | 追加「请基于以上 Observation 总结已完成/未完成/建议」再调一次模型，以 **⚠️ 未完成** 为前缀返回，而不是丢弃全部中间结果 |
+| `[E]` 错误 | Ollama 连不上 / 超时 | 直接返回 `[错误] …`，不写入会话 |
+
+**命令安全分级**（`execute_command`）：`ls/cat/git status` 等只读命令 → low 免确认；
+`pip/npm/brew/apt install`、`git push/commit/reset/checkout/rebase/merge`、`python x.py`、
+`node x.js`、`make`、`docker run/exec` → **medium 需确认**；`rm`、`drop`、`curl … | sh|bash` →
+**high 需确认**；`rm -rf /`、`mkfs`、`sudo rm` 等 → critical 直接拦截。
+`write_file` / `add_to_knowledge_base` 只允许操作**当前工作目录**或 `WRITE_ALLOWED_DIRS`
+（冒号分隔）内的路径，其余返回 `[错误] 路径超出允许范围`——要让 Agent 入库项目外的 PDF/图片，
+先 `export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads`。
+
+`query_knowledge_base` 与 RAG 模式走同一条管道（相关性阈值 + 模型判定），返回「答案 + 相关性
+结论 + top-3 片段原文（含文件名）」；知识库无相关内容时明确返回 `[知识库无相关内容]`，Agent 会
+据此改用 `web_search`。
+
 ### 🤝 模式三：多Agent 协作系统 ⭐ 新功能
 
 适合 **复杂任务分解、专业化分工、并行处理、多视角分析** 等高级场景。
@@ -517,42 +586,47 @@ Agent 会自动：
 # 进入交互式模式
 python query_interface.py
 
-# 然后使用 /multi 命令：
->>> /multi 实现用户认证系统，包括注册、登录、密码重置功能，并生成完整文档和测试 PARALLEL
+# 然后使用 /multi 命令（默认层级协作）：
+>>> /multi 写一个快速排序保存到 sort.py 并为它写测试
 
-# 或指定协作模式：
->>> /multi 重构 legacy.py，提高代码质量，添加测试，更新文档 SEQUENTIAL
-
->>> /multi 分析项目架构，CodeAgent分析代码，AuditAgent检查安全，DocAgent生成文档 HIERARCHY
+# 或用 --mode 指定协作模式：
+>>> /multi 重构 legacy.py，添加测试，更新文档 --mode parallel
+>>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
 ```
 
+Web 界面在对话页选「多 Agent 协作」，右侧下拉可选协作模式；「处理过程」实时显示分解 →
+调度 → 各 Agent 的 ReAct 步骤 → 整合，结果面板先给综合回答，再列各 Agent 摘要与来源。
+
 **支持的协作模式：**
-- `PARALLEL` - 并行执行多个独立任务
-- `SEQUENTIAL` - 按依赖顺序执行任务
-- `HIERARCHY` - 层级协作，任务分解和协调
-- `COMPETITIVE` - 多Agent竞争，选择最佳方案
+- `hierarchy`（默认）- 按依赖顺序逐个执行，下游子任务可看到上游产出
+- `parallel` - 无依赖的子任务真正并发（线程池，受 `max_parallel_tasks` 限制），有依赖的分波执行
+- `sequential` - 严格按依赖拓扑顺序执行
+- `competitive` - 同一任务并行交给所有能胜任的 Agent，由 LLM 评审选出最佳（失败回退最长成功输出）
 
-**专业Agent：**
-- `CodeAgent` - 代码专家（生成、重构、审查、调试）
-- `RAGAgent` - 知识库专家（检索、提取、综述）
-- `TestAgent` - 测试专家（生成、覆盖率分析、质量评估）
-- `DocAgent` - 文档专家（API文档、技术文档、用户指南）
-- `AuditAgent` - 审计专家（安全检查、合规验证、性能审计）
+**专业 Agent（Code / Test / Doc / Audit 各自委托一个受限工具集的 ReActEngine 真实执行）：**
+- `CodeAgent` - 代码专家：read_file / write_file / execute_command / list_directory / search_files / ast_search / analyze_project_structure / get_current_dir
+- `TestAgent` - 测试专家：read_file / write_file / execute_command / search_files / code_quality_check
+- `DocAgent` - 文档专家：read_file / write_file / list_directory / search_files / query_knowledge_base / web_search
+- `AuditAgent` - 审计专家（只读）：read_file / search_files / code_quality_check / ast_search / git_analyze / execute_command
+- `RAGAgent` - 知识库专家：复用 RAG 编排（相关性判定 + 联网回退），返回结构化来源
 
-**多Agent执行流程：**
+**多 Agent 执行流程：**
 ```
 MasterAgent 接收任务
     ↓
-TaskDecomposer 分解为子任务
+TaskDecomposer：一次 LLM 输出 JSON 子任务（类型 / 独立描述 / 依赖），失败回退关键词表
     ↓
-TaskScheduler 分配给专业Agent
+TaskScheduler 按能力分配给专业 Agent
     ↓
-专业Agent 并行/顺序执行
+专业 Agent 真实执行（ReActEngine / RAG 编排），按 timeout 超时，失败后恢复 IDLE
     ↓
-ResultIntegrator 整合结果
+ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（竞争模式 LLM 评审选优）
     ↓
-用户获得完整解决方案
+用户获得综合回答、各 Agent 摘要（步数 / 工具 / 未经验证标记）与来源
 ```
+
+> 子 Agent 若从未调用角色关键工具（如测试 Agent 没有真正写入 / 运行）却给出结论，结果会标记
+> 「⚠️ 未经验证」——小模型偶尔会口头宣称完成，请以该标记与磁盘产物为准。
 
 ---
 
@@ -560,9 +634,12 @@ ResultIntegrator 整合结果
 
 | 命令 | 模式 | 说明 |
 |------|------|------|
-| `/ask <问题>` | RAG | 直接查询知识库 |
+| `<自然语言>` | 自动 | 🆕 不加斜杠直接输入：按意图自动判定走 RAG 还是 Agent（`AUTO_ROUTE`） |
+| `/auto` | 自动 | 🆕 显示自动路由状态（默认开） |
+| `/auto on\|off` | 自动 | 🆕 运行时开关自动路由（关闭后自然语言一律走知识库问答） |
+| `/ask <问题>` | RAG | 直接查询知识库（不做意图判定） |
 | `/agent <任务>` | Agent | 进入 ReAct 自动任务模式 |
-| `/multi <任务> <模式>` | MultiAgent | 多Agent协作系统 (PARALLEL/SEQUENTIAL/HIERARCHY/COMPETITIVE) |
+| `/multi <任务> [--mode m]` | MultiAgent | 多 Agent 协作（hierarchy / parallel / sequential / competitive） |
 | `/add <路径>` | RAG | 添加文档到知识库 |
 | `/stats` | RAG | 知识库统计 |
 | `/sources` | RAG | 显示上次回答来源 |
@@ -801,12 +878,13 @@ orchestrator = AgentOrchestrator(config)
 
 | 风险等级 | 行为 | 示例 |
 |----------|------|------|
-| **critical** | 自动拦截 | `rm -rf /`, `dd if=/dev/zero` |
-| **high** | 询问确认 | `rm file`, `del file` |
-| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `write_file` |
-| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest` |
+| **critical** | 自动拦截 | `rm -rf /`, `dd if=/dev/zero`, `sudo rm` |
+| **high** | 询问确认 | `rm file`, `del file`, `curl … \| sh`, `wget … \| bash` |
+| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `pip/npm/brew/apt install`, `git push/commit/reset/checkout/rebase/merge`, `python x.py`, `node x.js`, `make`, `docker run/exec` |
+| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest`, `python -m pytest` |
 
-使用 `--yes` 参数可跳过所有确认（仅自动化脚本使用）。
+使用 `--yes` 参数可跳过所有确认（仅自动化脚本使用）。`write_file` / `add_to_knowledge_base`
+另受路径边界约束：只能操作当前工作目录或 `WRITE_ALLOWED_DIRS` 内的文件。
 
 ### 内容安全防护 ⚡
 
@@ -926,6 +1004,27 @@ export LLM_THINK=false
 export LLM_NUM_CTX=16384
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
+# 入口智能路由：自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（默认 true；CLI 可 /auto on|off）
+export AUTO_ROUTE=true
+# Agent 系统提示分层：builtin 只用精简内置模板；append（默认）在其后追加 .devin/SYSTEM_PROMPT.md
+# （截断到 SYSTEM_PROMPT_EXTRA_MAX_CHARS，默认 4000 字符）；replace 用该文件整体替换（旧行为）
+export CODE_AGENT_PROMPT_MODE=append
+export SYSTEM_PROMPT_EXTRA_MAX_CHARS=4000
+# 单 Agent 鲁棒性：连续格式错误重试次数 / 单条 Observation 最大字符数
+export MAX_FORMAT_RETRIES=2
+export OBSERVATION_MAX_CHARS=3000
+# write_file / add_to_knowledge_base 允许操作的额外目录（冒号分隔；当前工作目录始终允许）
+export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads
+# RAG 推理：逐片段 rerank 方式 llm（默认，一次模型调用）| cross-encoder（需 pip install sentence-transformers，
+# 未安装自动回退 llm）；cross-encoder 模型名；hybrid（向量 + BM25）召回开关与自动关闭的块数上限
+export RERANKER=llm
+export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+export RAG_HYBRID=true
+export RAG_HYBRID_MAX_CHUNKS=20000
+# 代码感知分块：开关（缺 tree-sitter-language-pack 时自动回退）/ 单片段字符上限 / 碎片合并阈值
+export CODE_AWARE_CHUNKING=true
+export CODE_CHUNK_MAX_CHARS=1500
+export CODE_CHUNK_MIN_CHARS=120
 
 python query_interface.py --data ./data
 ```

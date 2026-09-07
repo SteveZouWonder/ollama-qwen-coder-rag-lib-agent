@@ -145,3 +145,62 @@ class TestHandleThink:
         mock_switch.return_value = SimpleNamespace(ok=False, enabled=False, changed=False, message="不支持思考模式")
         qi.handle_think(_ctx(), _parsed_think("on"))
         assert "[red]" in _printed(mock_console)
+
+
+# ==================== F8 P3-2：/auto 开关 ====================
+
+def _parsed_auto(arg=""):
+    raw = f"/auto {arg}".strip()
+    return ParsedCommand("auto", raw, arg)
+
+
+class TestHandleAuto:
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_show_status_on(self, mock_console, _rec, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        assert qi.handle_auto(_ctx(), _parsed_auto("")) is True
+        out = _printed(mock_console)
+        assert "自动路由: 开" in out and "/auto off" in out
+        _rec.assert_called_with("auto")
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_show_status_off(self, mock_console, _rec, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
+        qi.handle_auto(_ctx(), _parsed_auto(""))
+        assert "自动路由: 关" in _printed(mock_console)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_toggle_off_then_on(self, mock_console, _rec, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        assert qi.handle_auto(_ctx(), _parsed_auto("off")) is True
+        assert qi.Config.AUTO_ROUTE is False
+        assert "已关闭" in _printed(mock_console)
+        qi.handle_auto(_ctx(), _parsed_auto("开"))
+        assert qi.Config.AUTO_ROUTE is True
+        assert "已开启" in _printed(mock_console)
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_invalid_arg_keeps_state(self, mock_console, _rec, monkeypatch):
+        monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
+        qi.handle_auto(_ctx(), _parsed_auto("maybe"))
+        assert "无法识别参数" in _printed(mock_console)
+        assert qi.Config.AUTO_ROUTE is True
+
+    def test_dispatch_table_has_auto(self):
+        assert qi._ENGINE_HANDLERS["auto"] is qi.handle_auto
+
+    def test_config_default_true(self, monkeypatch):
+        import importlib
+        import config as cfg
+        monkeypatch.delenv("AUTO_ROUTE", raising=False)
+        importlib.reload(cfg)
+        assert cfg.AUTO_ROUTE is True and cfg.Config.AUTO_ROUTE is True
+        monkeypatch.setenv("AUTO_ROUTE", "false")
+        importlib.reload(cfg)
+        assert cfg.Config.AUTO_ROUTE is False
+        monkeypatch.delenv("AUTO_ROUTE", raising=False)
+        importlib.reload(cfg)

@@ -23,8 +23,15 @@
 ``stage`` 取值：``meta_overview`` | ``web_plan`` | ``web_search_start`` |
 ``web_query`` | ``web_query_empty`` | ``web_search_done`` | ``web_search_empty`` |
 ``web_search_failed`` | ``enrich_start`` | ``enrich_page_failed`` |
-``enrich_done`` | ``kb_retrieving`` | ``kb_empty`` | ``kb_fallback_search`` |
-``synthesizing`` | ``model_thinking`` | ``kb_uninitialized`` 等。
+``enrich_done`` | ``kb_decompose`` | ``kb_retrieving`` | ``kb_merged`` |
+``kb_low_relevance`` | ``rerank`` | ``rerank_done`` | ``rerank_fallback`` |
+``kb_irrelevant`` | ``kb_empty`` | ``kb_fallback_search`` | ``synthesizing`` |
+``model_thinking`` | ``thinking``（/think on 时的思维链，截断 800 字）|
+``fallback``（知识库与网络均无结果）| ``kb_uninitialized`` 等。
+
+返回 ``kind``：``meta``（知识库概览直答）| ``answer`` | ``fallback``（无相关片段且
+网络无结果，``answer`` 末尾附「建议：/agent <原问题>」）。来源项带引用编号
+``ref``（知识库 ``"1"``..，网络 ``"W1"``..），与答案中的 ``[i]``/``[Wj]`` 对应。
 
 取消：``answer_question`` 接受可选 ``should_stop`` 回调（返回 True 表示用户
 已请求停止）。编排层在每个阶段边界检查它，命中则抛出 ``PipelineCancelled``；
@@ -32,10 +39,11 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -95,13 +103,65 @@ def reset_synthesis_llm() -> None:
     return None
 
 
+# 思维链透出：generate_answer 在 /think on 时把 progress 回调放进该上下文变量，
+# _complete 拿到响应后从中抽取 thinking 并以 ``stage="thinking"`` 事件推送。
+_THINKING_SINK: contextvars.ContextVar = contextvars.ContextVar("rag_thinking_sink", default=None)
+THINKING_MAX_CHARS = 800
+
+
+def extract_thinking(response: Any) -> str:
+    """从 ``Settings.llm.complete`` 的响应中尽力取出思维链文本；取不到返回空串。
+
+    依次尝试：``raw["message"]["thinking"]``（Ollama 原始响应）→
+    ``additional_kwargs["thinking"]`` → ``message.blocks`` 中的 ``ThinkingBlock``。
+    """
+    if response is None or isinstance(response, str):
+        return ""
+    try:
+        raw = getattr(response, "raw", None)
+        if isinstance(raw, dict):
+            msg = raw.get("message")
+            if isinstance(msg, dict) and msg.get("thinking"):
+                return str(msg["thinking"])
+        extra = getattr(response, "additional_kwargs", None)
+        if isinstance(extra, dict) and extra.get("thinking"):
+            return str(extra["thinking"])
+        message = getattr(response, "message", None)
+        blocks = getattr(message, "blocks", None) if message is not None else None
+        if blocks:
+            parts = []
+            for block in blocks:
+                if type(block).__name__ == "ThinkingBlock" or getattr(block, "block_type", "") == "thinking":
+                    content = getattr(block, "content", "")
+                    if content:
+                        parts.append(str(content))
+            if parts:
+                return "\n".join(parts)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"extract thinking failed: {e}")
+    return ""
+
+
+def _emit_thinking(response: Any) -> None:
+    sink = _THINKING_SINK.get()
+    if sink is None:
+        return
+    thinking = extract_thinking(response).strip()
+    if not thinking:
+        return
+    shown = thinking[:THINKING_MAX_CHARS] + ("…" if len(thinking) > THINKING_MAX_CHARS else "")
+    _emit(sink, "thinking", f"🧠 模型思考：{shown}", thinking=shown, truncated=len(thinking) > THINKING_MAX_CHARS)
+
+
 def _complete(prompt: str) -> str:
-    """用全局唯一模型执行一次补全。"""
+    """用全局唯一模型执行一次补全（/think on 时顺带透出思维链）。"""
     llm = _get_synthesis_llm()
     if llm is None:
         from llama_index.core import Settings
         llm = Settings.llm
-    return str(llm.complete(prompt))
+    response = llm.complete(prompt)
+    _emit_thinking(response)
+    return str(response)
 
 
 def llm_direct_answer(prompt: str) -> str:
@@ -162,73 +222,119 @@ def _is_mostly_ascii(text: str) -> bool:
     return cjk == 0
 
 
-def plan_web_search(question: str, progress: ProgressCallback = None) -> dict:
-    """用 LLM 判断问题是否需要联网搜索，并生成优化后的搜索查询。
+# 复合问题最多拆成的子问题数
+MAX_SUBQUESTIONS = 3
+
+
+def _dedupe_strings(items: list) -> list:
+    seen = set()
+    out = []
+    for q in items:
+        if not isinstance(q, str):
+            continue
+        q = q.strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+    return out
+
+
+def build_retrieval_plan_prompt(question: str) -> str:
+    """附录 A「检索规划」提示词（与搜索规划合并为一次调用）。"""
+    domestic = _is_domestic_query(question)
+    if domestic:
+        query_rule = (
+            "若需要搜索，queries 给 1-2 条精简的**中文**搜索词（去掉'帮我''请问'等口语化"
+            "前后缀，只保留核心检索词）。这是面向中国国内的查询，请勿生成英文查询。"
+        )
+    else:
+        query_rule = (
+            "若需要搜索，queries 给 1-3 条精简搜索词（去掉'帮我''请问'等口语化前后缀，"
+            "只保留核心检索词）；若原问题为中文，可额外补一条等价英文查询提升召回。"
+        )
+    return (
+        "分析问题，只输出 JSON：\n"
+        '{"complex":是否需要拆成多个子问题才能回答,'
+        '"subquestions":[最多3个,简单问题留空],'
+        '"needs_search":是否需要联网获取最新/外部信息,'
+        '"queries":[最多3个搜索词]}\n'
+        "说明：complex 仅在问题涉及多个对象/多个事实需分别查找再综合时为 true"
+        "（如\"A 与 B 的价格差多少\"拆为 A 的价格、B 的价格）；"
+        "needs_search 仅在需要版本号、新闻、价格、近期事件等最新/外部信息时为 true，"
+        "可凭通用知识回答或属于代码/写作/推理类任务时为 false。"
+        + query_rule + "\n"
+        f"问题：{question}"
+    )
+
+
+def plan_retrieval(question: str, progress: ProgressCallback = None) -> dict:
+    """一次 LLM 调用完成检索规划：复合问题分解 + 是否联网 + 搜索词。
 
     这是整条链路的第一次模型调用：若模型尚未驻留内存，还会叠加加载时间；
     开启思考模式时更慢。因此在调用前先发 ``web_plan`` 进度事件，避免用户
     在这一步只能看到静态的"正在处理"而误以为卡死。
 
     Returns:
-        ``{"needs_search": bool, "queries": [str, ...]}``；queries 已去重。
-        对非国内查询，会补一条英文查询提升召回；对国内查询（价格/售价/淘宝/京东
-        等语境）则只保留中文查询，避免英文结果把国内电商/国行价格挤出结果。
-        LLM 不可用时回退到轻量触发词。
+        ``{"complex": bool, "subquestions": [str...](≤3), "needs_search": bool,
+           "queries": [str...]}``。subquestions/queries 已去重；``complex`` 为 True
+        但子问题不足 2 个时降级为简单问题。对国内查询剔除英文搜索词。
+        LLM 不可用时回退到轻量触发词（不分解）。
     """
     domestic = _is_domestic_query(question)
+    prompt = build_retrieval_plan_prompt(question)
 
-    if domestic:
-        query_rule = (
-            "若需要搜索，请生成 1-2 条精简、高质量的**中文**搜索查询词（去掉'帮我'"
-            "'请问'等口语化前后缀，只保留核心检索词）。这是面向中国国内的查询，"
-            "请勿生成英文查询。\n"
-        )
-    else:
-        query_rule = (
-            "若需要搜索，请生成 1-3 条精简、高质量的搜索查询词（去掉'帮我''请问'"
-            "等口语化前后缀，只保留核心检索词）；若原问题为中文，请额外补充一条"
-            "等价的英文查询以提升召回。\n"
-        )
-
-    prompt = (
-        "你是一个搜索规划助手。判断回答下面这个问题是否需要联网搜索"
-        "最新/实时/外部信息（例如：版本号、新闻、价格、近期事件、特定事实）。"
-        "如果问题可以仅凭通用知识回答，或属于代码/写作/推理类任务，则不需要搜索。\n"
-        + query_rule +
-        "严格只输出 JSON，格式：\n"
-        '{"needs_search": true/false, "queries": ["查询1", "query2"]}\n\n'
-        f"问题：{question}"
-    )
-
-    _emit(progress, "web_plan", "🧭 规划搜索策略（判断是否需要联网、生成查询词）...")
+    _emit(progress, "web_plan", "🧭 规划检索策略（是否拆分子问题、是否联网、生成查询词）...")
     try:
-        from llama_index.core import Settings
-        raw = str(Settings.llm.complete(prompt)).strip()
+        raw = _complete(prompt).strip()
         data = json.loads(_strip_json_fence(raw))
+        if not isinstance(data, dict):
+            raise ValueError("规划输出不是 JSON 对象")
+
         needs = bool(data.get("needs_search", False))
-        queries = [
-            q.strip()
-            for q in (data.get("queries") or [])
-            if isinstance(q, str) and q.strip()
-        ]
+        queries = _dedupe_strings(data.get("queries") or [])
         # 国内查询：保险起见剔除 LLM 仍可能生成的英文查询（避免海外结果稀释）
         if domestic:
             filtered = [q for q in queries if not _is_mostly_ascii(q)]
             queries = filtered or queries  # 全被过滤则保底沿用
-        seen = set()
-        deduped = []
-        for q in queries:
-            if q.lower() not in seen:
-                seen.add(q.lower())
-                deduped.append(q)
-        if needs and not deduped:
-            deduped = [question]
-        return {"needs_search": needs, "queries": deduped}
+        if needs and not queries:
+            queries = [question]
+
+        subquestions = _dedupe_strings(data.get("subquestions") or [])[:MAX_SUBQUESTIONS]
+        complex_ = bool(data.get("complex", False)) and len(subquestions) >= 2
+        if not complex_:
+            subquestions = []
+        plan = {
+            "complex": complex_,
+            "subquestions": subquestions,
+            "needs_search": needs,
+            "queries": queries,
+        }
+        if complex_:
+            _emit(
+                progress, "kb_decompose",
+                "🧩 复合问题，拆为 " + "；".join(f"{i}. {sq}" for i, sq in enumerate(subquestions, 1)),
+                subquestions=subquestions,
+            )
+        return plan
     except Exception as e:  # noqa: BLE001 - LLM/JSON 失败时回退到启发式
-        logger.warning(f"LLM 搜索规划失败，回退到启发式判断: {e}")
+        logger.warning(f"LLM 检索规划失败，回退到启发式判断: {e}")
         lowered = question.lower()
         needs = any(hint in lowered for hint in _WEB_SEARCH_FALLBACK_HINTS)
-        return {"needs_search": needs, "queries": [question] if needs else []}
+        return {
+            "complex": False,
+            "subquestions": [],
+            "needs_search": needs,
+            "queries": [question] if needs else [],
+        }
+
+
+def plan_web_search(question: str, progress: ProgressCallback = None) -> dict:
+    """向后兼容封装：只返回搜索相关字段 ``{"needs_search", "queries"}``。
+
+    内部调用 :func:`plan_retrieval`（同一次 LLM 调用），不产生额外开销。
+    """
+    plan = plan_retrieval(question, progress=progress)
+    return {"needs_search": plan["needs_search"], "queries": plan["queries"]}
 
 
 def run_web_search(queries: list, progress: ProgressCallback = None) -> str:
@@ -341,7 +447,21 @@ _CONTEXT_PAGE_CHARS = 1500      # 每页正文保留字符
 _CONTEXT_MAX_PAGES = 2          # 最多保留的正文页数
 
 
-def compact_web_context(search_result: str, question: str) -> str:
+def _web_ref_map(web_sources: Optional[list]) -> Dict[str, str]:
+    """URL → 引用编号（``W1``..）映射；``web_sources`` 上若无 ``ref`` 则按序补齐。"""
+    refs: Dict[str, str] = {}
+    for i, src in enumerate(web_sources or [], 1):
+        if not isinstance(src, dict):
+            continue
+        ref = src.get("ref") or f"W{i}"
+        src["ref"] = ref
+        url = src.get("url")
+        if url:
+            refs[str(url)] = ref
+    return refs
+
+
+def compact_web_context(search_result: str, question: str, web_sources: Optional[list] = None) -> str:
     """把冗长的搜索结果按与问题的相关度精简，供综合 prompt 使用。
 
     背景：直接把"全部 10 条摘要 + 3 页全文"塞进 prompt 会引入大量噪音（选配件
@@ -350,11 +470,19 @@ def compact_web_context(search_result: str, question: str) -> str:
 
     因此这里按匹配度排序，只保留最相关的前若干条摘要 + 少量高相关页正文，并对
     每部分截断，最大化信噪比。question 为空或解析失败时退化为原文截断。
+
+    传入 ``web_sources``（``parse_web_sources`` 的结果）时，每条摘要/正文以其
+    引用编号 ``[W1]``.. 标注，使综合答案中的 ``[Wj]`` 可对应到来源面板。
     """
     if not search_result:
         return ""
     if not question:
         return search_result[:4000]
+
+    refs = _web_ref_map(web_sources)
+
+    def label(url: str, fallback: str) -> str:
+        return f"[{refs[url]}]" if url and url in refs else fallback
 
     # 分离"搜索结果"区与"相关页面详细信息"（正文）区
     marker = "=== 相关页面详细信息 ==="
@@ -370,12 +498,12 @@ def compact_web_context(search_result: str, question: str) -> str:
         scored.append((score, it))
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    lines = ["【相关网页摘要】（按相关度排序）"]
+    lines = ["【相关网页摘要】（按相关度排序，[W编号] 为引用编号）"]
     for i, (score, it) in enumerate(scored[:_CONTEXT_MAX_ITEMS], 1):
         title = (it.get("title") or "").strip()
         snippet = (it.get("snippet") or "").strip()[:_CONTEXT_SNIPPET_CHARS]
         url = it.get("url", "")
-        lines.append(f"{i}. {title}\n   摘要: {snippet}\n   来源: {url}")
+        lines.append(f"{label(url, f'{i}.')} {title}\n   摘要: {snippet}\n   来源: {url}")
 
     # 正文区：按页拆分，保留前 N 页（enrich 已按相关度选过页，这里再截断长度）
     if body.strip():
@@ -383,7 +511,11 @@ def compact_web_context(search_result: str, question: str) -> str:
         if pages:
             lines.append("\n【高相关页面正文摘录】")
             for p in pages[:_CONTEXT_MAX_PAGES]:
-                lines.append(p.strip()[:_CONTEXT_PAGE_CHARS])
+                text = p.strip()
+                m = re.match(r"^(\S+)\s*---", text)
+                if m and m.group(1) in refs:
+                    text = f"[{refs[m.group(1)]}] " + text
+                lines.append(text[:_CONTEXT_PAGE_CHARS])
 
     return "\n".join(lines)
 
@@ -728,6 +860,11 @@ def synthesize_prompt(
         "4. 若有多个取值，先给最能代表问题的主答案（如问售价优先给官方起售价），再分条"
         "列出其他版本/渠道的取值并解释差异原因，让回答丰富清楚，不要一句话带过。",
         "5. 【知识库检索内容】优先于【网络搜索补充】；两者冲突以知识库为准并指出差异。",
+        "6. 引用标注：资料已按 [1]、[2]…（知识库片段）与 [W1]、[W2]…（网络来源）编号，"
+        "每个关键结论/数字所在句子的末尾必须标注其依据编号（如「售价 2999 元起[1]」、"
+        "「最新版本为 3.2[W1]」）；一句话依据多条时并列标注（[1][W2]）。不要标注不存在的编号。",
+        "7. 引用代码片段时，在 [i] 之外可注明函数/类名与行号（如「`_ensure_bm25`（L534-581）[2]」），"
+        "便于用户定位；行号只能取自资料标注（来自 … · L起-止），不要编造。",
         "",
     ]
     if history:
@@ -752,16 +889,59 @@ def synthesize_prompt(
     return "\n".join(parts)
 
 
+def assign_refs(kb_sources: Optional[list], web_sources: Optional[list]) -> Tuple[list, list]:
+    """为知识库/网络来源就地写入引用编号：``kb_sources[i]["ref"]="1"``、``web_sources[j]["ref"]="W1"``。"""
+    kb = [s for s in (kb_sources or []) if isinstance(s, dict)]
+    web = [s for s in (web_sources or []) if isinstance(s, dict)]
+    for i, src in enumerate(kb, 1):
+        src["ref"] = str(i)
+    for j, src in enumerate(web, 1):
+        src["ref"] = f"W{j}"
+    return kb, web
+
+
 def format_kb_context(sources: list) -> str:
-    """把知识库来源拼成带文件标注的上下文文本，供综合 prompt 使用。"""
+    """把知识库来源拼成带编号与文件标注的上下文文本 ``[1]..[k]``，供综合 prompt 使用。
+
+    编号与 ``assign_refs`` 写入的 ``ref`` 一致（按列表顺序 1..k），综合答案中的
+    ``[i]`` 即对应第 i 条来源。空内容的片段仍占用编号，避免编号错位。
+    """
     blocks = []
     for i, src in enumerate(sources, 1):
         content = (src.get("content") or "").strip()
         if not content:
             continue
-        fname = src.get("file", "未知文件")
-        blocks.append(f"[片段{i}｜来自 {fname}]\n{content}")
+        src["ref"] = str(i)
+        blocks.append(f"[{i}]（来自 {source_location(src)}）\n{content}")
     return "\n\n".join(blocks)
+
+
+def source_location(src: dict) -> str:
+    """来源定位文案：文本块为文件名；代码块为 ``file · symbol · L起-止``（CLI / Web / prompt 共用）。"""
+    fname = src.get("file") or "未知文件"
+    parts = [str(fname)]
+    if src.get("symbol"):
+        parts.append(str(src["symbol"]))
+    if src.get("start_line") is not None:
+        end = src.get("end_line") or src.get("start_line")
+        parts.append(f"L{src['start_line']}-{end}")
+    return " · ".join(parts)
+
+
+def source_symbols(sources: list, limit: int = 3) -> str:
+    """取前 ``limit`` 个代码来源的符号名拼成短文案（进度事件用），无代码块返回空串。"""
+    names = []
+    for src in sources or []:
+        sym = src.get("symbol") if isinstance(src, dict) else None
+        if sym and sym not in names:
+            names.append(str(sym))
+        if len(names) >= limit:
+            break
+    if not names:
+        return ""
+    more = sum(1 for s in sources if isinstance(s, dict) and s.get("symbol")) - len(names)
+    text = ", ".join(f"`{n}`" for n in names)
+    return text + (f" 等 {more + len(names)} 个符号" if more > 0 else "")
 
 
 # ==================== 网络搜索增强编排 ====================
@@ -770,10 +950,16 @@ def augment_with_web_search(
     question: str,
     progress: ProgressCallback = None,
     should_stop: StopCheck = None,
+    plan: Optional[dict] = None,
 ) -> str:
-    """按需执行 LLM 规划的网络搜索，返回搜索结果文本（无则空串）。"""
+    """按需执行 LLM 规划的网络搜索，返回搜索结果文本（无则空串）。
+
+    ``plan`` 可传入 :func:`plan_retrieval` 已得到的规划（避免重复调用 LLM）；
+    为空时内部调用一次 ``plan_web_search``。
+    """
     try:
-        plan = plan_web_search(question, progress=progress)
+        if plan is None:
+            plan = plan_web_search(question, progress=progress)
         _check_stop(should_stop)
         if plan.get("needs_search") and plan.get("queries"):
             _emit(progress, "web_search_start", "🌐 检测到需要最新信息，正在网络搜索...")
@@ -805,8 +991,11 @@ def generate_answer(
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
     history_text: str = "",
+    kb_only: bool = False,
+    subquestions: Optional[list] = None,
+    web_sources: Optional[list] = None,
 ) -> dict:
-    """根据知识库状态生成回答（知识库/网络分区标注、综合总结）。
+    """根据知识库状态生成回答（知识库/网络分区标注、编号引用、综合总结）。
 
     Args:
         rag_engine: 已初始化的 RAGEngine（其 ``query_engine`` 可能为 None）。
@@ -818,16 +1007,84 @@ def generate_answer(
         rag_progress_callback: 直接透传给 ``query_with_sources`` 的进度回调。
         should_stop: 取消探针，阶段边界命中即抛 ``PipelineCancelled``。
         history_text: 最近几轮对话的紧凑文本（连续对话时注入综合 prompt）。
+        kb_only: 只要知识库结论：未初始化或未命中时不做网络回退、不调模型
+            兜底，直接返回 ``{"answer": "", "sources": []}``（供 Agent 工具
+            ``query_knowledge_base`` 使用，由模型自行决定是否转 web_search）。
+        subquestions: 复合问题的子问题列表（≥2 时多跳：逐个检索、去重合并后
+            再筛选/综合）；为空走单次检索路径。
+        web_sources: 已解析的网络来源（``parse_web_sources``），用于 ``[Wj]``
+            编号；为空时按 ``web_search_result`` 解析。
 
     Returns:
-        ``{"answer": str, "sources": [...]}``。sources 仅含知识库来源。
+        ``{"answer": str, "sources": [...], "web_sources": [...], "kind": "answer"|"fallback"}``。
+        sources 仅含知识库来源（带 ``ref``）；``kind="fallback"`` 表示知识库无相关
+        片段且网络也无结果（附 ``fallback_question``）。
     """
     kb_initialized = rag_engine.query_engine is not None
     _check_stop(should_stop)
 
+    if kb_only and not kb_initialized:
+        _emit(progress, "kb_uninitialized", "⚠️ 知识库未初始化")
+        return {"answer": "", "sources": [], "web_sources": [], "kind": "answer"}
+
+    # /think on：把 progress 交给 _complete，使综合/规划调用的思维链能推送给 UI
+    think_on = bool(getattr(rag_engine, "llm_think", False))
+    sink_token = _THINKING_SINK.set(progress if think_on else None)
+    try:
+        return _generate_answer_inner(
+            rag_engine, question, original_question, web_search_result,
+            show_progress=show_progress, progress=progress,
+            rag_progress_callback=rag_progress_callback, should_stop=should_stop,
+            history_text=history_text, kb_only=kb_only, subquestions=subquestions,
+            web_sources=web_sources, kb_initialized=kb_initialized,
+        )
+    finally:
+        _THINKING_SINK.reset(sink_token)
+
+
+def _retrieve(rag_engine, question: str, show_progress: bool, rag_progress_callback: ProgressCallback) -> dict:
+    if show_progress and rag_progress_callback is not None:
+        return rag_engine.query_with_sources(question, progress_callback=rag_progress_callback)
+    return rag_engine.query_with_sources(question)
+
+
+def _merge_multi_hop(results: list) -> dict:
+    """合并多个子问题的检索结果：按 ``(file, content)`` 去重，保留首次出现的分数/顺序。"""
+    merged: List[dict] = []
+    seen = set()
+    answers = []
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        ans = (res.get("answer") or "").strip()
+        if ans and ans != "Empty Response":
+            answers.append(ans)
+        for src in res.get("sources") or []:
+            if not isinstance(src, dict):
+                continue
+            where = src.get("file") or src.get("path") or ""
+            # 代码块用起始行去重（多个相似函数头的正文前缀可能相同）
+            key = (where, f"L{src['start_line']}") if src.get("start_line") is not None else (where, (src.get("content") or "").strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(src)
+    # 分数高的在前，便于后续编号与截断
+    merged.sort(key=lambda s: float(s.get("score") or 0), reverse=True)
+    return {"answer": "\n\n".join(answers), "sources": merged}
+
+
+def _generate_answer_inner(
+    rag_engine, question, original_question, web_search_result, *,
+    show_progress, progress, rag_progress_callback, should_stop, history_text,
+    kb_only, subquestions, web_sources, kb_initialized,
+) -> dict:
+    web_sources = [s for s in (web_sources if web_sources is not None else parse_web_sources(web_search_result)) if isinstance(s, dict)]
+    assign_refs([], web_sources)
+
     # 按相关度精简网络上下文：只保留与问题最相关的摘要 + 精选正文，最大化信噪比，
     # 避免全部结果+全文的噪音淹没有效信息、导致 LLM 抓不住重点或误判无答案。
-    web_context = compact_web_context(web_search_result, original_question) if web_search_result else ""
+    web_context = compact_web_context(web_search_result, original_question, web_sources) if web_search_result else ""
 
     # 知识库未初始化：只能用网络/模型自身知识，明确声明来源
     if not kb_initialized:
@@ -838,15 +1095,26 @@ def generate_answer(
         answer = llm_direct_answer(prompt)
         if web_search_result:
             answer = "⚠️ 以下回答基于网络搜索与模型知识，非你的知识库内容：\n\n" + answer
-        return {"answer": answer, "sources": []}
+        return {"answer": answer, "sources": [], "web_sources": web_sources, "kind": "answer"}
 
     # 检索知识库（LlamaIndex 的 query 会一次完成"向量检索 + 初步生成"，含模型推理）
-    _emit(progress, "kb_retrieving", "📖 检索知识库并生成初步回答（含模型推理）...")
-    if show_progress and rag_progress_callback is not None:
-        result = rag_engine.query_with_sources(question, progress_callback=rag_progress_callback)
+    multi_hop = bool(subquestions) and len(subquestions) >= 2
+    if multi_hop:
+        results = []
+        for i, sq in enumerate(subquestions, 1):
+            _emit(progress, "kb_retrieving", f"📖 子问题 {i}/{len(subquestions)}：{sq}",
+                  current=i, total=len(subquestions), subquestion=sq)
+            results.append(_retrieve(rag_engine, sq, show_progress, rag_progress_callback))
+            _check_stop(should_stop)
+        result = _merge_multi_hop(results)
+        syms = source_symbols(result["sources"])
+        _emit(progress, "kb_merged",
+              f"🔗 合并 {len(subquestions)} 个子问题的检索结果，去重后 {len(result['sources'])} 个片段" + (f"（含代码 {syms}）" if syms else ""),
+              count=len(result["sources"]), symbols=[s.get("symbol") for s in result["sources"] if s.get("symbol")])
     else:
-        result = rag_engine.query_with_sources(question)
-    _check_stop(should_stop)
+        _emit(progress, "kb_retrieving", "📖 检索知识库并生成初步回答（含模型推理）...")
+        result = _retrieve(rag_engine, question, show_progress, rag_progress_callback)
+        _check_stop(should_stop)
 
     # 相关性过滤：剔除低分噪音片段（检索阈值 0.3 会带回语义几乎无关的片段）。
     raw_sources = result.get("sources") or []
@@ -864,54 +1132,76 @@ def generate_answer(
         {"answer": result.get("answer"), "sources": relevant_sources}
     )
 
-    # LLM 相关性判定（治本）：纯 embedding 分数无法区分"话题相关"，用 LLM 判断
-    # 这些片段是否真能帮助回答问题；判为无关则视为未命中，避免把 0.45 这类勉强
-    # 过阈值但话题不搭的噪音（如问"售价"却召回 Cloudflare 配置）当作依据展示。
+    # 逐片段相关性筛选（rerank）：纯 embedding 分数无法区分"话题相关"，用 LLM /
+    # cross-encoder 逐片段判断是否真能帮助回答问题；全部无关则视为未命中，避免把
+    # 0.45 这类勉强过阈值但话题不搭的噪音（如问"售价"却召回 Cloudflare 配置）当作依据。
     if kb_hit:
-        _emit(progress, "kb_relevance_check", "🔎 校验知识库片段相关性（模型判定）...")
-        if not judge_kb_relevance(original_question, relevant_sources):
+        from rag_rerank import rerank
+        kept = rerank(original_question, relevant_sources, progress=progress)
+        _check_stop(should_stop)
+        if not kept:
             _emit(progress, "kb_irrelevant", "🧹 知识库片段与问题无关，已忽略")
             kb_hit = False
-        _check_stop(should_stop)
+        else:
+            dropped += len(relevant_sources) - len(kept)
+            relevant_sources = kept
 
-    # 知识库命中：以（过滤后的）知识库为主。
+    # 知识库命中：以（筛选后的）知识库为主。
     if kb_hit:
-        # 快路径：没有过滤掉任何片段、也没有网络补充时，直接沿用 LlamaIndex 的
-        # 原始回答（它正是基于这些相关片段生成的），避免多余的 LLM 调用。
-        if dropped == 0 and not web_search_result:
-            return {"answer": result.get("answer", ""), "sources": relevant_sources}
+        assign_refs(relevant_sources, web_sources)
+        hybrid_added = any(s.get("retriever") == "bm25" for s in relevant_sources)
+        # 快路径：没有过滤掉任何片段、没有网络补充、非多跳、且无 BM25 补充的片段时，
+        # 直接沿用 LlamaIndex 的原始回答（它正是基于这些片段生成的），省一次 LLM 调用。
+        if dropped == 0 and not web_search_result and not multi_hop and not hybrid_added:
+            return {"answer": result.get("answer", ""), "sources": relevant_sources,
+                    "web_sources": web_sources, "kind": "answer"}
 
-        # 否则（过滤掉了噪音，或需要综合网络补充）基于"仅相关片段"重新综合，
+        # 否则（过滤掉了噪音、多跳合并、或需要综合网络补充）基于"仅相关片段"重新综合，
         # 避免 LlamaIndex 原始回答里混入被过滤掉的噪音内容。
         kb_context = format_kb_context(relevant_sources)
         prompt = synthesize_prompt(original_question, kb_context, web_context, history=history_text)
         if web_search_result:
-            _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答...")
+            _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答（带编号引用）...")
         else:
-            _emit(progress, "synthesizing", "✍️ 基于知识库综合回答...")
+            _emit(progress, "synthesizing", "✍️ 基于知识库综合回答（带编号引用）...")
         answer = llm_direct_answer(prompt)
-        return {"answer": answer, "sources": relevant_sources}
+        return {"answer": answer, "sources": relevant_sources, "web_sources": web_sources, "kind": "answer"}
 
     # 知识库 0 命中（或全部为低相关噪音）：明确告知，再用网络/模型回答。
     _emit(progress, "kb_empty", "📭 知识库中未检索到相关内容。")
+    if kb_only:
+        return {"answer": "", "sources": [], "web_sources": web_sources, "kind": "answer"}
     if not web_search_result:
         _emit(progress, "kb_fallback_search", "🌐 正在网络搜索补充信息...")
         web_search_result = simple_web_search(original_question)
         _check_stop(should_stop)
         if web_search_result:
             _emit(progress, "web_search_done", "✅ 网络搜索完成")
-            # 回退搜索的结果同样精简后再入 prompt
-            web_context = compact_web_context(web_search_result, original_question)
+            # 回退搜索的结果同样解析来源、编号并精简后再入 prompt
+            web_sources = parse_web_sources(web_search_result)
+            assign_refs([], web_sources)
+            web_context = compact_web_context(web_search_result, original_question, web_sources)
 
     prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context, history=history_text)
     _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
     answer = llm_direct_answer(prompt)
     if web_search_result:
         answer = "⚠️ 知识库中无相关内容，以下回答基于网络搜索，非你的知识库内容：\n\n" + answer
-    else:
-        _emit(progress, "model_thinking", "💡 未获取到网络信息，直接使用模型自身知识回答")
-        answer = "⚠️ 知识库中无相关内容，以下为模型自身知识回答：\n\n" + answer
-    return {"answer": answer, "sources": []}
+        return {"answer": answer, "sources": [], "web_sources": web_sources, "kind": "answer"}
+
+    # 失败回退：知识库无相关片段且网络也无结果 → 提示改用单 Agent 工具进一步查找
+    _emit(progress, "model_thinking", "💡 未获取到网络信息，直接使用模型自身知识回答")
+    answer = "⚠️ 知识库中无相关内容，以下为模型自身知识回答：\n\n" + answer
+    answer += "\n\n" + fallback_suggestion(original_question)
+    _emit(progress, "fallback", "🧭 知识库与网络均未找到相关内容，可用单 Agent 进一步查找",
+          question=original_question)
+    return {"answer": answer, "sources": [], "web_sources": [], "kind": "fallback",
+            "fallback_question": original_question}
+
+
+def fallback_suggestion(question: str) -> str:
+    """知识库与网络均无结果时追加到答案末尾的建议文案。"""
+    return f"建议：/agent {question} 让 Agent 用工具进一步查找"
 
 
 # ==================== 顶层入口：完整问答编排 ====================
@@ -926,6 +1216,7 @@ def answer_question(
     rag_progress_callback: ProgressCallback = None,
     should_stop: StopCheck = None,
     context=None,
+    kb_only: bool = False,
 ) -> dict:
     """完整的知识库问答编排入口，CLI 与 Web 共享。
 
@@ -947,6 +1238,7 @@ def answer_question(
         rag_progress_callback: 透传给 query_with_sources 的进度回调。
         should_stop: 取消探针；用户请求停止时在阶段边界抛 ``PipelineCancelled``。
         context: 可选会话上下文，用于问题改写与历史注入。
+        kb_only: 只取知识库结论，未命中时不做网络回退/模型兜底（见 ``generate_answer``）。
 
     Returns:
         统一结构：
@@ -985,16 +1277,43 @@ def answer_question(
             logger.warning(f"读取会话上下文失败，按无历史处理: {e}")
         _check_stop(should_stop)
 
-    if rag_engine.query_engine is None:
+    kb_initialized = rag_engine.query_engine is not None
+    if not kb_initialized:
         _emit(progress, "kb_uninitialized", "⚠️ 知识库未初始化，将根据网络搜索/模型直接回答")
 
-    # 网络搜索增强（LLM 驱动的通用查询规划）
+    # /think on：整条链路（规划/综合）的思维链都透出到 progress
+    think_on = bool(getattr(rag_engine, "llm_think", False))
+    sink_token = _THINKING_SINK.set(progress if think_on else None)
+    try:
+        return _answer_question_planned(
+            rag_engine, question, effective, rewritten, history_text, kb_initialized,
+            enable_web_search=enable_web_search, show_progress=show_progress, progress=progress,
+            rag_progress_callback=rag_progress_callback, should_stop=should_stop, kb_only=kb_only,
+        )
+    finally:
+        _THINKING_SINK.reset(sink_token)
+
+
+def _answer_question_planned(
+    rag_engine, question, effective, rewritten, history_text, kb_initialized, *,
+    enable_web_search, show_progress, progress, rag_progress_callback, should_stop, kb_only,
+) -> dict:
+    # 检索规划（一次 LLM）：复合问题分解 + 是否联网 + 搜索词。关闭联网/kb_only 时
+    # 仍做分解（多跳检索）但不搜索；知识库未初始化时无需分解，仅在联网时规划。
+    plan: Optional[dict] = None
+    if enable_web_search or kb_initialized:
+        plan = plan_retrieval(effective, progress=progress)
+        _check_stop(should_stop)
+
+    # 网络搜索增强（复用上面的规划结果，不再额外调用 LLM）
     web_search_result = ""
     if enable_web_search:
         web_search_result = augment_with_web_search(
-            effective, progress=progress, should_stop=should_stop
+            effective, progress=progress, should_stop=should_stop, plan=plan
         )
     web_sources = parse_web_sources(web_search_result) if web_search_result else []
+
+    subquestions = (plan or {}).get("subquestions") if (plan or {}).get("complex") else None
 
     result = generate_answer(
         rag_engine,
@@ -1006,16 +1325,23 @@ def answer_question(
         rag_progress_callback=rag_progress_callback,
         should_stop=should_stop,
         history_text=history_text,
+        kb_only=kb_only,
+        subquestions=subquestions,
+        web_sources=web_sources,
     )
 
-    return {
-        "kind": "answer",
+    kb_sources, web_sources = assign_refs(result.get("sources", []), result.get("web_sources", web_sources))
+    out = {
+        "kind": result.get("kind") or "answer",
         "answer": result.get("answer", ""),
-        "kb_sources": result.get("sources", []),
+        "kb_sources": kb_sources,
         "web_sources": web_sources,
         "meta": None,
         "rewritten": rewritten,
     }
+    if out["kind"] == "fallback":
+        out["fallback_question"] = result.get("fallback_question") or question
+    return out
 
 
 # ==================== 对话落库（会话持久化）====================

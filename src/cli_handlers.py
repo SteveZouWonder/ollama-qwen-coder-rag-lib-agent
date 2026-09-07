@@ -57,6 +57,9 @@ class CLIContext:
     # 能力开关
     knowledge_management_available: bool = False
 
+    # 多 Agent 编排器工厂（None 时用默认配置创建；测试可注入替身）
+    orchestrator_factory: Callable[[], Any] = None
+
 
 # ==================== 通用工具 ====================
 
@@ -82,6 +85,122 @@ def _confirm(console, prompt: str = "确认执行? (y/n): ") -> bool:
     except (EOFError, KeyboardInterrupt):
         return False
     return answer in ("y", "yes", "是", "确认")
+
+
+# ==================== 多 Agent 协作 ====================
+
+_MULTI_MODES = ("hierarchy", "parallel", "sequential", "competitive")
+
+
+def parse_multi_args(arg: str) -> tuple[str, str | None]:
+    """解析 ``/multi <任务> [--mode xxx]``，返回 ``(任务文本, 模式或 None)``。
+
+    ``--mode`` 可出现在任意位置；非法模式按 None（编排器默认）处理并由调用方提示。
+    """
+    import re
+
+    text = arg or ""
+    mode = None
+    m = re.search(r"(?:^|\s)--mode(?:=|\s+)(\S+)", text)
+    if m:
+        mode = m.group(1).strip().lower()
+        text = (text[: m.start()] + " " + text[m.end():]).strip()
+    return re.sub(r"\s{2,}", " ", text).strip(), mode
+
+
+def _default_orchestrator():
+    from agent_config import AgentConfigManager
+    from agent_orchestrator import AgentOrchestrator
+
+    return AgentOrchestrator(AgentConfigManager.get_default_config())
+
+
+def handle_multi(ctx, parsed):
+    """``/multi <任务> [--mode hierarchy|parallel|sequential|competitive]``：
+    多 Agent 协作，实时打印"分解 → 调度 → 执行 → 整合"进度，输出与 Web 一致。"""
+    console = ctx.console
+    task, mode = parse_multi_args(getattr(parsed, "arg", ""))
+    if not task:
+        console.print("用法: /multi <任务> [--mode hierarchy|parallel|sequential|competitive]", style="yellow")
+        return False
+    if mode is not None and mode not in _MULTI_MODES:
+        console.print(f"⚠️ 未知模式 {mode}，可选: {', '.join(_MULTI_MODES)}；改用编排器默认模式", style="yellow")
+        mode = None
+
+    # 保证知识库引擎已注入全局工具表，RAGAgent 才能真正检索
+    if ctx.rag_engine is not None:
+        try:
+            import agent_tools
+            agent_tools.set_rag_engine(ctx.rag_engine)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        from agents.agent_types import CollaborationMode
+        resolved = CollaborationMode(mode) if mode else None
+    except Exception:  # noqa: BLE001
+        resolved = None
+
+    context = None
+    try:
+        from conversation_context import get_conversation_context
+        context = get_conversation_context()
+    except Exception:  # noqa: BLE001
+        context = None
+
+    def progress(evt):
+        msg = evt.get("message", "")
+        if not msg or evt.get("transient"):
+            return
+        stage = evt.get("stage", "")
+        style = "dim" if stage in ("agent_step", "schedule") else "cyan"
+        console.print(f"  {msg}", style=style)
+
+    factory = ctx.orchestrator_factory or _default_orchestrator
+    orchestrator = factory()
+    try:
+        console.print(f"🤝 多 Agent 协作（模式: {mode or '默认'}）…", style="bold cyan")
+        kwargs = {"progress": progress}
+        if context is not None:
+            kwargs["context"] = context
+        result = orchestrator.process_request(task, resolved, **kwargs)
+    except KeyboardInterrupt:
+        console.print("\n用户中断，协作已停止。", style="yellow")
+        return False
+    except Exception as e:  # noqa: BLE001
+        console.print(f"❌ 协作执行失败: {e}", style="red")
+        return False
+    finally:
+        shutdown = getattr(orchestrator, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not isinstance(result, dict):
+        result = {"success": False, "summary": str(result)}
+
+    from collaboration.presenter import format_multi_agent_result
+
+    rendered = format_multi_agent_result(result)
+    if ctx.has_rich:
+        try:
+            from rich.markdown import Markdown
+            console.print(Markdown(rendered))
+        except Exception:  # noqa: BLE001
+            console.print(rendered)
+    else:
+        console.print(rendered)
+
+    answer = str(result.get("answer") or "").strip() or str(result.get("summary", ""))
+    recorded = answer if result.get("success") else f"[协作失败] {answer}"
+    try:
+        ctx.record_conversation(task, recorded)
+    except Exception:  # noqa: BLE001
+        pass
+    ctx.record_command("multi", task, "success" if result.get("success") else "failed")
+    return True
 
 
 # ==================== 帮助 / 教程 / 工具 ====================
@@ -127,14 +246,69 @@ def handle_sources(ctx, parsed):
     return True
 
 
+def _make_ingest_progress(console):
+    """构造入库进度回调（rich Progress 两行：切分 / 嵌入）；rich 不可用时返回 (None, None)。
+
+    返回 ``(progress, callback)``，``progress`` 需在 ``with`` 中使用。
+    """
+    try:
+        from rich.console import Console
+        from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+    except ImportError:  # pragma: no cover - rich 为项目必装依赖
+        return None, None
+    if not isinstance(console, Console):
+        # 非 rich Console（如测试桩）不渲染进度条
+        return None, None
+    progress = Progress(
+        TextColumn("{task.description}"),
+        BarColumn(bar_width=24),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    tasks: dict = {}
+
+    def callback(event: dict) -> None:
+        stage = event.get("stage") or event.get("phase")
+        if stage not in ("chunk", "embed"):
+            return
+        total = int(event.get("total") or 0)
+        current = int(event.get("current") or 0)
+        label = "🧩 切分" if stage == "chunk" else "🧠 嵌入"
+        if stage not in tasks:
+            tasks[stage] = progress.add_task(label, total=max(total, 1))
+        progress.update(tasks[stage], total=max(total, 1), completed=min(current, total) if total else current,
+                        description=f"{label} {event.get('message', '')}"[:60])
+
+    return progress, callback
+
+
 def handle_add(ctx, parsed):
     console = ctx.console
     path = parsed.arg
     try:
         docs = ctx.load_documents(path)
         if docs:
-            ctx.rag_engine.add_documents(docs, [path])
-            console.print("✅ 文档已添加到知识库", style="green")
+            progress, callback = _make_ingest_progress(console)
+            if progress is not None:
+                with progress:
+                    ctx.rag_engine.add_documents(docs, [path], progress_callback=callback)
+            else:
+                ctx.rag_engine.add_documents(docs, [path])
+            # 结果摘要：文件数 · 片段数（· 代码文件按函数/类切分，符号数）
+            try:
+                from code_chunker import availability_hint_once, format_ingest_summary, language_for
+                stats = getattr(ctx.rag_engine, "last_ingest_stats", None) or {}
+                summary = format_ingest_summary(stats) if stats else "文档已添加到知识库"
+                # 本次含代码文件但代码分块未启用 → 追加一次性提示
+                has_code = any(language_for(None, str(p)) for p in stats)
+                hint = availability_hint_once() if has_code else ""
+            except Exception:  # noqa: BLE001 - 摘要失败不影响入库结果
+                summary, hint = "文档已添加到知识库", ""
+            console.print(f"✅ {summary}", style="green")
+            if hint:
+                console.print(f"💡 {hint}", style="dim")
             # 知识图谱作为文档入库的派生索引，已在 add_documents 中同步构建。
             if getattr(ctx.rag_engine, "last_graph_derived", False):
                 console.print("🕸️  已同步更新知识图谱", style="dim")
@@ -467,6 +641,7 @@ def handle_file_list(ctx, parsed):
     console = ctx.console
     try:
         from file_metadata import get_global_metadata_manager
+        from code_chunker import describe_file_chunking
         manager = get_global_metadata_manager()
         files = manager.list_files()
         if not files:
@@ -478,6 +653,11 @@ def handle_file_list(ctx, parsed):
                 console.print(f"  📊 大小: {manager._format_size(file_meta.file_size)}", style="dim")
                 console.print(f"  🏷️  类型: {file_meta.persistence_type}", style="dim")
                 console.print(f"  📅 上传: {file_meta.upload_time[:19]}", style="dim")
+                console.print(
+                    f"  🧩 片段: {file_meta.chunk_count} · 分块: "
+                    f"{describe_file_chunking(file_meta.file_path, getattr(file_meta, 'chunk_strategy', None), getattr(file_meta, 'symbol_count', 0))}",
+                    style="dim",
+                )
                 if file_meta.tags:
                     console.print(f"  🏷️  标签: {', '.join(file_meta.tags)}", style="dim")
         ctx.record_command("file_list")
@@ -495,6 +675,7 @@ def handle_file_info(ctx, parsed):
         return False
     try:
         from file_metadata import get_global_metadata_manager
+        from code_chunker import describe_file_chunking
         manager = get_global_metadata_manager()
         file_meta = manager.get_file_metadata(file_path)
         if not file_meta:
@@ -507,6 +688,10 @@ def handle_file_info(ctx, parsed):
         console.print(f"🔢 访问次数: {file_meta.access_count}", style="dim")
         console.print(f"📄 文档数: {file_meta.document_count}", style="dim")
         console.print(f"🧩 Chunk数: {file_meta.chunk_count}", style="dim")
+        console.print(
+            f"🧬 分块策略: {describe_file_chunking(file_meta.file_path, getattr(file_meta, 'chunk_strategy', None), getattr(file_meta, 'symbol_count', 0))}",
+            style="dim",
+        )
         if file_meta.last_access:
             console.print(f"🕐 最后访问: {file_meta.last_access[:19]}", style="dim")
         if file_meta.tags:
@@ -1572,6 +1757,7 @@ def handle_db_schema(ctx, parsed):
 COMMAND_HANDLERS: dict[str, Callable[[CLIContext, Any], bool]] = {
     "help": handle_help,
     "tutorial": handle_tutorial,
+    "multi": handle_multi,
     "tools": handle_tools,
     "stats": handle_stats,
     "sources": handle_sources,

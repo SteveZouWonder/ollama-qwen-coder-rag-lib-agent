@@ -385,14 +385,16 @@ class TestChatNoAction:
 
     @patch("react_engine.requests.post")
     def test_chat_no_final_prefix(self, mock_post):
-
+        """无 Final Answer 的裸文本不再直接当答案：回灌 [格式错误] 重试 2 次后才按现有文本收尾并标注。"""
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"message": {"content": "直接回答"}}
         mock_post.return_value = mock_resp
 
         engine, ctx = make_engine()
         result = engine.chat("你好")
-        assert result == "直接回答"
+        assert result.startswith("直接回答")
+        assert "（格式异常，可能不完整）" in result
+        assert mock_post.call_count == 3  # 首次 + 2 次重试
 
 
 class TestChatWithAction:
@@ -549,23 +551,361 @@ class TestGetStepSummary:
         assert "Agent 执行摘要" in summary
 
 
+def _resp(text):
+    """构造一个 Ollama /api/chat 响应 Mock。"""
+    r = MagicMock()
+    r.json.return_value = {"message": {"content": text}}
+    return r
+
+
+def _action(tool, **args):
+    import json as _json
+    return f"Thought: t\nAction: {tool}\nAction Input: {_json.dumps(args, ensure_ascii=False)}"
+
+
 class TestMaxIterations:
-    """测试最大迭代次数"""
+    """测试最大迭代次数（P1-3：耗尽后强制总结而非固定警告）"""
 
     @patch("react_engine.requests.post")
-    def test_max_iterations_reached(self, mock_post):
-
-        # 每次都返回 Action，永远不会 Final Answer
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {"content": "Thought: t\nAction: read_file\nAction Input: {\"path\": \"x\"}"}
-        }
-        mock_post.return_value = mock_resp
-
-        with patch.object(Config, "MAX_ITERATIONS", 3):
-            engine, ctx = make_engine()
+    def test_max_iterations_reached_triggers_forced_summary(self, mock_post):
+        # 每步读不同文件，永远不给 Final Answer；第 4 次调用是强制总结
+        mock_post.side_effect = [
+            _resp(_action("read_file", path="a")),
+            _resp(_action("read_file", path="b")),
+            _resp(_action("read_file", path="c")),
+            _resp("Final Answer: 已完成：读取 a/b/c；未完成：汇总；建议：继续"),
+        ]
+        events = []
+        with patch.object(Config, "MAX_ITERATIONS", 3), \
+                patch("react_engine.registry.execute", return_value="内容"):
+            engine, ctx = make_engine(on_step=lambda e: events.append(e))
             result = engine.chat("test")
-            assert "达到最大迭代次数" in result
+        assert result.startswith("⚠️ 未完成（已达最大步数 3）")
+        assert "读取 a/b/c" in result
+        assert "Final Answer:" not in result
+        # 追加的 user 总结请求在消息列表中
+        summary_req = mock_post.call_args.kwargs["json"]["messages"][-1]
+        assert summary_req["role"] == "user" and "步数已用尽" in summary_req["content"]
+        # 总结调用：think=False、num_predict 限额
+        body = mock_post.call_args.kwargs["json"]
+        assert body["think"] is False and body["options"]["num_predict"] == 1024
+        # step_log / 事件 / 会话
+        assert any(l["phase"] == "forced_summary" and l["reason"] == "max_iterations" for l in engine.step_log)
+        assert engine.step_log[-1]["phase"] == "final" and engine.step_log[-1]["forced"] == "max_iterations"
+        assert any(e.get("phase") == "forced_summary" for e in events)
+        assert ctx.recorded[0]["assistant"].startswith("⚠️ 未完成")
+        assert "强制总结收尾" in ctx.recorded[0]["trace"]
+
+    @patch("react_engine.requests.post")
+    def test_forced_summary_falls_back_when_model_fails(self, mock_post):
+        """总结调用失败时回退为执行摘要，仍带 ⚠️ 未完成 前缀。"""
+        import requests
+        mock_post.side_effect = [
+            _resp(_action("read_file", path="a")),
+            requests.exceptions.Timeout(),
+        ]
+        with patch("react_engine.registry.execute", return_value="内容"):
+            engine, ctx = make_engine(max_iterations=1)
+            result = engine.chat("test")
+        assert result.startswith("⚠️ 未完成")
+        assert "模型总结失败" in result and "共 1 步" in result
+
+    @patch("react_engine.requests.post")
+    def test_forced_summary_strips_thought_prefix(self, mock_post):
+        mock_post.side_effect = [
+            _resp(_action("read_file", path="a")),
+            _resp("Thought: 总结一下\n已完成 X"),
+        ]
+        with patch("react_engine.registry.execute", return_value="内容"):
+            engine, ctx = make_engine(max_iterations=1)
+            result = engine.chat("test")
+        assert "已完成 X" in result and "Thought:" not in result
+
+
+class TestFormatTolerance:
+    """P1-2 协议容错：格式错误回灌重试、[错误] 不入会话"""
+
+    @patch("react_engine.requests.post")
+    def test_format_error_retry_then_success(self, mock_post):
+        mock_post.side_effect = [
+            _resp("Thought: 我想想"),                 # 无 Action / Final Answer
+            _resp("Final Answer: 好了"),
+        ]
+        events = []
+        engine, ctx = make_engine(on_step=lambda e: events.append(e))
+        assert engine.chat("q") == "好了"
+        # 回灌的 Observation 带 [格式错误] 与协议提示
+        sent = mock_post.call_args.kwargs["json"]["messages"]
+        obs = [m for m in sent if m["role"] == "user" and m["content"].startswith("Observation: [格式错误]")]
+        assert len(obs) == 1 and "严格按协议" in obs[0]["content"]
+        assert [l["phase"] for l in engine.step_log] == ["format_retry", "final"]
+        assert engine.step_log[0]["retry"] == 1
+        assert any(e.get("phase") == "format_retry" for e in events)
+        assert "格式重试 1 次" in ctx.recorded[0]["trace"]
+
+    @patch("react_engine.requests.post")
+    def test_format_error_exhausts_retries_then_finalizes(self, mock_post):
+        mock_post.return_value = _resp("Thought: 只有思考没有动作")
+        engine, ctx = make_engine()
+        result = engine.chat("q")
+        assert mock_post.call_count == 3
+        assert result.startswith("只有思考没有动作")
+        assert result.endswith("（格式异常，可能不完整）")
+        assert engine.step_log[-1]["format_abnormal"] is True
+        assert len([l for l in engine.step_log if l["phase"] == "format_retry"]) == 2
+        # 仍写回会话（带标注）
+        assert ctx.recorded[0]["assistant"] == result
+        assert "[格式重试 1/2]" in engine.get_step_summary()
+        assert "格式异常" in engine.get_step_summary()
+
+    @patch("react_engine.requests.post")
+    def test_format_retry_counter_resets_after_valid_step(self, mock_post):
+        """格式错误按"连续"计：中间有合法步骤则重新计数。"""
+        mock_post.side_effect = [
+            _resp("bad"),
+            _resp(_action("read_file", path="a")),
+            _resp("bad"),
+            _resp("bad"),
+            _resp("Final Answer: ok"),
+        ]
+        with patch("react_engine.registry.execute", return_value="内容"):
+            engine, ctx = make_engine()
+            assert engine.chat("q") == "ok"
+        assert mock_post.call_count == 5
+
+    @patch("react_engine.requests.post")
+    def test_action_without_input_is_format_error(self, mock_post):
+        mock_post.side_effect = [
+            _resp("Thought: t\nAction: read_file"),
+            _resp("Final Answer: ok"),
+        ]
+        engine, ctx = make_engine()
+        assert engine.chat("q") == "ok"
+        assert "缺少 Action Input" in engine.step_log[0]["reason"]
+
+    @patch("react_engine.requests.post")
+    def test_invalid_json_input_is_format_error(self, mock_post):
+        mock_post.side_effect = [
+            _resp('Thought: t\nAction: read_file\nAction Input: {path: a.py}'),
+            _resp("Final Answer: ok"),
+        ]
+        engine, ctx = make_engine()
+        assert engine.chat("q") == "ok"
+        assert "不是合法 JSON 对象" in engine.step_log[0]["reason"]
+
+    @patch("react_engine.requests.post")
+    def test_empty_object_input_is_valid(self, mock_post):
+        """{} 是合法输入（无参数工具），不得判为格式错误。"""
+        mock_post.side_effect = [
+            _resp("Thought: t\nAction: get_current_dir\nAction Input: {}"),
+            _resp("Final Answer: ok"),
+        ]
+        with patch("react_engine.registry.execute", return_value="/tmp") as ex:
+            engine, ctx = make_engine()
+            assert engine.chat("q") == "ok"
+        ex.assert_called_once()
+        assert engine.step_log[0]["phase"] == "action"
+
+    @patch("react_engine.requests.post")
+    def test_unknown_tool_is_format_error(self, mock_post):
+        mock_post.side_effect = [
+            _resp(_action("todo_write", items=["x"])),
+            _resp("Final Answer: ok"),
+        ]
+        with patch("react_engine.registry.execute") as ex:
+            engine, ctx = make_engine()
+            assert engine.chat("q") == "ok"
+        ex.assert_not_called()
+        assert "未知工具 todo_write" in engine.step_log[0]["reason"]
+
+    @patch("react_engine.requests.post")
+    def test_model_error_returned_directly_not_recorded(self, mock_post):
+        """_call_model 返回 [错误] 时直接返回该错误，不 _record_turn。"""
+        import requests
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        events = []
+        engine, ctx = make_engine(on_step=lambda e: events.append(e))
+        result = engine.chat("q")
+        assert result.startswith("[错误] 无法连接到 Ollama")
+        assert ctx.recorded == []
+        assert engine.step_log == [{"step": 1, "phase": "error", "message": result}]
+        assert any(e.get("phase") == "error" for e in events)
+        assert "[错误]" in engine.get_step_summary()
+
+    @patch("react_engine.requests.post")
+    def test_model_error_mid_task_not_recorded(self, mock_post):
+        import requests
+        mock_post.side_effect = [_resp(_action("read_file", path="a")), requests.exceptions.Timeout()]
+        with patch("react_engine.registry.execute", return_value="内容"):
+            engine, ctx = make_engine()
+            result = engine.chat("q")
+        assert result.startswith("[错误] 模型响应超时")
+        assert ctx.recorded == []
+
+
+class TestRepeatDetection:
+    """P1-4：相同 (tool, canonical_json(args)) 第 2 次回灌提示，第 3 次强制总结"""
+
+    @patch("react_engine.requests.post")
+    def test_second_repeat_feeds_hint_without_executing(self, mock_post):
+        # 参数键序不同也算相同调用
+        mock_post.side_effect = [
+            _resp('Thought: t\nAction: read_file\nAction Input: {"path": "a", "limit": 10}'),
+            _resp('Thought: t\nAction: read_file\nAction Input: {"limit": 10, "path": "a"}'),
+            _resp("Final Answer: 用已有结果"),
+        ]
+        events = []
+        with patch("react_engine.registry.execute", return_value="内容") as ex:
+            engine, ctx = make_engine(on_step=lambda e: events.append(e))
+            assert engine.chat("q") == "用已有结果"
+        assert ex.call_count == 1
+        rep = [l for l in engine.step_log if l["phase"] == "repeat"]
+        assert len(rep) == 1 and rep[0]["count"] == 2 and rep[0]["tool"] == "read_file"
+        sent = mock_post.call_args.kwargs["json"]["messages"]
+        assert any(m["content"].startswith("Observation: [重复调用]") for m in sent if m["role"] == "user")
+        assert any(e.get("phase") == "repeat" for e in events)
+        assert "[重复] read_file 第 2 次" in engine.get_step_summary()
+        assert "重复调用 1 次" in ctx.recorded[0]["trace"]
+
+    @patch("react_engine.requests.post")
+    def test_third_repeat_forces_summary_and_stops(self, mock_post):
+        mock_post.side_effect = [
+            _resp(_action("read_file", path="a")),
+            _resp(_action("read_file", path="a")),
+            _resp(_action("read_file", path="a")),
+            _resp("已完成：读取 a；未完成：其余；建议：换方法"),
+        ]
+        with patch("react_engine.registry.execute", return_value="内容") as ex:
+            engine, ctx = make_engine()
+            result = engine.chat("q")
+        assert ex.call_count == 1
+        assert mock_post.call_count == 4
+        assert result.startswith("⚠️ 未完成（检测到重复调用，已终止）")
+        assert "换方法" in result
+        forced = [l for l in engine.step_log if l["phase"] == "forced_summary"]
+        assert forced and forced[0]["reason"] == "repeat"
+        summary_req = mock_post.call_args.kwargs["json"]["messages"][-1]
+        assert "重复" in summary_req["content"]
+        assert len(ctx.recorded) == 1
+
+    @patch("react_engine.requests.post")
+    def test_different_args_not_counted_as_repeat(self, mock_post):
+        mock_post.side_effect = [
+            _resp(_action("read_file", path="a")),
+            _resp(_action("read_file", path="b")),
+            _resp(_action("read_file", path="c")),
+            _resp("Final Answer: ok"),
+        ]
+        with patch("react_engine.registry.execute", return_value="内容") as ex:
+            engine, ctx = make_engine()
+            assert engine.chat("q") == "ok"
+        assert ex.call_count == 3
+        assert not any(l["phase"] == "repeat" for l in engine.step_log)
+
+
+class TestTurnBudget:
+    """P1-5：Observation 截断 + 本轮预算折叠（用小 num_ctx 触发）"""
+
+    def test_observation_truncated_with_note(self):
+        from react_engine import _truncate_observation
+        long = "x" * 3500
+        out = _truncate_observation(long)
+        assert out.startswith("x" * 3000)
+        assert "Observation 已截断" in out and "原长 3500" in out
+        assert _truncate_observation("short") == "short"
+        assert _truncate_observation("a" * 10, limit=4).startswith("aaaa\n…")
+
+    @patch("react_engine.requests.post")
+    def test_long_observation_truncated_in_messages(self, mock_post):
+        mock_post.side_effect = [_resp(_action("read_file", path="a")), _resp("Final Answer: ok")]
+        with patch("react_engine.registry.execute", return_value="y" * 5000):
+            engine, ctx = make_engine()
+            engine.chat("q")
+        obs = [m for m in engine.messages if m["role"] == "user" and m["content"].startswith("Observation: y")]
+        assert len(obs) == 1
+        assert "已截断" in obs[0]["content"]
+        assert len(engine.step_log[0]["observation"]) < 3200
+
+    def test_turn_budget_formula(self):
+        from conversation_context import estimate_tokens, estimate_messages_tokens
+        ctx = FakeContext(messages=[{"role": "user", "content": "旧问题" * 50},
+                                    {"role": "assistant", "content": "旧回答" * 50}], summary="摘要" * 20)
+        engine, _ = make_engine(context=ctx, model="qwen3.5:4b")  # num_ctx 16384
+        engine._load_context("新问题")
+        base = ctx.build_messages(system_prompt=engine.system_prompt)
+        expected = 16384 - estimate_tokens(engine.system_prompt) - estimate_messages_tokens(base[1:]) - 4096
+        assert engine.turn_budget == expected
+        assert engine._turn_start == len(base)
+
+    def test_turn_budget_has_floor(self):
+        engine, _ = make_engine()
+        engine.num_ctx = 512
+        engine._load_context("q")
+        assert engine.turn_budget == 1024
+
+    @patch("react_engine.requests.post")
+    def test_budget_fold_keeps_recent_three_steps(self, mock_post):
+        """小预算下最早步骤的 Observation 折叠为一行摘要，最近 3 步保持完整。"""
+        big = ("这是第{k}步的很长的观察结果，" * 40)
+        mock_post.side_effect = [
+            _resp(_action("read_file", path=f"f{k}")) for k in range(1, 6)
+        ] + [_resp("Final Answer: ok")]
+        obs_iter = iter(big.format(k=k) for k in range(1, 6))
+        events = []
+        with patch("react_engine.registry.execute", side_effect=lambda *a, **k: next(obs_iter)):
+            engine, ctx = make_engine(on_step=lambda e: events.append(e))
+            engine.num_ctx = 512  # 触发预算下限 1024 token
+            assert engine.chat("q") == "ok"
+
+        obs_msgs = [m for m in engine.messages if m["role"] == "user" and m["content"].startswith("Observation:")]
+        assert len(obs_msgs) == 5
+        folded = [m for m in obs_msgs if "结果已折叠" in m["content"]]
+        intact = [m for m in obs_msgs if "结果已折叠" not in m["content"]]
+        # 最近 3 步（3、4、5）必须完整，最早的步骤被折叠
+        assert len(intact) >= 3
+        assert "第3步" in intact[-3]["content"] and "第4步" in intact[-2]["content"] and "第5步" in intact[-1]["content"]
+        assert folded and "第 1 步 tool=read_file 结果已折叠，要点：" in folded[0]["content"]
+        assert len(folded[0]["content"]) < 300  # 一行摘要（前 200 字）
+        # 系统提示原样保留
+        assert engine.messages[0]["role"] == "system" and engine.messages[0]["content"] == engine.system_prompt
+        # step_log / 事件
+        fold_logs = [l for l in engine.step_log if l["phase"] == "budget_fold"]
+        assert fold_logs and 1 in fold_logs[0]["folded_steps"]
+        assert any(e.get("phase") == "budget_fold" for e in events)
+        assert "[折叠]" in engine.get_step_summary()
+        assert "上下文折叠" in ctx.recorded[0]["trace"]
+
+    @patch("react_engine.requests.post")
+    def test_no_fold_when_within_budget(self, mock_post):
+        mock_post.side_effect = [_resp(_action("read_file", path="a")), _resp("Final Answer: ok")]
+        with patch("react_engine.registry.execute", return_value="short"):
+            engine, ctx = make_engine()
+            engine.chat("q")
+        assert not any(l["phase"] == "budget_fold" for l in engine.step_log)
+
+    def test_enforce_budget_stops_once_within_budget(self):
+        """折叠够用即停：只折叠最早一步，第 2 步保持完整。"""
+        engine, _ = make_engine()
+        engine._load_context("q")
+        for k in range(1, 6):
+            engine._push_observation(k, "read_file", "Thought", f"第{k}步" + "内容" * 200, "")
+        # 折叠前 5 步都完整；把预算设为"只需折叠 1 步就够"的值
+        tokens = engine._turn_tokens()
+        engine.turn_budget = tokens - 100
+        folded = engine._enforce_budget(6)
+        assert folded == [1]
+        assert engine._obs_index[0]["folded"] and not engine._obs_index[1]["folded"]
+        assert engine._enforce_budget(7) == []  # 已在预算内，不再折叠
+
+    def test_enforce_budget_never_folds_protected_steps(self):
+        engine, _ = make_engine()
+        engine._load_context("q")
+        engine.turn_budget = 1  # 极小预算
+        for k in range(1, 4):
+            engine._push_observation(k, "read_file", "Thought", "内容" * 100, "")
+        # 只有 3 步，全部受保护 → 不折叠
+        assert all(not e["folded"] for e in engine._obs_index)
+        assert not any(l["phase"] == "budget_fold" for l in engine.step_log)
 
 
 class TestOnStepCallbackCoverage:
@@ -708,9 +1048,47 @@ class TestUserConfirmation:
         assert "好的，不写入" in result
 
 
+    @patch("react_engine.requests.post")
+    @patch("react_engine.registry")
+    def test_command_user_confirms_then_executes(self, mock_registry, mock_post):
+        """medium 风险命令（pip install）用户确认后执行。"""
+        mock_post.side_effect = [_resp(_action("execute_command", command="pip install rich")),
+                                 _resp("Final Answer: 装好了")]
+        mock_registry.execute.return_value = "Successfully installed"
+        mock_registry.tools = {"execute_command": {"safe": False}}
+        mock_registry.get_descriptions.return_value = "tools"
+        engine, ctx = make_engine(on_confirm=lambda d: True)
+        assert engine.chat("安装 rich") == "装好了"
+        mock_registry.execute.assert_called_once()
+        assert engine.step_log[0]["confirmed"] is True
+        assert engine.step_log[0]["safety"]["risk_level"] == "medium"
+
+    @patch("react_engine.requests.post")
+    @patch("react_engine.registry")
+    def test_tool_confirm_required_user_accepts(self, mock_registry, mock_post):
+        mock_post.side_effect = [_resp(_action("write_file", path="a.txt", content="x")),
+                                 _resp("Final Answer: 写好了")]
+        mock_registry.execute.side_effect = ['[CONFIRM_REQUIRED] write_file|{"path": "a.txt"}', "[成功] 写入"]
+        mock_registry.tools = {"write_file": {"safe": False}}
+        mock_registry.get_descriptions.return_value = "tools"
+        engine, ctx = make_engine(on_confirm=lambda d: True)
+        assert engine.chat("写文件") == "写好了"
+        assert mock_registry.execute.call_count == 2
+        assert mock_registry.execute.call_args.kwargs["auto_confirm"] is True
+        assert engine.step_log[0]["confirmed"] is True and engine.step_log[0]["observation"] == "[成功] 写入"
+
+
 class TestUserInterrupt:
-    """测试用户中断逻辑 - 这个路径很难测试，跳过"""
-    pass
+    """测试用户中断"""
+
+    @patch("react_engine.requests.post")
+    def test_stop_before_step_returns_interrupt_without_recording(self, mock_post):
+        engine, ctx = make_engine()
+        engine.reset_stop = lambda: None  # 保留已置位的停止标志
+        engine.stop()
+        assert engine.chat("q") == "[用户中断] 任务已停止。"
+        mock_post.assert_not_called()
+        assert ctx.recorded == []
 
 
 class TestSetModelAndThink:

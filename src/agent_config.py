@@ -18,6 +18,22 @@ def _default_model() -> str:
         return "qwen3.5:4b"
 
 
+# 各角色的真实工具白名单（与 agents/*.py 的 ALLOWED_TOOLS 一致，传给 ReActEngine.allowed_tools）
+CODE_AGENT_TOOLS = (
+    "read_file", "write_file", "execute_command", "list_directory",
+    "search_files", "ast_search", "analyze_project_structure", "get_current_dir",
+)
+TEST_AGENT_TOOLS = ("read_file", "write_file", "execute_command", "search_files", "code_quality_check")
+DOC_AGENT_TOOLS = (
+    "read_file", "write_file", "list_directory", "search_files", "query_knowledge_base", "web_search",
+)
+AUDIT_AGENT_TOOLS = (
+    "read_file", "search_files", "code_quality_check", "ast_search", "git_analyze", "execute_command",
+)
+# RAGAgent 不走 ReAct，直接调用 rag_pipeline.answer_question；此处仅作说明
+RAG_AGENT_TOOLS = ("query_knowledge_base", "web_search")
+
+
 class AgentConfigManager:
     """Agent配置管理器"""
     
@@ -53,7 +69,7 @@ class AgentConfigManager:
                 model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["code_generation", "code_refactoring", "bug_fixing", "code_review", "file_operations"],
-                specialized_tools=["code_analyzer", "refactoring_tool", "performance_profiler"],
+                specialized_tools=list(CODE_AGENT_TOOLS),
                 max_iterations=50,
                 timeout=300,
                 enabled=True,
@@ -65,7 +81,7 @@ class AgentConfigManager:
                 model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["knowledge_retrieval", "document_search", "knowledge_extraction", "literature_review"],
-                specialized_tools=["advanced_search", "knowledge_graph", "document_comparison"],
+                specialized_tools=list(RAG_AGENT_TOOLS),
                 max_iterations=50,
                 timeout=300,
                 enabled=True,
@@ -77,7 +93,7 @@ class AgentConfigManager:
                 model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["testing", "test_generation", "coverage_analysis", "quality_assessment"],
-                specialized_tools=["test_generator", "coverage_analyzer", "mock_tool"],
+                specialized_tools=list(TEST_AGENT_TOOLS),
                 max_iterations=50,
                 timeout=300,
                 enabled=True,
@@ -89,7 +105,7 @@ class AgentConfigManager:
                 model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["documentation", "api_documentation", "technical_writing", "user_guide"],
-                specialized_tools=["doc_generator", "format_converter", "doc_validator"],
+                specialized_tools=list(DOC_AGENT_TOOLS),
                 max_iterations=50,
                 timeout=300,
                 enabled=True,
@@ -101,7 +117,7 @@ class AgentConfigManager:
                 model=_default_model(),
                 host="http://localhost:11434",
                 capabilities=["audit", "security_check", "compliance_verification", "performance_audit"],
-                specialized_tools=["security_scanner", "code_quality_tool", "dependency_checker"],
+                specialized_tools=list(AUDIT_AGENT_TOOLS),
                 max_iterations=50,
                 timeout=300,
                 enabled=True,

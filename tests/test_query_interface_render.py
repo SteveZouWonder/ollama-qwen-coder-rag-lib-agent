@@ -37,6 +37,26 @@ class TestOnStepCallback:
         captured = capsys.readouterr()
         assert "[1/10]" in captured.out
 
+    @patch("query_interface.HAS_RICH", False)
+    def test_on_step_robustness_phases_have_markers(self, capsys):
+        """P1-8：格式重试 / 重复 / 折叠 / 强制总结 / 错误 事件有专属标记而非 [?]。"""
+        expected = {
+            "format_retry": "[~]", "repeat": "[R]", "budget_fold": "[F]",
+            "forced_summary": "[!!]", "error": "[E]",
+        }
+        for phase, mark in expected.items():
+            on_step_callback({"step": 3, "phase": phase, "message": f"Step 3: {phase}"})
+            out = capsys.readouterr().out
+            assert mark in out and f"Step 3: {phase}" in out and "[?]" not in out
+
+    @patch("query_interface.HAS_RICH", True)
+    @patch("query_interface.console")
+    def test_on_step_robustness_phase_rich(self, mock_console):
+        from query_interface import STEP_PHASE_COLOR
+        on_step_callback({"step": 2, "phase": "budget_fold", "message": "折叠"})
+        last = str(mock_console.print.call_args_list[-1])
+        assert "[F]" in last and "折叠" in last and STEP_PHASE_COLOR["budget_fold"] in last
+
 
 class TestOnConfirmCallback:
     """测试确认回调"""
@@ -390,3 +410,49 @@ class TestAskProgressCallback:
             original_callback({"phase": "unknown", "message": "未知阶段"})
         finally:
             Config.SHOW_PROGRESS = original_value
+
+
+class TestPrintSourcesNumbered:
+    """F8 P2-3：来源按引用编号显示（与回答中的 [n]/[Wn] 对应）。"""
+
+    @patch("query_interface.HAS_RICH", False)
+    def test_rag_sources_show_ref(self, capsys):
+        print_rag_sources([
+            {"file": "a.pdf", "score": 0.85, "content": "片段", "ref": "1"},
+            {"file": "k.md", "score": 0.49, "content": "关键词", "ref": "2", "retriever": "bm25"},
+        ])
+        out = capsys.readouterr().out
+        assert "[1] a.pdf (0.850)" in out and "[2] k.md" in out
+
+    @patch("query_interface.HAS_RICH", False)
+    def test_rag_sources_without_ref_use_index(self, capsys):
+        print_rag_sources([{"file": "a.pdf", "score": None, "content": "片段"}])
+        assert "[1] a.pdf" in capsys.readouterr().out
+
+    @patch("query_interface.HAS_RICH", True)
+    @patch("query_interface.console")
+    def test_rag_sources_rich_with_note_and_bm25(self, mock_console):
+        print_rag_sources([
+            {"file": "a.pdf", "score": 0.5, "content": "x" * 120, "ref": "1", "rerank_note": "含售价"},
+            {"file": "k.md", "score": 0.49, "content": "y", "ref": "2", "retriever": "bm25"},
+        ])
+        table = mock_console.print.call_args.args[0]
+        cells = [str(c) for col in table.columns for c in col._cells]
+        assert "[1]" in cells and "[2]" in cells
+        assert any("含售价" in c for c in cells) and any("关键词" in c for c in cells)
+
+    @patch("query_interface.HAS_RICH", False)
+    def test_web_sources_show_w_ref(self, capsys):
+        from query_interface import print_web_sources
+        print_web_sources([{"title": "T", "url": "http://x", "ref": "W1"}, {"title": "U", "url": "http://y"}])
+        out = capsys.readouterr().out
+        assert "[W1] T" in out and "[W2] U" in out
+
+    @patch("query_interface.HAS_RICH", True)
+    @patch("query_interface.console")
+    def test_web_sources_rich(self, mock_console):
+        from query_interface import print_web_sources
+        print_web_sources([{"title": "T", "url": "http://x", "ref": "W1"}])
+        table = mock_console.print.call_args.args[0]
+        cells = [str(c) for col in table.columns for c in col._cells]
+        assert "[W1]" in cells

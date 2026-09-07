@@ -12,6 +12,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .services import WebService, get_web_service
 
+# 对话页模式分段的「自动」标签（与 ui/chat.py 的 MODE_AUTO 保持一致）：
+# 服务层先判定意图再分发到 RAG / 单 Agent，UI 按 answer.data["routed_mode"] 渲染。
+MODE_AUTO = "自动"
+
 try:  # 上下文状态/提示的纯格式化函数（核心层提供，前端只接线）
     from conversation_context import format_context_status, format_suggest_hint, format_tokens
 except ImportError:  # pragma: no cover - 以 src.* 方式导入时的兜底
@@ -113,35 +117,62 @@ class ProgressTracker:
 # ==================== 纯格式化辅助（可测试）====================
 
 def format_sources(sources: List[Dict[str, Any]]) -> str:
-    """把 sources 列表渲染为 Markdown 文本。"""
+    """把 sources 列表渲染为 Markdown 文本（按引用编号 ``[1]``.. 显示，与答案中的标注对应）。"""
     if not sources:
         return "_无引用来源_"
     lines = ["### 引用来源", ""]
     for i, src in enumerate(sources, 1):
         score = src.get("score")
         score_str = f"（相似度 {score:.3f}）" if isinstance(score, (int, float)) else ""
+        if src.get("retriever") == "bm25":
+            score_str += "（关键词命中）"
         file_name = src.get("file", "未知")
         content = (src.get("content") or "").strip()
-        lines.append(f"**{i}. {file_name}** {score_str}")
+        ref = str(src.get("ref") or i)
+        # 代码块：标题带 `符号` · L起-止，内容用对应语言的围栏渲染（可定位、可复制）
+        loc = ""
+        if src.get("symbol"):
+            loc += f" · `{src['symbol']}`"
+        if src.get("start_line") is not None:
+            loc += f" · L{src['start_line']}-{src.get('end_line') or src['start_line']}"
+        if src.get("part"):
+            loc += f"（{src['part']}）"
+        lines.append(f"**[{ref}] {file_name}**{loc} {score_str}".rstrip())
+        note = (src.get("rerank_note") or "").strip()
+        if note:
+            lines.append(f"_相关性：{note}_")
         if content:
-            lines.append(f"> {content}")
+            if src.get("symbol") or str(src.get("chunk_strategy", "")).startswith("code"):
+                lang = str(src.get("language") or "")
+                lines.append(f"```{lang}")
+                lines.append(content.replace("```", "ˋˋˋ"))
+                lines.append("```")
+            else:
+                lines.append(f"> {content}")
         lines.append("")
     return "\n".join(lines).rstrip()
 
 
 def format_web_sources(sources: List[Dict[str, Any]]) -> str:
-    """把网络来源列表渲染为 Markdown 文本（与知识库来源明确区分）。"""
+    """把网络来源列表渲染为 Markdown 文本（按引用编号 ``[W1]``.. 显示，与知识库来源明确区分）。"""
     if not sources:
         return ""
     lines = ["### 🌐 网络来源", ""]
     for i, src in enumerate(sources, 1):
         title = src.get("title", "") or src.get("url", "")
         url = src.get("url", "")
+        ref = str(src.get("ref") or f"W{i}")
         if url:
-            lines.append(f"{i}. [{title}]({url})")
+            lines.append(f"- **[{ref}]** [{title}]({url})")
         else:
-            lines.append(f"{i}. {title}")
+            lines.append(f"- **[{ref}]** {title}")
     return "\n".join(lines)
+
+
+def format_fallback_hint(question: str) -> str:
+    """知识库与网络均无结果时的提示文案（旁边显示「用单 Agent 重试」按钮）。"""
+    q = (question or "").strip()
+    return f"📭 知识库与网络均未找到相关内容。可让单 Agent 用工具进一步查找：`/agent {q}`" if q else ""
 
 
 def format_meta_overview(meta: Dict[str, Any]) -> str:
@@ -195,6 +226,7 @@ def format_stats(stats: Dict[str, Any]) -> str:
         f"- Embedding 模型: `{stats.get('embed_model', '?')}`\n"
         f"- 分块大小: {stats.get('chunk_size', '?')}\n"
         f"- 分块重叠: {stats.get('chunk_overlap', '?')}\n"
+        f"- 代码分块: {stats.get('code_chunking', '?')}\n"
         f"- 检索数量 TOP_K: {stats.get('top_k', '?')}"
     )
 
@@ -250,28 +282,14 @@ def format_switch_result(result: Dict[str, Any]) -> str:
 
 
 def format_multi_agent_result(result: Dict[str, Any]) -> str:
-    """把多 Agent 协作结果渲染为 Markdown 文本。"""
-    if not result.get("success"):
-        err = result.get("error", "")
-        summary = result.get("summary", "协作失败")
-        return f"**❌ {summary}**\n\n{err}".strip()
+    """把多 Agent 协作结果渲染为 Markdown 文本（与 CLI ``/multi`` 共用渲染器）。
 
-    lines = [f"**✅ {result.get('summary', '协作完成')}**", ""]
-    stats = (
-        f"成功 {result.get('successful_results', 0)} / "
-        f"共 {result.get('total_results', 0)}"
-    )
-    lines.append(stats)
-    lines.append("")
-    for r in result.get("results", []):
-        status = "✅" if r.get("success") else "❌"
-        agent_id = r.get("agent_id", "?")
-        output = (r.get("output") or "").strip()
-        lines.append(f"{status} **{agent_id}**")
-        if output:
-            lines.append(f"> {output}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    展示综合回答 ``answer`` + 各 Agent 摘要（步数/工具/耗时）+ 结构化来源，
+    兼容 COMPETITIVE 模式的 ``best_result`` / ``all_results`` 结构。
+    """
+    from collaboration.presenter import format_multi_agent_result as _render
+
+    return _render(result if isinstance(result, dict) else {})
 
 
 _SESSION_STATUS_ICON = {"active": "🟢 活跃", "archived": "📦 已归档", "deleted": "🗑️ 已删除"}
@@ -361,8 +379,27 @@ def format_step_log(step_log: List[Dict[str, Any]]) -> str:
             lines.append(f"- Step {step} 🛡️ 危险命令被拦截")
         elif phase == "rejected":
             lines.append(f"- Step {step} ⛔ 用户拒绝执行")
+        elif phase == "format_retry":
+            reason = (log.get("reason") or "").strip()
+            lines.append(f"- Step {step} 🔁 输出格式错误，回灌重试（第 {log.get('retry', '?')} 次）"
+                         + (f"：{reason[:80]}" if reason else ""))
+        elif phase == "repeat":
+            lines.append(f"- Step {step} ♻️ 重复调用 `{log.get('tool', '?')}`（第 {log.get('count', '?')} 次相同参数）")
+        elif phase == "budget_fold":
+            folded = "、".join(str(s) for s in log.get("folded_steps", []))
+            lines.append(f"- Step {step} 🗜️ 上下文超预算，已折叠第 {folded} 步的 Observation")
+        elif phase == "forced_summary":
+            why = "步数已用尽" if log.get("reason") == "max_iterations" else "重复调用终止"
+            lines.append(f"- Step {step} ⚠️ {why}，请模型总结已完成/未完成/建议")
+        elif phase == "error":
+            lines.append(f"- Step {step} ❌ {log.get('message', '模型调用失败')}")
         elif phase == "final":
-            lines.append(f"- Step {step} 🏁 给出最终答案")
+            if log.get("forced"):
+                lines.append(f"- Step {step} ⚠️ 未完成，强制总结收尾")
+            elif log.get("format_abnormal"):
+                lines.append(f"- Step {step} 🏁 格式异常，按现有文本收尾（可能不完整）")
+            else:
+                lines.append(f"- Step {step} 🏁 给出最终答案")
     return "\n".join(lines) if len(lines) > 2 else ""
 
 
@@ -460,7 +497,10 @@ def format_file_info(info: Dict[str, Any]) -> str:
         ("访问次数", info.get("access_count", 0)),
         ("文档数", info.get("document_count", 0)),
         ("片段数", info.get("chunk_count", 0)),
+        ("分块策略", info.get("chunking", "") or "文本"),
     ]
+    if info.get("symbol_count"):
+        rows.append(("符号数", info.get("symbol_count", 0)))
     tags = info.get("tags") or []
     if tags:
         rows.append(("标签", ", ".join(map(str, tags))))
@@ -486,7 +526,8 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("向量库路径", f"`{info.get('vector_db_path', '')}`"),
         ("会话存储", f"`{info.get('session_storage', '')}`"),
         ("TOP_K", info.get("top_k", "")),
-        ("分块大小 / 重叠", f"{info.get('chunk_size', '')} / {info.get('chunk_overlap', '')}"),
+        ("文本分块 / 重叠", f"{info.get('chunk_size', '')} / {info.get('chunk_overlap', '')}"),
+        ("代码分块", info.get("code_chunking", "") or "—"),
         ("相似度阈值", info.get("similarity_cutoff", "")),
         ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
         ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
@@ -508,7 +549,9 @@ def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) 
     if file_count is not None:
         cards.append(card("已登记文件", file_count))
     cards.append(card("Embedding", stats.get("embed_model", "?"), small=True))
-    cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}", small=True))
+    code = str(stats.get("code_chunking", "") or "")
+    code_label = f" / 代码 {stats.get('code_chunk_max_chars', '')}".rstrip() if code.startswith("enabled") else ""
+    cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}{code_label}", small=True))
     cards.append(card("TOP_K", stats.get("top_k", "?")))
     return f'<div class="cb-cards">{"".join(cards)}</div>'
 
@@ -932,6 +975,35 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             side = "### 执行过程\n" + "\n".join(steps) if steps else ""
             return answer, side
 
+        if mode == MODE_AUTO:
+            # 自动路由（F8 P3-3）：服务层判定后分发；按 routed_mode 选择渲染路径
+            answer = ""
+            steps: List[str] = []
+            route_line = ""
+            final = None
+            for evt in service.chat_auto_stream(
+                message, enable_web_search=enable_web, auto_confirm=auto_confirm,
+                interactive_confirm=False,
+            ):
+                if evt.kind == "progress" and isinstance(evt.data, dict) and evt.data.get("phase") == "route":
+                    route_line = evt.message
+                elif evt.kind == "step":
+                    steps.append(f"- {evt.message}")
+                elif evt.kind == "answer":
+                    final = evt
+                elif evt.kind == "error":
+                    return "", f"[错误] {evt.message}"
+            if final is None:
+                return "", "[错误] 未获得回答"
+            data = final.data if isinstance(final.data, dict) else {}
+            if data.get("routed_mode") == "agent":
+                side = "### 执行过程\n" + "\n".join(steps) if steps else ""
+                return final.message or "", (route_line + "\n\n" + side).strip()
+            if data.get("kind") == "meta":
+                return format_meta_overview(data.get("meta") or {}), route_line
+            side = format_rag_side({"sources": data.get("sources", []), "web_sources": data.get("web_sources", [])})
+            return final.message or "", (route_line + "\n\n" + side).strip()
+
         # 默认 RAG 模式（与 CLI /ask 编排一致：可选网络搜索、双区综合、元查询直答）
         result = service.rag_query(message, enable_web_search=enable_web)
         # 元查询：直接展示知识库概览
@@ -980,7 +1052,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     ):
         """流式对话入口（供 Gradio 使用）。
 
-        yield 六元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md)``：
+        yield 七元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md, retry_md)``：
 
         - ``history``：Chatbot（messages 格式）的完整多轮消息列表——会话内既有
           历史 + 本轮用户消息，完成后追加助手回答；
@@ -992,21 +1064,28 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         - ``sources_md``：完成后的引用来源 / 多 Agent 结果明细；
         - ``hint_md``：健康度建议（如"对话较长，建议新建会话"），空串表示无提示；
         - ``confirm_md``：单 Agent 遇到危险操作时的审批卡片文案（非空时 UI 显示
-          「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串。
+          「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串；
+        - ``retry_md``：RAG 回答 ``kind="fallback"``（知识库无相关片段且网络无结果）
+          时的提示文案，非空时 UI 显示「用单 Agent 重试」按钮（切模式并用同一问题重发）。
 
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
         并绑定到 ``session_id``（每个浏览器标签页自己的会话）。多 Agent 可指定
         ``collab_mode``（hierarchy/parallel/sequential/competitive，空为自动）。
+
+        「自动」模式（默认）：服务层 ``chat_auto_stream`` 先判定意图再分发到 RAG /
+        单 Agent，``answer.data["routed_mode"]`` 决定渲染路径（RAG 来源面板 / Agent
+        执行摘要），状态行追加「· 实际模式：RAG 检索|单 Agent」；用户手动选其他模式
+        时不判定。
         """
         message = (message or "").strip()
         session_id = (session_id or "").strip()
         history = _load_history(session_id)
         if not message:
-            yield history, "_请输入内容_", "", "", "", ""
+            yield history, "_请输入内容_", "", "", "", "", ""
             return
 
         if service.is_running() is True:
-            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", ""
+            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", "", ""
             return
 
         activity, hint = _startup_hint()
@@ -1016,7 +1095,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         history = history + [{"role": "user", "content": message}]
 
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield history, tracker.render_status(), "", "", "", ""
+        yield history, tracker.render_status(), "", "", "", "", ""
 
         if mode == "多 Agent 协作":
             stream = service.multi_agent_stream(
@@ -1031,6 +1110,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                 interactive_confirm=not auto_confirm,
             )
             title = "执行过程"
+        elif mode == MODE_AUTO:
+            # 自动路由（F8 P3-3）：服务层先判定意图再分发；answer.data["routed_mode"] 决定渲染路径
+            stream = service.chat_auto_stream(
+                message, enable_web_search=enable_web, auto_confirm=auto_confirm,
+                session_id=session_id or None, interactive_confirm=True,
+            )
+            title = "处理过程"
         else:
             stream = service.rag_query_stream(
                 message, enable_web_search=enable_web, session_id=session_id or None
@@ -1043,19 +1129,19 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             if evt.kind == "confirm":
                 confirm_md = format_confirm_request(evt.data if isinstance(evt.data, dict) else {})
                 tracker.current = "⏸️ 等待你确认危险操作…"
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
             elif evt.kind in ("progress", "step"):
                 confirm_md = ""
                 tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", "", ""
             elif evt.kind == "heartbeat":
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
                 yield (
                     history, tracker.render_status("cancelled"),
-                    tracker.render_steps(title, done=True), "", "", "",
+                    tracker.render_steps(title, done=True), "", "", "", "",
                 )
                 return
             elif evt.kind == "error":
@@ -1066,17 +1152,25 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                     "",
                     "",
                     "",
+                    "",
                 )
                 return
 
         steps_md = tracker.render_steps(title, done=True)
         if final is None:
-            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", ""
+            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", "", ""
             return
 
         data = final.data if isinstance(final.data, dict) else {}
         ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
-        status = with_context_status(tracker.render_status("done"), ctx)
+        status = tracker.render_status("done")
+        # 自动模式：状态行追加实际模式，并按 routed_mode 切换到对应渲染路径
+        render_mode = mode
+        if mode == MODE_AUTO:
+            routed = data.get("routed_mode") or "rag"
+            render_mode = "单 Agent" if routed == "agent" else "RAG 检索"
+            status = f"{status} · 实际模式：{render_mode}"
+        status = with_context_status(status, ctx)
 
         # 健康度提示：每会话只提示一次（展示后即标记）
         hint_md = format_suggest_hint(ctx)
@@ -1091,21 +1185,25 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
         if mode == "多 Agent 协作":
             content = prefix + format_multi_agent_result(data)
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
 
-        if mode == "单 Agent":
+        if render_mode == "单 Agent":
             content = prefix + (final.message or "")
             summary = format_step_log(data.get("step_log") or [])
             if summary:
                 steps_md = f"{steps_md}\n\n{summary}" if steps_md else summary
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
 
         if data.get("kind") == "meta":
             content = format_meta_overview(data.get("meta") or {})
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
             return
+        # 失败回退：知识库与网络均无结果 → 状态行下方出现「用单 Agent 重试」按钮
+        retry_q = ""
+        if data.get("kind") == "fallback":
+            retry_q = format_fallback_hint(data.get("fallback_question") or message)
         yield (
             history + [{"role": "assistant", "content": prefix + (final.message or "")}],
             status,
@@ -1118,6 +1216,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             ),
             hint_md,
             "",
+            retry_q,
         )
 
     def on_resolve_confirm(approved: bool) -> str:
@@ -1177,6 +1276,53 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_upload(file_paths: Optional[List[str]]) -> Tuple[str, str]:
         msg = service.add_documents(file_paths or [])
         return msg, format_stats(service.get_stats())
+
+    def _ingest_stream(**kwargs):
+        """流式入库公共实现：yield (结果 Markdown, 统计卡片 HTML)。
+
+        进行中：结果区显示「⏳ 切分 x/y · 嵌入 m/n · 已用时」+ 处理过程；完成后显示
+        结果文案（含代码分块摘要与一次性缺依赖提示）并刷新统计卡片。
+        """
+        tracker = ProgressTracker()
+        tracker.current = "准备入库…"
+        cards = on_stats_cards()  # 进行中保持原卡片不变，完成后刷新
+        yield tracker.render_status(), cards
+        final = None
+        for evt in service.ingest_stream(**kwargs):
+            if evt.kind == "progress":
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield tracker.render_status() + "\n\n" + tracker.render_steps("入库进度"), cards
+            elif evt.kind == "heartbeat":
+                yield tracker.render_status() + "\n\n" + tracker.render_steps("入库进度"), cards
+            elif evt.kind == "answer":
+                final = evt
+            elif evt.kind == "cancelled":
+                yield tracker.render_status("cancelled"), cards
+                return
+            elif evt.kind == "error":
+                yield f"❌ {evt.message}", on_stats_cards()
+                return
+        if final is None:
+            yield tracker.render_status("error", "未获得结果"), on_stats_cards()
+            return
+        msg = _fmt_result(str(final.message or ""))
+        ok = msg.startswith("✅")
+        took = f" · 用时 {format_elapsed(tracker.elapsed())}" if ok else ""
+        yield msg + took, on_stats_cards()
+
+    def on_upload_stream(file_paths: Optional[List[str]]):
+        """上传入库（流式进度）。"""
+        if not file_paths:
+            yield "💡 未选择任何文件", on_stats_cards()
+            return
+        yield from _ingest_stream(file_paths=list(file_paths))
+
+    def on_add_path_stream(path: str, file_types: str = ""):
+        """从路径追加入库（流式进度，等价 CLI /add）。"""
+        if not (path or "").strip():
+            yield "💡 请输入文件或目录路径", on_stats_cards()
+            return
+        yield from _ingest_stream(path=path, file_types=file_types)
 
     def on_refresh_stats() -> str:
         return format_stats(service.get_stats())
@@ -1421,7 +1567,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         """追加服务器上的文件/目录入库（等价 CLI /add）。返回 (结果, 统计卡片)。"""
         return _fmt_result(service.add_path(path, file_types)), on_stats_cards()
 
-    _FILE_HEADERS = ["文件", "大小", "类型", "上传时间", "片段", "访问", "路径"]
+    _FILE_HEADERS = ["文件", "大小", "类型", "上传时间", "片段 · 分块", "访问", "路径"]
 
     def on_file_table() -> List[List[Any]]:
         """文件表：首列文件名便于浏览，末列完整路径供选中行取值。"""
@@ -1429,9 +1575,10 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         for f in service.file_list():
             path = str(f.get("path", ""))
             name = path.rsplit("/", 1)[-1] if "/" in path else path
+            chunking = str(f.get("chunking_short") or "文本")
             rows.append([
                 name, f.get("size", ""), f.get("type", ""),
-                f.get("upload_time", ""), f.get("chunk_count", 0), f.get("access_count", 0), path,
+                f.get("upload_time", ""), f"{f.get('chunk_count', 0)} · {chunking}", f.get("access_count", 0), path,
             ])
         return rows
 
@@ -1681,7 +1828,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_sidebar_archive": on_sidebar_archive,
         "on_sidebar_delete": on_sidebar_delete,
         "on_stats_cards": on_stats_cards,
-        "on_add_path": on_add_path,
+        "on_add_path": on_add_path, "on_add_path_stream": on_add_path_stream, "on_upload_stream": on_upload_stream,
         "on_file_table": on_file_table,
         "on_file_info": on_file_info,
         "on_file_stats_md": on_file_stats_md,

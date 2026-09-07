@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 
 from config import TEMPORARY_FILE_TTL_HOURS
 
@@ -34,6 +34,9 @@ class FileMetadata:
     document_count: int = 0  # 知识库中的文档数量
     chunk_count: int = 0     # 知识库中的chunk数量
     tags: List[str] = None  # 文件标签
+    # F8 P4 代码感知分块：分块策略（"text" / "code(python)" / "text(fallback:...)"）与符号数
+    chunk_strategy: str = "text"
+    symbol_count: int = 0
 
     def __post_init__(self):
         if self.tags is None:
@@ -78,8 +81,9 @@ class FileMetadata:
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'FileMetadata':
-        """从字典创建实例"""
-        return cls(**data)
+        """从字典创建实例（忽略未知键，兼容新旧版本 JSON）"""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 class FileMetadataManager:
