@@ -14,22 +14,23 @@
 ```
 # 任务：F9 P1 —— Web 工具页止血与骨架
 
-先读 docs/features/f9-web-tools-revamp/REQUIREMENTS.md：§0 是已核实的代码事实（文件:行号），直接采信勿重新调研；§1 是本次需求与验收；§4 是 UI 规范；附录 A-5/A-6 是提示词模板。同目录 README.md 记录实现进度。
+先读 docs/features/f9-web-tools-revamp/REQUIREMENTS.md：§0 是已核实的代码事实（文件:行号，§0.3 为 CLI 现状），直接采信勿重新调研；§1 是本次需求与验收；§4 是 UI 规范（含 CLI 行）；附录 A-5/A-6 是提示词模板。同目录 README.md 记录实现进度。
 
 ## 范围
-§1 全部：P1-1 删网络搜索子页 → P1-2 DB 连接上下文透传（先写复现测试）→ P1-3 表列表与 Schema → P1-4 DB 结果表格化 → P1-5 Git 仪表盘 → P1-6 结果流转（用 AI 解读 / 发送到对话）。
+§1 全部：P1-1 删网络搜索子页（Web；CLI /web-* 保留）→ P1-2 DB 当前连接下沉到 database_tools/session.py（先写复现测试；Web + CLI /db-connect 单参数 + help 文案）→ P1-3 表列表与 Schema（Web 面板 + CLI /db-schema 无参列表）→ P1-4 DB 结果表格化 → P1-5 Git 仪表盘 → P1-6 结果流转（用 AI 解读 / 发送到对话）。
 「代码」「工作区」子页本次只挂结果流转行，不重构。
 
 ## 规则
 - 分支 feat/web-tools-revamp（已存在，直接提交）；禁止提交 master；完成后询问是否建 PR，不得自动建。
 - 分层：工具库 → src/web/services.py（唯一接引擎）→ src/web/app.py（format_*/build_handlers，可单测）→ src/web/ui/*（# pragma: no cover）。handler 返回值个数 = outputs 个数。
-- 不新增/改名 registry 工具；database_get_schema 仅放宽 table="" 语义。
+- 不新增/改名 registry 工具；database_get_schema 仅放宽 table="" 语义；database_* 显式传 database 时优先于当前连接。
+- Web 与 CLI 共用逻辑放共享层（database_tools / git_integration / agent_tools），两端都要验证；改 CLI 行为必须同步 print_help / TUTORIAL_TEXT。
 - LLM 长任务必须经 WebService._bridge；is_running() 时拒绝。新提示词短、think=False、num_predict 限额。
 - 测试：./venv/bin/python -m pytest -q -n 4，覆盖 ≥80%；Mock Ollama；tmp_path 隔离；参考 tests/test_web_services.py、tests/test_web_app.py。
-- 浏览器验证：cd src && ../venv/bin/python -c "import web.app as a; a.launch(server_port=7861)"，playwright chromium 截图四个子页，无 console error。
+- 浏览器验证：cd src && ../venv/bin/python -c "import web.app as a; a.launch(server_port=7861)"，playwright chromium 截图四个子页，无 console error。CLI 验证：/db-connect /tmp/t.db → /db-execute → /db-query → /db-schema 贴终端输出。
 
 ## 完成后
-更新 CHANGELOG.md [Unreleased]（新增/修复/改进）、README.md 工具页段落、docs/features/f7-web-ui/README.md:31、docs/development/ai-assistant/TOOL_USAGE.md:70 连接描述、同目录 README.md（状态表 + 实现记录 + 差异 + 验证）、docs/features/README.md 状态。中文 commit（风格见 git log -5）。
+更新 CHANGELOG.md [Unreleased]（新增/修复/改进）、README.md 工具页与 CLI 命令表、docs/features/f7-web-ui/README.md:31、docs/development/ai-assistant/TOOL_USAGE.md:70 连接描述、同目录 README.md（状态表 + 实现记录 + 差异 + 验证）、docs/features/README.md 状态。中文 commit（风格见 git log -5）。
 输出：改动文件清单、新增测试数、覆盖率、§1 验收逐条结果、未完成/风险。
 ```
 
@@ -70,17 +71,18 @@
 先读 docs/features/f9-web-tools-revamp/REQUIREMENTS.md：§0 代码事实直接采信；§3 是本次需求与验收；§4 UI 规范。同目录 README.md 记录 P1/P2 已完成实现，以它为准。
 
 ## 范围
-§3 全部：P3-1 连接记忆（.cerebro/web_tools_state.json）→ P3-2 命令历史 → P3-3 提交信息增强（暂存预览 + 可编辑 + Confirm 提交）→ P3-4 空态与加载态。
+§3 全部：P3-1 连接记忆（.cerebro/web_tools_state.json）→ P3-2 命令历史 → P3-3 提交信息增强（暂存预览 + 可编辑 + Confirm 提交）→ P3-4 空态与加载态 → P3-5 CLI rich 表格（/git-analyze 概览与三种表、/db-query 结果表、/db-schema 列表；取数逻辑放共享层与 Web 复用）。
 
 ## 规则
 - 分支 feat/web-tools-revamp；禁止提交 master；完成后询问是否建 PR，不得自动建。
 - 状态文件经 runtime_paths 解析，测试用 tmp_path monkeypatch；损坏 JSON 回退空；不改动 index_storage/ 与 .cerebro/ 内既有文件格式。
 - git commit 受 shell_enable 门控 + Confirm；service 层执行，不经 registry。
 - 分层与测试要求同 P1/P2：services.py → app.py → ui/*；./venv/bin/python -m pytest -q -n 4，覆盖 ≥80%。
-- 浏览器验证：重启后最近库仍在下拉；历史命令回填；提交流程端到端截图。
+- CLI 测试用 Console(record=True) 断言表头/行数/空态；表格样式参考 query_interface.py:724/752/808。
+- 浏览器验证：重启后最近库仍在下拉；历史命令回填；提交流程端到端截图。终端贴 /git-analyze、/db-query 输出。
 
 ## 完成后
-更新 CHANGELOG.md [Unreleased]、README.md、docs/features/f7-web-ui/README.md、同目录 README.md（状态改 ✅ + 实现记录 + 差异 + 验证）、docs/features/README.md（F9 移入已实现）、ROADMAP.md。中文 commit。
+更新 CHANGELOG.md [Unreleased]、README.md（含 CLI 命令表）、docs/features/f7-web-ui/README.md、同目录 README.md（状态改 ✅ + 实现记录 + 差异 + 验证）、docs/features/README.md（F9 移入已实现）、ROADMAP.md。中文 commit。
 输出：改动文件清单、新增测试数、覆盖率、§3 验收逐条结果、未完成/风险。
 ```
 
@@ -90,5 +92,6 @@
 - 需求（REQ）与实现记录（README）分文件：REQ 只增不改；实现差异集中在 README。
 - 代码事实全部在 REQ §0 并带行号，提示词只引用章节，避免 Agent 重新 grep 大文件。
 - 三个 P 级各自独立成段、规则内联，可单独粘贴；P2/P3 显式声明依赖前序产物（`ai_explain_stream`、`react_factory` 透传），避免返工。
+- Web 与 CLI 同为一等入口：共享层修复（P1-2/P1-3）与 CLI 渲染（P3-5）写进范围与验证，避免 Agent 只改 Web。
 - 顺序中的前置项写明（P1-2 先写复现测试、P2-1 先做工厂透传），验收用可检查的表述（grep 结果、返回元组、截图）。
 - 规则只列与 AGENTS.md / 现有工程约束相关的最小集合，不复制 REQ 正文。

@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F9 | Web「工具」页重构：删网络搜索 · 修复 DB 连接透传 · Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· 代码助手 / NL→SQL / 工作区 / NL→命令（P1 高 · P2 中 · P3 低，分支 `feat/web-tools-revamp`） | ⏳ 待实现 | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
+| F9 | Web「工具」页重构：删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· 代码助手 / NL→SQL / 工作区 / NL→命令 · CLI rich 表格（P1 高 · P2 中 · P3 低，分支 `feat/web-tools-revamp`） | ⏳ 待实现 | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
 
 ## 已实现
 

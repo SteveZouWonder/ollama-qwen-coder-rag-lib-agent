@@ -2,7 +2,8 @@
 
 > 功能编号 F9 · 状态 **⏳ 待实现**（立项 2026-09-07）· 分支 `feat/web-tools-revamp`
 > 目标：Web「工具」页从"registry 直通命令面板"升级为"AI 驱动的工作台"——删除无增量价值的网络搜索子页，
-> 修复数据库连接失效缺陷，各子页以自然语言为主入口、结构化展示结果、结果可流转到对话。
+> 修复数据库连接失效缺陷（**Web 与 CLI 共有，修在共享层**），各子页以自然语言为主入口、结构化展示结果、结果可流转到对话；
+> CLI 同步受益于共享层修复，并在 P3 用 rich 表格渲染 Git / DB 结果。CLI 不复制 Web 的 AI 主入口（`/agent` 已覆盖）。
 >
 > 本文件只记录**需求与已核实的代码事实**；实现记录、与需求的差异、验证结果见 [README.md](README.md)；
 > 交给 Agent 的启动提示词见 [PROMPT.md](PROMPT.md)；功能索引见 [../README.md](../README.md)。
@@ -12,10 +13,10 @@
 
 | 章节 | 内容 |
 |---|---|
-| [§0 背景](#0-背景已核实的代码事实实施时勿重复调研) | 工具页现状、五个子页缺陷、可复用的 AI 与 UI 资产、工程约束 |
-| [§1 P1](#1-p1--止血与骨架高) | 删网络搜索 · DB 透传修复 · Git 仪表盘 · 结果流转（AI 解读 / 发送到对话） |
+| [§0 背景](#0-背景已核实的代码事实实施时勿重复调研) | 工具页现状、五个子页缺陷、CLI 对应命令现状、可复用的 AI 与 UI 资产、工程约束 |
+| [§1 P1](#1-p1--止血与骨架高) | 删网络搜索 · DB 当前连接（共享层，Web + CLI）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话） |
 | [§2 P2](#2-p2--ai-主入口中) | 代码助手 · DB 自然语言转 SQL · 工作区文件浏览 · Shell 自然语言生成命令 |
-| [§3 P3](#3-p3--体验打磨低) | 连接记忆 · 命令历史 · 提交信息 diff 预览与一步提交 |
+| [§3 P3](#3-p3--体验打磨低) | 连接记忆 · 命令历史 · 提交信息 diff 预览与一步提交 · CLI rich 表格渲染 |
 | [§4 UI 规范](#4-ui-规范全-p-级共用) | 布局、组件、样式、交互约定 |
 | [§5](#5-实施顺序与交付) | 实施顺序与交付 |
 | [附录 A](#附录-a--llm-提示词草案实施时可微调保持简短) | LLM 提示词草案 |
@@ -43,7 +44,7 @@
 **Git**：`git_analyze :890` 返回 `history / status / authors` 三种纯文本；UI 是 Radio + 一个按钮。`GitAnalyzer`（`src/git_integration/git_analyzer.py:62`）已有 `get_current_branch :100`、`get_commit_history(max_count) :105`、`get_status :217`、`get_author_stats :259`、`get_branches :212`，可直接产出结构化数据。`git_commit_gen :945` → `CommitMessageGenerator`（`commit_generator.py:29`）：`get_staged_changes :46` 取 diff，`_generate_ai_commit_message :130` 直连 `/api/generate`，失败回退规则；UI 看不到 diff 就生成，也不能一步提交。
 
 **数据库**（含功能性 Bug）：
-1. `services.db_query / db_execute / db_schema / db_create_table / db_insert`（`:1216-1323`）**只传 `sql` / `table`，不传 `db_type` / `database`**；而 `database_query :1094` 等每次 `DatabaseConnector(db_type, database=database)` 新建连接、默认 `sqlite` + `:memory:`。结果：「连接」子页选的库对后续操作**无效**，每次查询都在全新内存库上执行。`TOOL_USAGE.md:70` 写的"按 (db_type, database) 缓存"与代码不符。
+1. `services.db_query / db_execute / db_schema / db_create_table / db_insert`（`:1216-1323`）**只传 `sql` / `table`，不传 `db_type` / `database`**；**CLI 同样**：`cli_handlers.handle_db_query :1651`、`handle_db_execute`、`handle_db_schema :1745` 只传 `sql` / `table`。而 `database_query :1094` 等每次 `DatabaseConnector(db_type, database=database)`（`:1108-1112`）新建连接、默认 `sqlite` + `:memory:`。结果：Web「连接」/ CLI `/db-connect` 对后续操作**无效**，每次查询都在全新内存库上执行。根因是 `database_tools` 没有"当前连接"概念，`TOOL_USAGE.md:70` 写的"按 (db_type, database) 缓存"与代码不符。
 2. `DatabaseType` 枚举 4 种，`_create_connection`（`db_connector.py:60-77`）只实现 sqlite，其余 `NotImplementedError`；`docs/features/README.md:44` 已把 MySQL / PostgreSQL 列为"不做"。UI 下拉仍提供三种。
 3. 无表列表：UI 提示"留空列出所有表"，但 `database_get_schema :1235` / `QueryExecutor.get_table_schema :218` 只查单表。
 4. 无 NL→SQL；`SQLGenerator`（`sql_generator.py:25`）仅模板拼接 + `validate_sql :201`。
@@ -54,7 +55,18 @@
 - `execute_command :253` `shell=True`，`cwd=os.getcwd()`；`CommandSafetyChecker.analyze :94-184` 四级（critical 拦截 / high / medium 需确认 / low）；Web 有总开关 `shell_enable`（`tools.py:123`，默认关）+ 分析→执行两步 + `Confirm`。AI 仅做风险分级，命令由用户手写。
 - `read_file :218`（按行范围）/ `write_file :237`（`is_path_allowed :201`：cwd 或 `WRITE_ALLOWED_DIRS`）已暴露；`list_directory :276`、`search_files :388`（子串）**未暴露**。读文件要手填路径 + 起始行 + 行数，无浏览、无预览、无语法高亮。
 
-### 0.3 可复用的 AI 与 UI 资产
+### 0.3 CLI 对应命令现状
+
+| 命令 | 位置 | 现状 |
+|---|---|---|
+| `/db-connect <type> <database>` | `cli_handlers.handle_db_connect :1622`（必须两个参数）；help `query_interface.py:665` | 类型参数实际只支持 sqlite |
+| `/db-query` `/db-execute` `/db-schema <table>` | `:1643 / :1663 / :1737` | 同 §0.2 Bug；结果 `console.print(result, style="green")` 纯文本 |
+| `/db-create-table` `/db-insert` | `:1683 / :1710` | JSON 参数，保留不动 |
+| `/git-analyze [history\|status\|authors]` `/git-commit-gen` | `:1574`、`_GIT_ANALYSIS_TYPES` | 纯文本输出 |
+| `/web-search` `/web-cache` `/web-extract` `/code-ast` `/code-quality` `/file` `/write` `/exec` | `query_interface.py:936-1038` 分发 | **保留不动**（终端无浏览器替代；AI 入口由 `/agent` 覆盖） |
+| rich 表格范例 | `query_interface.py:724`（工具表）、`:752`（来源表）、`:808`（统计表），`Table(box=box.ROUNDED)` | P3-5 复用 |
+
+### 0.4 可复用的 AI 与 UI 资产
 
 | 资产 | 位置 | 用途 |
 |---|---|---|
@@ -67,9 +79,9 @@
 | 格式化纯函数 | `app.py`：`format_stats_cards :548`（卡片 HTML 范例）、`format_kv_table :461`、`format_exec_analysis :444`、`format_sources :124` | 新增 `format_*` 照此写法，可单测 |
 | 运行时状态目录 | `.cerebro/`（gitignored；`runtime_paths.py`） | P3 连接记忆 / 命令历史落盘 |
 
-### 0.4 工程约束（沿用现有规范）
+### 0.5 工程约束（沿用现有规范）
 - 测试：`./venv/bin/python -m pytest -q -n 4`，全量覆盖 ≥80%；新逻辑必须有单测（Mock Ollama，模式见 `tests/test_web_services.py`、`tests/test_web_app.py`）；`src/web/ui/*` 标 `# pragma: no cover`，改动后需浏览器手动验证。
-- 分层：引擎 / 工具库 → `src/web/services.py`（唯一接引擎处）→ `src/web/app.py`（`format_*` / `build_handlers`，可单测）→ `src/web/ui/*`。handler 返回值个数必须与 outputs 一致。
+- 分层：引擎 / 工具库 → `src/web/services.py`（唯一接引擎处）→ `src/web/app.py`（`format_*` / `build_handlers`，可单测）→ `src/web/ui/*`。handler 返回值个数必须与 outputs 一致。CLI：`query_interface.py::parse_command/print_help/TUTORIAL_TEXT` + `cli_handlers.py::COMMAND_HANDLERS`；**Web 与 CLI 共用的逻辑放共享层（`database_tools` / `git_integration` / `agent_tools`），不在两端各写一份**。
 - 工具注册名 / 参数名不得改动（改则同步 `prompts/system/PROJECT_RULES.md`、`docs/development/ai-assistant/TOOL_USAGE.md`、测试）；本需求**不新增 registry 工具**，结构化数据在 service 层直接调用 `git_integration` / `database_tools` / `os` 获得。
 - 新 LLM 提示词：短、只输出目标格式、`think=False`、`num_predict` 限额；解析失败必须有回退。
 - 每个 P 级完成更新 `CHANGELOG.md [Unreleased]`、`README.md` 相关段落、本目录 `README.md`、`docs/features/README.md`、`docs/features/f7-web-ui/README.md:31` 工具页描述、`TOOL_USAGE.md:70` 连接缓存描述。
@@ -80,12 +92,16 @@
 ## 1. P1 · 止血与骨架（高）
 
 ### 目标
-去掉无价值子页、修复 DB 功能性缺陷、Git 改为可读的仪表盘、建立"结果流转"通用机制，为 P2 的 AI 主入口铺好骨架。
+去掉无价值子页、在共享层修复 DB 功能性缺陷（Web / CLI / Agent 三端同时生效）、Git 改为可读的仪表盘、建立"结果流转"通用机制，为 P2 的 AI 主入口铺好骨架。
 
 ### 需求
 - **P1-1 删除「网络搜索」子页**：移除 `tools.py` 网络搜索 Tab 及 `on_web_search / on_web_extract / on_web_cache_status / on_web_cache_clear` handler 与对应 service 方法（`services.py:1167-1182`）及其测试；**registry 工具与 CLI `/web-*` 保持不变**。缓存状态 / 清空（含 `Confirm`）迁到「系统」页运行环境区，一行 `.cb-inline-actions`。页面副标题改为"AI 驱动的代码 / Git / 数据库 / 工作区工具，结果可发送到对话继续追问。"；子页顺序 `代码 | Git | 数据库 | 工作区`。
-- **P1-2 DB 连接上下文透传**：`WebService` 新增 `_db_ctx: Dict = {"db_type": "sqlite", "database": ":memory:"}`；`db_connect` 成功后写入；所有 `db_*` 方法透传 `db_type` / `database`。UI 连接区改为：SQLite 文件路径输入（默认 `:memory:`，`placeholder` 示例 `./data/app.db`）+ `连接` 按钮 + 当前连接状态芯片（`.cb-status-chip`）；**移除** `db_type` 下拉（后端仅 sqlite）。先写复现测试：连接 A 库建表后 `db_query` 能查到该表。
-- **P1-3 表列表与 Schema 面板**：`QueryExecutor` 新增 `list_tables() -> List[str]`（`sqlite_master`）；`database_get_schema(table="")` 返回全部表名列表（保持工具名 / 参数名不变，仅放宽空值语义）。UI 左栏 `table(["表名"])`，连接成功后自动刷新；点击行 → 右栏显示该表 schema 表格（列 / 类型 / 约束）。
+- **P1-2 DB 当前连接（共享层）**：
+  - `src/database_tools/` 新增 `session.py`：进程级 `set_current(db_type, database, **kw)` / `get_current() -> Dict | None` / `clear_current()`；`agent_tools.database_connect` 成功后 `set_current`；`database_query / database_execute / database_get_schema / database_create_table / database_insert` 当调用方**未显式传** `database`（即仍为默认 `":memory:"`）且存在当前连接时，回退到当前连接。显式传参优先，工具名 / 参数名不变。同一 `(db_type, database)` 复用 `DatabaseConnector` 实例（真正实现 `TOOL_USAGE.md:70` 的缓存语义），`clear_current` 时关闭。
+  - Web：`db_connect` 成功后 UI 显示当前连接状态芯片（`.cb-status-chip`）；连接区改为 SQLite 文件路径输入（默认 `:memory:`，`placeholder` 示例 `./data/app.db`）+ `连接`；**移除** `db_type` 下拉（后端仅 sqlite）。
+  - CLI：`/db-connect <database>` 允许省略类型（默认 sqlite，`/db-connect sqlite x.db` 仍兼容）；连接成功后 `/db-query /db-execute /db-schema` 自动作用于该库；help（`query_interface.py:665`）与 `TUTORIAL_TEXT` 文案同步。
+  - 先写复现测试（`tests/test_agent_tools*.py`）：`database_connect(tmp.db)` → `database_execute(CREATE TABLE)` → `database_query(SELECT)` 只传 sql 能查到；显式传另一库时不受当前连接影响；Web `db_query` 与 CLI `handle_db_query` 各一条集成断言。
+- **P1-3 表列表与 Schema 面板**：`QueryExecutor` 新增 `list_tables() -> List[str]`（`sqlite_master`）；`database_get_schema(table="")` 返回全部表名列表（保持工具名 / 参数名不变，仅放宽空值语义）。Web 左栏 `table(["表名"])`，连接成功后自动刷新；点击行 → 右栏显示该表 schema 表格（列 / 类型 / 约束）。CLI `/db-schema` 无参数时列出全部表（help 同步）。
 - **P1-4 DB 结果表格化**：`WebService.db_query` 改为 service 层直接用 `QueryExecutor.execute_query` 拿 `QueryResult`，返回 `Dict`（`columns/rows/row_count/execution_time/error`）；handler `on_db_query -> (status_md, headers, rows)`，UI 用 `gr.Dataframe` 显示（最多 500 行，超出提示）。`db_execute` 同样返回 `affected_rows`。删除「创建表」「插入数据」两个 JSON 表单（由 P2-2 NL→SQL 覆盖）；`db_create_table / db_insert` service 方法与 handler 一并删除。
 - **P1-5 Git 仪表盘**：`WebService.git_overview(repo_path=".") -> Dict`：`branch`、`changed: List[{status, path}]`、`commits: List[{hash7, author, date, subject}]`（最近 20）、`authors: List[{name, commits}]`、`last_commit_at`、`is_repo`。`app.py` 新增 `format_git_cards(overview)`（4 张卡：当前分支 / 变更文件 / 最近提交时间 / 提交者数）与 `git_changes_rows / git_commits_rows / git_authors_rows`。UI 布局：顶部卡片行 → 下方两栏（左：变更文件表；右：`gr.Tabs` 最近提交 / 提交者统计）→ 底部 AI 动作行（保留「AI 生成提交信息」，P3-3 增强）。进入 Git 子页或点击 `刷新` 时加载；非 git 目录显示 `.cb-empty` 提示。移除 Radio。
 - **P1-6 结果流转（通用机制）**：
@@ -95,9 +111,10 @@
   - 「代码」「工作区」子页在 P1 先保留现有控件不动，只挂上这行动作（P2 再重构）。
 
 ### 验收
-- `tests/test_web_services.py`：DB 透传复现测试通过；`list_tables`；`db_query` 返回结构化 dict；`git_overview` 用临时 git 仓库（`tmp_path` + `subprocess git init`）断言字段；`ai_explain_stream` Mock `complete_text` 产出 `answer` + `done`，并发时 `error`。
+- `tests/test_agent_tools*.py`：P1-2 复现测试通过（当前连接回退 / 显式参数优先 / 连接复用）；`tests/test_cli_handlers*.py`：`/db-connect x.db` 单参数、`/db-schema` 无参列表。`tests/test_web_services.py`：Web `db_query` 作用于已连接库；`list_tables`；`db_query` 返回结构化 dict；`git_overview` 用临时 git 仓库（`tmp_path` + `subprocess git init`）断言字段；`ai_explain_stream` Mock `complete_text` 产出 `answer` + `done`，并发时 `error`。
 - `tests/test_web_app.py`：`format_git_cards`、各 `*_rows`、`on_db_query` 三元组、`_fmt_result` 对新前缀。
-- `src/web/` 中 `web_search|web_extract|web_cache` 仅剩系统页两个缓存 handler；`grep -n "db_type" src/web/ui/tools.py` 无下拉。
+- `src/web/` 中 `web_search|web_extract|web_cache` 仅剩系统页两个缓存 handler；`grep -n "db_type" src/web/ui/tools.py` 无下拉；`grep -n ":memory:" src/web/services.py src/cli_handlers.py` 无硬编码回退。
+- CLI 手动验证：`/db-connect /tmp/t.db` → `/db-execute create table…` → `/db-query select…` 查到数据 → `/db-schema` 列出表。
 - 浏览器验证：连接 `tmp.db` → 表列表出现 → 点表看 schema → 查询出表格 → `用 AI 解读` 有流式输出且可停止 → `发送到对话` 跳到对话页且输入框已填充。
 
 ---
@@ -139,10 +156,15 @@
 - **P3-2 命令历史**：`exec_run` 成功后写入 `shell_history`（去重、最新在前）；UI 命令区下方 `gr.Dropdown` "历史命令"，选中回填输入框并触发分析。
 - **P3-3 提交信息增强**：`WebService.git_commit_preview() -> Dict{staged_files, diff_stat, has_staged}`（`git diff --cached --stat`）；UI 点「AI 生成提交信息」先显示暂存文件 + stat 卡片，若无暂存给出 `.cb-hint`"请先 `git add`"；生成结果放入可编辑 `gr.Textbox(lines=4)`；新增 `Confirm("提交")` → `WebService.git_commit(message) -> str`（`git commit -m`，受 `shell_enable` 门控，走 `CommandSafetyChecker` 记录 medium）；成功后刷新仪表盘。
 - **P3-4 空态与加载态**：所有表格空数据显示 `.cb-empty` 文案；长任务按钮在运行期 `interactive=False`；`ai_md` 显示 heartbeat 期间的"思考中…"。
+- **P3-5 CLI rich 表格渲染**：复用 P1 产出的结构化数据（把 `git_overview` 与结构化 `QueryResult` 的取数逻辑放在 `git_integration` / `database_tools` 共享层，Web service 与 CLI handler 都调它）：
+  - `/git-analyze`（无参）改为概览：分支 / 变更数 / 最近提交时间一行 + 最近 10 次提交 `Table(hash · 作者 · 日期 · 标题)`；`status` → 变更文件表（状态 · 路径）；`authors` → 作者表（作者 · 提交数）。`history` 等同无参。
+  - `/db-query` 结果 `Table`（列名为表头，最多 50 行，超出提示"…共 N 行"）+ 行数 / 耗时；`/db-schema <table>` 列表（列 · 类型 · 约束）；`/db-schema` 无参 → 表名表。
+  - 空结果、非 git 目录、未连接给出一行 dim 提示，不打印空表。
 
 ### 验收
 - 状态文件读写、上限裁剪、损坏 JSON 回退空；`git_commit_preview` / `git_commit` 用临时仓库；历史去重。
-- 浏览器验证：重启 Web 后最近库仍在下拉；提交流程端到端。
+- CLI：`tests/test_cli_handlers*.py` 用 `Console(record=True)` 断言表头与行数、空态提示；Web / CLI 对同一临时仓库、同一 SQLite 得到相同字段。
+- 浏览器验证：重启 Web 后最近库仍在下拉；提交流程端到端。终端截图：`/git-analyze`、`/db-query` 表格。
 
 ---
 
@@ -159,6 +181,7 @@
 | 两栏布局 | `gr.Row` 内 `gr.Column(scale=2)` + `gr.Column(scale=3)`；≤ 900px 由 Gradio 自动堆叠，不写额外媒体查询 |
 | 新样式 | 仅在 `theme.py BASE_CSS` 追加（如 `.cb-breadcrumb`、`.cb-toolbar`），复用现有变量，深浅主题都要看 |
 | 文案 | 中文、动词开头、≤ 8 字按钮；不出现工具注册名（如 `database_query`） |
+| CLI 对应 | 共享层改动必须同时检查 CLI 命令行为与 help / TUTORIAL 文案；列表类结果用 rich `Table(box=box.ROUNDED)`，指标用一行 `key: value`；错误 `style="red"`、提示 `style="yellow"`、空态 `style="dim"` |
 
 ---
 
@@ -167,10 +190,10 @@
 ```
 P1-1 删网络搜索 → P1-2 DB 透传（先复现测试）→ P1-3 表列表 → P1-4 结果表格 → P1-5 Git 仪表盘 → P1-6 结果流转
 P2-1 代码助手（先做 react_factory 透传）→ P2-3 工作区（P2-1 依赖其选路径联动，可并行）→ P2-2 NL→SQL → P2-4 Shell 生成
-P3-1 连接记忆 → P3-2 命令历史 → P3-3 提交增强 → P3-4 空态/加载态
+P3-1 连接记忆 → P3-2 命令历史 → P3-3 提交增强 → P3-4 空态/加载态 → P3-5 CLI rich 表格
 ```
 
-每个 P 级独立可提交、可发 PR。交付物：改动文件清单、新增测试数、覆盖率、验收项逐条结果、浏览器截图（工具页四个子页）、未完成 / 风险。
+每个 P 级独立可提交、可发 PR。交付物：改动文件清单、新增测试数、覆盖率、验收项逐条结果、浏览器截图（工具页四个子页）、涉及 CLI 的 P 级附终端输出、未完成 / 风险。
 
 ---
 
