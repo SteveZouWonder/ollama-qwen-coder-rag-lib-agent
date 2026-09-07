@@ -1153,6 +1153,20 @@ class TestConversationContextWiring:
         assert user_msgs[-1]["content"] == "它多少钱"
         assert user_msgs[-1]["rewritten"] == "DJI OSMO 360 多少钱"
 
+    def test_rag_stream_challenge_flag_in_answer_event(self, monkeypatch, stub_synthesis):
+        """F9 P1-2：质疑追问 → answer 事件 data["challenge"] 为 True，进度事件文案为「重新核对」。"""
+        import conversation_context as cc
+
+        svc = make_service()
+        sid = svc.ensure_session()
+        self._ctx_with_history(svc, sid)
+        monkeypatch.setattr(cc, "_default_complete", lambda prompt: "重新核对：DJI OSMO 360 售价（用户认为：3999）")
+        events = list(svc.rag_query_stream("不对，应该是 3999 吧", enable_web_search=False, session_id=sid))
+        answer = events[-1]
+        assert answer.data["challenge"] is True
+        assert answer.data["rewritten"].startswith("重新核对：")
+        assert any(e.kind == "progress" and "用户质疑，重新核对" in e.message for e in events)
+
     def test_rag_stream_records_warn_notices_in_session(self, monkeypatch):
         """F9 P0-5：会话记录 = 正文 + warn 级 notice 各一行 ``[code] text``；answer 事件带 notices 等字段。"""
         import rag_pipeline

@@ -565,6 +565,7 @@ class WebService:
                     "web_sources": result.get("web_sources", []),
                     "meta": result.get("meta"),
                     "rewritten": result.get("rewritten"),
+                    "challenge": bool(result.get("challenge")),
                     "context": result.get("context") or {},
                     # kind="fallback" 时附原问题，供 UI「用单 Agent 重试」
                     "fallback_question": result.get("fallback_question"),
@@ -815,9 +816,10 @@ class WebService:
 
             ctx = self._context(session_id)
             pre = self._health_before(ctx, request)
-            effective, rewritten = request, None
+            effective, rewritten, challenge = request, None, False
             try:
                 rw = ctx.rewrite_question(request, progress=progress_cb)
+                challenge = bool(rw.get("challenge"))
                 if rw.get("changed"):
                     effective = rw["question"]
                     rewritten = effective
@@ -831,6 +833,7 @@ class WebService:
             answer = str(result.get("answer") or "").strip() or summary
             recorded = answer if result.get("success") else f"[协作失败] {answer}"
             result["rewritten"] = rewritten
+            result["challenge"] = challenge
             result["context"] = self._finish_turn(
                 ctx, request, recorded, pre, rewritten=rewritten, progress=progress_cb,
             )

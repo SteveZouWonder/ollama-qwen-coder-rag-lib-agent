@@ -320,6 +320,19 @@ class TestRunAsk:
 
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
+    def test_challenge_rewritten_label(self, mock_console, _rec, conv):
+        """F9 P1-2：challenge=True 时 cyan 行文案为「🔁 用户质疑，重新核对」，复用同一通道。"""
+        rag = MagicMock(retriever=object())
+        result = _answer(answer="仍为 2999 元[1]", rewritten="重新核对：DJI 售价（用户认为：3999）", challenge=True)
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask 不对", "不对，应该是 3999"))
+        out = _printed(mock_console)
+        assert "[cyan]🔁 用户质疑，重新核对：重新核对：DJI 售价（用户认为：3999）[/cyan]" in out
+        assert "已理解为" not in out
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
     def test_meta_query_recorded(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question",
@@ -436,6 +449,15 @@ class TestAskP2Display:
         assert printed[2] == "🧭 均未找到"
         assert mock_console.print.call_args_list[2].kwargs.get("style") == "yellow"
 
+    def test_progress_f9_stages_registered(self):
+        """F9：enrich_page_blocked → cyan；context_rewritten（含质疑文案）→ cyan。"""
+        with patch.object(qi, "console") as mock_console:
+            qi._cli_ask_progress({"stage": "enrich_page_blocked", "message": "🛡️ 已丢弃疑似提示词注入的页面: http://x", "url": "http://x"})
+            qi._cli_ask_progress({"stage": "context_rewritten", "message": "🔁 用户质疑，重新核对：q", "challenge": True})
+        calls = mock_console.print.call_args_list
+        assert str(calls[0].args[0]).startswith("🛡️ 已丢弃") and calls[0].kwargs.get("style") == "cyan"
+        assert str(calls[1].args[0]).startswith("🔁 用户质疑，重新核对") and calls[1].kwargs.get("style") == "cyan"
+
 
 # ==================== rag_pipeline 上下文接线 ====================
 
@@ -477,6 +499,19 @@ class TestPipelineContext:
         assert any(e["stage"] == "context_rewritten" for e in events)
         assert "对话上下文" in prompts[0] and "DJI OSMO 360 是什么" in prompts[0]
         assert "## 问题\nDJI OSMO 360 多少钱" in prompts[0]
+
+    def test_challenge_passthrough(self, conv, monkeypatch):
+        conv.record("DJI OSMO 360 多少钱", "2999 元")
+        conv._complete = lambda p: "重新核对：DJI OSMO 360 售价（用户认为：3999）"
+        events = []
+        result = rag_pipeline.answer_question(FakeRAG(), "不对，应该是 3999", enable_web_search=False,
+                                              context=conv, progress=lambda e: events.append(e))
+        assert result["challenge"] is True and result["rewritten"].startswith("重新核对：")
+        ev = next(e for e in events if e["stage"] == "context_rewritten")
+        assert ev["challenge"] is True and ev["message"].startswith("🔁 用户质疑，重新核对：")
+
+    def test_challenge_false_without_context(self):
+        assert rag_pipeline.answer_question(FakeRAG(), "问题", enable_web_search=False)["challenge"] is False
 
     def test_context_failure_ignored(self, monkeypatch):
         bad = MagicMock()

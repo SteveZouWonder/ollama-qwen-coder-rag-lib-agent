@@ -22,7 +22,7 @@
 
 ``stage`` 取值：``meta_overview`` | ``web_plan`` | ``web_search_start`` |
 ``web_query`` | ``web_query_empty`` | ``web_search_done`` | ``web_search_empty`` |
-``web_search_failed`` | ``enrich_start`` | ``enrich_page_failed`` |
+``web_search_failed`` | ``enrich_start`` | ``enrich_page_failed`` | ``enrich_page_blocked`` |
 ``enrich_done`` | ``kb_decompose`` | ``kb_retrieving`` | ``kb_merged`` |
 ``kb_low_relevance`` | ``rerank`` | ``rerank_done`` | ``rerank_fallback`` |
 ``kb_irrelevant`` | ``kb_empty`` | ``kb_fallback_search`` | ``synthesizing`` |
@@ -562,6 +562,34 @@ _ENRICH_PER_PAGE_CHARS = 3000
 _ENRICH_MATCH_THRESHOLD = 0.34
 
 
+# 网页正文注入扫描（F9 P1-3）：模块级惰性单例，只用扫描器的提示词注入检测
+_PAGE_SCANNER = None
+
+
+def _page_scanner():
+    global _PAGE_SCANNER
+    if _PAGE_SCANNER is None:
+        try:
+            from content_security import ContentSecurityScanner
+            _PAGE_SCANNER = ContentSecurityScanner()
+        except Exception as e:  # noqa: BLE001 - 扫描器不可用时不阻断联网增强
+            logger.debug(f"内容安全扫描器不可用，跳过网页注入扫描: {e}")
+            _PAGE_SCANNER = False
+    return _PAGE_SCANNER or None
+
+
+def page_has_prompt_injection(page_content: str) -> bool:
+    """网页正文是否疑似含提示词注入（``ContentSecurityScanner._detect_prompt_injection``，不用密钥等规则）。"""
+    scanner = _page_scanner()
+    if scanner is None or not page_content:
+        return False
+    try:
+        return bool(scanner._detect_prompt_injection(page_content))
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"网页注入扫描失败，视为安全: {e}")
+        return False
+
+
 def enrich_with_page_content(
     search_result: str, question: str = "", progress: ProgressCallback = None
 ) -> str:
@@ -610,6 +638,10 @@ def enrich_with_page_content(
         try:
             page_content = web_content_extract(url, timeout=10)
             if page_content and not page_content.startswith("[错误]"):
+                # F9 P1-3：抓取的网页正文直接进 prompt，先做提示词注入扫描，命中整页丢弃并留痕
+                if page_has_prompt_injection(page_content):
+                    _emit(progress, "enrich_page_blocked", f"🛡️ 已丢弃疑似提示词注入的页面: {url}", url=url)
+                    continue
                 blocks.append(
                     f"--- 页面 {idx}: {url} ---\n{page_content[:_ENRICH_PER_PAGE_CHARS]}"
                 )
@@ -867,10 +899,21 @@ FAITHFULNESS_RULES: List[str] = [
 ]
 
 
+# 无依据作答（F9 P1-1）：知识库与网络双空时替换 prompt 末尾的作答指令——先判断是否确知
+NO_EVIDENCE_INSTRUCTION = (
+    "当前没有任何资料。先判断你是否确知答案：确知则简要回答并注明「依据模型自身知识，未经资料核实」；"
+    "不确知则只说「我不确定」并说明缺少什么信息，不要猜测或编造。"
+)
+
+
 def synthesize_prompt(
-    question: str, kb_context: str, web_context: str, history: str = ""
+    question: str, kb_context: str, web_context: str, history: str = "",
+    no_evidence: bool = False,
 ) -> str:
     """组装带"准确回答方法论"的结构化 prompt。
+
+    ``no_evidence=True``（知识库与网络均无资料，F9 P1-1）时末尾的作答指令替换为
+    ``NO_EVIDENCE_INSTRUCTION``：先判断是否确知，确知则答并注明依据模型知识，不确知只说不确定。
 
     ``history`` 为最近 2-3 轮对话的紧凑摘要（可为空）：连续对话中用于理解指代
     与延续上下文，但明确要求"事实只以资料为准"，避免把历史回答当作依据。
@@ -906,7 +949,10 @@ def synthesize_prompt(
     else:
         parts.append("## 网络搜索补充\n（无）")
     parts.append("")
-    parts.append("请给出准确、必要处展开的回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
+    if no_evidence:
+        parts.append(NO_EVIDENCE_INSTRUCTION)
+    else:
+        parts.append("请给出准确、必要处展开的回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
     return "\n".join(parts)
 
 
@@ -977,6 +1023,9 @@ NOTICE_CODES = (
     "self_check",        # LLM 自校验（P2-1）
     "premise",           # 前提实体未命中（P2-2）
 )
+
+
+NO_EVIDENCE_NOTICE_TEXT = "无资料依据 · 模型自身知识 · 请自行核实"
 
 
 def make_notice(code: str, text: str, *, level: str = "warn", position: str = "before") -> dict:
@@ -1228,13 +1277,16 @@ def _generate_answer_inner(
     if not kb_initialized:
         if not web_search_result:
             _emit(progress, "kb_uninitialized", "💡 知识库为空，直接使用模型回答（可能不含最新信息）")
-        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context, history=history_text)
+        # F9 P1-1：双空（知识库为空且无网络）→ 无依据作答指令 + no_evidence notice
+        no_evidence = not web_search_result
+        prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context,
+                                   history=history_text, no_evidence=no_evidence)
         _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
         answer = llm_direct_answer(prompt)
         if web_search_result:
             notices = [make_notice("kb_uninitialized", "知识库为空 · 回答基于网络搜索与模型知识，非你的知识库内容")]
         else:
-            notices = [make_notice("kb_uninitialized", "知识库为空 · 回答基于模型自身知识，未经资料核实")]
+            notices = [make_notice("no_evidence", NO_EVIDENCE_NOTICE_TEXT)]
         return _finalize_answer(answer, [], web_sources, "answer", notices)
 
     # 检索知识库（F9 P0-1：只做向量/BM25 检索，不生成初步回答）
@@ -1323,12 +1375,12 @@ def _generate_answer_inner(
     # 失败回退：知识库无相关片段且网络也无结果 → 模型自身知识作答，并建议改用单 Agent
     # 工具进一步查找（建议文案走 ``fallback`` notice，由各端的 retry 行渲染，不再拼进 answer）
     _emit(progress, "model_thinking", "💡 未获取到网络信息，直接使用模型自身知识回答")
-    prompt = synthesize_prompt(original_question, kb_context="", web_context="", history=history_text)
+    prompt = synthesize_prompt(original_question, kb_context="", web_context="", history=history_text, no_evidence=True)
     answer = llm_direct_answer(prompt)
     _emit(progress, "fallback", "🧭 知识库与网络均未找到相关内容，可用单 Agent 进一步查找",
           question=original_question)
     notices = [
-        make_notice("no_evidence", "无资料依据 · 模型自身知识 · 请自行核实"),
+        make_notice("no_evidence", NO_EVIDENCE_NOTICE_TEXT),
         make_notice("fallback", fallback_suggestion(original_question), level="info", position="after"),
     ]
     out = _finalize_answer(answer, [], [], "fallback", notices)
@@ -1397,7 +1449,8 @@ def answer_question(
            "web_sources": [...], "meta": {...}|None, "rewritten": str|None,
            "notices": [{"level","code","text","position"}...], "citation_check": {...}|None,
            "model": str}``
-        ``rewritten`` 为被改写后的独立问题（未改写时为 None）；``answer`` 只含正文，
+        ``rewritten`` 为被改写后的独立问题（未改写时为 None）；``challenge`` 为是否命中质疑句式
+        （F9 P1-2，各端据此把「🔗 已理解为」改为「🔁 用户质疑，重新核对」）；``answer`` 只含正文，
         警示 / 引用校验等"关于可信度的信息"在 ``notices``（F9 P0-5）；``citation_check``
         为 ``verify_citations`` 结果（无来源时 None）；``model`` 为本次作答的 LLM 名。
     """
@@ -1418,15 +1471,18 @@ def answer_question(
             "notices": [],
             "citation_check": None,
             "model": _current_model_name(rag_engine),
+            "challenge": False,
         }
 
     # 连续对话：疑似追问时改写为独立问题；并取最近几轮紧凑文本供综合 prompt
     effective = question
     rewritten = None
+    challenge = False
     history_text = ""
     if context is not None:
         try:
             rw = context.rewrite_question(question, progress=progress)
+            challenge = bool(rw.get("challenge"))
             if rw.get("changed"):
                 effective = rw["question"]
                 rewritten = effective
@@ -1443,11 +1499,13 @@ def answer_question(
     think_on = bool(getattr(rag_engine, "llm_think", False))
     sink_token = _THINKING_SINK.set(progress if think_on else None)
     try:
-        return _answer_question_planned(
+        out = _answer_question_planned(
             rag_engine, question, effective, rewritten, history_text, kb_initialized,
             enable_web_search=enable_web_search, show_progress=show_progress, progress=progress,
             rag_progress_callback=rag_progress_callback, should_stop=should_stop, kb_only=kb_only,
         )
+        out["challenge"] = challenge
+        return out
     finally:
         _THINKING_SINK.reset(sink_token)
 

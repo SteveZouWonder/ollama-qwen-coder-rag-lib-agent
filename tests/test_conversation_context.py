@@ -90,6 +90,25 @@ class TestFollowupHeuristics:
         assert is_followup("") is False
         assert is_followup("   ") is False
 
+    @pytest.mark.parametrize("q", [
+        "不对，DJI OSMO 360 的售价应该是 3999 元而不是 2999 元吧",
+        "你搞错了，Cloudflare Tunnel 的兜底规则不是必须放在最后吗",
+        "这个数字有误，请重新确认一下官方公布的起售价格是多少",
+        "确定吗？我记得 http_status:404 可以放在中间的，请再核实一下",
+        "真的吗？我看到的资料说这个功能早在 2023 年就已经被移除了",
+        "Are you sure? I think the default port should be 8080 not 7070",
+    ])
+    def test_challenge_phrases_are_followups(self, q):
+        """F9 P1-2：质疑句式即使较长、无指代词也视为追问，且 is_challenge 命中。"""
+        from conversation_context import is_challenge
+        assert is_challenge(q) is True
+        assert is_followup(q) is True
+
+    def test_non_challenge(self):
+        from conversation_context import is_challenge
+        assert is_challenge("请介绍一下 Cloudflare Tunnel 的完整配置方法和常见故障排查步骤") is False
+        assert is_challenge("") is False
+
     def test_topic_drift_detects_new_topic(self):
         recent = [
             {"role": "user", "content": "DJI OSMO 360 的售价是多少"},
@@ -315,7 +334,7 @@ class TestRewrite:
         calls = []
         ctx = make_ctx(manager, complete=lambda p: calls.append(p) or "x")
         r = ctx.rewrite_question("它多少钱")
-        assert r == {"question": "它多少钱", "original": "它多少钱", "changed": False}
+        assert r == {"question": "它多少钱", "original": "它多少钱", "changed": False, "challenge": False}
         assert calls == []
 
     def test_standalone_question_no_llm_call(self, manager):
@@ -335,6 +354,34 @@ class TestRewrite:
         assert r["original"] == "它多少钱"
         assert [e["stage"] for e in events] == ["context_rewrite", "context_rewritten"]
         assert "已理解为" in events[1]["message"]
+
+    def test_challenge_rewrite_prompt_and_event(self, manager):
+        """F9 P1-2：质疑追问 → prompt 含「重新核对」规则；返回 challenge=True；事件文案「🔁 用户质疑，重新核对」。"""
+        prompts, events = [], []
+        ctx = make_ctx(manager, complete=lambda p: prompts.append(p) or "重新核对：DJI OSMO 360 的售价（用户认为：3999 元）")
+        ctx.record("DJI OSMO 360 多少钱", "官方售价 2999 元起[1]")
+        r = ctx.rewrite_question("不对，应该是 3999 元吧", progress=lambda e: events.append(e))
+        assert r["challenge"] is True and r["changed"] is True
+        assert r["question"].startswith("重新核对：") and "用户认为" in r["question"]
+        assert "反驳或质疑上一轮回答" in prompts[0] and "不要把用户说法当作事实" in prompts[0]
+        ev = events[-1]
+        assert ev["stage"] == "context_rewritten" and ev["challenge"] is True
+        assert ev["message"].startswith("🔁 用户质疑，重新核对：")
+        assert "已理解为" not in ev["message"]
+
+    def test_non_challenge_rewrite_event_has_challenge_false(self, manager):
+        events = []
+        ctx = make_ctx(manager, complete=lambda p: "DJI OSMO 360 多少钱")
+        ctx.record("DJI OSMO 360 是什么", "全景相机")
+        r = ctx.rewrite_question("它多少钱", progress=lambda e: events.append(e))
+        assert r["challenge"] is False
+        assert events[-1]["challenge"] is False and events[-1]["message"].startswith("🔗 已理解为：")
+
+    def test_challenge_flag_present_even_when_not_rewritten(self, manager):
+        ctx = make_ctx(manager, complete=lambda p: "")
+        ctx.record("q", "a")
+        r = ctx.rewrite_question("不对，你错了")
+        assert r["changed"] is False and r["challenge"] is True
 
     def test_rewrite_unchanged_when_llm_echoes_or_fails(self, manager):
         ctx = make_ctx(manager, complete=lambda p: "它多少钱")

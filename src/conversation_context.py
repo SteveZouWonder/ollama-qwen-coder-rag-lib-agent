@@ -55,6 +55,13 @@ _FOLLOWUP_CUES_EN = (
 )
 _FOLLOWUP_SHORT_LEN = 12
 
+# 质疑 / 反驳上一轮回答的句式（F9 P1-2）：命中即视为追问，且改写时不得把用户说法当事实
+_CHALLENGE_RE = re.compile(
+    r"不对|错了|不是.*吗|应该是|确定吗|真的吗|有误|你搞错|说错|不准确|搞错了|"
+    r"\bwrong\b|\bincorrect\b|are you sure|isn't it|should be|\bactually\b",
+    re.IGNORECASE,
+)
+
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _WORD_RE = re.compile(r"[a-zA-Z0-9_]{2,}")
 
@@ -111,10 +118,16 @@ def format_tokens(n: int) -> str:
 # ==================== 追问 / 话题漂移启发式 ====================
 
 
+def is_challenge(question: str) -> bool:
+    """问题是否在质疑 / 反驳上一轮回答（``不对|错了|不是.*吗|应该是|确定吗|真的吗|有误|你搞错`` 等）。"""
+    q = (question or "").strip()
+    return bool(q) and _CHALLENGE_RE.search(q) is not None
+
+
 def is_followup(question: str) -> bool:
     """问题是否疑似"追问"（依赖上文才能理解）。
 
-    命中任一条件即视为追问：含指代/承接线索词；或去掉标点后长度 < 12 字。
+    命中任一条件即视为追问：含指代/承接线索词；质疑句式（F9 P1-2）；或去掉标点后长度 < 12 字。
     仅在会话已有历史时才有意义，由调用方保证。
     """
     q = (question or "").strip()
@@ -122,6 +135,8 @@ def is_followup(question: str) -> bool:
         return False
     stripped = re.sub(r"[\s\W_]+", "", q)
     if len(stripped) < _FOLLOWUP_SHORT_LEN:
+        return True
+    if is_challenge(q):
         return True
     if any(cue in q for cue in _FOLLOWUP_CUES_CJK):
         return True
@@ -578,10 +593,13 @@ class ConversationContext:
         """若疑似追问，则结合最近对话把问题改写为独立问题。
 
         Returns:
-            ``{"question": 用于检索的问题, "original": 原问题, "changed": bool}``
+            ``{"question": 用于检索的问题, "original": 原问题, "changed": bool, "challenge": bool}``
+            ``challenge`` 为是否命中质疑句式（F9 P1-2）：此时改写为「重新核对：<原问题>（用户认为：<说法>）」，
+            不把用户说法当作事实写进问题；``context_rewritten`` 事件文案改为「🔁 用户质疑，重新核对：…」。
         """
         question = (question or "").strip()
-        result = {"question": question, "original": question, "changed": False}
+        challenge = is_challenge(question)
+        result = {"question": question, "original": question, "changed": False, "challenge": challenge}
         if not question or not self.has_history() or not is_followup(question):
             return result
         history = self.history_text(turns=3, max_chars=300)
@@ -592,7 +610,10 @@ class ConversationContext:
             "下面是一段对话的最近内容，以及用户的最新问题。最新问题可能省略了主语或使用了"
             "指代（如“它”“这个”“刚才那个”）。请把最新问题改写成一个不依赖上文、可独立理解"
             "的完整问题：补全被指代的对象名称与必要限定条件，保持原意与语言，不要回答问题，"
-            "不要添加解释。若问题本身已经独立完整，原样输出。只输出改写后的问题一行。\n\n"
+            "不要添加解释。"
+            "若最新问题是在反驳或质疑上一轮回答，改写为「重新核对：<原问题>（用户认为：<用户说法>）」，"
+            "不要把用户说法当作事实写进问题。"
+            "若问题本身已经独立完整，原样输出。只输出改写后的问题一行。\n\n"
             f"【最近对话】\n{history}\n\n"
             f"【最新问题】\n{question}"
         )
@@ -606,7 +627,11 @@ class ConversationContext:
         if not rewritten or rewritten == question or len(rewritten) > 300:
             return result
         result.update({"question": rewritten, "changed": True})
-        _emit(progress, "context_rewritten", f"🔗 已理解为：{rewritten}", rewritten=rewritten)
+        if challenge:
+            _emit(progress, "context_rewritten", f"🔁 用户质疑，重新核对：{rewritten}",
+                  rewritten=rewritten, challenge=True)
+        else:
+            _emit(progress, "context_rewritten", f"🔗 已理解为：{rewritten}", rewritten=rewritten, challenge=False)
         return result
 
     # ---------- 健康度 / 新会话建议 ----------

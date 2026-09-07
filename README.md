@@ -1068,6 +1068,16 @@ Cerebro 采用「单一模型」架构：一个 LLM 同时驱动 RAG 综合、Re
 
 > 基准分数来自各模型官方页公开的模型卡数据；吞吐/驻留为 Apple M4 MacBook Air 16GB 实测。
 
+**小模型更容易"过度顺从"**（H-Neurons 研究，arXiv 2512.01797：<10B 模型接受错误前提、被反驳就改口的倾向明显更强，
+且换 instruct 版本不能解决）。本项目在模型外围加了忠实性条款、引用程序化校验与结构化警示（见「模式一」的 F9 段），
+但对**重要事实请务必**用 `/sources` 与回答后的 `🔎 引用 v/t 有效` 校验行核对，不要仅凭答案文字。
+切换模型前后可用评测脚本对比抗过度顺从表现（需本机 Ollama，规则词表判定，不用 LLM 当裁判）：
+
+```bash
+./venv/bin/python scripts/eval_overcompliance.py --model qwen3.5:4b            # 30 例：错误前提 / 误导片段 / 被质疑 / 虚构实体
+./venv/bin/python scripts/eval_overcompliance.py --model qwen3.5:9b --out /tmp/eval-9b.json -v
+```
+
 ### 三种切换方式
 
 ```bash

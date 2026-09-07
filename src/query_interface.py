@@ -1240,6 +1240,7 @@ def _cli_ask_progress(event: dict):
         "web_search_failed": "yellow",
         "enrich_start": "dim",
         "enrich_page_failed": "dim",
+        "enrich_page_blocked": "cyan",   # F9 P1-3：丢弃疑似注入页面
         "enrich_done": "green",
         "kb_empty": "yellow",
         "kb_fallback_search": "cyan",
@@ -1703,7 +1704,9 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
 
     console.print("\n🤖 回答:", style="bold blue")
     if result.get("rewritten"):
-        console.print(f"[cyan]🔗 已理解为：{result['rewritten']}[/cyan]")
+        # F9 P1-2：质疑类追问复用同一通道，文案改为「重新核对」
+        label = "🔁 用户质疑，重新核对" if result.get("challenge") else "🔗 已理解为"
+        console.print(f"[cyan]{label}：{result['rewritten']}[/cyan]")
     # F9 P0-5：警示 / 校验等结构化提示与正文分离——before 组在 Panel 上方，after 组在下方
     notices = result.get("notices") or []
     _print_notices(notices, position="before")

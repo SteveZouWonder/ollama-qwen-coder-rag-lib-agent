@@ -1768,3 +1768,23 @@ class TestF9MultiAgentNotices:
         integ = ResultIntegrator(use_llm=False)
         out = integ.integrate([r1])
         assert out["notices"] == [{"level": "warn", "code": "web_only", "text": "x"}]
+
+
+class TestF9ChallengeLabel:
+    def test_challenge_prefix_label(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            _rag_answer("仍为 2999 元[1]", rewritten="重新核对：DJI 售价（用户认为：3999）", challenge=True),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("不对", "RAG 检索"))
+        content = out[-1][0][-1]["content"]
+        assert content.startswith("> 🔁 用户质疑，重新核对：重新核对：DJI 售价（用户认为：3999）\n\n")
+        assert "已理解为" not in content
+
+    def test_non_challenge_keeps_understood_label(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("答", rewritten="DJI 多少钱", challenge=False)])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("它多少钱", "RAG 检索"))
+        assert out[-1][0][-1]["content"].startswith("> 🔗 已理解为：DJI 多少钱")

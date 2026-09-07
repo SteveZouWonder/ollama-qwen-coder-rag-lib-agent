@@ -1262,7 +1262,9 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         prefix = ""
         rewritten = data.get("rewritten")
         if rewritten:
-            prefix = f"> 🔗 已理解为：{rewritten}\n\n"
+            # F9 P1-2：质疑类追问复用同一 blockquote，文案改为「重新核对」
+            label = "🔁 用户质疑，重新核对" if data.get("challenge") else "🔗 已理解为"
+            prefix = f"> {label}：{rewritten}\n\n"
 
         if mode == "多 Agent 协作":
             content = prefix + format_multi_agent_result(data)
