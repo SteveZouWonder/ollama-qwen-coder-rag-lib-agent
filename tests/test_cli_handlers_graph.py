@@ -189,45 +189,81 @@ class TestGraphQueryRouting:
         assert params == {"query": "http://example.com", "query_type": "entity"}
 
 
-class TestGitAnalyze:
-    """/git-analyze 与 /git-commit-gen handler 测试（修复静默无输出）"""
+_OVERVIEW = {
+    "is_repo": True, "branch": "main", "last_commit_at": "2026-09-08 10:00:00 +0800",
+    "changed": [{"status": "M", "label": "修改", "path": "a.py"}],
+    "commits": [{"hash7": "abc1234", "author": "T", "date": "2026-09-08", "subject": "feat: x"}],
+    "authors": [{"name": "T", "commits": 1}],
+}
 
-    def _ctx(self, result="OK"):
-        reg = MagicMock()
-        reg.execute.return_value = result
-        ctx = h.CLIContext(console=MagicMock(), has_rich=False,
-                           registry=reg, record_command=MagicMock())
-        return ctx, reg
+
+class TestGitAnalyze:
+    """/git-analyze（F9 P3-5：共享层 ``get_overview`` + rich 表格）与 /git-commit-gen handler 测试。
+
+    详细的表头 / 行数 / 空态断言见 ``test_cli_handlers_rich_tables.py``；这里只覆盖分发与容错。
+    """
+
+    def _ctx(self, overview=None, has_rich=False):
+        ctx = h.CLIContext(console=MagicMock(), has_rich=has_rich, registry=MagicMock(), record_command=MagicMock())
+        return ctx
 
     def _pq(self, arg):
         return ParsedCommand("git_analyze", f"/git-analyze {arg}", arg)
 
-    def test_no_arg_defaults_to_history(self):
-        ctx, reg = self._ctx("最近 1 次提交")
+    def _patch(self, monkeypatch, overview=_OVERVIEW):
+        calls = []
+
+        def fake(repo_path=".", max_commits=10):
+            calls.append((repo_path, max_commits))
+            return dict(overview)
+
+        monkeypatch.setattr(h, "_git_overview", fake)
+        return calls
+
+    def test_no_arg_defaults_to_history(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        ctx = self._ctx()
         assert h.handle_git_analyze(ctx, self._pq("")) is True
-        _, params = reg.execute.call_args.args
-        assert params == {"repo_path": ".", "analysis_type": "history"}
+        assert calls == [(".", 10)]
+        ctx.record_command.assert_called_once_with("git_analyze", "history")
+        ctx.registry.execute.assert_not_called()  # 不再经 registry
 
-    def test_status_type(self):
-        ctx, reg = self._ctx("当前分支: main")
+    def test_status_type(self, monkeypatch):
+        self._patch(monkeypatch)
+        ctx = self._ctx()
         h.handle_git_analyze(ctx, self._pq("status"))
-        _, params = reg.execute.call_args.args
-        assert params["analysis_type"] == "status"
+        ctx.record_command.assert_called_once_with("git_analyze", "status")
+        printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list)
+        assert "修改 a.py" in printed
 
-    def test_author_alias_maps_to_authors(self):
-        ctx, reg = self._ctx("作者统计:")
+    def test_author_alias_maps_to_authors(self, monkeypatch):
+        self._patch(monkeypatch)
+        ctx = self._ctx()
         h.handle_git_analyze(ctx, self._pq("author"))
-        _, params = reg.execute.call_args.args
-        assert params["analysis_type"] == "authors"
+        ctx.record_command.assert_called_once_with("git_analyze", "authors")
 
-    def test_unknown_type_returns_false_without_tool(self):
-        ctx, reg = self._ctx()
+    def test_unknown_type_returns_false_without_tool(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        ctx = self._ctx()
         assert h.handle_git_analyze(ctx, self._pq("bogus")) is False
-        reg.execute.assert_not_called()
+        assert calls == []
 
-    def test_tool_error_surfaced(self):
-        ctx, reg = self._ctx("[错误] Git 集成模块未安装")
-        assert h.handle_git_analyze(ctx, self._pq("history")) is False
+    def test_non_repo_hint(self, monkeypatch):
+        self._patch(monkeypatch, {"is_repo": False, "branch": "", "changed": [], "commits": [], "authors": [],
+                                  "last_commit_at": ""})
+        ctx = self._ctx()
+        assert h.handle_git_analyze(ctx, self._pq("history")) is True
+        assert ctx.console.print.call_args.kwargs.get("style") == "dim"
+
+    def test_exception_recorded(self, monkeypatch):
+        def boom(repo_path=".", max_commits=10):
+            raise RuntimeError("git-boom")
+
+        monkeypatch.setattr(h, "_git_overview", boom)
+        ctx = self._ctx()
+        assert h.handle_git_analyze(ctx, self._pq("history")) is True
+        assert ctx.record_command.call_args.args[2] == "failed"
+        assert ctx.console.print.call_args.kwargs.get("style") == "red"
 
     def test_commit_gen_invokes_tool(self):
         reg = MagicMock()

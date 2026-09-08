@@ -638,6 +638,364 @@ def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) 
     return f'<div class="cb-cards">{"".join(cards)}</div>'
 
 
+def _html_escape(text: Any) -> str:
+    """HTML 属性 / 文本转义（卡片 title 等）。"""
+    return (str("" if text is None else text)
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def format_git_cards(overview: Dict[str, Any]) -> str:
+    """Git 仪表盘顶部 4 张卡：当前分支 / 变更文件 / 最近提交时间 / 提交者数（HTML）。"""
+    if not overview or not overview.get("is_repo"):
+        err = overview.get("error") if overview else ""
+        detail = f"<p>{_html_escape(err)}</p>" if err else "<p>在「系统 → 运行环境」切换到 Git 仓库目录后刷新。</p>"
+        return f'<div class="cb-empty"><h3>当前目录不是 Git 仓库</h3>{detail}</div>'
+
+    def card(k: str, v: Any, small: bool = False) -> str:
+        cls = "v small" if small else "v"
+        v = _html_escape(v)
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="{cls}" title="{v}">{v}</div></div>'
+
+    last = str(overview.get("last_commit_at") or "")
+    last_short = last[:16] if last else "—"
+    cards = [
+        card("当前分支", overview.get("branch") or "（分离 HEAD）", small=True),
+        card("变更文件", len(overview.get("changed") or [])),
+        card("最近提交", last_short, small=True),
+        card("提交者", len(overview.get("authors") or [])),
+    ]
+    return f'<div class="cb-cards">{"".join(cards)}</div>'
+
+
+GIT_CHANGES_HEADERS = ["状态", "路径"]
+GIT_COMMITS_HEADERS = ["提交", "作者", "日期", "标题"]
+GIT_AUTHORS_HEADERS = ["作者", "提交数"]
+
+
+def git_changes_rows(overview: Dict[str, Any]) -> List[List[Any]]:
+    return [[c.get("label") or c.get("status", ""), c.get("path", "")] for c in (overview or {}).get("changed") or []]
+
+
+def git_commits_rows(overview: Dict[str, Any]) -> List[List[Any]]:
+    return [[c.get("hash7", ""), c.get("author", ""), c.get("date", ""), c.get("subject", "")]
+            for c in (overview or {}).get("commits") or []]
+
+
+def git_authors_rows(overview: Dict[str, Any]) -> List[List[Any]]:
+    return [[a.get("name", ""), a.get("commits", 0)] for a in (overview or {}).get("authors") or []]
+
+
+def format_git_payload(overview: Dict[str, Any]) -> str:
+    """把 Git 概览压成纯文本，供「用 AI 解读 / 发送到对话」。"""
+    if not overview or not overview.get("is_repo"):
+        return ""
+    lines = [f"分支: {overview.get('branch') or '(detached)'}", f"最近提交: {overview.get('last_commit_at') or '—'}"]
+    changed = overview.get("changed") or []
+    lines.append(f"变更文件 ({len(changed)}):")
+    lines += [f"  {c.get('label') or c.get('status', '')} {c.get('path', '')}" for c in changed[:50]]
+    lines.append("最近提交:")
+    lines += [f"  {c.get('hash7', '')} {c.get('date', '')} {c.get('author', '')}: {c.get('subject', '')}"
+              for c in overview.get("commits") or []]
+    lines.append("提交者: " + ", ".join(f"{a.get('name', '')}({a.get('commits', 0)})" for a in overview.get("authors") or []))
+    return "\n".join(lines)
+
+
+GIT_STAGED_HEADERS = ["状态", "路径"]
+
+
+def git_staged_rows(preview: Dict[str, Any]) -> List[List[Any]]:
+    return [[f.get("label") or f.get("status", ""), f.get("path", "")]
+            for f in (preview or {}).get("staged_files") or []]
+
+
+def format_git_commit_preview(preview: Dict[str, Any]) -> str:
+    """暂存区预览卡片（HTML）：暂存文件数 / 新增行 / 删除行；无暂存时给 ``.cb-hint`` 提示。"""
+    if not preview or not preview.get("is_repo"):
+        err = (preview or {}).get("error")
+        detail = f"<p>{_html_escape(err)}</p>" if err else ""
+        return f'<div class="cb-empty"><h3>当前目录不是 Git 仓库</h3>{detail}</div>'
+    if not preview.get("has_staged"):
+        return ('<div class="cb-hint cb-hint-block">💡 暂存区为空：请先在终端 <code>git add</code> 要提交的文件，'
+                '再点「AI 生成提交信息」。</div>')
+
+    def card(k: str, v: Any) -> str:
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="v">{_html_escape(v)}</div></div>'
+
+    cards = [
+        card("暂存文件", preview.get("files_changed") or len(preview.get("staged_files") or [])),
+        card("新增行", f"+{int(preview.get('insertions') or 0)}"),
+        card("删除行", f"-{int(preview.get('deletions') or 0)}"),
+    ]
+    stat = _html_escape(preview.get("diff_stat") or "")
+    stat_html = f'<pre class="cb-diff-stat">{stat}</pre>' if stat else ""
+    return f'<div class="cb-cards">{"".join(cards)}</div>{stat_html}'
+
+
+def format_db_status(current: Dict[str, Any]) -> str:
+    """数据库当前连接状态芯片（HTML）。"""
+    if not current or not current.get("connected"):
+        return '<span class="cb-status-chip"><span class="dot off"></span>未连接 · 输入 SQLite 文件路径后点「连接」</span>'
+    return (f'<span class="cb-status-chip"><span class="dot"></span>已连接 · '
+            f'<code>{_html_escape(current.get("database", ""))}</code></span>')
+
+
+DB_TABLES_HEADERS = ["表名"]
+DB_SCHEMA_HEADERS = ["列", "类型", "约束"]
+
+
+def db_tables_rows(data: Dict[str, Any]) -> List[List[Any]]:
+    return [[t] for t in (data or {}).get("tables") or []]
+
+
+def db_schema_rows(schema: Dict[str, Any]) -> List[List[Any]]:
+    """列 / 类型 / 约束（PK · NOT NULL · DEFAULT x）；与 CLI ``/db-schema`` 共用共享层实现。"""
+    from database_tools.results import schema_rows
+
+    return schema_rows(schema)
+
+
+def format_db_query_status(result: Dict[str, Any]) -> str:
+    """查询结果状态行：行数 / 耗时 / 截断提示，或错误。"""
+    if not result:
+        return ""
+    if result.get("error"):
+        return f"❌ {result['error']}"
+    n = int(result.get("row_count", 0) or 0)
+    shown = len(result.get("rows") or [])
+    took = f"{float(result.get('execution_time', 0) or 0):.3f}s"
+    if result.get("truncated"):
+        return f"✅ 共 {n} 行，仅显示前 {shown} 行 · {took}"
+    return f"✅ 返回 {n} 行 · {took}"
+
+
+def format_db_execute_status(result: Dict[str, Any]) -> str:
+    if not result:
+        return ""
+    if result.get("error"):
+        return f"❌ {result['error']}"
+    return f"✅ 执行成功，影响 {int(result.get('affected_rows', 0) or 0)} 行 · {float(result.get('execution_time', 0) or 0):.3f}s"
+
+
+def format_db_payload(result: Dict[str, Any], max_rows: int = 50) -> str:
+    """SQL + 前 ``max_rows`` 行结果的纯文本，供「用 AI 解读 / 发送到对话」。"""
+    if not result:
+        return ""
+    lines = [f"SQL: {result.get('sql', '')}"]
+    if result.get("error"):
+        lines.append(f"错误: {result['error']}")
+        return "\n".join(lines)
+    if "affected_rows" in result and "columns" not in result:
+        lines.append(f"影响行数: {result.get('affected_rows', 0)}")
+        return "\n".join(lines)
+    cols = result.get("columns") or []
+    rows = (result.get("rows") or [])[:max_rows]
+    lines.append(f"共 {result.get('row_count', 0)} 行" + (f"（下面为前 {len(rows)} 行）" if result.get("row_count", 0) > len(rows) else ""))
+    if cols:
+        lines.append(" | ".join(map(str, cols)))
+        lines += [" | ".join("" if v is None else str(v) for v in r) for r in rows]
+    return "\n".join(lines)
+
+
+SEND_TO_CHAT_MAX = 4000
+
+
+def format_send_to_chat(tab: str, payload: str) -> str:
+    """「发送到对话」填入输入框的模板（附录 A-6）；结果截 ``SEND_TO_CHAT_MAX`` 字。"""
+    payload = (payload or "").strip()
+    if not payload:
+        return ""
+    if len(payload) > SEND_TO_CHAT_MAX:
+        payload = payload[:SEND_TO_CHAT_MAX] + "\n…（已截断）"
+    return f"以下是工具页「{tab}」的结果，请基于它继续分析：\n```\n{payload}\n```\n我的问题："
+
+
+# ---------- 工具页 P2：代码助手 / 符号表 / 质量卡片 ----------
+
+SYMBOL_HEADERS = ["名称", "类型", "文件", "行号", "复杂度"]
+QUALITY_ISSUE_HEADERS = ["严重度", "行", "描述"]
+_SEVERITY_LABEL = {"critical": "危险", "error": "错误", "warning": "警告", "info": "提示"}
+
+
+def symbol_rows(data: Dict[str, Any]) -> List[List[Any]]:
+    """符号搜索结果 → 表格行（名称 / 类型 / 文件 / 行号 / 复杂度）。"""
+    return [[s.get("name", ""), s.get("kind", ""), s.get("file", ""), s.get("line", 0), s.get("complexity", "")]
+            for s in (data or {}).get("symbols") or []]
+
+
+def format_symbols_status(data: Dict[str, Any]) -> str:
+    if not data:
+        return ""
+    if data.get("error"):
+        return f"❌ {data['error']}"
+    n = len(data.get("symbols") or [])
+    if n == 0:
+        return "💡 未找到匹配的函数 / 类"
+    return f"✅ 找到 {n} 个符号" + ("（已截断）" if data.get("truncated") else "")
+
+
+def format_symbols_payload(pattern: str, data: Dict[str, Any]) -> str:
+    """符号表的纯文本（供「用 AI 解读 / 发送到对话」）。"""
+    rows = symbol_rows(data)
+    if not rows:
+        return ""
+    lines = [f"符号搜索「{pattern}」共 {len(rows)} 条："]
+    lines += [f"  {r[1]} {r[0]}  {r[2]}:{r[3]}  复杂度 {r[4]}" for r in rows[:100]]
+    return "\n".join(lines)
+
+
+def format_quality_cards(report: Dict[str, Any]) -> str:
+    """质量检查卡片：评分 / 问题数 / 文件数 / 严重度分布（HTML）。"""
+    if not report:
+        return ""
+    if report.get("error"):
+        return f'<div class="cb-empty">❌ {_html_escape(report["error"])}</div>'
+
+    def card(k: str, v: Any, small: bool = False) -> str:
+        cls = "v small" if small else "v"
+        v = _html_escape(v)
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="{cls}" title="{v}">{v}</div></div>'
+
+    sev = report.get("severity") or {}
+    dist = " · ".join(f"{_SEVERITY_LABEL.get(k, k)} {int(sev.get(k, 0) or 0)}"
+                      for k in ("critical", "error", "warning", "info"))
+    cards = [
+        card("评分", f"{float(report.get('score', 0) or 0):.1f} / 100"),
+        card("问题数", int(report.get("total_issues", 0) or 0)),
+        card("文件数", int(report.get("files", 0) or 0)),
+        card("严重度分布", dist, small=True),
+    ]
+    return f'<div class="cb-cards">{"".join(cards)}</div>'
+
+
+def quality_issue_rows(report: Dict[str, Any]) -> List[List[Any]]:
+    """问题表：严重度 / 行（多文件时为 ``文件:行``）/ 描述。"""
+    issues = (report or {}).get("issues") or []
+    multi = int((report or {}).get("files", 0) or 0) > 1
+    rows = []
+    for i in issues:
+        loc = f"{i.get('file', '')}:{i.get('line', 0)}" if multi else str(i.get("line", 0))
+        rows.append([_SEVERITY_LABEL.get(i.get("severity", ""), i.get("severity", "")), loc, i.get("message", "")])
+    return rows
+
+
+def format_quality_payload(report: Dict[str, Any]) -> str:
+    if not report or report.get("error"):
+        return f"质量检查失败: {report.get('error')}" if report and report.get("error") else ""
+    sev = report.get("severity") or {}
+    lines = [f"质量检查 {report.get('path', '')}：评分 {float(report.get('score', 0) or 0):.1f}/100，"
+             f"{report.get('files', 0)} 个文件，{report.get('total_issues', 0)} 个问题"
+             f"（危险 {sev.get('critical', 0)} / 错误 {sev.get('error', 0)} / 警告 {sev.get('warning', 0)} / 提示 {sev.get('info', 0)}）"]
+    lines += [f"  [{r[0]}] {r[1]}: {r[2]}" for r in quality_issue_rows(report)[:100]]
+    return "\n".join(lines)
+
+
+# ---------- 工具页 P2：工作区文件浏览 ----------
+
+DIR_HEADERS = ["", "名称", "大小", "修改时间"]
+SEARCH_HEADERS = ["文件", "行", "内容"]
+_LANGUAGE_BY_SUFFIX = {
+    ".py": "python", ".js": "javascript", ".mjs": "javascript", ".ts": "typescript", ".tsx": "typescript",
+    ".jsx": "javascript", ".json": "json", ".md": "markdown", ".html": "html", ".htm": "html", ".css": "css",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".yaml": "yaml", ".yml": "yaml", ".sql": "sql",
+    ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp", ".r": "r", ".jinja": "jinja2",
+}
+_LANGUAGE_BY_NAME = {"dockerfile": "dockerfile", "makefile": "shell"}
+
+
+def guess_code_language(name: str) -> Optional[str]:
+    """按文件名后缀推断 ``gr.Code`` 的 ``language``（未知返回 None，即纯文本）。"""
+    import os
+
+    base = os.path.basename((name or "").strip())
+    if not base:
+        return None
+    if base.lower() in _LANGUAGE_BY_NAME:
+        return _LANGUAGE_BY_NAME[base.lower()]
+    suffix = os.path.splitext(base)[1] or (base if base.startswith(".") else "")  # 允许直接传 ".py"
+    return _LANGUAGE_BY_SUFFIX.get(suffix.lower())
+
+
+def format_size(size: Any) -> str:
+    """字节数 → ``1.2 KB`` 样式（目录 / 0 显示 ``—``）。"""
+    try:
+        n = float(size or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if n <= 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return "—"  # pragma: no cover - 循环内必返回
+
+
+def dir_rows(listing: Dict[str, Any]) -> List[List[Any]]:
+    """目录列表 → 表格行：``📁/📄`` / 名称 / 大小 / 修改时间。"""
+    rows = []
+    for e in (listing or {}).get("entries") or []:
+        is_dir = e.get("kind") == "dir"
+        rows.append(["📁" if is_dir else "📄", e.get("name", ""), "—" if is_dir else format_size(e.get("size")),
+                     e.get("mtime", "")])
+    return rows
+
+
+def abbreviate_home(path: str) -> str:
+    """把用户主目录前缀缩写为 ``~``（仅用于显示；服务层照常接受 ``~`` 路径）。"""
+    import os
+
+    path = str(path or "")
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if home and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+def format_dir_breadcrumb(listing: Dict[str, Any]) -> str:
+    """面包屑：``📂 `~/path` · N 项``；出错时 ❌。"""
+    if not listing:
+        return ""
+    if listing.get("error"):
+        return f"❌ {listing['error']}"
+    n = len(listing.get("entries") or [])
+    extra = "（已截断）" if listing.get("truncated") else ""
+    return f"📂 `{abbreviate_home(listing.get('path', ''))}` · {n} 项{extra}"
+
+
+def join_entry(cur_path: str, kind_cell: str, name: str) -> Tuple[str, bool]:
+    """把表格选中行还原为 ``(完整路径, 是否目录)``；名称为空返回 ``("", False)``。"""
+    import os
+
+    name = (name or "").strip()
+    if not name:
+        return "", False
+    return os.path.join((cur_path or ".").strip() or ".", name), (kind_cell or "").strip() == "📁"
+
+
+def search_rows(results: List[Dict[str, Any]]) -> List[List[Any]]:
+    """搜索结果行：相对路径（无则绝对路径）/ 行 / 内容。"""
+    return [[r.get("rel") or r.get("file", ""), r.get("line", 0), r.get("text", "")] for r in results or []]
+
+
+def format_file_preview_status(preview: Dict[str, Any]) -> str:
+    """预览状态行：``📄 `path` · 第 1/3 页 · 行 1-200 / 512``。"""
+    if not preview:
+        return ""
+    if preview.get("error"):
+        return f"❌ {preview['error']}"
+    total = int(preview.get("total_lines", 0) or 0)
+    if total == 0:
+        return f"📄 `{preview.get('path', '')}` · 空文件"
+    return (f"📄 `{preview.get('path', '')}` · 第 {int(preview.get('page', 0)) + 1}/{preview.get('pages', 1)} 页 · "
+            f"行 {int(preview.get('start', 0)) + 1}-{preview.get('end', 0)} / {total}")
+
+
+def format_file_payload(preview: Dict[str, Any]) -> str:
+    if not preview or preview.get("error") or not preview.get("content"):
+        return ""
+    return f"文件: {preview.get('path', '')}（行 {int(preview.get('start', 0)) + 1}-{preview.get('end', 0)}）\n{preview.get('content', '')}"
+
+
 def format_graph_result(result: Dict[str, Any]) -> str:
     """把知识图谱查询结果渲染为 Markdown 文本。"""
     entities = result.get("entities", [])
@@ -1578,43 +1936,229 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         result = service.set_think(bool(enabled))
         return format_switch_result(result), on_model_status(), bool(result.get("enabled"))
 
-    # ---------- 阶段三：工具命令面 ----------
-
-    def on_web_search(query: str) -> str:
-        return service.web_search(query)
-
-    def on_web_extract(url: str) -> str:
-        return service.web_extract(url)
+    # ---------- 工具页（F9）：网络缓存（系统页）/ 代码 / Git 仪表盘 / 数据库 / 结果流转 ----------
 
     def on_web_cache_status() -> str:
-        return service.web_cache_status()
+        return _fmt_result(service.web_cache_status())
 
     def on_web_cache_clear() -> str:
-        return service.web_cache_clear()
+        return _fmt_result(service.web_cache_clear())
 
-    def on_code_ast(pattern: str, path: str) -> str:
-        return service.code_ast(pattern, path or ".")
+    def on_git_commit_preview() -> Tuple[str, List[List[Any]], bool]:
+        """暂存区预览：返回 (卡片 / 提示 HTML, 暂存文件行, 是否有暂存)。"""
+        pv = service.git_commit_preview()
+        return format_git_commit_preview(pv), git_staged_rows(pv), bool(pv.get("has_staged"))
 
-    def on_code_quality(path: str) -> str:
-        return service.code_quality(path or ".")
+    def on_git_commit_gen() -> Tuple[str, List[List[Any]], str, str]:
+        """「AI 生成提交信息」：先取暂存预览，再生成；返回 (预览 HTML, 暂存行, 可编辑的提交信息, 提示行)。
 
-    def on_git_analyze(analysis_type: str) -> str:
-        return service.git_analyze(analysis_type or "history")
+        无暂存时不调用模型，提交信息留空并在提示行说明。
+        """
+        html, rows, has_staged = on_git_commit_preview()
+        if not has_staged:
+            return html, rows, "", "💡 暂存区为空，请先 `git add`"
+        result = service.git_commit_message()
+        if result.get("error"):
+            return html, rows, "", f"❌ {result['error']}"
+        return html, rows, str(result.get("message") or ""), "✅ 已生成，可编辑后点「提交」"
 
-    def on_git_commit_gen() -> str:
-        return service.git_commit_gen()
+    def on_git_commit(message: str) -> str:
+        """确认后提交（``git commit -m``）；UI 负责 ``shell_enable`` 门控与 ``Confirm``。"""
+        return _fmt_result(service.git_commit(message))
 
-    def on_db_connect(db_type: str, database: str) -> str:
-        return service.db_connect(db_type, database)
+    def on_git_overview() -> Tuple[str, List[List[Any]], List[List[Any]], List[List[Any]], str]:
+        """Git 仪表盘：返回 (卡片 HTML, 变更文件行, 最近提交行, 提交者行, 解读用纯文本)。"""
+        ov = service.git_overview()
+        return (format_git_cards(ov), git_changes_rows(ov), git_commits_rows(ov), git_authors_rows(ov),
+                format_git_payload(ov))
 
-    def on_db_query(sql: str) -> str:
-        return service.db_query(sql)
+    def on_db_status() -> str:
+        return format_db_status(service.db_current())
 
-    def on_db_execute(sql: str) -> str:
-        return service.db_execute(sql)
+    def on_db_tables() -> List[List[Any]]:
+        return db_tables_rows(service.db_tables())
 
-    def on_db_schema(table: str) -> str:
-        return service.db_schema(table)
+    def on_db_connect(database: str) -> Tuple[str, str, List[List[Any]]]:
+        """连接：返回 (结果文案, 状态芯片 HTML, 表列表行)。"""
+        msg = _fmt_result(service.db_connect(database))
+        return msg, on_db_status(), on_db_tables()
+
+    def on_recent_databases() -> List[str]:
+        """连接区下拉的候选：``:memory:`` 恒在首位 + 最近成功连接过的库（F9 P3-1）。"""
+        recent = [d for d in service.recent_databases() if d and d != ":memory:"]
+        return [":memory:", *recent]
+
+    def on_shell_history() -> List[str]:
+        """命令区「历史命令」下拉候选（最新在前，F9 P3-2）。"""
+        return list(service.shell_history())
+
+    def on_db_disconnect() -> Tuple[str, str, List[List[Any]]]:
+        msg = _fmt_result(service.db_disconnect())
+        return msg, on_db_status(), []
+
+    def on_db_table_schema(table: str) -> Tuple[str, List[List[Any]]]:
+        """点选表 → (标题文案, 列 / 类型 / 约束 行)。"""
+        table = (table or "").strip()
+        if not table:
+            return "", []
+        schema = service.db_table_schema(table)
+        if schema.get("error"):
+            return f"❌ {schema['error']}", []
+        return f"**{table}** · {len(schema.get('columns') or [])} 列", db_schema_rows(schema)
+
+    def on_db_query(sql: str) -> Tuple[str, List[str], List[List[Any]]]:
+        """查询：返回 (状态行, 表头, 行)。"""
+        result = service.db_query(sql)
+        return format_db_query_status(result), list(result.get("columns") or []), list(result.get("rows") or [])
+
+    def on_db_execute(sql: str) -> Tuple[str, List[List[Any]]]:
+        """写操作（调用方已确认）：返回 (状态行, 刷新后的表列表行)。"""
+        result = service.db_execute(sql)
+        return format_db_execute_status(result), on_db_tables()
+
+    def on_db_payload(sql: str, headers: List[str], rows: List[List[Any]]) -> str:
+        """把当前查询与表格内容压成解读用文本（UI 在查询后调用）。"""
+        return format_db_payload({"sql": sql, "columns": headers or [], "rows": rows or [],
+                                  "row_count": len(rows or [])})
+
+    def on_ai_explain(kind: str, payload: str, question: str = ""):
+        """「用 AI 解读」：流式 yield Markdown（心跳期显示已用时；answer 直接展示）。"""
+        tracker = ProgressTracker()
+        yield "⏳ 思考中…"
+        for evt in service.ai_explain_stream(kind, payload, question):
+            if evt.kind in ("progress", "heartbeat"):
+                yield f"⏳ 思考中… {format_elapsed(tracker.elapsed())}"
+            elif evt.kind == "answer":
+                yield evt.message
+            elif evt.kind == "error":
+                yield f"❌ {evt.message}"
+                return
+            elif evt.kind == "cancelled":
+                yield "⏹️ 已停止"
+                return
+
+    def on_send_to_chat(tab: str, payload: str) -> str:
+        """「发送到对话」：返回填入对话输入框的文本（空结果返回空串，UI 据此不跳转）。"""
+        return format_send_to_chat(tab, payload)
+
+    # ---------- 工具页 P2-1：代码助手 / 符号表 / 质量报告 ----------
+
+    def on_code_assist(action: str, path: str, extra: str = ""):
+        """代码助手（流式）：yield ``(处理过程 Markdown, 结果 Markdown)``。"""
+        tracker = ProgressTracker()
+        label = WebService.CODE_ASSIST_ACTIONS.get(action, action)
+        yield tracker.render_status(), f"⏳ 正在{label}…"
+        for evt in service.code_assist_stream(action, path, extra):
+            if evt.kind == "step":
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield _process_md(tracker), f"⏳ 正在{label}… {format_elapsed(tracker.elapsed())}"
+            elif evt.kind in ("progress", "heartbeat"):
+                yield _process_md(tracker), f"⏳ 正在{label}… {format_elapsed(tracker.elapsed())}"
+            elif evt.kind == "answer":
+                yield _process_md(tracker, done=True), evt.message
+            elif evt.kind == "error":
+                yield _process_md(tracker, state="error", detail=evt.message), f"❌ {evt.message}"
+                return
+            elif evt.kind == "cancelled":
+                yield _process_md(tracker, state="cancelled"), "⏹️ 已停止"
+                return
+
+    def _process_md(tracker: ProgressTracker, done: bool = False, state: str = "", detail: str = "") -> str:
+        status = tracker.render_status("done" if done else (state or "running"), detail)
+        steps = tracker.render_steps(done=done)
+        return f"{status}\n\n{steps}" if steps else status
+
+    def on_code_symbols(pattern: str, path: str, search_by: str = "name") -> Tuple[str, List[List[Any]], str]:
+        """符号搜索：返回 (状态行, 表格行, 解读用文本)。"""
+        data = service.code_symbols(pattern, path or ".", search_by or "name")
+        return format_symbols_status(data), symbol_rows(data), format_symbols_payload(pattern, data)
+
+    def on_code_quality_report(path: str) -> Tuple[str, List[List[Any]], str]:
+        """质量检查：返回 (卡片 HTML, 问题表行, 解读用文本)。"""
+        report = service.code_quality_report(path or ".")
+        return format_quality_cards(report), quality_issue_rows(report), format_quality_payload(report)
+
+    # ---------- 工具页 P2-2：自然语言 → SQL ----------
+
+    def on_db_connected() -> bool:
+        return bool((service.db_current() or {}).get("connected"))
+
+    def on_sql_kind(sql: str) -> Tuple[bool, bool]:
+        """按 SQL 首关键字判定 (可直接运行, 需确认)；空 / 不可识别均为 (False, False)。"""
+        kind = WebService.sql_kind(sql)
+        return kind == "select", kind == "write"
+
+    def on_db_nl2sql(question: str) -> Tuple[str, str, bool, bool]:
+        """自然语言 → SQL：返回 (SQL 文本, 提示行, 可直接运行, 需确认)。"""
+        result = service.db_nl2sql(question)
+        sql = str(result.get("sql") or "")
+        kind = result.get("kind") or "invalid"
+        note = str(result.get("note") or "")
+        if kind == "invalid":
+            return sql, f"❌ {note or '未生成可用 SQL'}", False, False
+        hint = f"💡 {note}" if note else ("✅ 已生成只读查询，可直接运行" if kind == "select" else "")
+        return sql, hint, kind == "select", kind == "write"
+
+    # ---------- 工具页 P2-3：工作区文件浏览 ----------
+
+    def on_list_dir(path: str, show_hidden: bool = False) -> Tuple[str, List[List[Any]], str]:
+        """列目录：返回 (面包屑, 表格行, 解析后的路径（主目录缩写为 ``~``）)。出错时路径保持原值。"""
+        listing = service.list_dir(path or ".", bool(show_hidden))
+        resolved = abbreviate_home(listing.get("path", path)) if not listing.get("error") else (path or ".")
+        return format_dir_breadcrumb(listing), dir_rows(listing), resolved
+
+    def on_dir_parent(path: str, show_hidden: bool = False) -> Tuple[str, List[List[Any]], str]:
+        listing = service.list_dir(path or ".", bool(show_hidden))
+        parent = listing.get("parent") or path or "."
+        return on_list_dir(parent, show_hidden)
+
+    def on_file_preview(path: str, page: float = 0) -> Tuple[str, Optional[str], str, int, str]:
+        """文件预览：返回 (内容, 语言, 状态行, 页码, 解读用文本)。"""
+        preview = service.file_preview(path, int(page or 0))
+        content = preview.get("content", "") if not preview.get("error") else ""
+        return (content, guess_code_language(path), format_file_preview_status(preview),
+                int(preview.get("page", 0) or 0), format_file_payload(preview))
+
+    FILE_EDIT_MAX_LINES = 2000
+
+    def on_file_edit_load(path: str) -> Tuple[str, str]:
+        """打开「编辑」：返回 (编辑框初始内容, 提示行)。
+
+        新文件 / 不存在：内容空、提示"保存将创建新文件"；超过 ``FILE_EDIT_MAX_LINES`` 行不加载全文并提示用「追加」。
+        """
+        path = (path or "").strip()
+        if not path:
+            return "", "💡 先在左侧选择文件，或在上方输入新文件路径"
+        preview = service.file_preview(path, 0, FILE_EDIT_MAX_LINES)
+        if preview.get("error"):
+            return "", f"💡 {preview['error']} · 保存将创建新文件"
+        if int(preview.get("pages", 1) or 1) > 1:
+            return "", (f"⚠️ 文件超过 {FILE_EDIT_MAX_LINES} 行，编辑框未加载全文；"
+                        "覆盖保存会替换整个文件，建议勾选「追加」")
+        return str(preview.get("content") or ""), ""
+
+    def on_dir_search(query: str, path: str) -> Tuple[str, List[List[Any]]]:
+        """关键词搜索：返回 (状态行, 表格行)。"""
+        query = (query or "").strip()
+        if not query:
+            return "", []
+        results = service.search_in_dir(query, path or ".")
+        if not results:
+            return f"💡 未找到包含「{query}」的文件", []
+        cap = WebService.SEARCH_MAX_RESULTS
+        more = f"（仅显示前 {cap} 条）" if len(results) >= cap else ""
+        return f"✅ 找到 {len(results)} 处匹配{more}", search_rows(results)
+
+    # ---------- 工具页 P2-4：自然语言 → 命令 ----------
+
+    def on_shell_generate(intent: str) -> Tuple[str, str]:
+        """生成命令：返回 (命令文本, 提示行)。未生成时命令为空。"""
+        result = service.shell_generate(intent)
+        cmd = str(result.get("command") or "")
+        note = str(result.get("note") or "")
+        if not cmd:
+            return "", f"❌ {note or '未生成'}"
+        return cmd, "✅ 已生成命令，请检查后点「分析」→「执行」"
 
     def on_file_list() -> str:
         files = service.file_list()
@@ -1892,13 +2436,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             return None, f"❌ 渲染失败：{exc}", cards
         return fig, stats_md, cards
 
-    # ---------- 工具：数据库写操作 / Shell / 文件读写 / 工作目录 ----------
-
-    def on_db_create_table(table: str, columns_json: str) -> str:
-        return _fmt_result(service.db_create_table(table, columns_json))
-
-    def on_db_insert(table: str, data_json: str) -> str:
-        return _fmt_result(service.db_insert(table, data_json))
+    # ---------- 工具：Shell / 文件读写 / 工作目录 ----------
 
     def on_exec_analyze(command: str) -> Tuple[str, bool, bool]:
         """分析命令：返回 (分析文案, 可直接执行, 需二次确认)。"""
@@ -1912,12 +2450,6 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
     def on_exec_run(command: str) -> str:
         result = service.exec_run(command)
-        if result.startswith("[错误]") or result.startswith("[提示]"):
-            return _fmt_result(result)
-        return f"```\n{result}\n```"
-
-    def on_read_file(path: str, offset: float = 0, limit: float = 200) -> str:
-        result = service.read_file(path, int(offset or 0), int(limit or 200))
         if result.startswith("[错误]") or result.startswith("[提示]"):
             return _fmt_result(result)
         return f"```\n{result}\n```"
@@ -1989,11 +2521,8 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_knowledge_summary_table": on_knowledge_summary_table,
         "on_graph_query_typed": on_graph_query_typed,
         "on_graph_build_any": on_graph_build_any,
-        "on_db_create_table": on_db_create_table,
-        "on_db_insert": on_db_insert,
         "on_exec_analyze": on_exec_analyze,
         "on_exec_run": on_exec_run,
-        "on_read_file": on_read_file,
         "on_write_file": on_write_file,
         "on_cwd": on_cwd,
         "on_chdir": on_chdir,
@@ -2004,7 +2533,26 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "headers": {
             "files": _FILE_HEADERS, "snapshots": _SNAPSHOT_HEADERS, "summary": _SUMMARY_HEADERS,
             "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS, "snapshot_docs": _SNAPSHOT_DOC_HEADERS,
+            "git_changes": GIT_CHANGES_HEADERS, "git_commits": GIT_COMMITS_HEADERS,
+            "git_authors": GIT_AUTHORS_HEADERS, "git_staged": GIT_STAGED_HEADERS,
+            "db_tables": DB_TABLES_HEADERS, "db_schema": DB_SCHEMA_HEADERS,
+            "symbols": SYMBOL_HEADERS, "quality_issues": QUALITY_ISSUE_HEADERS,
+            "dir": DIR_HEADERS, "search": SEARCH_HEADERS,
         },
+        "on_code_assist": on_code_assist,
+        "on_code_symbols": on_code_symbols,
+        "on_code_quality_report": on_code_quality_report,
+        "on_db_connected": on_db_connected,
+        "on_sql_kind": on_sql_kind,
+        "on_db_nl2sql": on_db_nl2sql,
+        "on_list_dir": on_list_dir,
+        "on_dir_parent": on_dir_parent,
+        "on_file_preview": on_file_preview,
+        "on_file_edit_load": on_file_edit_load,
+        "on_dir_search": on_dir_search,
+        "on_shell_generate": on_shell_generate,
+        "join_entry": join_entry,
+        "abbreviate_home": abbreviate_home,
         "on_chat": on_chat,
         "on_chat_stream": on_chat_stream,
         "on_session_init": on_session_init,
@@ -2033,18 +2581,24 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_model_choices": on_model_choices,
         "on_switch_model": on_switch_model,
         "on_toggle_think": on_toggle_think,
-        "on_web_search": on_web_search,
-        "on_web_extract": on_web_extract,
         "on_web_cache_status": on_web_cache_status,
         "on_web_cache_clear": on_web_cache_clear,
-        "on_code_ast": on_code_ast,
-        "on_code_quality": on_code_quality,
-        "on_git_analyze": on_git_analyze,
         "on_git_commit_gen": on_git_commit_gen,
+        "on_git_commit_preview": on_git_commit_preview,
+        "on_git_commit": on_git_commit,
+        "on_recent_databases": on_recent_databases,
+        "on_shell_history": on_shell_history,
+        "on_git_overview": on_git_overview,
+        "on_db_status": on_db_status,
+        "on_db_tables": on_db_tables,
         "on_db_connect": on_db_connect,
+        "on_db_disconnect": on_db_disconnect,
+        "on_db_table_schema": on_db_table_schema,
         "on_db_query": on_db_query,
         "on_db_execute": on_db_execute,
-        "on_db_schema": on_db_schema,
+        "on_db_payload": on_db_payload,
+        "on_ai_explain": on_ai_explain,
+        "on_send_to_chat": on_send_to_chat,
         "on_file_list": on_file_list,
         "on_file_stats": on_file_stats,
         "on_generate_skills": on_generate_skills,

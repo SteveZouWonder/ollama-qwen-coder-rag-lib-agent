@@ -12,17 +12,18 @@
 
 ## 已实现
 
-| 编号 | 功能 | 目录 |
-|---|---|---|
-| F1 | OCR 图片/图表提取 | [f1-ocr-extract/](f1-ocr-extract/) |
-| F2 | 多 Agent 协作系统（骨架） | [f2-multiple-agent/](f2-multiple-agent/) — 真实化改造见 F8 P0 |
-| F3 | 文件管理与会话管理 | [f3-file-session-management/](f3-file-session-management/) |
-| F4 | 智能命令推荐 | [f4-command-recommender/](f4-command-recommender/) |
-| F5 | 跨平台桌面应用打包与发布 | [f5-desktop-packaging/](f5-desktop-packaging/) |
-| F6 | 系统能力增强（Agent 工具集） | [f6-capability-tools/](f6-capability-tools/) |
-| F7 | Web 界面（Gradio） | [f7-web-ui/](f7-web-ui/) |
-| F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent）：P0 多 Agent 真实化 · P1 单 Agent 鲁棒性 · P2 RAG 推理与可核验性 · P3 入口智能路由 · P4 代码感知分块（2026-09-04 ~ 09-07，分支 `feat/agent-modes-optimization`） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
-| F9 | 抗过度顺从与回答可核验性（基于 H-Neurons 研究）：P0 检索-only 单次综合 + 忠实性条款 + 结构化 notices + 引用程序化校验 · P1 无依据路径 / 质疑追问改写 / 网页注入扫描 / 评测集与脚本 · P2 `RAG_SELF_CHECK` 自校验（默认关）+ 前提实体校验（2026-09-07，分支 `feat/anti-overcompliance`） | [f9-anti-overcompliance/](f9-anti-overcompliance/) |
+| 编号   | 功能 | 目录 |
+|------|---|---|
+| F1   | OCR 图片/图表提取 | [f1-ocr-extract/](f1-ocr-extract/) |
+| F2   | 多 Agent 协作系统（骨架） | [f2-multiple-agent/](f2-multiple-agent/) — 真实化改造见 F8 P0 |
+| F3   | 文件管理与会话管理 | [f3-file-session-management/](f3-file-session-management/) |
+| F4   | 智能命令推荐 | [f4-command-recommender/](f4-command-recommender/) |
+| F5   | 跨平台桌面应用打包与发布 | [f5-desktop-packaging/](f5-desktop-packaging/) |
+| F6   | 系统能力增强（Agent 工具集） | [f6-capability-tools/](f6-capability-tools/) |
+| F7   | Web 界面（Gradio） | [f7-web-ui/](f7-web-ui/) |
+| F8   | 三种对话模式优化（RAG / 单 Agent / 多 Agent）：P0 多 Agent 真实化 · P1 单 Agent 鲁棒性 · P2 RAG 推理与可核验性 · P3 入口智能路由 · P4 代码感知分块（2026-09-04 ~ 09-07，分支 `feat/agent-modes-optimization`） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| F9   | Web「工具」页重构：P1 删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· P2 代码助手 / NL→SQL / 工作区 / NL→命令 · P3 连接记忆 / 命令历史 / 暂存预览 → 可编辑提交信息 → 确认提交 / 空态与加载态 / CLI `/git-analyze` `/db-query` `/db-schema` rich 表格（2026-09-07 ~ 09-08，分支 `feat/web-tools-revamp`） | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
+| F9-1 | 抗过度顺从与回答可核验性（基于 H-Neurons 研究）：P0 检索-only 单次综合 + 忠实性条款 + 结构化 notices + 引用程序化校验 · P1 无依据路径 / 质疑追问改写 / 网页注入扫描 / 评测集与脚本 · P2 `RAG_SELF_CHECK` 自校验（默认关）+ 前提实体校验（2026-09-07，分支 `feat/anti-overcompliance`） | [f9-anti-overcompliance/](f9-anti-overcompliance/) |
 
 ---
 

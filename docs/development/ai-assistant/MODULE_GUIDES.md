@@ -96,8 +96,8 @@
 
 ### `code_analyzer/` · `database_tools/` · `git_integration/`
 - `ast_analyzer.py`（stdlib ast 搜索函数 / 类 / 变量）、`quality_checker.py`（pylint / bandit / radon 子进程，缺工具时降级）。
-- `db_connector.py` / `query_executor.py` / `sql_generator.py`：SQLite 为主，连接按 `(db_type, database)` 缓存。
-- `git_analyzer.py`（gitpython 历史分析）、`commit_generator.py`（AI 生成提交信息）。
+- `db_connector.py` / `query_executor.py`（含 `list_tables`）/ `sql_generator.py`：SQLite 为主。`session.py` 进程级「当前连接」（`set_current / get_current / clear_current / resolve / current_connector`，按 `(db_type, database)` 复用连接器；Web / CLI / Agent 三端共用）。`results.py` 结构化取数（`query_structured / execute_structured / tables_structured / table_schema_structured / schema_rows / sql_kind`，以 `QueryExecutor | None` 为输入），Web `WebService.db_*` 与 CLI `/db-query` `/db-schema` 都调它（F9）。
+- `git_analyzer.py`（`subprocess git`，非 gitpython）：历史 / 状态 / 作者统计，`get_overview(max_commits)` 供 Web 仪表盘与 CLI `/git-analyze` 表格共用；`get_commit_preview()`（暂存文件 / `diff --cached --stat` / 增删行数）与 `commit(message)`（仅提交暂存区，返回 `ok / hash7 / subject / error`）供 Web 一步提交（F9 P3）。`commit_generator.py`：AI 生成提交信息（`/api/generate`，`think=False` + `num_predict=256`，失败回退规则生成）。
 
 ### `ocr_processor/`
 - `base.py` 抽象 → `tesseract_ocr.py`（默认）/ `paddle_ocr.py`；`preprocessor.py`（去噪 / 二值化 / 纠偏）、`image_extractor.py`（PDF 内嵌图）、`cache.py`（按内容 hash 缓存）。依赖不在 requirements 中，缺失时 `document_loader` 降级为跳过图片。
@@ -116,6 +116,8 @@
 - `services.py` `WebService`：所有业务入口（对话流 / 模型 / 知识库 / 会话 / 图谱 / 工具），流式统一经 `_bridge`（后台线程 + 队列 → `StreamEvent(kind, message, data)`，kinds `progress | answer | step | error | done | heartbeat | cancelled`）。构造参数全部可注入工厂。单例 `get_web_service()` / `reset_web_service()`。
 - `app.py`：`format_*` 纯函数（可单测）+ `build_handlers(service)`（返回 handler dict，可单测）+ `build_app / launch / main`（`pragma: no cover`）。`on_chat_stream` yield 七元组，`session_id` 为空时先 `ensure_session()` 钉死。
 - `ui/layout.py` 骨架与侧栏（`session_state = gr.State("")` 每标签页一份）；`ui/chat.py` 对话页事件链（`_begin → _chat_stream_ui → _end`，`_end` 把实际会话 id 写回 `session_state`）；`ui/knowledge.py` / `graph.py` / `tools.py` / `system.py` 各页；`ui/common.py` 二步确认按钮等复用件；`theme.py` 主题。
+- `tools_state.py` `ToolsState`：工具页轻量持久状态（最近数据库 ≤8 / 命令历史 ≤50，`.cerebro/web_tools_state.json` 经 `runtime_paths.app_state_dir`；损坏 JSON 回退空）。`WebService.tools_state` 惰性持有，测试直接赋值指向 `tmp_path` 的实例。
+- `ui/tools.py` 工具页：`_result_actions`（结果流转行）、`_empty_note / _vis_empty`（表格空态）、`_lock / _locked`（长任务锁按钮；单输出组件须返回标量 `gr.update`）。Gradio 惰性渲染子页：对未渲染子页内 Markdown 的 `visible` 更新会丢失，需在 `tab.select` 时重同步。
 - `ui/*` 不做单元测试（covered 排除），改动后需手动启动验证。
 
 ### `desktop_app.py`

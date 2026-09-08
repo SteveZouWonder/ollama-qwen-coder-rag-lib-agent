@@ -12,10 +12,13 @@ SessionManager / GraphQuery）交互的地方。UI 层（``app.py``）只调用�
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 引擎工厂（可在测试中替换/注入）====================
@@ -33,14 +36,48 @@ def _default_rag_factory():
     return engine
 
 
-def _default_react_factory(on_step=None, on_confirm=None, context=None):
+def _default_react_factory(on_step=None, on_confirm=None, context=None,
+                           allowed_tools=None, system_prompt_extra: str = "",
+                           max_iterations=None):
     """创建一个 ReActEngine（模型取自 config.LLM_MODEL，热切换后自动跟随）。
 
     ``context`` 为本次对话绑定的会话上下文（每个浏览器标签页有自己的会话）。
+    ``allowed_tools`` / ``system_prompt_extra`` / ``max_iterations`` 透传给引擎，
+    供工具页「代码助手」等受限场景收窄工具集、附加角色提示、限制步数（F9 P2-1）。
     """
     from react_engine import ReActEngine
 
-    return ReActEngine(on_step=on_step, on_confirm=on_confirm, context=context)
+    kwargs: Dict[str, Any] = {}
+    if allowed_tools is not None:
+        kwargs["allowed_tools"] = set(allowed_tools)
+    if system_prompt_extra:
+        kwargs["system_prompt_extra"] = system_prompt_extra
+    if max_iterations:
+        kwargs["max_iterations"] = int(max_iterations)
+    return ReActEngine(on_step=on_step, on_confirm=on_confirm, context=context, **kwargs)
+
+
+class ScratchContext:
+    """一次性会话上下文：不读历史、不写回会话（工具页「代码助手」用）。
+
+    只实现 ``ReActEngine`` 依赖的三个方法，避免把工具性调用混入用户的对话会话。
+    """
+
+    def build_messages(self, system_prompt: Optional[str] = None) -> List[Dict[str, str]]:
+        return [{"role": "system", "content": system_prompt}] if system_prompt else []
+
+    def record(self, *args, **kwargs) -> None:  # noqa: D401 - 有意为空
+        return None
+
+    def clear(self) -> bool:
+        return True
+
+
+def _default_complete_text(prompt: str, **kwargs) -> str:
+    """一次性短补全（``think=False``），用于「用 AI 解读」等工具性调用。"""
+    from collaboration.llm_helper import complete_text
+
+    return complete_text(prompt, **kwargs)
 
 
 def _default_model_switcher():
@@ -187,6 +224,7 @@ class WebService:
         load_documents: Callable = _default_load_documents,
         resolve_mode: Callable = _default_collaboration_mode,
         model_switcher_factory: Callable = _default_model_switcher,
+        complete_text: Callable = _default_complete_text,
     ):
         self._rag_factory = rag_factory
         self._react_factory = react_factory
@@ -197,6 +235,7 @@ class WebService:
         self._load_documents = load_documents
         self._resolve_mode = resolve_mode
         self._model_switcher_factory = model_switcher_factory
+        self._complete_text = complete_text
 
         self._rag_engine = None
         self._session_manager = None
@@ -213,6 +252,35 @@ class WebService:
         # ``_pending_confirm`` 为 ``{"event": Event, "approved": bool, "data": dict}``。
         self._pending_confirm: Optional[Dict[str, Any]] = None
         self.confirm_timeout: float = 300.0
+        # 工具页轻量持久状态（最近库 / 命令历史，F9 P3-1/2）：惰性创建，路径经 runtime_paths 解析
+        self._tools_state: Optional[Any] = None
+
+    # ---------- 工具页持久状态（最近数据库 / 命令历史） ----------
+
+    @property
+    def tools_state(self):
+        """``ToolsState``（惰性）；测试可直接赋值为指向 ``tmp_path`` 的实例。"""
+        if self._tools_state is None:
+            from .tools_state import ToolsState
+
+            self._tools_state = ToolsState()
+        return self._tools_state
+
+    def recent_databases(self) -> List[str]:
+        """最近成功连接过的 SQLite 路径（最新在前，≤8）。读失败回退空列表。"""
+        try:
+            return list(self.tools_state.recent_databases())
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("读取最近数据库失败: %s", exc)
+            return []
+
+    def shell_history(self) -> List[str]:
+        """成功执行过的命令（最新在前、去重，≤50）。读失败回退空列表。"""
+        try:
+            return list(self.tools_state.shell_history())
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("读取命令历史失败: %s", exc)
+            return []
 
     # ---------- 任务生命周期 / 取消 ----------
 
@@ -1160,9 +1228,9 @@ class WebService:
                  auto_confirm: bool = False) -> str:
         """通用工具执行入口，桥接 agent_tools 全局注册表。
 
-        CLI 的 /web-search、/code-*、/git-*、/db-* 等命令底层都调用
-        ``registry.execute(tool, args)``；Web 侧此前无直接入口，只能靠 Agent
-        间接触发。此方法把这些工具直接暴露给 Web，与 CLI 命令面对齐。
+        CLI 的 /code-*、/git-*、/db-*、/exec、/file 等命令底层都调用
+        ``registry.execute(tool, args)``；此方法把这些工具直接暴露给 Web，
+        与 CLI 命令面对齐。
         """
         try:
             import agent_tools
@@ -1174,34 +1242,204 @@ class WebService:
         except BaseException as exc:  # noqa: BLE001
             return f"[错误] 工具 {tool_name} 执行失败: {exc}"
 
-    # -- 网络搜索 --
-    def web_search(self, query: str) -> str:
-        query = (query or "").strip()
-        if not query:
-            return "[提示] 请输入搜索查询"
-        return self.run_tool("web_search", {"query": query})
-
-    def web_extract(self, url: str) -> str:
-        url = (url or "").strip()
-        if not url:
-            return "[提示] 请输入 URL"
-        return self.run_tool("web_content_extract", {"url": url})
-
+    # -- 网络搜索缓存（系统页 · 运行环境；搜索本身由对话页「联网搜索」与 Agent 覆盖）--
     def web_cache_status(self) -> str:
         return self.run_tool("web_cache_status", {})
 
     def web_cache_clear(self) -> str:
         return self.run_tool("web_cache_clear", {}, auto_confirm=True)
 
-    # -- 代码分析 --
-    def code_ast(self, pattern: str, path: str = ".") -> str:
-        pattern = (pattern or "").strip()
-        if not pattern:
-            return "[提示] 请输入搜索模式"
-        return self.run_tool("ast_search", {"pattern": pattern, "path": path or "."})
+    # -- 代码助手（F9 P2-1）：受限 ReAct（只读工具集、≤12 步、一次性上下文）--
 
-    def code_quality(self, path: str = ".") -> str:
-        return self.run_tool("code_quality_check", {"path": (path or ".").strip() or "."})
+    CODE_ASSIST_ACTIONS: Dict[str, str] = {
+        "explain": "解释代码", "review": "审查问题", "tests": "生成测试",
+        "docs": "生成文档", "refactor": "重构建议",
+    }
+    CODE_ASSIST_TOOLS = frozenset({
+        "read_file", "list_directory", "search_files", "ast_search", "code_quality_check", "get_current_dir",
+    })
+    CODE_ASSIST_MAX_ITERATIONS = 12
+    CODE_ASSIST_INLINE_MAX = 6000
+    """单文件内容不超过该字数时直接放进提示，省一次 ``read_file`` 往返。"""
+
+    _CODE_ASSIST_GUIDE: Dict[str, str] = {
+        "explain": "先说明用途与入口，再按调用顺序讲关键函数/类，最后列出依赖与注意点。",
+        "review": "按 严重度(高/中/低) 列问题，每条给 位置(文件:行)、原因、修复建议；无问题要明说。",
+        "tests": "给出 pytest 测试代码（可直接落盘的完整文件），覆盖正常路径与边界，Mock 外部 I/O。",
+        "docs": "生成模块级 docstring 与 README 片段（用途、用法示例、参数说明）。",
+        "refactor": "列 3-5 条可落地的重构建议，每条给 动机、改法、风险。",
+    }
+
+    def build_code_assist_prompt(self, action: str, path: str, extra: str = "",
+                                 content: Optional[str] = None) -> str:
+        """组装代码助手的 ``system_prompt_extra``（附录 A-1）。``content`` 非空时内联文件内容。"""
+        action = (action or "").strip().lower()
+        guide = self._CODE_ASSIST_GUIDE.get(action, self._CODE_ASSIST_GUIDE["explain"])
+        lines = [
+            f"角色：代码助手。目标路径：{path}。用户补充：{(extra or '').strip() or '无'}",
+            f"动作 = {action}：{guide}",
+            "规则：只读，不得写文件或执行命令；引用代码时标 文件:行；结论用中文。",
+        ]
+        if content is not None:
+            lines[-1] += "内容已给出，勿再 read_file。"
+            lines.append(f"文件内容：\n{content}")
+        return "\n".join(lines)
+
+    def code_assist_stream(self, action: str, path: str, extra: str = "") -> Iterator[StreamEvent]:
+        """代码助手：对 ``path`` 执行 ``action``（explain/review/tests/docs/refactor），流式返回。
+
+        经 ``_bridge`` 运行受限 ``ReActEngine``（只读工具集、``max_iterations=12``、
+        一次性上下文不写回会话）；``on_step`` → ``step`` 事件，最终答案 → ``answer``。
+        """
+        import os
+
+        action = (action or "").strip().lower()
+        path = (path or "").strip() or "."
+        if action not in self.CODE_ASSIST_ACTIONS:
+            yield StreamEvent("error", f"未知动作 '{action}'，支持: {' / '.join(self.CODE_ASSIST_ACTIONS)}")
+            return
+        if not os.path.exists(os.path.expanduser(path)):
+            yield StreamEvent("error", f"路径不存在: {path}")
+            return
+        if self.is_running():
+            yield StreamEvent("error", "有任务进行中，请先停止或等待完成")
+            return
+
+        content: Optional[str] = None
+        real = os.path.expanduser(path)
+        if os.path.isfile(real):
+            try:
+                if os.path.getsize(real) <= self.CODE_ASSIST_INLINE_MAX * 4:
+                    with open(real, "r", encoding="utf-8", errors="ignore") as f:
+                        text = f.read()
+                    if len(text) <= self.CODE_ASSIST_INLINE_MAX:
+                        content = text
+            except OSError:
+                content = None
+        label = self.CODE_ASSIST_ACTIONS[action]
+        prompt_extra = self.build_code_assist_prompt(action, path, extra, content)
+        task = f"请对 {path} 执行「{label}」" + (f"。补充：{extra.strip()}" if (extra or "").strip() else "")
+
+        engine_holder: Dict[str, Any] = {}
+
+        def run(q: "queue.Queue", cancel: threading.Event):
+            def on_step(evt: Dict[str, Any]):
+                q.put(StreamEvent("step", evt.get("message", ""), evt))
+
+            engine = self._react_factory(
+                on_step=on_step, on_confirm=lambda evt: False, context=ScratchContext(),
+                allowed_tools=set(self.CODE_ASSIST_TOOLS), system_prompt_extra=prompt_extra,
+                max_iterations=self.CODE_ASSIST_MAX_ITERATIONS,
+            )
+            engine_holder["engine"] = engine
+            self._active_react = engine
+            return engine.chat(task)
+
+        def on_finish(result_holder, error_holder):
+            engine = engine_holder.get("engine")
+            if "error" in error_holder:
+                yield StreamEvent("error", f"代码助手执行失败: {error_holder['error']}")
+                return
+            answer = str(result_holder.get("result") or "").strip()
+            if not answer:
+                yield StreamEvent("error", "模型没有返回内容")
+                return
+            yield StreamEvent("answer", answer, {"action": action, "path": path,
+                                                 "step_log": list(getattr(engine, "step_log", []) or [])})
+            yield StreamEvent("done", "")
+
+        try:
+            yield from self._bridge(run, on_finish)
+        finally:
+            self._active_react = None
+
+    CODE_SYMBOLS_MAX = 200
+
+    def code_symbols(self, pattern: str, path: str = ".", search_by: str = "name") -> Dict[str, Any]:
+        """符号搜索（结构化）：``{symbols: [{name, kind, file, line, complexity}], error?}``。
+
+        直接调用 ``ASTAnalyzer.search_functions / search_classes``，目录模式逐文件搜索并
+        同样尊重 ``search_by``（name / parameter / return / base / method）。
+        """
+        import os
+
+        pattern = (pattern or "").strip()
+        path = (path or ".").strip() or "."
+        search_by = (search_by or "name").strip().lower() or "name"
+        if not pattern:
+            return {"symbols": [], "error": "请输入搜索模式"}
+        real = os.path.expanduser(path)
+        if not os.path.exists(real):
+            return {"symbols": [], "error": f"路径不存在: {path}"}
+        try:
+            from code_analyzer import get_ast_analyzer
+
+            analyzer = get_ast_analyzer()
+            if os.path.isfile(real):
+                files = [real]
+            else:
+                files = [str(p) for p in sorted(__import__("pathlib").Path(real).rglob("*.py"))
+                         if "venv" not in str(p) and "__pycache__" not in str(p)]
+            out: List[Dict[str, Any]] = []
+            for fp in files:
+                for fn in analyzer.search_functions(fp, pattern, search_by):
+                    out.append({"name": fn.name, "kind": "函数", "file": fp, "line": fn.line_no,
+                                "complexity": int(getattr(fn, "complexity", 1) or 1)})
+                for cls in analyzer.search_classes(fp, pattern, search_by):
+                    cx = sum(int(getattr(m, "complexity", 1) or 1) for m in getattr(cls, "methods", []) or [])
+                    out.append({"name": cls.name, "kind": "类", "file": fp, "line": cls.line_no, "complexity": cx})
+                if len(out) >= self.CODE_SYMBOLS_MAX:
+                    break
+            return {"symbols": out[: self.CODE_SYMBOLS_MAX], "truncated": len(out) > self.CODE_SYMBOLS_MAX}
+        except BaseException as exc:  # noqa: BLE001
+            return {"symbols": [], "error": str(exc)}
+
+    CODE_QUALITY_MAX_ISSUES = 200
+    _SEVERITY_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+
+    def code_quality_report(self, path: str = ".") -> Dict[str, Any]:
+        """质量检查（结构化）：``{path, files, score, total_issues, severity: {...}, issues: [...], error?}``。
+
+        文件模式直接用 ``QualityChecker.check_file``；目录模式 ``check_project`` + ``get_project_summary``，
+        问题按严重度排序汇总（最多 ``CODE_QUALITY_MAX_ISSUES`` 条）。
+        """
+        import os
+
+        path = (path or ".").strip() or "."
+        real = os.path.expanduser(path)
+        base = {"path": path, "files": 0, "score": 0.0, "total_issues": 0,
+                "severity": {"critical": 0, "error": 0, "warning": 0, "info": 0}, "issues": []}
+        if not os.path.exists(real):
+            return {**base, "error": f"路径不存在: {path}"}
+        try:
+            from code_analyzer import get_quality_checker
+
+            checker = get_quality_checker()
+            if os.path.isfile(real):
+                reports = {real: checker.check_file(real)}
+            else:
+                reports = checker.check_project(real)
+            if not reports:
+                return {**base, "error": "没有可检查的 Python 文件"}
+            summary = checker.get_project_summary(reports) or {}
+            issues: List[Dict[str, Any]] = []
+            for fp, rep in reports.items():
+                for iss in getattr(rep, "issues", []) or []:
+                    sev = getattr(getattr(iss, "severity", None), "value", str(getattr(iss, "severity", "")))
+                    issues.append({"severity": sev, "file": fp, "line": int(getattr(iss, "line_no", 0) or 0),
+                                   "message": str(getattr(iss, "message", ""))})
+            issues.sort(key=lambda i: (self._SEVERITY_ORDER.get(i["severity"], 9), i["file"], i["line"]))
+            sev = summary.get("severity_breakdown") or base["severity"]
+            return {
+                **base, "files": int(summary.get("total_files", len(reports)) or 0),
+                "score": float(summary.get("average_score", 0.0) or 0.0),
+                "total_issues": int(summary.get("total_issues", len(issues)) or 0),
+                "severity": {k: int(sev.get(k, 0) or 0) for k in ("critical", "error", "warning", "info")},
+                "issues": issues[: self.CODE_QUALITY_MAX_ISSUES],
+                "truncated": len(issues) > self.CODE_QUALITY_MAX_ISSUES,
+            }
+        except BaseException as exc:  # noqa: BLE001
+            return {**base, "error": str(exc)}
 
     # -- Git --
     def git_analyze(self, analysis_type: str = "history", repo_path: str = ".") -> str:
@@ -1216,28 +1454,328 @@ class WebService:
     def git_commit_gen(self, repo_path: str = ".") -> str:
         return self.run_tool("git_commit_gen", {"repo_path": repo_path or ".", "use_ai": True})
 
-    # -- 数据库 --
-    def db_connect(self, db_type: str, database: str) -> str:
-        db_type = (db_type or "").strip()
+    # -- 提交信息增强（F9 P3-3）：暂存预览 → AI 生成（可编辑）→ 确认提交 --
+
+    _GIT_EMPTY_PREVIEW: Dict[str, Any] = {
+        "is_repo": False, "has_staged": False, "staged_files": [], "diff_stat": "",
+        "files_changed": 0, "insertions": 0, "deletions": 0,
+    }
+
+    def git_commit_preview(self, repo_path: str = ".") -> Dict[str, Any]:
+        """暂存区预览（共享层 ``GitAnalyzer.get_commit_preview``）：
+        ``{is_repo, has_staged, staged_files[{status,label,path}], diff_stat, files_changed, insertions, deletions}``；
+        异常时附 ``error``。"""
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            return GitAnalyzer(repo_path or ".").get_commit_preview()
+        except BaseException as exc:  # noqa: BLE001
+            return {**self._GIT_EMPTY_PREVIEW, "error": str(exc)}
+
+    def git_commit_message(self, repo_path: str = ".") -> Dict[str, Any]:
+        """AI 生成提交信息（沿用 ``CommitMessageGenerator`` 现有提示，附录 A-4）。
+
+        返回 ``{title, body, message, error?}``；``message`` 为可直接填入编辑框的完整文本
+        （标题 + 空行 + 正文）。无暂存 / 非仓库时返回 ``error``，不调用模型。
+        """
+        preview = self.git_commit_preview(repo_path)
+        if preview.get("error"):
+            return {"title": "", "body": "", "message": "", "error": preview["error"]}
+        if not preview.get("is_repo"):
+            return {"title": "", "body": "", "message": "", "error": "当前目录不是 Git 仓库"}
+        if not preview.get("has_staged"):
+            return {"title": "", "body": "", "message": "", "error": "暂存区为空，请先 git add 要提交的文件"}
+        try:
+            from git_integration.commit_generator import CommitMessageGenerator
+
+            suggestion = CommitMessageGenerator(repo_path or ".").generate_commit_message(use_ai=True)
+        except BaseException as exc:  # noqa: BLE001
+            return {"title": "", "body": "", "message": "", "error": f"生成提交信息失败: {exc}"}
+        title = (getattr(suggestion, "title", "") or "").strip()
+        body = (getattr(suggestion, "body", "") or "").strip()
+        if not title or title.lower().startswith("no changes staged"):
+            return {"title": "", "body": "", "message": "", "error": "暂存区为空，请先 git add 要提交的文件"}
+        message = f"{title}\n\n{body}" if body else title
+        return {"title": title, "body": body, "message": message}
+
+    def git_commit(self, message: str, repo_path: str = ".") -> str:
+        """执行 ``git commit -m``（仅提交暂存区；调用方负责 ``shell_enable`` 门控与二次确认）。
+
+        不经 registry：在 service 层直接调用共享层 ``GitAnalyzer.commit``；
+        执行前用 ``CommandSafetyChecker`` 记录风险等级（git commit 为 medium）。
+        """
+        message = (message or "").strip()
+        if not message:
+            return "[提示] 请填写提交信息"
+        try:
+            from agent_tools import CommandSafetyChecker
+
+            safety = CommandSafetyChecker.analyze(f"git commit -m {message.splitlines()[0]!r}")
+            if safety.get("is_dangerous"):
+                return "[错误] 提交信息包含危险内容，已拒绝"
+            logger.info("git commit 风险等级 %s（用户已确认）", safety.get("risk_level"))
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("提交前安全分析失败，按 medium 继续: %s", exc)
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            result = GitAnalyzer(repo_path or ".").commit(message)
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 提交失败: {exc}"
+        if not result.get("ok"):
+            return f"[错误] 提交失败: {result.get('error') or '未知错误'}"
+        return f"[成功] 已提交 {result.get('hash7', '')} · {result.get('subject', '')}".rstrip(" ·")
+
+    def git_overview(self, repo_path: str = ".", max_commits: int = 20) -> Dict[str, Any]:
+        """Git 仪表盘数据（结构化，来自共享层 ``GitAnalyzer.get_overview``）。
+
+        返回 ``is_repo / branch / changed / commits / authors / last_commit_at``；
+        异常时 ``is_repo=False`` 并附 ``error``。
+        """
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            return GitAnalyzer(repo_path or ".").get_overview(max_commits=max_commits)
+        except BaseException as exc:  # noqa: BLE001
+            return {"is_repo": False, "branch": "", "changed": [], "commits": [], "authors": [],
+                    "last_commit_at": "", "error": str(exc)}
+
+    # -- 结果流转：用 AI 解读（工具页各子页共用）--
+
+    AI_EXPLAIN_LEADS: Dict[str, str] = {
+        "code": "解读下面的代码分析结果，指出最值得关注的问题与下一步。",
+        "git": "解读下面的 Git 信息，总结近期改动主题、活跃度与潜在风险。",
+        "db": "解读下面的 SQL 与查询结果，说明数据含义与异常值。",
+        "shell": "解读下面的命令与输出，说明结果含义与可能的问题。",
+        "file": "总结下面文件的用途、结构与关键点。",
+    }
+    AI_EXPLAIN_MAX_PAYLOAD = 6000
+    AI_EXPLAIN_NUM_PREDICT = 768
+
+    def build_explain_prompt(self, kind: str, payload: str, question: str = "") -> str:
+        """按 ``kind`` 组装「用 AI 解读」提示词（附录 A-5）；未知 kind 回退 ``code``。"""
+        lead = self.AI_EXPLAIN_LEADS.get((kind or "").strip().lower(), self.AI_EXPLAIN_LEADS["code"])
+        payload = (payload or "").strip()[: self.AI_EXPLAIN_MAX_PAYLOAD]
+        question = (question or "").strip()
+        parts = [lead, "内容：", payload]
+        if question:
+            parts.append(f"问题：{question}")
+        parts.append("要求：中文，≤300 字，先结论后依据；有风险或异常先说。")
+        return "\n".join(parts)
+
+    def ai_explain_stream(self, kind: str, payload: str, question: str = "") -> Iterator[StreamEvent]:
+        """用当前模型解读工具页结果（流式：heartbeat → answer / error / cancelled）。
+
+        经 ``_bridge`` 运行，可被 ``stop_current`` 取消；已有任务在跑时直接产出 ``error``。
+        """
+        if self.is_running():
+            yield StreamEvent("error", "有任务进行中，请先停止或等待完成")
+            return
+        if not (payload or "").strip():
+            yield StreamEvent("error", "没有可解读的内容，请先执行一次操作")
+            return
+        prompt = self.build_explain_prompt(kind, payload, question)
+
+        def run(q: "queue.Queue", cancel: threading.Event):
+            q.put(StreamEvent("progress", "正在解读…"))
+            return self._complete_text(prompt, num_predict=self.AI_EXPLAIN_NUM_PREDICT)
+
+        def on_finish(result_holder, error_holder):
+            if "error" in error_holder:
+                yield StreamEvent("error", f"解读失败: {error_holder['error']}")
+                return
+            text = str(result_holder.get("result") or "").strip()
+            if not text:
+                yield StreamEvent("error", "模型没有返回内容")
+                return
+            yield StreamEvent("answer", text, {"kind": kind})
+            yield StreamEvent("done", "")
+
+        yield from self._bridge(run, on_finish)
+
+    # -- 数据库（SQLite；「当前连接」由共享层 database_tools.session 维护，Web / CLI / Agent 共用）--
+
+    DB_MAX_ROWS = 500
+    """查询结果最多返回的行数（超出部分截断并在 ``truncated`` 标记）。"""
+
+    @staticmethod
+    def _db_session():
+        from database_tools import session as db_session
+
+        return db_session
+
+    @staticmethod
+    def _db_results():
+        """共享层结构化取数模块（Web 与 CLI ``/db-query`` ``/db-schema`` 共用）。"""
+        from database_tools import results as db_results
+
+        return db_results
+
+    def db_current(self) -> Dict[str, Any]:
+        """当前连接：``{connected, db_type, database, label}``。"""
+        try:
+            sess = self._db_session()
+            cur = sess.get_current()
+        except BaseException as exc:  # noqa: BLE001
+            return {"connected": False, "db_type": "", "database": "", "label": "", "error": str(exc)}
+        if not cur:
+            return {"connected": False, "db_type": "", "database": "", "label": ""}
+        return {"connected": True, "db_type": cur.get("db_type", ""), "database": cur.get("database", ""),
+                "label": sess.describe(cur)}
+
+    def _db_executor(self):
+        """当前连接的 ``QueryExecutor``；未连接返回 None。"""
+        from database_tools import QueryExecutor
+
+        connector = self._db_session().current_connector()
+        return QueryExecutor(connector) if connector is not None else None
+
+    def db_connect(self, database: str, db_type: str = "sqlite") -> str:
+        """连接 SQLite 库并设为当前连接（等价 CLI ``/db-connect <database>``）。"""
         database = (database or "").strip()
-        if not db_type or not database:
-            return "[提示] 请提供数据库类型和路径"
-        return self.run_tool("database_connect", {"db_type": db_type, "database": database})
+        if not database:
+            return "[提示] 请输入 SQLite 数据库文件路径"
+        result = self.run_tool("database_connect", {"db_type": (db_type or "sqlite").strip() or "sqlite",
+                                                    "database": database})
+        if result.startswith("[成功]"):
+            try:
+                self.tools_state.remember_database(database)
+            except BaseException as exc:  # noqa: BLE001
+                logger.warning("记录最近数据库失败: %s", exc)
+        return result
 
-    def db_query(self, sql: str) -> str:
+    def db_disconnect(self) -> str:
+        """断开当前连接（关闭缓存的连接器）。"""
+        try:
+            self._db_session().clear_current()
+            return "[成功] 已断开当前连接"
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 断开失败: {exc}"
+
+    def db_tables(self) -> Dict[str, Any]:
+        """当前库的表名列表：``{tables: [...], error?}``（共享层 ``results.tables_structured``）。"""
+        try:
+            return self._db_results().tables_structured(self._db_executor())
+        except BaseException as exc:  # noqa: BLE001
+            return {"tables": [], "error": str(exc)}
+
+    def db_table_schema(self, table: str) -> Dict[str, Any]:
+        """单表结构：``{table, columns: [{name, type, not_null, default_value, primary_key}], error?}``。"""
+        table = (table or "").strip()
+        try:
+            return self._db_results().table_schema_structured(self._db_executor() if table else None, table)
+        except BaseException as exc:  # noqa: BLE001
+            return {"table": table, "columns": [], "error": str(exc)}
+
+    def db_query(self, sql: str) -> Dict[str, Any]:
+        """在当前连接上执行只读查询，返回结构化结果（共享层 ``results.query_structured``）。
+
+        ``{sql, columns, rows(list of list), row_count, execution_time, truncated, error?}``；
+        ``rows`` 最多 ``DB_MAX_ROWS`` 行。非 SELECT 类语句提示改用「执行」。
+        """
+        results = self._db_results()
+        sql = (sql or "").strip()
+        head = results.sql_head(sql)
+        if not sql or not head or head not in results.READ_PREFIXES:
+            return results.query_structured(None, sql, self.DB_MAX_ROWS)  # 参数校验分支，不需要连接
+        try:
+            return results.query_structured(self._db_executor(), sql, self.DB_MAX_ROWS)
+        except BaseException as exc:  # noqa: BLE001
+            return {"sql": sql, "columns": [], "rows": [], "row_count": 0, "execution_time": 0.0,
+                    "truncated": False, "error": str(exc)}
+
+    def db_execute(self, sql: str) -> Dict[str, Any]:
+        """在当前连接上执行写语句：``{sql, affected_rows, execution_time, error?}``（调用方负责确认）。"""
+        results = self._db_results()
         sql = (sql or "").strip()
         if not sql:
-            return "[提示] 请输入 SQL 查询语句"
-        return self.run_tool("database_query", {"sql": sql})
-
-    def db_execute(self, sql: str) -> str:
-        sql = (sql or "").strip()
-        if not sql:
-            return "[提示] 请输入 SQL 语句"
-        return self.run_tool("database_execute", {"sql": sql})
+            return results.execute_structured(None, sql)
+        try:
+            return results.execute_structured(self._db_executor(), sql)
+        except BaseException as exc:  # noqa: BLE001
+            return {"sql": sql, "affected_rows": 0, "execution_time": 0.0, "error": str(exc)}
 
     def db_schema(self, table: str = "") -> str:
+        """文本版表结构 / 表列表（沿用 registry 工具，供 Agent 与旧调用方）。"""
         return self.run_tool("database_get_schema", {"table": (table or "").strip()})
+
+    # -- 自然语言 → SQL（F9 P2-2）--
+
+    DB_NL2SQL_NUM_PREDICT = 256
+    DB_NL2SQL_SCHEMA_MAX = 3000
+
+    @classmethod
+    def _sql_head(cls, sql: str) -> str:
+        """去掉前导 ``--`` 行注释与左括号后的首个关键字（小写）；无内容返回空串（共享层实现）。"""
+        return cls._db_results().sql_head(sql)
+
+    @classmethod
+    def sql_kind(cls, sql: str) -> str:
+        """按首个关键字判定 ``select`` / ``write`` / ``invalid``（空串 / 仅注释亦为 invalid）。"""
+        return cls._db_results().sql_kind(sql)
+
+    def db_schema_text(self, max_chars: Optional[int] = None) -> str:
+        """当前库全部表的 ``CREATE``-风格文本（供 NL→SQL 提示），截 ``max_chars``。"""
+        max_chars = max_chars or self.DB_NL2SQL_SCHEMA_MAX
+        tables = self.db_tables().get("tables") or []
+        lines: List[str] = []
+        for t in tables:
+            schema = self.db_table_schema(t)
+            cols = ", ".join(
+                f"{c.get('name', '')} {c.get('type', '') or ''}".strip() + (" PRIMARY KEY" if c.get("primary_key") else "")
+                for c in schema.get("columns") or []
+            )
+            lines.append(f"{t}({cols})")
+        text = "\n".join(lines)
+        return text[:max_chars]
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """去掉 ``` 围栏（含语言标记）并返回去首尾空白的正文。"""
+        import re
+
+        text = (text or "").strip()
+        m = re.search(r"```[a-zA-Z0-9_-]*\s*(.*?)```", text, re.DOTALL)
+        if m:
+            text = m.group(1)
+        return text.replace("```", "").strip()
+
+    def db_nl2sql(self, question: str) -> Dict[str, Any]:
+        """自然语言 → 一条 SQLite SQL：``{sql, kind, note}``（附录 A-2）。
+
+        ``kind`` 按首个关键字判定 ``select`` / ``write`` / ``invalid``；模型失败或输出不可用时
+        ``kind=invalid`` 并在 ``note`` 说明。含高危关键字（DROP / DELETE / ALTER …）时 ``note`` 提示需确认。
+        """
+        question = (question or "").strip()
+        if not question:
+            return {"sql": "", "kind": "invalid", "note": "请输入自然语言描述"}
+        if not self.db_current().get("connected"):
+            return {"sql": "", "kind": "invalid", "note": "尚未连接数据库，请先连接"}
+        schema = self.db_schema_text() or "（当前库没有表）"
+        prompt = f"你是 SQLite 专家。仅输出一条 SQL，不要解释、不要围栏。\n表结构：\n{schema}\n问题：{question}"
+        try:
+            raw = self._complete_text(prompt, num_predict=self.DB_NL2SQL_NUM_PREDICT, temperature=0)
+        except BaseException as exc:  # noqa: BLE001
+            return {"sql": "", "kind": "invalid", "note": f"生成失败: {exc}"}
+        sql = self._strip_fences(str(raw or ""))
+        # 只保留第一条语句（模型偶尔多输出一条）
+        if ";" in sql:
+            first = sql.split(";", 1)[0].strip()
+            sql = first + ";" if first else sql
+        kind = self.sql_kind(sql)
+        if kind == "invalid":
+            return {"sql": sql, "kind": "invalid", "note": "模型未生成可识别的 SQL，请换个说法或直接手写"}
+        note = ""
+        try:
+            from database_tools.sql_generator import SQLGenerator
+
+            if not SQLGenerator().validate_sql(sql):
+                note = "含高危关键字（DROP / DELETE / ALTER …），执行前请仔细确认"
+        except BaseException:  # noqa: BLE001
+            pass
+        if kind == "write" and not note:
+            note = "这是写操作，运行前需确认"
+        return {"sql": sql, "kind": kind, "note": note}
 
     # -- 知识图谱构建 --
     def graph_build(self, text: str, doc_id: str = "manual", doc_type: str = "text") -> str:
@@ -1297,42 +1835,6 @@ class WebService:
         doc_type = "code" if path.suffix.lower() in self._CODE_SUFFIXES else "text"
         return self.graph_build(text, doc_id=path.name, doc_type=doc_type)
 
-    # -- 数据库（写操作）--
-    @staticmethod
-    def _parse_json_object(raw: str, what: str) -> Tuple[Optional[Dict[str, Any]], str]:
-        import json
-
-        raw = (raw or "").strip() or "{}"
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return None, f"[错误] {what}必须是有效的 JSON 对象: {exc}"
-        if not isinstance(data, dict):
-            return None, f"[错误] {what}必须是 JSON 对象（{{...}}）"
-        return data, ""
-
-    def db_create_table(self, table: str, columns_json: str) -> str:
-        """创建表（等价 CLI ``/db-create-table``；列定义为 JSON 对象）。"""
-        table = (table or "").strip()
-        if not table:
-            return "[提示] 请输入表名"
-        columns, err = self._parse_json_object(columns_json, "列定义")
-        if err:
-            return err
-        return self.run_tool(
-            "database_create_table", {"table": table, "columns": columns}, auto_confirm=True,
-        )
-
-    def db_insert(self, table: str, data_json: str) -> str:
-        """插入一行数据（等价 CLI ``/db-insert``；数据为 JSON 对象）。"""
-        table = (table or "").strip()
-        if not table:
-            return "[提示] 请输入表名"
-        data, err = self._parse_json_object(data_json, "数据")
-        if err:
-            return err
-        return self.run_tool("database_insert", {"table": table, "data": data}, auto_confirm=True)
-
     # -- 工具清单 / Shell / 文件读写 / 工作目录（对齐 CLI /tools /exec /file /write /pwd /cd）--
 
     def list_tools(self) -> List[Dict[str, Any]]:
@@ -1366,6 +1868,14 @@ class WebService:
         except BaseException as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    @staticmethod
+    def exec_succeeded(result: str) -> bool:
+        """``exec_run`` 的文本结果是否表示成功（无错误 / 提示前缀且退出码为 0）。"""
+        text = result or ""
+        if text.startswith("[错误]") or text.startswith("[提示]"):
+            return False
+        return "\n[退出码] " not in f"\n{text}"
+
     def exec_run(self, command: str) -> str:
         """执行 Shell 命令；危险命令一律拦截（调用方负责"需确认"的二次确认）。"""
         command = (command or "").strip()
@@ -1377,22 +1887,14 @@ class WebService:
         if safety.get("is_dangerous"):
             reasons = "；".join(safety.get("danger_reasons") or [])
             return f"[错误] 该命令被安全系统拦截，拒绝执行。{reasons}".rstrip()
-        return self.run_tool("execute_command", {"command": command}, auto_confirm=True)
-
-    def read_file(self, path: str, offset: int = 0, limit: int = 200) -> str:
-        """直接读取文件内容（不经过模型，等价 CLI ``/file``）。"""
-        path = (path or "").strip()
-        if not path:
-            return "[提示] 请输入文件路径"
-        args: Dict[str, Any] = {"path": path}
-        try:
-            if int(offset or 0) > 0:
-                args["offset"] = int(offset)
-            if limit:
-                args["limit"] = int(limit)
-        except (TypeError, ValueError):
-            pass
-        return self.run_tool("read_file", args, auto_confirm=True)
+        result = self.run_tool("execute_command", {"command": command}, auto_confirm=True)
+        # 命令历史（F9 P3-2）：只记成功执行过的命令（工具层错误 / 提示 / 非零退出码不记）
+        if self.exec_succeeded(result):
+            try:
+                self.tools_state.remember_command(command)
+            except BaseException as exc:  # noqa: BLE001
+                logger.warning("记录命令历史失败: %s", exc)
+        return result
 
     def write_file(self, path: str, content: str, append: bool = False) -> str:
         """写入文件（等价 CLI ``/write``；调用方负责二次确认）。"""
@@ -1403,6 +1905,159 @@ class WebService:
         if append:
             args["append"] = True
         return self.run_tool("write_file", args, auto_confirm=True)
+
+    # -- 工作区文件浏览（F9 P2-3）：结构化目录 / 预览 / 搜索 --
+
+    DIR_MAX_ENTRIES = 2000
+    FILE_PREVIEW_PAGE = 200
+    SEARCH_MAX_RESULTS = 50
+    SEARCH_MAX_LINE = 200
+
+    def list_dir(self, path: str = ".", show_hidden: bool = False) -> Dict[str, Any]:
+        """列出目录：``{path, parent, entries: [{kind, name, size, mtime}], error?}``。
+
+        目录在前、按名排序；``show_hidden=False`` 时跳过以 ``.`` 开头的项；
+        路径不存在 / 非目录返回 ``error``（``entries`` 为空）。
+        """
+        import os
+        from datetime import datetime
+
+        raw = (path or ".").strip() or "."
+        real = os.path.abspath(os.path.expanduser(raw))
+        parent = os.path.dirname(real) if os.path.dirname(real) != real else real
+        base = {"path": real, "parent": parent, "entries": []}
+        if not os.path.exists(real):
+            return {**base, "error": f"路径不存在: {raw}"}
+        if not os.path.isdir(real):
+            return {**base, "error": f"不是目录: {raw}"}
+        dirs: List[Dict[str, Any]] = []
+        files: List[Dict[str, Any]] = []
+        try:
+            with os.scandir(real) as it:
+                for entry in it:
+                    if not show_hidden and entry.name.startswith("."):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                        size = int(st.st_size)
+                    except OSError:
+                        mtime, size = "", 0
+                    is_dir = entry.is_dir(follow_symlinks=True)
+                    item = {"kind": "dir" if is_dir else "file", "name": entry.name,
+                            "size": 0 if is_dir else size, "mtime": mtime}
+                    (dirs if is_dir else files).append(item)
+        except PermissionError:
+            return {**base, "error": f"权限不足: {raw}"}
+        except OSError as exc:
+            return {**base, "error": str(exc)}
+        dirs.sort(key=lambda e: e["name"].lower())
+        files.sort(key=lambda e: e["name"].lower())
+        entries = (dirs + files)[: self.DIR_MAX_ENTRIES]
+        return {**base, "entries": entries, "truncated": len(dirs) + len(files) > len(entries)}
+
+    def file_preview(self, path: str, page: int = 0, page_size: Optional[int] = None) -> Dict[str, Any]:
+        """分页读取文件：``{path, page, pages, total_lines, start, end, content, error?}``（``page`` 从 0 起）。"""
+        import os
+
+        page_size = int(page_size or self.FILE_PREVIEW_PAGE)
+        raw = (path or "").strip()
+        base = {"path": raw, "page": 0, "pages": 0, "total_lines": 0, "start": 0, "end": 0, "content": ""}
+        if not raw:
+            return {**base, "error": "请选择文件"}
+        real = os.path.expanduser(raw)
+        if not os.path.exists(real):
+            return {**base, "error": f"文件不存在: {raw}"}
+        if os.path.isdir(real):
+            return {**base, "error": f"是目录而非文件: {raw}"}
+        try:
+            with open(real, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except OSError as exc:
+            return {**base, "error": f"读取失败: {exc}"}
+        total = len(lines)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(int(page or 0), 0), pages - 1)
+        start = page * page_size
+        end = min(start + page_size, total)
+        return {**base, "page": page, "pages": pages, "total_lines": total, "start": start, "end": end,
+                "content": "".join(lines[start:end])}
+
+    def search_in_dir(self, query: str, path: str = ".", max_results: Optional[int] = None) -> List[Dict[str, Any]]:
+        """在目录下按子串搜索文本文件：``[{file, rel, line, text}]``（最多 ``max_results`` 条）。
+
+        ``file`` 为绝对路径，``rel`` 为相对搜索目录的路径（供表格显示）；
+        与 ``agent_tools.search_files`` 同一套后缀 / 跳过目录规则，但返回结构化行。
+        """
+        import os
+
+        query = (query or "").strip()
+        max_results = int(max_results or self.SEARCH_MAX_RESULTS)
+        if not query:
+            return []
+        real = os.path.abspath(os.path.expanduser((path or ".").strip() or "."))
+        if not os.path.isdir(real):
+            return []
+        try:
+            from agent_tools import SEARCH_FILE_EXTS as exts, SEARCH_SKIP_DIRS as skip_dirs
+        except (ImportError, AttributeError):  # pragma: no cover - 兜底
+            exts = {".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt", ".json",
+                    ".yaml", ".yml", ".sql", ".sh"}
+            skip_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".idea", ".vscode"}
+        out: List[Dict[str, Any]] = []
+        for root, dirs, files in os.walk(real):
+            dirs[:] = sorted(d for d in dirs if d not in skip_dirs and not d.startswith("."))
+            for name in sorted(files):
+                if not any(name.endswith(ext) for ext in exts):
+                    continue
+                fp = os.path.join(root, name)
+                try:
+                    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                        for no, line in enumerate(f, 1):
+                            if query in line:
+                                out.append({"file": fp, "rel": os.path.relpath(fp, real), "line": no,
+                                            "text": line.strip()[: self.SEARCH_MAX_LINE]})
+                                if len(out) >= max_results:
+                                    return out
+                except OSError:
+                    continue
+        return out
+
+    # -- 自然语言 → Shell 命令（F9 P2-4）--
+
+    SHELL_GEN_NUM_PREDICT = 128
+
+    def shell_generate(self, intent: str) -> Dict[str, Any]:
+        """把自然语言需求转成一条 shell 命令：``{command, note}``（附录 A-3）。
+
+        只取模型输出的第一行、去围栏与 ``$`` 提示符；空输出 ``note="未生成"``。
+        生成结果仅回填编辑框，执行仍走 分析 → 确认 流程。
+        """
+        import os
+        import platform
+
+        intent = (intent or "").strip()
+        if not intent:
+            return {"command": "", "note": "请输入需求描述"}
+        os_name = platform.system() or os.name
+        prompt = (
+            f"把需求转成一条 {os_name} shell 命令。当前目录：{os.getcwd()}。只输出命令本身，一行，不要解释。\n"
+            "禁止破坏性操作（rm -rf、格式化、管道到 sh）。\n"
+            f"需求：{intent}"
+        )
+        try:
+            raw = self._complete_text(prompt, num_predict=self.SHELL_GEN_NUM_PREDICT, temperature=0)
+        except BaseException as exc:  # noqa: BLE001
+            return {"command": "", "note": f"生成失败: {exc}"}
+        text = self._strip_fences(str(raw or ""))
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if first.startswith("$ "):
+            first = first[2:].strip()
+        elif first.startswith("$"):
+            first = first[1:].strip()
+        if not first:
+            return {"command": "", "note": "未生成"}
+        return {"command": first, "note": ""}
 
     def cwd(self) -> str:
         """当前工作目录（等价 CLI ``/pwd``；Git / 代码工具默认作用于此）。"""

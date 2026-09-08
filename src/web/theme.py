@@ -256,6 +256,31 @@ button.stop:hover { background: #fecaca !important; }
 .cb-risk-medium { color: #d97706; font-weight: 700; }
 .cb-risk-high, .cb-risk-critical { color: #dc2626; font-weight: 700; }
 .cb-empty { text-align: center; padding: 28px 12px; opacity: .8; }
+/* 工具页：结果流转行 + AI 解读输出 */
+.cb-result-actions { margin-top: 4px; align-items: center !important; }
+.cb-result-actions > .cb-btn { flex: 0 0 auto !important; }
+/* 工具页 P2：代码助手工具条 / 工作区面包屑 / 预览与 SQL 编辑器 / 编辑框 */
+.cb-toolbar { align-items: center !important; }
+.cb-toolbar > .cb-btn { flex: 0 0 auto !important; }
+.cb-breadcrumb { padding: 6px 10px; border-radius: var(--cb-radius); background: var(--background-fill-secondary);
+  border: 1px solid var(--border-color-primary); font-size: .88rem; }
+.cb-breadcrumb p { margin: 0; word-break: break-all; }
+.cb-breadcrumb code { font-size: .82rem; }
+.cb-file-preview .cm-editor, .cb-sql-editor .cm-editor { border-radius: var(--cb-radius); }
+.cb-file-preview .cm-scroller { max-height: 560px; }
+.cb-edit-box { border: 1px solid var(--cb-accent-border); background: var(--cb-accent-soft);
+  border-radius: var(--cb-radius); padding: 10px 12px; gap: 8px !important; }
+/* 工具页 P3：表格空态（紧凑）/ 暂存预览提示与 diff --stat / 历史命令下拉 */
+.cb-empty-sm { padding: 10px 12px; font-size: .88rem; opacity: .65; }
+.cb-hint-block { display: block; margin: 4px 0 8px; font-size: .9rem; }
+.cb-hint-block code { font-size: .82rem; }
+.cb-diff-stat { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--cb-radius); font-size: .78rem;
+  line-height: 1.4; max-height: 180px; overflow: auto; background: var(--background-fill-secondary);
+  border: 1px solid var(--border-color-primary); white-space: pre; }
+.cb-history label > span { font-size: .78rem; opacity: .7; }
+.cb-ai-explain { min-height: 0; }
+.cb-ai-explain:has(p, ul, ol, pre, h1, h2, h3, blockquote) { padding: 10px 12px; border-radius: var(--cb-radius);
+  background: var(--background-fill-secondary); border-left: 3px solid var(--cb-accent); }
 .cb-empty h3 { margin: 0 0 6px; }
 .cb-kv table { width: 100%; border-collapse: collapse; }
 .cb-kv th, .cb-kv td { border: none !important; border-bottom: 1px solid var(--border-color-primary) !important;

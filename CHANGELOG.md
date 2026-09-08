@@ -11,6 +11,47 @@
 
 ### 新增
 
+- **Web「工具」页重构 P3 · 体验打磨（F9，完结）**：
+  - **连接记忆**：数据库连接区改为下拉（可直接输入路径），列出最近成功连接过的 8 个 SQLite 库；重启 Web 后仍在，
+    不自动连接。状态落盘 `.cerebro/web_tools_state.json`（损坏时按空状态处理）。
+  - **命令历史**：工作区命令区新增「历史命令」下拉（最近 50 条成功执行的命令，去重、最新在前），选中即回填输入框并自动做风险分析。
+  - **提交信息增强**：Git 子页新增「提交」区——进入子页自动显示暂存区预览（暂存文件 / 新增行 / 删除行卡片 + `diff --stat` +
+    暂存文件表），无暂存时提示先 `git add`；「AI 生成提交信息」的结果放入可编辑文本框（也可直接手写），「提交」按钮二步确认后执行
+    `git commit`（仅提交暂存区），成功后刷新仪表盘与暂存区、清空文本框。提交受「工作区」总开关门控，提示随开关状态显示 / 隐藏。
+  - **空态与加载态**：变更文件 / 最近提交 / 提交者 / 表列表 / 查询结果 / 符号搜索 / 质量问题 / 目录 / 搜索结果等表格为空时显示
+    一行说明（如"工作区干净，没有未提交的变更"、"查询没有返回数据"）；代码助手 5 个动作、AI 解读、AI 生成 SQL / 命令 / 提交信息
+    在运行期禁用触发按钮，完成或停止后恢复；AI 解读心跳期显示"思考中… 已用时"。
+  - **CLI rich 表格**：`/git-analyze`（无参 / `history`）改为一行概览（分支 · 变更数 · 最近提交）+ 最近 10 次提交表；
+    `status` 变更文件表；`authors` 提交者表。`/db-query` 结果以列名为表头的表格显示（最多 50 行，超出提示"…共 N 行"）+ 行数 / 耗时；
+    `/db-schema <table>` 列 / 类型 / 约束 表，无参时表名表。空结果 / 非 Git 目录 / 未连接只给一行灰色提示，不打印空表。
+  - 共享层：新增 `database_tools/results.py`（结构化查询 / 执行 / 表列表 / 表结构 / 约束标签，Web 与 CLI 同一实现）、
+    `GitAnalyzer.get_commit_preview() / commit()`；Web `db_*` 与 CLI `/db-query /db-schema` 均改为调用它们。
+- **Web「工具」页重构 P2 · AI 主入口（F9）**：每个子页的第一入口改为自然语言，AI 产出的 SQL / 命令只回填编辑框、用户确认后才执行。
+  - **代码助手**：输入文件或目录路径 + 可选补充说明，一键「解释代码 / 审查问题 / 生成测试 / 生成文档 / 重构建议」，
+    由受限单 Agent（只读工具集、最多 12 步、不写入对话会话）流式完成，「处理过程」折叠区实时显示步骤，可随时「停止」；
+    单文件 ≤6000 字直接内联进提示省一次读取。折叠「高级」区的符号搜索改为表格（名称 / 类型 / 文件 / 行号 / 复杂度，
+    目录模式也尊重「按参数 / 返回类型 / 基类 / 方法名」），质量检查改为卡片（评分 / 问题数 / 文件数 / 严重度分布）+ 问题表格。
+  - **数据库 · 自然语言 → SQL**：连接后用自然语言描述（如"每个表有多少行"）→「AI 生成 SQL」→ SQL 编辑框（可手改、可直接手写）→
+    「运行」：只读查询直接执行，写操作按钮自动变为「执行写操作」二步确认；含 DROP / DELETE 等高危关键字时给出提示。
+    未连接时自然语言区置灰并提示"先连接数据库"。
+  - **工作区文件浏览**：左栏面包屑 + 路径跳转 + 「上级」+ 隐藏项开关 + 目录表格（📁/📄 · 名称 · 大小 · 修改时间）+
+    关键词搜索（文件 / 行 / 内容，点击直达对应页）；右栏按后缀语法高亮的分页预览（每页 200 行，上一页 / 下一页）、
+    「用 AI 总结」/「发送到对话」/「发到代码助手」（自动填路径并切到代码子页）/「编辑」（追加或覆盖，保存需确认）。
+    移除原「读取文件」手填行号表单，「写入文件」并入「编辑」。
+  - **命令 · 自然语言 → Shell**：命令输入框既可写自然语言（如"列出当前目录最大的 5 个文件"）也可直接写命令，
+    「AI 生成命令」回填后自动做风险分析，再沿用 分析 → 执行 / 确认后执行 流程；「执行」前复核命令未被改为需确认的命令。
+    总开关「启用文件编辑与 Shell 执行」默认关闭，同时门控「编辑」与「命令」。
+  - 共享层：`read_file / write_file / list_directory / search_files / ast_search / code_quality_check` 接受 `~` 开头路径。
+- **Web「工具」页重构 P1（F9）**：
+  - **Git 仪表盘**：顶部 4 张卡（当前分支 / 变更文件数 / 最近提交时间 / 提交者数），下方「变更文件」表与「最近提交 /
+    提交者统计」表格，进入子页或点「刷新」加载；非 Git 目录给出空态提示。新增共享层 `GitAnalyzer.get_overview()`，
+    供 Web 与后续 CLI rich 表格复用。
+  - **数据库表列表与 Schema 面板**：连接后左栏列出全部表，点表名右栏显示 列 / 类型 / 约束（PK · NOT NULL · DEFAULT）；
+    查询结果以表格展示（最多 500 行，超出提示），状态行显示行数与耗时；写语句走「执行」二步确认。
+    `QueryExecutor.list_tables()` 新增；`database_get_schema` 的 `table` 留空时列出全部表（工具名 / 参数名不变）。
+  - **结果流转**：代码 / Git / 数据库 / 工作区每个结果面板下统一「用 AI 解读」（流式、可停止）与「发送到对话」
+    （把结果模板填入对话输入框、切「自动」模式并跳到对话页，不自动发送）。
+  - CLI `/db-connect <database>` 允许省略类型（默认 sqlite，`/db-connect sqlite x.db` 仍兼容）；`/db-schema` 不带参数列出全部表。
 - **抗过度顺从与回答可核验性（F9 P0，基于 H-Neurons 研究）**：
   - **结构化提示 `notices`**：`rag_pipeline.answer_question` 结果新增 `notices: list[{"level","code","text","position"}]`
     与 `citation_check` / `model` 字段；`answer` 只含正文，"知识库为空 / 依据网络 / 无资料依据 / 建议 `/agent`"等
@@ -297,6 +338,28 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
+- **AI 生成提交信息更快、更少落到规则回退**：`git_commit_gen`（Web「AI 生成提交信息」与 CLI `/git-commit-gen`）调用模型时
+  关闭思考并限制 256 token（提示词不变）。此前 qwen3.5 会先输出数百 token 推理，大 diff 下常超 60s 超时而退化为
+  "Update N file(s)" 之类的无意义标题；实测同一暂存区从 ~40s+ 缩短到约 1s。
+- CLI `/help` 与 `/tutorial` 的 `/git-analyze` `/db-query` `/db-schema` 说明同步为表格输出语义。
+- **Web「工具」页**：移除「网络搜索」子页（对话页「联网搜索」开关与 Agent 已覆盖；CLI `/web-*` 不变），搜索缓存状态 /
+  清空迁到「系统 → 运行环境」；子页重排为 代码 | Git | 数据库 | 工作区；数据库连接区移除 MySQL / PostgreSQL 下拉
+  （后端仅实现 SQLite），改为文件路径输入 + 连接状态芯片 + 「断开」；移除「创建表 / 插入数据」JSON 表单（由后续 NL→SQL 覆盖）。
+- CLI `/help` 与 `/tutorial` 的数据库命令说明同步（当前连接语义、`/db-schema` 无参列表）。
+- **`.devin/` 目录整体拆分**（Devin 时代遗留，混装了运行时数据、模型提示与开发者文档）：
+  - 运行时状态目录改为 **`.cerebro/`**（`knowledge/snapshots`、`knowledge/graph.json`、`file_metadata`），经
+    `runtime_paths.app_state_dir()` 解析；首次访问时自动把旧 `.devin/<同名子目录>` 搬迁到新位置（不覆盖已有数据），源码运行与
+    打包版（`<用户数据目录>/.cerebro/`）均生效。
+  - 开发者 AI 知识库 `.devin/AI_KNOWLEDGE_BASE/*` 与 `AI_DEBUGGING_WORKFLOW.md` 迁入 `docs/development/ai-assistant/`，并按当前代码
+    全部重写：架构（四种模式数据流、系统提示层次、运行时路径）、模块指南（含 F6–F8 新增模块与 `prompt_assets`）、代码规范、
+    测试指南（门禁 80%、conftest fixture、注入手段）、工作流、28 个工具的真实签名与返回协议、从 CHANGELOG 提炼的陷阱清单、
+    调试流程；删除与 `docs/tutorials/01-overview.md` 重复的 `PROJECT_OVERVIEW.md`。
+  - `.devin/AGENTS.md` 中仍有效的内容（技术栈、常用命令、依赖 / 测试 / 文档要求、禁止项）合并进根 `AGENTS.md`，去掉
+    `~/.config/devin/*`、`todo_write`、`read_system_prompt`、覆盖率 95% 等过时要求。
+  - 三份一次性报告（`AI_PROMPT_ENHANCEMENT_PLAN / _IMPLEMENTATION_REPORT`、`MANDATORY_REQUIREMENTS_UPDATE_REPORT`）归档到
+    `docs/history/`。
+- 移除 Agent 工具 `read_system_prompt`（其内容本已自动注入系统提示，工具描述自己也写"一般无需调用"，只占用工具列表 token）。
+- `CODE_AGENT_PROMPT_MODE` 只保留 `builtin | append`；`replace`（用规范文件整体替换内置模板）已移除，传入按 `append` 处理并告警。
 - BM25 分词对 `snake_case` / `camelCase` 标识符在保留原词的同时追加子词（`_ensure_bm25` → `ensure`、`bm25`），
   代码问答中问"ensure bm25"也能关键词命中；RRF 融合与多跳合并对代码块改用 `(路径, 起始行)` 去重，避免相似函数头误合并。
 - `RAGEngine.build_index / add_documents` 改为"先统一切分、再建索引 / 分批 `insert_nodes`"，切分结果直接用于文件元数据
@@ -412,6 +475,30 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
+- **数据库「当前连接」失效（Web 与 CLI 共有）**：此前 `database_connect` / `/db-connect` / Web「连接」之后，
+  `database_query` 等只传 `sql` 时每次都在全新的 `:memory:` 库上执行，连接形同无效。现由新增的共享层
+  `database_tools/session.py` 维护进程级当前连接：工具未显式传 `database` 时回退到它，显式传参优先，
+  同一 `(db_type, database)` 复用连接器（sqlite `check_same_thread=False` + 锁，可跨 Web 请求线程）。Web / CLI / Agent 三端同时生效。
+- **CLI `/db-execute` `/db-create-table` `/db-insert` 不再打印内部协议串** `[CONFIRM_REQUIRED] …`：改为交互确认后以
+  `auto_confirm=True` 执行（与 `/web-cache clear` 一致）。
+- DDL 语句的「影响 -1 行」归一为 0。
+- 打包版此前从未加载过项目附加规范：`.devin/SYSTEM_PROMPT.md` 以源码相对路径读取且未打进 `datas`，桌面应用只剩内置模板；
+  现 `prompts/` 经 `runtime_paths.resource_root()` 定位并随 App 分发。
+- 旧系统提示示例中的参数名错误（`query_knowledge_base` 写成 `"query"`，实为 `question`；`search_files` 写成 `"keyword"`，实为
+  `query`）已在新 `PROJECT_RULES.md` 中改正，并由 `tests/test_project_rules.py` 对照 `agent_tools.registry` 持续校验。
+- 测试曾把伪造快照写进真实 `.devin/knowledge/snapshots/`（`RAGEngine` 默认开启自动快照且未被隔离）；`tests/conftest.py` 新增
+  `isolate_app_state_dir` 把整个运行时状态根重定向到临时目录。
+- **新会话不再"记得"旧会话**（会话隔离）：
+  - 「携带摘要」新建会话此前会把上一会话**尚未压缩的原文**（每条用户问前 60 字 / 助手答前 90 字）拼进新会话背景，
+    即使上一会话从未生成滚动摘要也会带入；新会话 UI 为空、模型却按旧对话改写追问与作答。现只承接上一会话
+    **已折叠的滚动摘要**，没有摘要时新会话完全干净，CLI / Web 均明确提示「上一会话尚无滚动摘要，未承接任何内容」。
+  - CLI `/session-new --carry`（及 `--no-history`）此前把进程内上下文单例钉死到新会话，之后再执行 `/session-new`
+    / `/session-switch` 时 `/ask`、自然语言、`/agent`、`/reset` 仍读写被钉死的旧会话；现跟随模式实例新建后继续
+    跟随"当前会话"指针。
+  - Web 侧栏「携带摘要」复选框默认不勾选（不承接上一会话），且新建会话后自动复位，不再一次勾选后每次新建都承接；
+    上下文面板把承接背景标为「🧳 承接自上一会话」，对话区顶部以可折叠说明展示承接内容，让用户看得见模型"记得"什么。
+  - Web 标签页尚未完成会话绑定就发送消息时，此前每次调用都回落到全局"当前会话"指针（可能被其他标签页改掉）；
+    现在首轮即钉到一个具体会话并写回标签页状态，后续对话 / 新建 / 清空都作用于同一会话。
 - `RAGEngine.load_index()` 此前未设置切分器，"启动加载已有索引 → 追加文档"会落到 LlamaIndex 默认
   `SentenceSplitter(1024/200)` 而非 `.env` 的 `CHUNK_SIZE / CHUNK_OVERLAP`；现三条路径共用同一切分器。
 - `requirements-build.txt` 漏掉 `rank_bm25`，打包版 hybrid 召回会静默回退纯向量；已补入，并在 PyInstaller spec 中

@@ -69,6 +69,7 @@ tests/
 
 - 行为而非实现：断言返回 dict 字段、前缀标记（`[错误]` / `[知识库无相关内容]` / `⚠️ 未完成`）、事件 phase 序列、写入文件内容；不断言日志文案。
 - 结构化输出改动要同时断言三端消费者：CLI 打印（`patch("query_interface.console")` 后收集 `print.call_args_list`）、Web `format_*` 输出、Agent Observation。
+- CLI rich 表格：给 `CLIContext(console=rich.console.Console(record=True, width=120, color_system=None), has_rich=True)`，用 `console.export_text()` 断言表头 / 行数 / 空态提示（模式见 `tests/test_cli_handlers_rich_tables.py`）；`has_rich=False` 分支另测纯文本回退。需要真实 git 的用例在模块导入时留存 `subprocess.run/Popen` 并在 fixture 内 `monkeypatch` 还原（conftest 全局 Mock 了它们）。
 - Bug 修复先写**会失败**的复现测试，再改代码（会话隔离、单例钉死这类回归尤其如此）。
 - 边界：空输入、超长（截断标注）、可选依赖缺失、取消 / 超时、旧数据格式（`from_dict` 未知键）。
 - 不写无断言测试凑覆盖率；`pragma: no cover` 只用于真正无法单测的 UI 装配 / `main()`。

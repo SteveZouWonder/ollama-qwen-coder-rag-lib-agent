@@ -19,6 +19,7 @@
 | 回答可信度 | 抗过度顺从：检索-only 单次综合 + 前提核对 / 冲突并列 / 被质疑不改口条款、引用程序化校验（`[?]` 标记、被引用次数、状态行计数）、结构化警示 notices（CLI / Web / Agent 四端）、无依据路径先判断是否确知、质疑追问不吸收用户断言、网页正文注入扫描、30 例评测集与真实模型评测脚本、可选 `RAG_SELF_CHECK` 自校验与前提实体校验 | [F9](f9-anti-overcompliance/) |
 | Agent 工具 | 网络搜索、AST 分析、代码质量、Git 分析/提交信息、知识图谱（Plotly 3D/2D）、SQLite 数据库 | [F6](f6-capability-tools/) |
 | 入口 | CLI（几十个斜杠命令 + 智能命令推荐）、桌面托盘（状态监控 / 模型预热 / Ollama 引导）、Gradio Web UI（5 页、多主题、审批卡片） | [F4](f4-command-recommender/)、[F5](f5-desktop-packaging/)、[F7](f7-web-ui/) |
+| 工具工作台 | Web「工具」页 AI 化（代码助手 / Git 仪表盘 + 一步提交 / NL→SQL / 工作区浏览与 NL→命令、结果流转、连接记忆与命令历史）、DB 当前连接下沉共享层（Web + CLI + Agent 同修）、CLI `/git-analyze` `/db-query` `/db-schema` rich 表格 | [F9](f9-web-tools-revamp/) |
 | 发布 | GitHub Actions 打 tag 自动构建 dmg / Inno Setup exe / AppImage，自动 Release Notes 与 CHANGELOG 归档；CI 含 flake8 / pylint / bandit / pip-audit / pytest / codecov、PR 漏洞门禁 | [CI_CD.md](../development/CI_CD.md) |
 
 ---

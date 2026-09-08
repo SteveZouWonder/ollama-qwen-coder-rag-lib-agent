@@ -28,6 +28,9 @@ class CommitSuggestion:
 
 class CommitMessageGenerator:
     """提交信息生成器"""
+
+    NUM_PREDICT = 256
+    """AI 生成提交信息的最大 token 数（标题 + 简短正文）。"""
     
     def __init__(self, repo_path: str = ".", ollama_base_url: str = "http://localhost:11434",
                  model: Optional[str] = None):
@@ -150,12 +153,16 @@ detailed description (if needed)"""
             # 调用 Ollama API
             import requests
             
+            # think=False + num_predict 限额：思考型模型（qwen3.5 等）不关思考会先输出数百 token 的
+            # 推理，大 diff 下常超过 60s 超时而落到规则回退；提交信息本身很短，256 token 足够。
             response = requests.post(
                 f"{self.ollama_base_url}/api/generate",
                 json={
                     "model": self.model,
                     "prompt": prompt,
-                    "stream": False
+                    "stream": False,
+                    "think": False,
+                    "options": {"num_predict": self.NUM_PREDICT},
                 },
                 timeout=60
             )

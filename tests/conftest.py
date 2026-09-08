@@ -304,3 +304,10 @@ def reset_module_state():
         module = sys.modules['agent_tools']
         if hasattr(module, '_rag_engine'):
             module._rag_engine = None
+
+    # 重置数据库「当前连接」（进程级状态，关闭缓存的连接器）
+    if 'database_tools.session' in sys.modules:
+        try:
+            sys.modules['database_tools.session'].clear_current()
+        except Exception:  # noqa: BLE001
+            pass

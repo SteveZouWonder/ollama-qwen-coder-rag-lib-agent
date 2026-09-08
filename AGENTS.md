@@ -84,6 +84,13 @@ bash scripts/verify_deps.sh                     # 依赖校验
 - 定位实现以 `src/` 为准，文档可能滞后；发现文档与代码不一致时**以代码为准并顺手修正文档**。
 - 多步任务先列计划并逐项跟踪。
 
+### 需求分析（强制）
+
+- **从用户体验与 UI 设计角度分析问题。** 收到需求或缺陷时，先回答：用户在什么场景、想达成什么、当前路径卡在哪；再给方案。方案要说明入口是否直观、步骤是否最少、结果是否结构化可读、危险操作是否有确认、失败是否有明确提示，而不是只描述"调用哪个函数"。
+- **同时考虑 Web UI 与 CLI 两个入口。** 本项目的功能面在 `src/web/`（Gradio）与 `src/query_interface.py` + `src/cli_handlers.py`（CLI）各有一份呈现层。任何需求分析必须逐一说明：该问题在两端是否都存在、方案在两端各如何落地（或明确说明某端不做及原因）。共用逻辑放共享层（`agent_tools` / `database_tools` / `git_integration` 等），禁止只修一端；改 CLI 行为须同步 `print_help` / `TUTORIAL_TEXT`，改 Web 须同步页面文案。
+- **优先修复共有缺陷，再做单端增强。** 排优先级时，两端共有的功能性 Bug > 影响主路径的体验问题 > 单端的锦上添花；需求文档按此分 P 级并给出可检查的验收。
+- 需求文档模板见 `docs/features/f8-agent-modes-optimization/` 与 `docs/features/f9-web-tools-revamp/`（REQUIREMENTS §0 代码事实 + 分 P 级需求 + UI 规范 + 按 P 级分发的 PROMPT）。
+
 ### 依赖
 
 - 新依赖须兼容 Python 3.13，使用最新稳定版；同步更新 `requirements.txt`、`requirements-build.txt`（打包用）与 `scripts/install_deps.sh` / `verify_deps.sh` / `check_prereqs.sh`（如涉及系统级前置）；PyInstaller 需要 `collect_all` 的库要在 `packaging/cerebro.spec` 中补充。

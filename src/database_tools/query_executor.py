@@ -135,7 +135,8 @@ class QueryExecutor:
                     cursor.execute(query)
                 
                 conn.commit()
-                affected_rows = cursor.rowcount
+                # DDL（CREATE/DROP…）时 sqlite 的 rowcount 为 -1，对用户无意义，归一为 0
+                affected_rows = max(cursor.rowcount, 0)
                 
                 execution_time = time.time() - start_time
                 
@@ -214,6 +215,25 @@ class QueryExecutor:
                 success=False,
                 error_message=error_message
             )
+    
+    def list_tables(self) -> List[str]:
+        """
+        列出用户表名（按名排序；SQLite 排除 ``sqlite_*`` 内部表）。失败返回空列表。
+        """
+        try:
+            with self.connector.get_connection() as conn:
+                cursor = conn.cursor()
+                if self.connector.db_type.value == "sqlite":
+                    cursor.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                    )
+                    return [str(row[0]) for row in cursor.fetchall()]
+                logger.warning(f"数据库类型 {self.connector.db_type.value} 的表列表获取暂未实现")
+                return []
+        except Exception as e:
+            logger.error(f"获取表列表失败: {e}")
+            return []
     
     def get_table_schema(self, table_name: str) -> Dict[str, Any]:
         """

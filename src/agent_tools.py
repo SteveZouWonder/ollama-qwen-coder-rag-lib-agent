@@ -216,6 +216,7 @@ def path_scope_error(path: str) -> str:
 # ========== 具体工具实现 ==========
 
 def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
+    path = os.path.expanduser(str(path or ""))
     if not os.path.exists(path):
         return "[错误] 文件不存在: " + path
     try:
@@ -235,6 +236,7 @@ def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
         return "[错误] 读取失败: " + str(e)
 
 def write_file(path: str, content: str, append: bool = False) -> str:
+    path = os.path.expanduser(str(path or ""))
     if not is_path_allowed(path):
         return path_scope_error(path)
     try:
@@ -274,6 +276,7 @@ def execute_command(command: str, timeout: int = 30) -> str:
         return "[错误] 执行失败: " + str(e)
 
 def list_directory(path: str = ".") -> str:
+    path = os.path.expanduser(str(path or "."))
     if not os.path.exists(path):
         return "[错误] 目录不存在: " + path
     try:
@@ -385,10 +388,18 @@ def analyze_project_structure(project_path: str = ".") -> str:
     except Exception as e:
         return "[错误] 分析项目结构失败: " + str(e)
 
+# 文本搜索的文件后缀 / 跳过目录（``search_files`` 与 Web 工作区搜索共用）
+SEARCH_FILE_EXTS = frozenset({".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt",
+                              ".json", ".yaml", ".yml", ".sql", ".sh"})
+SEARCH_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".idea",
+                              ".vscode"})
+
+
 def search_files(query: str, path: str = ".", max_results: int = 10) -> str:
+    path = os.path.expanduser(str(path or "."))
     results = []
-    exts = {".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt", ".json", ".yaml", ".yml", ".sql", ".sh"}
-    skip_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".idea", ".vscode"}
+    exts = SEARCH_FILE_EXTS
+    skip_dirs = SEARCH_SKIP_DIRS
 
     try:
         for root, dirs, files in os.walk(path):
@@ -814,6 +825,7 @@ registry.register("web_cache_clear", web_cache_clear, "清空搜索缓存", {}, 
 # 代码分析工具
 def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
     """AST 语法树搜索（函数、类、变量）"""
+    path = os.path.expanduser(str(path or "."))
     try:
         from code_analyzer import get_ast_analyzer
         
@@ -855,6 +867,7 @@ def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
 
 def code_quality_check(path: str = ".", check_type: str = "basic") -> str:
     """代码质量分析（安全、性能、复杂度）"""
+    path = os.path.expanduser(str(path or "."))
     try:
         from code_analyzer import get_quality_checker
         
@@ -1071,13 +1084,27 @@ registry.register("knowledge_graph_build", knowledge_graph_build, "构建知识�
                   {"text": "文本内容(必填)", "doc_id": "文档ID，默认manual", "doc_type": "文档类型（text/code），默认text"}, safe=True)
 
 # ========== 数据库工具 ==========
+#
+# 「当前连接」语义（database_tools.session）：``database_connect`` 成功后记录当前库；
+# 其余工具在调用方未显式传 ``database``（仍为默认 ``:memory:``）时回退到当前连接，
+# 显式传参优先；同一 (db_type, database) 复用同一连接器。Web / CLI / Agent 三端共用。
+
+def _db_executor(db_type: str, database: str, **kwargs):
+    """解析当前连接并返回复用的 ``QueryExecutor``。"""
+    from database_tools import QueryExecutor
+    from database_tools import session as db_session
+
+    db_type, database, extra = db_session.resolve(db_type, database, **kwargs)
+    connector = db_session.get_connector(db_type, database, **extra)
+    return QueryExecutor(connector)
+
 
 def database_connect(db_type: str = "sqlite", database: str = ":memory:", **kwargs) -> str:
     """
-    连接数据库
+    连接数据库并设为当前连接（后续 database_query / execute / get_schema 未指定 database 时作用于它）
     
     Args:
-        db_type: 数据库类型（sqlite/mysql/postgresql/mssql）
+        db_type: 数据库类型（当前仅实现 sqlite）
         database: 数据库路径或名称
         **kwargs: 其他连接参数
         
@@ -1085,14 +1112,22 @@ def database_connect(db_type: str = "sqlite", database: str = ":memory:", **kwar
         连接结果信息
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType
+        from database_tools import DatabaseType
+        from database_tools import session as db_session
         
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
+        db_type = (db_type or "sqlite").lower()
+        database = database or ":memory:"
+        DatabaseType(db_type)  # 校验类型合法
+        connector = db_session.get_connector(db_type, database, **kwargs)
         
         if connector.test_connection():
+            db_session.set_current(db_type, database, **kwargs)
             conn_info = connector.get_connection_info()
-            return f"[成功] 数据库连接成功\n类型: {conn_info['db_type']}\n参数: {json.dumps(conn_info['connection_params'], ensure_ascii=False)}"
+            return (
+                f"[成功] 数据库连接成功\n类型: {conn_info['db_type']}\n"
+                f"参数: {json.dumps(conn_info['connection_params'], ensure_ascii=False)}\n"
+                f"已设为当前连接：后续查询 / 执行 / 表结构未指定 database 时作用于此库"
+            )
         else:
             return "[错误] 数据库连接测试失败"
     
@@ -1108,19 +1143,14 @@ def database_query(sql: str, db_type: str = "sqlite", database: str = ":memory:"
     Args:
         sql: SQL查询语句
         db_type: 数据库类型
-        database: 数据库路径或名称
+        database: 数据库路径或名称（省略时使用当前连接）
         **kwargs: 其他连接参数
         
     Returns:
         查询结果
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType, QueryExecutor
-        
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
-        executor = QueryExecutor(connector)
-        
+        executor = _db_executor(db_type, database, **kwargs)
         result = executor.execute_query(sql)
         
         if result.success:
@@ -1142,24 +1172,19 @@ def database_query(sql: str, db_type: str = "sqlite", database: str = ":memory:"
 
 def database_execute(sql: str, db_type: str = "sqlite", database: str = ":memory:", **kwargs) -> str:
     """
-    执行SQL语句（INSERT/UPDATE/DELETE）
+    执行SQL语句（INSERT/UPDATE/DELETE/DDL）
     
     Args:
         sql: SQL语句
         db_type: 数据库类型
-        database: 数据库路径或名称
+        database: 数据库路径或名称（省略时使用当前连接）
         **kwargs: 其他连接参数
         
     Returns:
         执行结果
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType, QueryExecutor
-        
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
-        executor = QueryExecutor(connector)
-        
+        executor = _db_executor(db_type, database, **kwargs)
         result = executor.execute_update(sql)
         
         if result.success:
@@ -1180,18 +1205,16 @@ def database_create_table(table: str, columns: dict, db_type: str = "sqlite", da
         table: 表名
         columns: 列定义字典，如 {"id": "INTEGER PRIMARY KEY", "name": "TEXT"}
         db_type: 数据库类型
-        database: 数据库路径或名称
+        database: 数据库路径或名称（省略时使用当前连接）
         **kwargs: 其他连接参数
         
     Returns:
         执行结果
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType, QueryExecutor, SQLGenerator
+        from database_tools import SQLGenerator
         
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
-        executor = QueryExecutor(connector)
+        executor = _db_executor(db_type, database, **kwargs)
         generator = SQLGenerator()
         
         sql = generator.generate_create_table(table, columns)
@@ -1215,18 +1238,16 @@ def database_insert(table: str, data: dict, db_type: str = "sqlite", database: s
         table: 表名
         data: 数据字典，如 {"name": "John", "age": 30}
         db_type: 数据库类型
-        database: 数据库路径或名称
+        database: 数据库路径或名称（省略时使用当前连接）
         **kwargs: 其他连接参数
         
     Returns:
         执行结果
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType, QueryExecutor, SQLGenerator
+        from database_tools import SQLGenerator
         
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
-        executor = QueryExecutor(connector)
+        executor = _db_executor(db_type, database, **kwargs)
         generator = SQLGenerator()
         
         sql, params = generator.generate_insert(table, data)
@@ -1242,36 +1263,39 @@ def database_insert(table: str, data: dict, db_type: str = "sqlite", database: s
     except Exception as e:
         return f"[错误] 插入数据失败: {str(e)}"
 
-def database_get_schema(table: str, db_type: str = "sqlite", database: str = ":memory:", **kwargs) -> str:
+def database_get_schema(table: str = "", db_type: str = "sqlite", database: str = ":memory:", **kwargs) -> str:
     """
-    获取表结构
+    获取表结构；``table`` 为空时列出库中全部表名
     
     Args:
-        table: 表名
+        table: 表名（空 → 列出所有表）
         db_type: 数据库类型
-        database: 数据库路径或名称
+        database: 数据库路径或名称（省略时使用当前连接）
         **kwargs: 其他连接参数
         
     Returns:
-        表结构信息
+        表结构信息 / 表名列表
     """
     try:
-        from database_tools import DatabaseConnector, DatabaseType, QueryExecutor
+        executor = _db_executor(db_type, database, **kwargs)
+        table = (table or "").strip()
         
-        db_type_enum = DatabaseType(db_type.lower())
-        connector = DatabaseConnector(db_type_enum, database=database, **kwargs)
-        executor = QueryExecutor(connector)
+        if not table:
+            tables = executor.list_tables()
+            if not tables:
+                return "[提示] 数据库中没有表"
+            return f"[成功] 共 {len(tables)} 张表\n" + "\n".join(f"- {t}" for t in tables)
         
         schema = executor.get_table_schema(table)
         
-        if schema:
+        if schema and schema.get('columns'):
             output = [f"[表] {schema['table_name']}"]
             output.append("[列信息]")
             for col in schema['columns']:
                 output.append(f"  {col['name']}: {col['type']} (NOT NULL: {col['not_null']}, PK: {col['primary_key']})")
             return "\n".join(output)
         else:
-            return "[错误] 获取表结构失败"
+            return f"[错误] 获取表结构失败: 表 {table} 不存在或没有列"
     
     except ImportError as e:
         return f"[错误] 数据库工具模块未安装: {e}"
@@ -1279,15 +1303,15 @@ def database_get_schema(table: str, db_type: str = "sqlite", database: str = ":m
         return f"[错误] 获取表结构失败: {str(e)}"
 
 # 注册数据库工具
-registry.register("database_connect", database_connect, "连接数据库",
-                  {"db_type": "数据库类型（sqlite/mysql/postgresql/mssql），默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=True)
+registry.register("database_connect", database_connect, "连接数据库并设为当前连接（后续 database_* 未指定 database 时作用于它）",
+                  {"db_type": "数据库类型（当前仅实现 sqlite），默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=True)
 registry.register("database_query", database_query, "执行SQL查询（SELECT）",
-                  {"sql": "SQL查询语句(必填)", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=True)
+                  {"sql": "SQL查询语句(必填)", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=True)
 registry.register("database_execute", database_execute, "执行SQL语句（INSERT/UPDATE/DELETE）",
-                  {"sql": "SQL语句(必填)", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=False)
+                  {"sql": "SQL语句(必填)", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=False)
 registry.register("database_create_table", database_create_table, "创建数据库表",
-                  {"table": "表名(必填)", "columns": "列定义字典(必填)，如 {\"id\": \"INTEGER PRIMARY KEY\", \"name\": \"TEXT\"}", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=False)
+                  {"table": "表名(必填)", "columns": "列定义字典(必填)，如 {\"id\": \"INTEGER PRIMARY KEY\", \"name\": \"TEXT\"}", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=False)
 registry.register("database_insert", database_insert, "插入数据到表",
-                  {"table": "表名(必填)", "data": "数据字典(必填)，如 {\"name\": \"John\", \"age\": 30}", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=False)
-registry.register("database_get_schema", database_get_schema, "获取表结构",
-                  {"table": "表名(必填)", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，默认:memory:"}, safe=True)
+                  {"table": "表名(必填)", "data": "数据字典(必填)，如 {\"name\": \"John\", \"age\": 30}", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=False)
+registry.register("database_get_schema", database_get_schema, "获取表结构（table 为空时列出全部表名）",
+                  {"table": "表名，留空列出全部表", "db_type": "数据库类型，默认sqlite", "database": "数据库路径或名称，省略时使用当前连接"}, safe=True)
