@@ -554,6 +554,11 @@
   避免在打包首启（需先做 Ollama 引导与索引加载）时打开空白/无法连接的页面。
 
 ### 文档
+- **F10 立项：工程加固与体验升级**（`docs/features/f10-hardening/`）：基于项目整体评估归纳的 7 类结构性问题
+  （安全分级误判与读边界、依赖未钉版本与发布滞后、非流式与单一 Ollama 后端、无 RAG 评测基准、BM25 全量重建与并发、
+  入口层巨型文件、Tesseract 硬编码与 README 过长），按"用户可感知价值 × 复杂度"拆成 P0–P3 八个独立任务；
+  REQUIREMENTS 含带行号的代码事实、分项需求与可检查验收、Web / CLI 两端规范；PROMPT 按任务分发、各自可独立粘贴。
+  `docs/features/README.md` 加入待实现，`ROADMAP.md` 进行中区按 P 级列出，F5 残留小项「Tesseract 引导提示」并入 P3-1。
 - 清理 `docs/future-feature-design/`：已落地的「跨平台桌面应用打包」「系统能力增强
   （Agent 工具集）」「Web 界面」三份设计文档迁移到 `docs/implemented-features/`
   （重编号为 F5 / F6 / F7，解决与 `f4-command-recommender` 的编号冲突），各自新增

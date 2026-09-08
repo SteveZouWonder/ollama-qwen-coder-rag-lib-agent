@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| — | （暂无） | | |
+| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身（立项 2026-09-08） | 待实现（八个独立任务，按 [PROMPT.md](f10-hardening/PROMPT.md) 分发） | [f10-hardening/](f10-hardening/) |
 
 ## 已实现
 
@@ -35,7 +35,7 @@
 |---|---|---|
 | 启动时检查新版本并提示 | F5 | 调 GitHub Releases API 比对当前 `APP_VERSION`，托盘 / Web「系统」页提示下载链接。**不做**应用内自更新（需正式签名与公证，成本不匹配） |
 | macOS / Linux 开机自启 | F5 | `AppConfig.autostart` 配置项已存在但未生效；补 launchd plist / XDG `autostart/*.desktop`。Windows 已由 Inno Setup 可选任务覆盖 |
-| `bootstrap.py` 补 Tesseract 检测提示 | F5 | 当前仅引导 Ollama；OCR 依赖缺失时给出安装提示（不自动安装） |
+| `bootstrap.py` 补 Tesseract 检测提示 | F5 | 当前仅引导 Ollama；OCR 依赖缺失时给出安装提示（不自动安装）。**已并入 F10 P3-1** |
 | Web「系统」页配置可编辑 | F7 | `TOP_K` / `SIMILARITY_CUTOFF` / `CHUNK_SIZE` 等写回 `.env`，重启生效；当前为只读概览 |
 
 ## 已明确不做
@@ -58,4 +58,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-07（F9 全部完成，移入已实现）
+**最后更新**: 2026-09-08（F10 立项，加入待实现）
