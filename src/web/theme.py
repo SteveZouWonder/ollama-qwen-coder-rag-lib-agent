@@ -259,6 +259,17 @@ button.stop:hover { background: #fecaca !important; }
 /* 工具页：结果流转行 + AI 解读输出 */
 .cb-result-actions { margin-top: 4px; align-items: center !important; }
 .cb-result-actions > .cb-btn { flex: 0 0 auto !important; }
+/* 工具页 P2：代码助手工具条 / 工作区面包屑 / 预览与 SQL 编辑器 / 编辑框 */
+.cb-toolbar { align-items: center !important; }
+.cb-toolbar > .cb-btn { flex: 0 0 auto !important; }
+.cb-breadcrumb { padding: 6px 10px; border-radius: var(--cb-radius); background: var(--background-fill-secondary);
+  border: 1px solid var(--border-color-primary); font-size: .88rem; }
+.cb-breadcrumb p { margin: 0; word-break: break-all; }
+.cb-breadcrumb code { font-size: .82rem; }
+.cb-file-preview .cm-editor, .cb-sql-editor .cm-editor { border-radius: var(--cb-radius); }
+.cb-file-preview .cm-scroller { max-height: 560px; }
+.cb-edit-box { border: 1px solid var(--cb-accent-border); background: var(--cb-accent-soft);
+  border-radius: var(--cb-radius); padding: 10px 12px; gap: 8px !important; }
 .cb-ai-explain { min-height: 0; }
 .cb-ai-explain:has(p, ul, ol, pre, h1, h2, h3, blockquote) { padding: 10px 12px; border-radius: var(--cb-radius);
   background: var(--background-fill-secondary); border-left: 3px solid var(--cb-accent); }

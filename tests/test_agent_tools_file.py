@@ -237,3 +237,29 @@ class TestExecuteCommand:
     def test_execute_invalid_command(self):
         result = execute_command("this_command_does_not_exist_12345")
         assert "[错误]" in result or "[stderr]" in result
+
+
+class TestTildePaths:
+    """F9 P2：文件 / 目录 / 搜索 / 代码分析工具接受 ``~`` 开头的路径（Web 工作区以 ``~`` 显示路径）。"""
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def test_read_list_search(self, home):
+        assert "def f()" in read_file("~/proj/a.py")
+        assert "[F] a.py" in list_directory("~/proj")
+        assert "a.py" in search_files("return 1", "~/proj")
+
+    def test_write(self, home):
+        out = write_file("~/proj/new.txt", "hi")
+        assert out.startswith("[成功]") and (home / "proj" / "new.txt").read_text() == "hi"
+
+    def test_ast_and_quality(self, home):
+        from agent_tools import ast_search, code_quality_check
+        assert "函数: f" in ast_search("f", "~/proj/a.py")
+        assert "[错误]" not in code_quality_check("~/proj/a.py")

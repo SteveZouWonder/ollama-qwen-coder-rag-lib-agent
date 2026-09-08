@@ -216,6 +216,7 @@ def path_scope_error(path: str) -> str:
 # ========== 具体工具实现 ==========
 
 def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
+    path = os.path.expanduser(str(path or ""))
     if not os.path.exists(path):
         return "[错误] 文件不存在: " + path
     try:
@@ -235,6 +236,7 @@ def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
         return "[错误] 读取失败: " + str(e)
 
 def write_file(path: str, content: str, append: bool = False) -> str:
+    path = os.path.expanduser(str(path or ""))
     if not is_path_allowed(path):
         return path_scope_error(path)
     try:
@@ -274,6 +276,7 @@ def execute_command(command: str, timeout: int = 30) -> str:
         return "[错误] 执行失败: " + str(e)
 
 def list_directory(path: str = ".") -> str:
+    path = os.path.expanduser(str(path or "."))
     if not os.path.exists(path):
         return "[错误] 目录不存在: " + path
     try:
@@ -385,10 +388,18 @@ def analyze_project_structure(project_path: str = ".") -> str:
     except Exception as e:
         return "[错误] 分析项目结构失败: " + str(e)
 
+# 文本搜索的文件后缀 / 跳过目录（``search_files`` 与 Web 工作区搜索共用）
+SEARCH_FILE_EXTS = frozenset({".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt",
+                              ".json", ".yaml", ".yml", ".sql", ".sh"})
+SEARCH_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".idea",
+                              ".vscode"})
+
+
 def search_files(query: str, path: str = ".", max_results: int = 10) -> str:
+    path = os.path.expanduser(str(path or "."))
     results = []
-    exts = {".py", ".js", ".java", ".ts", ".go", ".rs", ".c", ".cpp", ".h", ".md", ".txt", ".json", ".yaml", ".yml", ".sql", ".sh"}
-    skip_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".idea", ".vscode"}
+    exts = SEARCH_FILE_EXTS
+    skip_dirs = SEARCH_SKIP_DIRS
 
     try:
         for root, dirs, files in os.walk(path):
@@ -804,6 +815,7 @@ registry.register("web_cache_clear", web_cache_clear, "清空搜索缓存", {}, 
 # 代码分析工具
 def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
     """AST 语法树搜索（函数、类、变量）"""
+    path = os.path.expanduser(str(path or "."))
     try:
         from code_analyzer import get_ast_analyzer
         
@@ -845,6 +857,7 @@ def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
 
 def code_quality_check(path: str = ".", check_type: str = "basic") -> str:
     """代码质量分析（安全、性能、复杂度）"""
+    path = os.path.expanduser(str(path or "."))
     try:
         from code_analyzer import get_quality_checker
         

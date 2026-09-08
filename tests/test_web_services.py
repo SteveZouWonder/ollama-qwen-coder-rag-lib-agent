@@ -931,13 +931,6 @@ class TestToolCommands:
         svc.web_cache_clear()
         assert reg.calls[0][2] is True  # auto_confirm
 
-    def test_code_ast_args(self, monkeypatch):
-        reg = _FakeRegistry("ast")
-        self._patch_registry(monkeypatch, reg)
-        svc = make_service()
-        svc.code_ast("def foo", "src")
-        assert reg.calls[0] == ("ast_search", {"pattern": "def foo", "path": "src"}, False)
-
     def test_git_analyze_invalid_type(self):
         svc = make_service()
         assert svc.git_analyze("bogus").startswith("[错误]")
@@ -1796,12 +1789,9 @@ class TestShellAndFiles:
         assert "[错误] 该命令被安全系统拦截" in svc.exec_run("rm -rf /")
         assert svc.exec_run("").startswith("[提示]")
 
-    def test_read_write(self, monkeypatch):
+    def test_write(self, monkeypatch):
         reg = _FakeRegistry("content")
         svc = self._svc(monkeypatch, reg)
-        assert svc.read_file("a.txt", 10, 50) == "content"
-        assert reg.calls[0] == ("read_file", {"path": "a.txt", "offset": 10, "limit": 50}, True)
-        assert svc.read_file("").startswith("[提示]")
         svc.write_file("b.txt", "hi", append=True)
         assert reg.calls[-1] == ("write_file", {"path": "b.txt", "content": "hi", "append": True}, True)
         assert svc.write_file("", "x").startswith("[提示]")
@@ -2255,3 +2245,437 @@ class TestCodeAwareIngest:
         code_chunker.reset_availability_cache()
         assert _code_chunking_env_text().startswith("未启用：")
         code_chunker.reset_availability_cache()
+
+
+# ==================== F9 P2：AI 主入口（服务层） ====================
+
+class _KwReact(FakeReact):
+    """记录工厂收到的全部关键字参数（断言 allowed_tools / max_iterations 透传）。"""
+
+    captured = []
+
+    def __init__(self, on_step=None, on_confirm=None, context=None, **kw):
+        super().__init__(on_step=on_step, on_confirm=on_confirm, context=context,
+                         answer=kw.pop("answer", "助手答案"), steps=kw.pop("steps", None))
+        self.kwargs = kw
+        _KwReact.captured.append({"context": context, **kw})
+
+
+class TestReactFactoryPassthrough:
+    def test_default_factory_passes_restrictions(self, monkeypatch):
+        import sys as _sys
+        created = {}
+
+        class FakeEngine:
+            def __init__(self, **kw):
+                created.update(kw)
+
+        monkeypatch.setitem(_sys.modules, "react_engine", SimpleNamespace(ReActEngine=FakeEngine))
+        services._default_react_factory(on_step="s", on_confirm="c", context="ctx",
+                                        allowed_tools=["read_file"], system_prompt_extra="X", max_iterations=12)
+        assert created == {"on_step": "s", "on_confirm": "c", "context": "ctx", "allowed_tools": {"read_file"},
+                           "system_prompt_extra": "X", "max_iterations": 12}
+        created.clear()
+        services._default_react_factory()
+        assert created == {"on_step": None, "on_confirm": None, "context": None}
+
+    def test_scratch_context(self):
+        ctx = services.ScratchContext()
+        assert ctx.build_messages("sys") == [{"role": "system", "content": "sys"}]
+        assert ctx.build_messages() == []
+        assert ctx.record("q", "a", trace="t") is None and ctx.clear() is True
+
+
+class TestCodeAssist:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _KwReact.captured = []
+        yield
+
+    def _svc(self, **kw):
+        return make_service(react_factory=lambda **k: _KwReact(**k, **kw))
+
+    def test_prompt_by_action(self):
+        svc = make_service()
+        p = svc.build_code_assist_prompt("review", "src/x.py", "看异常")
+        assert p.startswith("角色：代码助手。目标路径：src/x.py。用户补充：看异常") and "动作 = review" in p
+        assert "严重度" in p and "只读" in p and "文件内容" not in p
+        p2 = svc.build_code_assist_prompt("explain", "a.py", "", content="print(1)")
+        assert "内容已给出，勿再 read_file" in p2 and p2.endswith("文件内容：\nprint(1)")
+        assert "用户补充：无" in p2
+        assert "动作 = bogus" in svc.build_code_assist_prompt("bogus", "a", "")
+
+    def test_stream_inlines_small_file_and_passes_restrictions(self, tmp_path):
+        f = tmp_path / "m.py"
+        f.write_text("def f():\n    return 1\n", encoding="utf-8")
+        svc = self._svc(steps=[{"message": "读取中", "phase": "thinking"}])
+        events = list(svc.code_assist_stream("explain", str(f), "简短"))
+        kinds = [e.kind for e in events]
+        assert "step" in kinds and kinds[-2:] == ["answer", "done"]
+        ans = events[-2]
+        assert ans.message == "助手答案" and ans.data["action"] == "explain" and ans.data["path"] == str(f)
+        assert ans.data["step_log"]
+        cap = _KwReact.captured[0]
+        assert cap["allowed_tools"] == set(WebService.CODE_ASSIST_TOOLS)
+        assert cap["max_iterations"] == 12
+        assert "def f()" in cap["system_prompt_extra"] and "勿再 read_file" in cap["system_prompt_extra"]
+        assert isinstance(cap["context"], services.ScratchContext)
+        assert not svc.is_running() and svc._active_react is None
+
+    def test_stream_directory_not_inlined(self, tmp_path):
+        (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+        svc = self._svc()
+        events = list(svc.code_assist_stream("review", str(tmp_path)))
+        assert events[-1].kind == "done"
+        assert "文件内容" not in _KwReact.captured[0]["system_prompt_extra"]
+
+    def test_stream_large_file_not_inlined(self, tmp_path):
+        f = tmp_path / "big.py"
+        f.write_text("x = 1\n" * 2000, encoding="utf-8")
+        svc = self._svc()
+        list(svc.code_assist_stream("docs", str(f)))
+        assert "文件内容" not in _KwReact.captured[0]["system_prompt_extra"]
+
+    def test_stream_errors(self, tmp_path):
+        svc = self._svc()
+        assert list(svc.code_assist_stream("explain", str(tmp_path / "nope.py"))) == [
+            StreamEvent("error", f"路径不存在: {tmp_path / 'nope.py'}")]
+        bad = list(svc.code_assist_stream("fly", str(tmp_path)))
+        assert bad[0].kind == "error" and "未知动作" in bad[0].message
+        svc._running = True
+        busy = list(svc.code_assist_stream("explain", str(tmp_path)))
+        assert busy == [StreamEvent("error", "有任务进行中，请先停止或等待完成")]
+        assert _KwReact.captured == []
+
+    def test_stream_engine_failure_and_empty(self, tmp_path):
+        svc = make_service(react_factory=lambda **k: _KwReact(**k, answer="", steps=[]))
+        events = list(svc.code_assist_stream("tests", str(tmp_path)))
+        assert events[-1] == StreamEvent("error", "模型没有返回内容")
+
+        class Boom(FakeReact):
+            def __init__(self, **k):
+                super().__init__(raise_error=True)
+
+        svc = make_service(react_factory=lambda **k: Boom(**k))
+        events = list(svc.code_assist_stream("tests", str(tmp_path)))
+        assert events[-1].kind == "error" and "agent-boom" in events[-1].message
+
+    def test_stream_confirm_always_rejected(self, tmp_path):
+        seen = {}
+
+        class Asking(FakeReact):
+            def __init__(self, on_step=None, on_confirm=None, context=None, **k):
+                super().__init__(on_step=on_step, on_confirm=on_confirm, context=context)
+
+            def chat(self, user_input):
+                seen["confirm"] = self.on_confirm({"tool": "write_file"})
+                seen["task"] = user_input
+                return "ok"
+
+        svc = make_service(react_factory=lambda **k: Asking(**k))
+        list(svc.code_assist_stream("refactor", str(tmp_path), "  少改  "))
+        assert seen["confirm"] is False and "重构建议" in seen["task"] and "补充：少改" in seen["task"]
+
+
+class TestCodeSymbolsAndQuality:
+    @pytest.fixture
+    def proj(self, tmp_path):
+        (tmp_path / "a.py").write_text(
+            "class Base:\n    pass\n\n"
+            "class Child(Base):\n    def run(self, size: int) -> str:\n        if size:\n            return 'x'\n        return ''\n\n"
+            "def helper(size, name) -> int:\n    return 1\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "b.py").write_text("def other(x):\n    return x\n", encoding="utf-8")
+        return tmp_path
+
+    def test_symbols_by_name_file_and_dir(self, proj):
+        svc = make_service()
+        out = svc.code_symbols("helper", str(proj / "a.py"))
+        assert [s["name"] for s in out["symbols"]] == ["helper"]
+        s = out["symbols"][0]
+        assert s["kind"] == "函数" and s["line"] == 10 and s["complexity"] == 1 and s["file"].endswith("a.py")
+        out = svc.code_symbols("Base", str(proj))
+        assert {(s["name"], s["kind"]) for s in out["symbols"]} == {("Base", "类")}
+        out = svc.code_symbols("o", str(proj))  # 目录：跨文件
+        assert {s["name"] for s in out["symbols"]} >= {"other"}
+
+    def test_symbols_respect_search_by(self, proj):
+        svc = make_service()
+        by_param = svc.code_symbols("size", str(proj), "parameter")
+        assert {s["name"] for s in by_param["symbols"]} == {"run", "helper"}
+        by_base = svc.code_symbols("Base", str(proj), "base")
+        assert [s["name"] for s in by_base["symbols"]] == ["Child"]
+        assert by_base["symbols"][0]["complexity"] == 2  # run 的圈复杂度
+        by_method = svc.code_symbols("run", str(proj), "method")
+        assert [s["name"] for s in by_method["symbols"]] == ["Child"]
+        by_ret = svc.code_symbols("int", str(proj / "a.py"), "return")
+        assert [s["name"] for s in by_ret["symbols"]] == ["helper"]
+        # search_by 生效：按名称搜 "size" 不命中任何符号
+        assert svc.code_symbols("size", str(proj), "name")["symbols"] == []
+
+    def test_symbols_errors_and_truncation(self, proj, monkeypatch):
+        svc = make_service()
+        assert svc.code_symbols("", str(proj))["error"] == "请输入搜索模式"
+        assert "路径不存在" in svc.code_symbols("x", str(proj / "zz"))["error"]
+        monkeypatch.setattr(WebService, "CODE_SYMBOLS_MAX", 1)
+        out = svc.code_symbols("e", str(proj))
+        assert len(out["symbols"]) == 1 and out["truncated"] is True
+
+    def test_symbols_analyzer_failure(self, proj, monkeypatch):
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "code_analyzer", SimpleNamespace(
+            get_ast_analyzer=lambda: (_ for _ in ()).throw(RuntimeError("ast down"))))
+        svc_err = make_service().code_symbols("x", str(proj))
+        assert "ast down" in svc_err["error"]
+
+    def test_quality_report_file_and_dir(self, proj):
+        svc = make_service()
+        rep = svc.code_quality_report(str(proj / "a.py"))
+        assert "error" not in rep and rep["files"] == 1 and 0 <= rep["score"] <= 100
+        assert set(rep["severity"]) == {"critical", "error", "warning", "info"}
+        assert rep["total_issues"] == len(rep["issues"]) or rep["truncated"]
+        for issue in rep["issues"]:
+            assert {"severity", "file", "line", "message"} <= set(issue)
+        rep_dir = svc.code_quality_report(str(proj))
+        assert rep_dir["files"] == 2 and rep_dir["path"] == str(proj)
+
+    def test_quality_report_errors(self, tmp_path):
+        svc = make_service()
+        assert "路径不存在" in svc.code_quality_report(str(tmp_path / "no"))["error"]
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert "没有可检查" in svc.code_quality_report(str(empty))["error"]
+
+    def test_quality_report_sorted_and_truncated(self, proj, monkeypatch):
+        from code_analyzer.quality_checker import QualityIssue, QualityReport, Severity
+        svc = make_service()
+
+        class FakeChecker:
+            def check_file(self, path):
+                rep = QualityReport(file_path=path)
+                rep.add_issue(QualityIssue(path, 5, 0, Severity.INFO, "i", "t"))
+                rep.add_issue(QualityIssue(path, 2, 0, Severity.CRITICAL, "c", "t"))
+                rep.add_issue(QualityIssue(path, 9, 0, Severity.WARNING, "w", "t"))
+                return rep
+
+            def get_project_summary(self, reports):
+                return {"total_files": 1, "total_issues": 3, "average_score": 77.5,
+                        "severity_breakdown": {"critical": 1, "warning": 1, "info": 1}}
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "code_analyzer", SimpleNamespace(get_quality_checker=lambda: FakeChecker()))
+        rep = svc.code_quality_report(str(proj / "a.py"))
+        assert [i["severity"] for i in rep["issues"]] == ["critical", "warning", "info"]
+        assert rep["score"] == 77.5 and rep["severity"]["error"] == 0 and rep["truncated"] is False
+        monkeypatch.setattr(WebService, "CODE_QUALITY_MAX_ISSUES", 2)
+        rep = svc.code_quality_report(str(proj / "a.py"))
+        assert len(rep["issues"]) == 2 and rep["truncated"] is True
+
+
+class TestDbNl2Sql:
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from database_tools import session
+
+        session.clear_current()
+        yield
+        session.clear_current()
+
+    def _connected(self, tmp_path, complete):
+        svc = make_service(complete_text=complete)
+        assert svc.db_connect(str(tmp_path / "n.db")).startswith("[成功]")
+        svc.db_execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        svc.db_execute("CREATE TABLE orders(id INTEGER PRIMARY KEY, uid INTEGER, amount REAL)")
+        return svc
+
+    def test_sql_kind(self):
+        k = WebService.sql_kind
+        assert k("SELECT 1") == "select" and k("  with x as (select 1) select * from x") == "select"
+        assert k("(SELECT 1)") == "select" and k("PRAGMA table_info(t)") == "select"
+        assert k("insert into t values (1)") == "write" and k("DROP TABLE t") == "write"
+        assert k("") == "invalid" and k("hello world") == "invalid"
+
+    def test_schema_text(self, tmp_path):
+        svc = self._connected(tmp_path, lambda p, **k: "")
+        text = svc.db_schema_text()
+        assert text.splitlines() == ["orders(id INTEGER PRIMARY KEY, uid INTEGER, amount REAL)",
+                                     "users(id INTEGER PRIMARY KEY, name TEXT)"]
+        assert len(svc.db_schema_text(max_chars=10)) == 10
+        svc.db_disconnect()
+        assert svc.db_schema_text() == ""
+
+    def test_nl2sql_select_with_fence(self, tmp_path):
+        calls = []
+
+        def fake(prompt, **kw):
+            calls.append((prompt, kw))
+            return "```sql\nSELECT COUNT(*) FROM users;\n```"
+
+        svc = self._connected(tmp_path, fake)
+        out = svc.db_nl2sql("用户有多少")
+        assert out == {"sql": "SELECT COUNT(*) FROM users;", "kind": "select", "note": ""}
+        prompt, kw = calls[0]
+        assert prompt.startswith("你是 SQLite 专家") and "users(id INTEGER PRIMARY KEY" in prompt
+        assert prompt.endswith("问题：用户有多少")
+        assert kw == {"num_predict": WebService.DB_NL2SQL_NUM_PREDICT, "temperature": 0}
+
+    def test_nl2sql_write_and_dangerous_notes(self, tmp_path):
+        svc = self._connected(tmp_path, lambda p, **k: "INSERT INTO users(name) VALUES ('a')")
+        out = svc.db_nl2sql("加个用户 a")
+        assert out["kind"] == "write" and out["note"] == "这是写操作，运行前需确认"
+        svc = self._connected(tmp_path, lambda p, **k: "DELETE FROM users WHERE id = 1")
+        out = svc.db_nl2sql("删掉 1 号")
+        assert out["kind"] == "write" and "高危" in out["note"]
+
+    def test_nl2sql_invalid_and_failures(self, tmp_path):
+        svc = self._connected(tmp_path, lambda p, **k: "抱歉，我不知道")
+        out = svc.db_nl2sql("？")
+        assert out["kind"] == "invalid" and out["sql"] == "抱歉，我不知道" and "未生成可识别" in out["note"]
+
+        def boom(p, **k):
+            raise RuntimeError("down")
+
+        svc = self._connected(tmp_path, boom)
+        out = svc.db_nl2sql("x")
+        assert out == {"sql": "", "kind": "invalid", "note": "生成失败: down"}
+        assert svc.db_nl2sql("  ")["note"] == "请输入自然语言描述"
+        svc.db_disconnect()
+        assert "尚未连接" in svc.db_nl2sql("x")["note"]
+
+    def test_nl2sql_keeps_first_statement(self, tmp_path):
+        svc = self._connected(tmp_path, lambda p, **k: "SELECT 1; SELECT 2;")
+        assert svc.db_nl2sql("q")["sql"] == "SELECT 1;"
+        svc = self._connected(tmp_path, lambda p, **k: "```\nselect name from users\n```\n说明：…")
+        assert svc.db_nl2sql("q")["sql"] == "select name from users"
+
+    def test_sql_kind_ignores_leading_comments(self):
+        k = WebService.sql_kind
+        assert k("-- 在此手写 SQL\nSELECT 1") == "select" and k("-- only comment") == "invalid"
+        assert k("-- c\n\n  insert into t values(1)") == "write"
+        assert WebService._sql_head("") == "" and WebService._sql_head("-- a\n-- b") == ""
+
+    def test_db_query_with_leading_comment(self, tmp_path):
+        svc = self._connected(tmp_path, lambda p, **k: "")
+        r = svc.db_query("-- 注释\nSELECT COUNT(*) AS n FROM users")
+        assert "error" not in r and r["rows"] == [[0]]
+        assert svc.db_query("-- 仅注释")["error"] == "请输入 SQL 查询语句"
+
+    def test_strip_fences(self):
+        s = WebService._strip_fences
+        assert s("```sql\nSELECT 1\n```") == "SELECT 1"
+        assert s("SELECT 1") == "SELECT 1" and s("") == ""
+        assert s("```\nls -la\n```") == "ls -la"
+
+
+class TestWorkspaceBrowse:
+    @pytest.fixture
+    def tree(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "docs").mkdir()
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "README.md").write_text("hello world\nsecond needle line\n", encoding="utf-8")
+        (tmp_path / ".hidden").write_text("x", encoding="utf-8")
+        (tmp_path / "src" / "main.py").write_text("needle = 1\nprint(needle)\n", encoding="utf-8")
+        (tmp_path / "src" / "data.bin").write_bytes(b"needle")
+        (tmp_path / "docs" / "note.txt").write_text("nothing\n", encoding="utf-8")
+        return tmp_path
+
+    def test_list_dir_sorted_dirs_first_and_hidden(self, tree):
+        svc = make_service()
+        out = svc.list_dir(str(tree))
+        assert out["path"] == str(tree) and out["parent"] == str(tree.parent) and "error" not in out
+        assert [(e["kind"], e["name"]) for e in out["entries"]] == [("dir", "docs"), ("dir", "src"), ("file", "README.md")]
+        readme = out["entries"][-1]
+        assert readme["size"] == len("hello world\nsecond needle line\n") and len(readme["mtime"]) == 16
+        assert out["entries"][0]["size"] == 0
+        with_hidden = svc.list_dir(str(tree), show_hidden=True)
+        assert {e["name"] for e in with_hidden["entries"]} == {".git", "docs", "src", ".hidden", "README.md"}
+        assert with_hidden["entries"][0]["name"] == ".git"
+
+    def test_list_dir_errors_and_root(self, tree):
+        svc = make_service()
+        out = svc.list_dir(str(tree / "nope"))
+        assert out["entries"] == [] and "路径不存在" in out["error"]
+        out = svc.list_dir(str(tree / "README.md"))
+        assert "不是目录" in out["error"]
+        root = svc.list_dir("/")
+        assert root["path"] == "/" and root["parent"] == "/"
+        assert svc.list_dir("")["path"] == __import__("os").getcwd()
+
+    def test_list_dir_truncated(self, tree, monkeypatch):
+        monkeypatch.setattr(WebService, "DIR_MAX_ENTRIES", 2)
+        out = make_service().list_dir(str(tree))
+        assert len(out["entries"]) == 2 and out["truncated"] is True
+
+    def test_file_preview_pages(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("".join(f"L{i}\n" for i in range(1, 451)), encoding="utf-8")
+        svc = make_service()
+        p0 = svc.file_preview(str(f))
+        assert p0["pages"] == 3 and p0["total_lines"] == 450 and p0["start"] == 0 and p0["end"] == 200
+        assert p0["content"].startswith("L1\n") and p0["content"].endswith("L200\n")
+        p2 = svc.file_preview(str(f), 2)
+        assert p2["page"] == 2 and p2["start"] == 400 and p2["end"] == 450 and p2["content"].endswith("L450\n")
+        assert svc.file_preview(str(f), 99)["page"] == 2  # 越界收敛到最后一页
+        assert svc.file_preview(str(f), -3)["page"] == 0
+        assert svc.file_preview(str(f), 0, page_size=1000)["pages"] == 1
+        empty = tmp_path / "e.txt"
+        empty.write_text("", encoding="utf-8")
+        pe = svc.file_preview(str(empty))
+        assert pe["pages"] == 1 and pe["total_lines"] == 0 and pe["content"] == ""
+
+    def test_file_preview_errors(self, tmp_path):
+        svc = make_service()
+        assert svc.file_preview("")["error"] == "请选择文件"
+        assert "文件不存在" in svc.file_preview(str(tmp_path / "no.txt"))["error"]
+        assert "是目录" in svc.file_preview(str(tmp_path))["error"]
+
+    def test_search_in_dir(self, tree):
+        svc = make_service()
+        hits = svc.search_in_dir("needle", str(tree))
+        assert [(h["file"].rsplit("/", 1)[-1], h["line"]) for h in hits] == [("README.md", 2), ("main.py", 1), ("main.py", 2)]
+        assert hits[0]["text"] == "second needle line"
+        assert [h["rel"] for h in hits] == ["README.md", "src/main.py", "src/main.py"]
+        assert all(h["file"].startswith(str(tree)) for h in hits)
+        assert svc.search_in_dir("needle", str(tree), max_results=2) == hits[:2]
+        assert svc.search_in_dir("", str(tree)) == [] and svc.search_in_dir("x", str(tree / "no")) == []
+        assert svc.search_in_dir("zzz", str(tree)) == []
+
+    def test_search_skips_git_and_long_lines(self, tree):
+        (tree / ".git" / "cfg.txt").write_text("needle\n", encoding="utf-8")
+        (tree / "long.md").write_text("needle " + "x" * 500 + "\n", encoding="utf-8")
+        hits = make_service().search_in_dir("needle", str(tree))
+        assert all(".git" not in h["file"] for h in hits)
+        long_hit = next(h for h in hits if h["file"].endswith("long.md"))
+        assert len(long_hit["text"]) == WebService.SEARCH_MAX_LINE
+
+
+class TestShellGenerate:
+    def test_first_line_and_fences(self):
+        calls = []
+
+        def fake(prompt, **kw):
+            calls.append((prompt, kw))
+            return "```bash\n$ ls -lS | head -5\necho done\n```"
+
+        svc = make_service(complete_text=fake)
+        assert svc.shell_generate("列出最大的 5 个文件") == {"command": "ls -lS | head -5", "note": ""}
+        prompt, kw = calls[0]
+        assert prompt.startswith("把需求转成一条") and "当前目录：" in prompt and prompt.endswith("需求：列出最大的 5 个文件")
+        assert "rm -rf" in prompt and kw == {"num_predict": WebService.SHELL_GEN_NUM_PREDICT, "temperature": 0}
+
+    def test_dollar_prefix_and_blank_lines(self):
+        svc = make_service(complete_text=lambda p, **k: "\n\n$git status\n")
+        assert svc.shell_generate("看状态")["command"] == "git status"
+
+    def test_empty_and_failure(self):
+        assert make_service(complete_text=lambda p, **k: "   ").shell_generate("x") == {"command": "", "note": "未生成"}
+        assert make_service(complete_text=lambda p, **k: "```\n```").shell_generate("x")["note"] == "未生成"
+        assert make_service(complete_text=lambda p, **k: "x").shell_generate("  ")["note"] == "请输入需求描述"
+
+        def boom(p, **k):
+            raise RuntimeError("down")
+
+        assert make_service(complete_text=boom).shell_generate("x") == {"command": "", "note": "生成失败: down"}
+

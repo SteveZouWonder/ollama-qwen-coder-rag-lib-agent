@@ -1302,17 +1302,13 @@ class TestNewHandlers:
         svc.exec_run.return_value = "[错误] 拦截"
         assert h["on_exec_run"]("rm -rf /").startswith("❌")
 
-    def test_file_rw_and_cwd(self):
+    def test_file_write_and_cwd(self):
         svc = make_service_mock()
-        svc.read_file.return_value = "line"
         svc.write_file.return_value = "[成功] 写入"
         svc.cwd.return_value = "/w"
         svc.chdir.return_value = "[成功] 已切换"
         h = build_handlers(svc)
-        assert h["on_read_file"]("a", 0, 10) == "```\nline\n```"
-        svc.read_file.assert_called_with("a", 0, 10)
-        svc.read_file.return_value = "[提示] 请输入文件路径"
-        assert h["on_read_file"]("").startswith("💡")
+        assert "on_read_file" not in h and "on_code_ast" not in h and "on_code_quality" not in h
         assert h["on_write_file"]("a", "c", True).startswith("✅")
         svc.write_file.assert_called_with("a", "c", True)
         assert "`/w`" in h["on_cwd"]()
@@ -1831,3 +1827,242 @@ class TestResultFlow:
         svc.web_cache_clear.return_value = "[成功] 已清空"
         h = build_handlers(svc)
         assert h["on_web_cache_status"]().startswith("✅") and h["on_web_cache_clear"]().startswith("✅")
+
+
+# ==================== F9 P2：AI 主入口（格式化 + handlers） ====================
+
+class TestCodeAssistFormatters:
+    def test_symbol_rows_and_status(self):
+        from web.app import SYMBOL_HEADERS, format_symbols_payload, format_symbols_status, symbol_rows
+        data = {"symbols": [{"name": "f", "kind": "函数", "file": "a.py", "line": 3, "complexity": 2}]}
+        assert SYMBOL_HEADERS == ["名称", "类型", "文件", "行号", "复杂度"]
+        assert symbol_rows(data) == [["f", "函数", "a.py", 3, 2]]
+        assert symbol_rows({}) == [] and format_symbols_status({}) == ""
+        assert format_symbols_status(data) == "✅ 找到 1 个符号"
+        assert format_symbols_status({**data, "truncated": True}).endswith("（已截断）")
+        assert format_symbols_status({"symbols": []}).startswith("💡")
+        assert format_symbols_status({"symbols": [], "error": "x"}) == "❌ x"
+        payload = format_symbols_payload("f", data)
+        assert payload.startswith("符号搜索「f」共 1 条") and "函数 f  a.py:3  复杂度 2" in payload
+        assert format_symbols_payload("f", {}) == ""
+
+    def test_quality_cards_rows_payload(self):
+        from web.app import QUALITY_ISSUE_HEADERS, format_quality_cards, format_quality_payload, quality_issue_rows
+        rep = {"path": "src", "files": 2, "score": 88.25, "total_issues": 2,
+               "severity": {"critical": 0, "error": 1, "warning": 1, "info": 0},
+               "issues": [{"severity": "error", "file": "a.py", "line": 4, "message": "bad"},
+                          {"severity": "warning", "file": "b.py", "line": 9, "message": "meh"}]}
+        html = format_quality_cards(rep)
+        assert "88.2 / 100" in html and "cb-cards" in html and "错误 1 · 警告 1" in html and ">2<" in html
+        assert QUALITY_ISSUE_HEADERS == ["严重度", "行", "描述"]
+        assert quality_issue_rows(rep) == [["错误", "a.py:4", "bad"], ["警告", "b.py:9", "meh"]]
+        single = {**rep, "files": 1}
+        assert quality_issue_rows(single)[0][1] == "4"
+        p = format_quality_payload(rep)
+        assert p.startswith("质量检查 src：评分 88.2/100，2 个文件，2 个问题") and "[错误] a.py:4: bad" in p
+        assert format_quality_cards({}) == "" and "cb-empty" in format_quality_cards({"error": "<x>"})
+        assert "&lt;x&gt;" in format_quality_cards({"error": "<x>"})
+        assert format_quality_payload({}) == "" and format_quality_payload({"error": "e"}) == "质量检查失败: e"
+        assert quality_issue_rows({}) == []
+
+    def test_code_assist_handler_stream(self):
+        svc = make_service_mock()
+        svc.code_assist_stream.return_value = iter([
+            StreamEvent("step", "读取文件", {"phase": "action"}), StreamEvent("heartbeat", "", {"elapsed": 1}),
+            StreamEvent("step", "分析中", {"phase": "thinking"}), StreamEvent("answer", "## 结论"), StreamEvent("done", ""),
+        ])
+        out = list(build_handlers(svc)["on_code_assist"]("explain", "a.py", "补充"))
+        assert all(len(o) == 2 for o in out)
+        assert out[0][1] == "⏳ 正在解释代码…"
+        assert "1. 读取文件" in out[1][0] and out[1][1].startswith("⏳ 正在解释代码…")
+        assert "2. 分析中" in out[3][0]
+        assert out[-1][1] == "## 结论" and "✅ 完成" in out[-1][0] and "（已完成）" in out[-1][0]
+        svc.code_assist_stream.assert_called_with("explain", "a.py", "补充")
+
+    def test_code_assist_handler_error_cancel(self):
+        svc = make_service_mock()
+        svc.code_assist_stream.return_value = iter([StreamEvent("progress", "p"), StreamEvent("error", "路径不存在: x")])
+        out = list(build_handlers(svc)["on_code_assist"]("review", "x", ""))
+        assert out[-1][1] == "❌ 路径不存在: x" and "❌ 出错" in out[-1][0] and "路径不存在" in out[-1][0]
+        svc.code_assist_stream.return_value = iter([StreamEvent("cancelled", "")])
+        out = list(build_handlers(svc)["on_code_assist"]("bogus", "x", ""))
+        assert out[0][1] == "⏳ 正在bogus…" and out[-1][1] == "⏹️ 已停止" and "⏹️" in out[-1][0]
+
+    def test_symbols_and_quality_handlers(self):
+        svc = make_service_mock()
+        svc.code_symbols.return_value = {"symbols": [{"name": "f", "kind": "函数", "file": "a.py", "line": 1, "complexity": 1}]}
+        svc.code_quality_report.return_value = {"path": "a.py", "files": 1, "score": 90, "total_issues": 0,
+                                                "severity": {}, "issues": []}
+        h = build_handlers(svc)
+        status, rows, payload = h["on_code_symbols"]("f", "", "")
+        assert status.startswith("✅") and rows[0][0] == "f" and "a.py:1" in payload
+        svc.code_symbols.assert_called_with("f", ".", "name")
+        cards, rows, payload = h["on_code_quality_report"]("")
+        assert "90.0 / 100" in cards and rows == [] and payload.startswith("质量检查 a.py")
+        svc.code_quality_report.assert_called_with(".")
+
+
+class TestNl2SqlHandlers:
+    def test_on_db_nl2sql(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        svc.db_nl2sql.return_value = {"sql": "SELECT 1", "kind": "select", "note": ""}
+        assert h["on_db_nl2sql"]("q") == ("SELECT 1", "✅ 已生成只读查询，可直接运行", True, False)
+        svc.db_nl2sql.return_value = {"sql": "INSERT INTO t VALUES (1)", "kind": "write", "note": "这是写操作，运行前需确认"}
+        assert h["on_db_nl2sql"]("q") == ("INSERT INTO t VALUES (1)", "💡 这是写操作，运行前需确认", False, True)
+        svc.db_nl2sql.return_value = {"sql": "", "kind": "invalid", "note": "尚未连接数据库"}
+        assert h["on_db_nl2sql"]("q") == ("", "❌ 尚未连接数据库", False, False)
+        svc.db_nl2sql.return_value = {"sql": "x", "kind": "invalid", "note": ""}
+        assert h["on_db_nl2sql"]("q")[1] == "❌ 未生成可用 SQL"
+
+    def test_sql_kind_and_connected(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_sql_kind"]("select 1") == (True, False)
+        assert h["on_sql_kind"]("UPDATE t SET a=1") == (False, True)
+        assert h["on_sql_kind"]("") == (False, False) and h["on_sql_kind"]("hello") == (False, False)
+        svc.db_current.return_value = {"connected": True}
+        assert h["on_db_connected"] () is True
+        svc.db_current.return_value = {}
+        assert h["on_db_connected"]() is False
+
+
+class TestWorkspaceFormatters:
+    def test_guess_code_language(self):
+        from web.app import guess_code_language
+        assert guess_code_language(".py") == "python" and guess_code_language("/x/y/app.PY") == "python"
+        assert guess_code_language("a.md") == "markdown" and guess_code_language("a.sh") == "shell"
+        assert guess_code_language("Dockerfile") == "dockerfile" and guess_code_language("Makefile") == "shell"
+        assert guess_code_language("a.unknown") is None and guess_code_language("") is None
+        assert guess_code_language("a.ts") == "typescript" and guess_code_language("a.yml") == "yaml"
+
+    def test_format_size(self):
+        from web.app import format_size
+        assert format_size(0) == "—" and format_size(None) == "—" and format_size("x") == "—"
+        assert format_size(512) == "512 B" and format_size(2048) == "2.0 KB"
+        assert format_size(3 * 1024 * 1024) == "3.0 MB" and format_size(5 * 1024 ** 3) == "5.0 GB"
+        assert format_size(5 * 1024 ** 4) == "5120.0 GB"
+
+    def test_dir_rows_and_breadcrumb(self):
+        from web.app import DIR_HEADERS, dir_rows, format_dir_breadcrumb
+        listing = {"path": "/p", "parent": "/", "entries": [
+            {"kind": "dir", "name": "src", "size": 0, "mtime": "2026-01-01 10:00"},
+            {"kind": "file", "name": "a.py", "size": 1536, "mtime": "2026-01-02 11:00"},
+        ]}
+        assert DIR_HEADERS == ["", "名称", "大小", "修改时间"]
+        assert dir_rows(listing) == [["📁", "src", "—", "2026-01-01 10:00"], ["📄", "a.py", "1.5 KB", "2026-01-02 11:00"]]
+        assert dir_rows({}) == []
+        assert format_dir_breadcrumb(listing) == "📂 `/p` · 2 项"
+        assert format_dir_breadcrumb({**listing, "truncated": True}).endswith("（已截断）")
+        assert format_dir_breadcrumb({"error": "路径不存在: x"}) == "❌ 路径不存在: x"
+        assert format_dir_breadcrumb({}) == ""
+
+    def test_join_entry_and_search_rows(self):
+        from web.app import SEARCH_HEADERS, join_entry, search_rows
+        assert join_entry("/p", "📁", "src") == ("/p/src", True)
+        assert join_entry("/p", "📄", "a.py") == ("/p/a.py", False)
+        assert join_entry("", "📄", "a.py") == ("./a.py", False)
+        assert join_entry("/p", "📁", "") == ("", False)
+        assert SEARCH_HEADERS == ["文件", "行", "内容"]
+        assert search_rows([{"file": "a", "line": 2, "text": "t"}]) == [["a", 2, "t"]] and search_rows([]) == []
+        assert search_rows([{"file": "/abs/a", "rel": "a", "line": 2, "text": "t"}]) == [["a", 2, "t"]]
+
+    def test_preview_status_and_payload(self):
+        from web.app import format_file_payload, format_file_preview_status
+        pv = {"path": "a.py", "page": 1, "pages": 3, "total_lines": 450, "start": 200, "end": 400, "content": "x\n"}
+        assert format_file_preview_status(pv) == "📄 `a.py` · 第 2/3 页 · 行 201-400 / 450"
+        assert format_file_preview_status({"path": "e", "total_lines": 0, "pages": 1}) == "📄 `e` · 空文件"
+        assert format_file_preview_status({"error": "文件不存在: z"}) == "❌ 文件不存在: z"
+        assert format_file_preview_status({}) == ""
+        assert format_file_payload(pv) == "文件: a.py（行 201-400）\nx\n"
+        assert format_file_payload({"error": "e"}) == "" and format_file_payload({}) == ""
+
+
+class TestWorkspaceHandlers:
+    def test_list_dir_and_parent(self):
+        svc = make_service_mock()
+        svc.list_dir.return_value = {"path": "/abs/p", "parent": "/abs", "entries": [
+            {"kind": "file", "name": "a", "size": 1, "mtime": "m"}]}
+        h = build_handlers(svc)
+        crumb, rows, resolved = h["on_list_dir"]("p", True)
+        assert crumb.startswith("📂 `/abs/p`") and rows[0][1] == "a" and resolved == "/abs/p"
+        svc.list_dir.assert_called_with("p", True)
+        crumb, rows, resolved = h["on_dir_parent"]("/abs/p", False)
+        assert resolved == "/abs/p"  # mock 始终返回同一 listing；父目录取自 listing["parent"]
+        assert svc.list_dir.call_args_list[-1].args == ("/abs", False)
+        svc.list_dir.return_value = {"path": "/x", "parent": "/", "entries": [], "error": "路径不存在: /x"}
+        crumb, rows, resolved = h["on_list_dir"]("/x", False)
+        assert crumb.startswith("❌") and rows == [] and resolved == "/x"
+        assert h["on_list_dir"]("", False)[2] == "."
+
+    def test_file_preview_handler(self):
+        svc = make_service_mock()
+        svc.file_preview.return_value = {"path": "a.py", "page": 0, "pages": 1, "total_lines": 1, "start": 0,
+                                         "end": 1, "content": "print(1)\n"}
+        h = build_handlers(svc)
+        content, lang, status, page, payload = h["on_file_preview"]("a.py", 0)
+        assert content == "print(1)\n" and lang == "python" and status.startswith("📄") and page == 0
+        assert payload.startswith("文件: a.py")
+        svc.file_preview.return_value = {"error": "文件不存在: b", "page": 0}
+        content, lang, status, page, payload = h["on_file_preview"]("b", 2.0)
+        assert content == "" and status.startswith("❌") and payload == ""
+        svc.file_preview.assert_called_with("b", 2)
+
+    def test_file_edit_load(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_file_edit_load"]("")[1].startswith("💡")
+        svc.file_preview.return_value = {"error": "文件不存在: n.txt"}
+        content, hint = h["on_file_edit_load"]("n.txt")
+        assert content == "" and "保存将创建新文件" in hint
+        svc.file_preview.return_value = {"pages": 1, "content": "abc"}
+        assert h["on_file_edit_load"]("a") == ("abc", "")
+        svc.file_preview.return_value = {"pages": 3, "content": "abc"}
+        content, hint = h["on_file_edit_load"]("a")
+        assert content == "" and "追加" in hint
+        assert svc.file_preview.call_args.args == ("a", 0, 2000)
+
+    def test_dir_search_handler(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        assert h["on_dir_search"]("  ", "/p") == ("", [])
+        svc.search_in_dir.return_value = []
+        assert h["on_dir_search"]("q", "/p")[0].startswith("💡")
+        svc.search_in_dir.return_value = [{"file": "a", "line": 1, "text": "q"}]
+        status, rows = h["on_dir_search"]("q", "")
+        assert status == "✅ 找到 1 处匹配" and rows == [["a", 1, "q"]]
+        svc.search_in_dir.assert_called_with("q", ".")
+        svc.search_in_dir.return_value = [{"file": "a", "line": i, "text": "q"} for i in range(50)]
+        assert "仅显示前 50 条" in h["on_dir_search"]("q", "/p")[0]
+
+    def test_shell_generate_handler(self):
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        svc.shell_generate.return_value = {"command": "ls -la", "note": ""}
+        cmd, note = h["on_shell_generate"]("列出文件")
+        assert cmd == "ls -la" and note.startswith("✅")
+        svc.shell_generate.return_value = {"command": "", "note": "未生成"}
+        assert h["on_shell_generate"]("x") == ("", "❌ 未生成")
+        svc.shell_generate.return_value = {"command": "", "note": ""}
+        assert h["on_shell_generate"]("x") == ("", "❌ 未生成")
+
+    def test_new_handlers_and_headers_registered(self):
+        h = build_handlers(make_service_mock())
+        for name in ("on_code_assist", "on_code_symbols", "on_code_quality_report", "on_db_connected", "on_sql_kind",
+                     "on_db_nl2sql", "on_list_dir", "on_dir_parent", "on_file_preview", "on_file_edit_load",
+                     "on_dir_search", "on_shell_generate", "join_entry"):
+            assert name in h, name
+        assert h["headers"]["symbols"][0] == "名称" and h["headers"]["dir"] == ["", "名称", "大小", "修改时间"]
+        assert h["headers"]["search"] == ["文件", "行", "内容"] and h["headers"]["quality_issues"] == ["严重度", "行", "描述"]
+
+    def test_abbreviate_home(self, monkeypatch):
+        import os
+        from web.app import abbreviate_home, format_dir_breadcrumb
+        home = os.path.expanduser("~")
+        assert abbreviate_home(home) == "~" and abbreviate_home(os.path.join(home, "x", "y")) == "~/x/y"
+        assert abbreviate_home("/opt/data") == "/opt/data" and abbreviate_home("") == ""
+        assert abbreviate_home(home + "x") == home + "x"  # 前缀相同但不是子目录
+        assert format_dir_breadcrumb({"path": os.path.join(home, "p"), "entries": []}) == "📂 `~/p` · 0 项"
+        svc = make_service_mock()
+        svc.list_dir.return_value = {"path": os.path.join(home, "p"), "parent": home, "entries": []}
+        assert build_handlers(svc)["on_list_dir"]("p", False)[2] == "~/p"

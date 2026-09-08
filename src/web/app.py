@@ -713,6 +713,193 @@ def format_send_to_chat(tab: str, payload: str) -> str:
     return f"以下是工具页「{tab}」的结果，请基于它继续分析：\n```\n{payload}\n```\n我的问题："
 
 
+# ---------- 工具页 P2：代码助手 / 符号表 / 质量卡片 ----------
+
+SYMBOL_HEADERS = ["名称", "类型", "文件", "行号", "复杂度"]
+QUALITY_ISSUE_HEADERS = ["严重度", "行", "描述"]
+_SEVERITY_LABEL = {"critical": "危险", "error": "错误", "warning": "警告", "info": "提示"}
+
+
+def symbol_rows(data: Dict[str, Any]) -> List[List[Any]]:
+    """符号搜索结果 → 表格行（名称 / 类型 / 文件 / 行号 / 复杂度）。"""
+    return [[s.get("name", ""), s.get("kind", ""), s.get("file", ""), s.get("line", 0), s.get("complexity", "")]
+            for s in (data or {}).get("symbols") or []]
+
+
+def format_symbols_status(data: Dict[str, Any]) -> str:
+    if not data:
+        return ""
+    if data.get("error"):
+        return f"❌ {data['error']}"
+    n = len(data.get("symbols") or [])
+    if n == 0:
+        return "💡 未找到匹配的函数 / 类"
+    return f"✅ 找到 {n} 个符号" + ("（已截断）" if data.get("truncated") else "")
+
+
+def format_symbols_payload(pattern: str, data: Dict[str, Any]) -> str:
+    """符号表的纯文本（供「用 AI 解读 / 发送到对话」）。"""
+    rows = symbol_rows(data)
+    if not rows:
+        return ""
+    lines = [f"符号搜索「{pattern}」共 {len(rows)} 条："]
+    lines += [f"  {r[1]} {r[0]}  {r[2]}:{r[3]}  复杂度 {r[4]}" for r in rows[:100]]
+    return "\n".join(lines)
+
+
+def format_quality_cards(report: Dict[str, Any]) -> str:
+    """质量检查卡片：评分 / 问题数 / 文件数 / 严重度分布（HTML）。"""
+    if not report:
+        return ""
+    if report.get("error"):
+        return f'<div class="cb-empty">❌ {_html_escape(report["error"])}</div>'
+
+    def card(k: str, v: Any, small: bool = False) -> str:
+        cls = "v small" if small else "v"
+        v = _html_escape(v)
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="{cls}" title="{v}">{v}</div></div>'
+
+    sev = report.get("severity") or {}
+    dist = " · ".join(f"{_SEVERITY_LABEL.get(k, k)} {int(sev.get(k, 0) or 0)}"
+                      for k in ("critical", "error", "warning", "info"))
+    cards = [
+        card("评分", f"{float(report.get('score', 0) or 0):.1f} / 100"),
+        card("问题数", int(report.get("total_issues", 0) or 0)),
+        card("文件数", int(report.get("files", 0) or 0)),
+        card("严重度分布", dist, small=True),
+    ]
+    return f'<div class="cb-cards">{"".join(cards)}</div>'
+
+
+def quality_issue_rows(report: Dict[str, Any]) -> List[List[Any]]:
+    """问题表：严重度 / 行（多文件时为 ``文件:行``）/ 描述。"""
+    issues = (report or {}).get("issues") or []
+    multi = int((report or {}).get("files", 0) or 0) > 1
+    rows = []
+    for i in issues:
+        loc = f"{i.get('file', '')}:{i.get('line', 0)}" if multi else str(i.get("line", 0))
+        rows.append([_SEVERITY_LABEL.get(i.get("severity", ""), i.get("severity", "")), loc, i.get("message", "")])
+    return rows
+
+
+def format_quality_payload(report: Dict[str, Any]) -> str:
+    if not report or report.get("error"):
+        return f"质量检查失败: {report.get('error')}" if report and report.get("error") else ""
+    sev = report.get("severity") or {}
+    lines = [f"质量检查 {report.get('path', '')}：评分 {float(report.get('score', 0) or 0):.1f}/100，"
+             f"{report.get('files', 0)} 个文件，{report.get('total_issues', 0)} 个问题"
+             f"（危险 {sev.get('critical', 0)} / 错误 {sev.get('error', 0)} / 警告 {sev.get('warning', 0)} / 提示 {sev.get('info', 0)}）"]
+    lines += [f"  [{r[0]}] {r[1]}: {r[2]}" for r in quality_issue_rows(report)[:100]]
+    return "\n".join(lines)
+
+
+# ---------- 工具页 P2：工作区文件浏览 ----------
+
+DIR_HEADERS = ["", "名称", "大小", "修改时间"]
+SEARCH_HEADERS = ["文件", "行", "内容"]
+_LANGUAGE_BY_SUFFIX = {
+    ".py": "python", ".js": "javascript", ".mjs": "javascript", ".ts": "typescript", ".tsx": "typescript",
+    ".jsx": "javascript", ".json": "json", ".md": "markdown", ".html": "html", ".htm": "html", ".css": "css",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".yaml": "yaml", ".yml": "yaml", ".sql": "sql",
+    ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp", ".r": "r", ".jinja": "jinja2",
+}
+_LANGUAGE_BY_NAME = {"dockerfile": "dockerfile", "makefile": "shell"}
+
+
+def guess_code_language(name: str) -> Optional[str]:
+    """按文件名后缀推断 ``gr.Code`` 的 ``language``（未知返回 None，即纯文本）。"""
+    import os
+
+    base = os.path.basename((name or "").strip())
+    if not base:
+        return None
+    if base.lower() in _LANGUAGE_BY_NAME:
+        return _LANGUAGE_BY_NAME[base.lower()]
+    suffix = os.path.splitext(base)[1] or (base if base.startswith(".") else "")  # 允许直接传 ".py"
+    return _LANGUAGE_BY_SUFFIX.get(suffix.lower())
+
+
+def format_size(size: Any) -> str:
+    """字节数 → ``1.2 KB`` 样式（目录 / 0 显示 ``—``）。"""
+    try:
+        n = float(size or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if n <= 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return "—"  # pragma: no cover - 循环内必返回
+
+
+def dir_rows(listing: Dict[str, Any]) -> List[List[Any]]:
+    """目录列表 → 表格行：``📁/📄`` / 名称 / 大小 / 修改时间。"""
+    rows = []
+    for e in (listing or {}).get("entries") or []:
+        is_dir = e.get("kind") == "dir"
+        rows.append(["📁" if is_dir else "📄", e.get("name", ""), "—" if is_dir else format_size(e.get("size")),
+                     e.get("mtime", "")])
+    return rows
+
+
+def abbreviate_home(path: str) -> str:
+    """把用户主目录前缀缩写为 ``~``（仅用于显示；服务层照常接受 ``~`` 路径）。"""
+    import os
+
+    path = str(path or "")
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if home and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+def format_dir_breadcrumb(listing: Dict[str, Any]) -> str:
+    """面包屑：``📂 `~/path` · N 项``；出错时 ❌。"""
+    if not listing:
+        return ""
+    if listing.get("error"):
+        return f"❌ {listing['error']}"
+    n = len(listing.get("entries") or [])
+    extra = "（已截断）" if listing.get("truncated") else ""
+    return f"📂 `{abbreviate_home(listing.get('path', ''))}` · {n} 项{extra}"
+
+
+def join_entry(cur_path: str, kind_cell: str, name: str) -> Tuple[str, bool]:
+    """把表格选中行还原为 ``(完整路径, 是否目录)``；名称为空返回 ``("", False)``。"""
+    import os
+
+    name = (name or "").strip()
+    if not name:
+        return "", False
+    return os.path.join((cur_path or ".").strip() or ".", name), (kind_cell or "").strip() == "📁"
+
+
+def search_rows(results: List[Dict[str, Any]]) -> List[List[Any]]:
+    """搜索结果行：相对路径（无则绝对路径）/ 行 / 内容。"""
+    return [[r.get("rel") or r.get("file", ""), r.get("line", 0), r.get("text", "")] for r in results or []]
+
+
+def format_file_preview_status(preview: Dict[str, Any]) -> str:
+    """预览状态行：``📄 `path` · 第 1/3 页 · 行 1-200 / 512``。"""
+    if not preview:
+        return ""
+    if preview.get("error"):
+        return f"❌ {preview['error']}"
+    total = int(preview.get("total_lines", 0) or 0)
+    if total == 0:
+        return f"📄 `{preview.get('path', '')}` · 空文件"
+    return (f"📄 `{preview.get('path', '')}` · 第 {int(preview.get('page', 0)) + 1}/{preview.get('pages', 1)} 页 · "
+            f"行 {int(preview.get('start', 0)) + 1}-{preview.get('end', 0)} / {total}")
+
+
+def format_file_payload(preview: Dict[str, Any]) -> str:
+    if not preview or preview.get("error") or not preview.get("content"):
+        return ""
+    return f"文件: {preview.get('path', '')}（行 {int(preview.get('start', 0)) + 1}-{preview.get('end', 0)}）\n{preview.get('content', '')}"
+
+
 def format_graph_result(result: Dict[str, Any]) -> str:
     """把知识图谱查询结果渲染为 Markdown 文本。"""
     entities = result.get("entities", [])
@@ -1639,12 +1826,6 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_web_cache_clear() -> str:
         return _fmt_result(service.web_cache_clear())
 
-    def on_code_ast(pattern: str, path: str) -> str:
-        return service.code_ast(pattern, path or ".")
-
-    def on_code_quality(path: str) -> str:
-        return service.code_quality(path or ".")
-
     def on_git_commit_gen() -> str:
         return _fmt_result(service.git_commit_gen())
 
@@ -1713,6 +1894,125 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_send_to_chat(tab: str, payload: str) -> str:
         """「发送到对话」：返回填入对话输入框的文本（空结果返回空串，UI 据此不跳转）。"""
         return format_send_to_chat(tab, payload)
+
+    # ---------- 工具页 P2-1：代码助手 / 符号表 / 质量报告 ----------
+
+    def on_code_assist(action: str, path: str, extra: str = ""):
+        """代码助手（流式）：yield ``(处理过程 Markdown, 结果 Markdown)``。"""
+        tracker = ProgressTracker()
+        label = WebService.CODE_ASSIST_ACTIONS.get(action, action)
+        yield tracker.render_status(), f"⏳ 正在{label}…"
+        for evt in service.code_assist_stream(action, path, extra):
+            if evt.kind == "step":
+                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
+                yield _process_md(tracker), f"⏳ 正在{label}… {format_elapsed(tracker.elapsed())}"
+            elif evt.kind in ("progress", "heartbeat"):
+                yield _process_md(tracker), f"⏳ 正在{label}… {format_elapsed(tracker.elapsed())}"
+            elif evt.kind == "answer":
+                yield _process_md(tracker, done=True), evt.message
+            elif evt.kind == "error":
+                yield _process_md(tracker, state="error", detail=evt.message), f"❌ {evt.message}"
+                return
+            elif evt.kind == "cancelled":
+                yield _process_md(tracker, state="cancelled"), "⏹️ 已停止"
+                return
+
+    def _process_md(tracker: ProgressTracker, done: bool = False, state: str = "", detail: str = "") -> str:
+        status = tracker.render_status("done" if done else (state or "running"), detail)
+        steps = tracker.render_steps(done=done)
+        return f"{status}\n\n{steps}" if steps else status
+
+    def on_code_symbols(pattern: str, path: str, search_by: str = "name") -> Tuple[str, List[List[Any]], str]:
+        """符号搜索：返回 (状态行, 表格行, 解读用文本)。"""
+        data = service.code_symbols(pattern, path or ".", search_by or "name")
+        return format_symbols_status(data), symbol_rows(data), format_symbols_payload(pattern, data)
+
+    def on_code_quality_report(path: str) -> Tuple[str, List[List[Any]], str]:
+        """质量检查：返回 (卡片 HTML, 问题表行, 解读用文本)。"""
+        report = service.code_quality_report(path or ".")
+        return format_quality_cards(report), quality_issue_rows(report), format_quality_payload(report)
+
+    # ---------- 工具页 P2-2：自然语言 → SQL ----------
+
+    def on_db_connected() -> bool:
+        return bool((service.db_current() or {}).get("connected"))
+
+    def on_sql_kind(sql: str) -> Tuple[bool, bool]:
+        """按 SQL 首关键字判定 (可直接运行, 需确认)；空 / 不可识别均为 (False, False)。"""
+        kind = WebService.sql_kind(sql)
+        return kind == "select", kind == "write"
+
+    def on_db_nl2sql(question: str) -> Tuple[str, str, bool, bool]:
+        """自然语言 → SQL：返回 (SQL 文本, 提示行, 可直接运行, 需确认)。"""
+        result = service.db_nl2sql(question)
+        sql = str(result.get("sql") or "")
+        kind = result.get("kind") or "invalid"
+        note = str(result.get("note") or "")
+        if kind == "invalid":
+            return sql, f"❌ {note or '未生成可用 SQL'}", False, False
+        hint = f"💡 {note}" if note else ("✅ 已生成只读查询，可直接运行" if kind == "select" else "")
+        return sql, hint, kind == "select", kind == "write"
+
+    # ---------- 工具页 P2-3：工作区文件浏览 ----------
+
+    def on_list_dir(path: str, show_hidden: bool = False) -> Tuple[str, List[List[Any]], str]:
+        """列目录：返回 (面包屑, 表格行, 解析后的路径（主目录缩写为 ``~``）)。出错时路径保持原值。"""
+        listing = service.list_dir(path or ".", bool(show_hidden))
+        resolved = abbreviate_home(listing.get("path", path)) if not listing.get("error") else (path or ".")
+        return format_dir_breadcrumb(listing), dir_rows(listing), resolved
+
+    def on_dir_parent(path: str, show_hidden: bool = False) -> Tuple[str, List[List[Any]], str]:
+        listing = service.list_dir(path or ".", bool(show_hidden))
+        parent = listing.get("parent") or path or "."
+        return on_list_dir(parent, show_hidden)
+
+    def on_file_preview(path: str, page: float = 0) -> Tuple[str, Optional[str], str, int, str]:
+        """文件预览：返回 (内容, 语言, 状态行, 页码, 解读用文本)。"""
+        preview = service.file_preview(path, int(page or 0))
+        content = preview.get("content", "") if not preview.get("error") else ""
+        return (content, guess_code_language(path), format_file_preview_status(preview),
+                int(preview.get("page", 0) or 0), format_file_payload(preview))
+
+    FILE_EDIT_MAX_LINES = 2000
+
+    def on_file_edit_load(path: str) -> Tuple[str, str]:
+        """打开「编辑」：返回 (编辑框初始内容, 提示行)。
+
+        新文件 / 不存在：内容空、提示"保存将创建新文件"；超过 ``FILE_EDIT_MAX_LINES`` 行不加载全文并提示用「追加」。
+        """
+        path = (path or "").strip()
+        if not path:
+            return "", "💡 先在左侧选择文件，或在上方输入新文件路径"
+        preview = service.file_preview(path, 0, FILE_EDIT_MAX_LINES)
+        if preview.get("error"):
+            return "", f"💡 {preview['error']} · 保存将创建新文件"
+        if int(preview.get("pages", 1) or 1) > 1:
+            return "", (f"⚠️ 文件超过 {FILE_EDIT_MAX_LINES} 行，编辑框未加载全文；"
+                        "覆盖保存会替换整个文件，建议勾选「追加」")
+        return str(preview.get("content") or ""), ""
+
+    def on_dir_search(query: str, path: str) -> Tuple[str, List[List[Any]]]:
+        """关键词搜索：返回 (状态行, 表格行)。"""
+        query = (query or "").strip()
+        if not query:
+            return "", []
+        results = service.search_in_dir(query, path or ".")
+        if not results:
+            return f"💡 未找到包含「{query}」的文件", []
+        cap = WebService.SEARCH_MAX_RESULTS
+        more = f"（仅显示前 {cap} 条）" if len(results) >= cap else ""
+        return f"✅ 找到 {len(results)} 处匹配{more}", search_rows(results)
+
+    # ---------- 工具页 P2-4：自然语言 → 命令 ----------
+
+    def on_shell_generate(intent: str) -> Tuple[str, str]:
+        """生成命令：返回 (命令文本, 提示行)。未生成时命令为空。"""
+        result = service.shell_generate(intent)
+        cmd = str(result.get("command") or "")
+        note = str(result.get("note") or "")
+        if not cmd:
+            return "", f"❌ {note or '未生成'}"
+        return cmd, "✅ 已生成命令，请检查后点「分析」→「执行」"
 
     def on_file_list() -> str:
         files = service.file_list()
@@ -2008,12 +2308,6 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             return _fmt_result(result)
         return f"```\n{result}\n```"
 
-    def on_read_file(path: str, offset: float = 0, limit: float = 200) -> str:
-        result = service.read_file(path, int(offset or 0), int(limit or 200))
-        if result.startswith("[错误]") or result.startswith("[提示]"):
-            return _fmt_result(result)
-        return f"```\n{result}\n```"
-
     def on_write_file(path: str, content: str, append: bool = False) -> str:
         return _fmt_result(service.write_file(path, content, bool(append)))
 
@@ -2083,7 +2377,6 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_graph_build_any": on_graph_build_any,
         "on_exec_analyze": on_exec_analyze,
         "on_exec_run": on_exec_run,
-        "on_read_file": on_read_file,
         "on_write_file": on_write_file,
         "on_cwd": on_cwd,
         "on_chdir": on_chdir,
@@ -2096,7 +2389,23 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS, "snapshot_docs": _SNAPSHOT_DOC_HEADERS,
             "git_changes": GIT_CHANGES_HEADERS, "git_commits": GIT_COMMITS_HEADERS,
             "git_authors": GIT_AUTHORS_HEADERS, "db_tables": DB_TABLES_HEADERS, "db_schema": DB_SCHEMA_HEADERS,
+            "symbols": SYMBOL_HEADERS, "quality_issues": QUALITY_ISSUE_HEADERS,
+            "dir": DIR_HEADERS, "search": SEARCH_HEADERS,
         },
+        "on_code_assist": on_code_assist,
+        "on_code_symbols": on_code_symbols,
+        "on_code_quality_report": on_code_quality_report,
+        "on_db_connected": on_db_connected,
+        "on_sql_kind": on_sql_kind,
+        "on_db_nl2sql": on_db_nl2sql,
+        "on_list_dir": on_list_dir,
+        "on_dir_parent": on_dir_parent,
+        "on_file_preview": on_file_preview,
+        "on_file_edit_load": on_file_edit_load,
+        "on_dir_search": on_dir_search,
+        "on_shell_generate": on_shell_generate,
+        "join_entry": join_entry,
+        "abbreviate_home": abbreviate_home,
         "on_chat": on_chat,
         "on_chat_stream": on_chat_stream,
         "on_session_init": on_session_init,
@@ -2127,8 +2436,6 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_toggle_think": on_toggle_think,
         "on_web_cache_status": on_web_cache_status,
         "on_web_cache_clear": on_web_cache_clear,
-        "on_code_ast": on_code_ast,
-        "on_code_quality": on_code_quality,
         "on_git_commit_gen": on_git_commit_gen,
         "on_git_overview": on_git_overview,
         "on_db_status": on_db_status,
