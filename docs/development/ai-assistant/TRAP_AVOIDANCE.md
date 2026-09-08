@@ -70,6 +70,9 @@
 | 长任务在 handler 内直跑 | 界面卡死无法取消。**规则**：走 `WebService._bridge` 后台线程 + 队列 + 心跳。 |
 | 模块级"当前会话" | 多标签页共享。**规则**：每标签页 `gr.State`。 |
 | `is_running()` 并发 | Ollama 单实例，第二个任务应被拒绝而不是排队。 |
+| 单输出组件返回列表 | `outputs=[btn]` 时返回 `[gr.update(...)]` 会被当作 Button 的 value 渲染成 `[{'interactive': False…}]`。**规则**：单输出返回标量（`tools.py::_lock` 已处理）。 |
+| 可编辑 `gr.Code` 空初值 | Gradio 6.20：初值为空则不渲染编辑器，之后任何写值触发前端 `props_invalid_value` 并中断整次更新；动态切 `interactive` 亦如此。**规则**：给非空初始注释、不切 `interactive`。 |
+| 惰性渲染子页的 `visible` 更新 | 未访问过的 `gr.Tab` 内 Markdown 的 `gr.update(visible=…)` 会丢失（`interactive` 不会）。**规则**：在 `tab.select` 时按状态重同步（Git 子页门控提示）。 |
 
 ## 7. 测试
 

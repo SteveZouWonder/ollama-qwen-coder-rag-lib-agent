@@ -12,10 +12,13 @@ SessionManager / GraphQuery）交互的地方。UI 层（``app.py``）只调用�
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 引擎工厂（可在测试中替换/注入）====================
@@ -249,6 +252,35 @@ class WebService:
         # ``_pending_confirm`` 为 ``{"event": Event, "approved": bool, "data": dict}``。
         self._pending_confirm: Optional[Dict[str, Any]] = None
         self.confirm_timeout: float = 300.0
+        # 工具页轻量持久状态（最近库 / 命令历史，F9 P3-1/2）：惰性创建，路径经 runtime_paths 解析
+        self._tools_state: Optional[Any] = None
+
+    # ---------- 工具页持久状态（最近数据库 / 命令历史） ----------
+
+    @property
+    def tools_state(self):
+        """``ToolsState``（惰性）；测试可直接赋值为指向 ``tmp_path`` 的实例。"""
+        if self._tools_state is None:
+            from .tools_state import ToolsState
+
+            self._tools_state = ToolsState()
+        return self._tools_state
+
+    def recent_databases(self) -> List[str]:
+        """最近成功连接过的 SQLite 路径（最新在前，≤8）。读失败回退空列表。"""
+        try:
+            return list(self.tools_state.recent_databases())
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("读取最近数据库失败: %s", exc)
+            return []
+
+    def shell_history(self) -> List[str]:
+        """成功执行过的命令（最新在前、去重，≤50）。读失败回退空列表。"""
+        try:
+            return list(self.tools_state.shell_history())
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("读取命令历史失败: %s", exc)
+            return []
 
     # ---------- 任务生命周期 / 取消 ----------
 
@@ -1411,6 +1443,78 @@ class WebService:
     def git_commit_gen(self, repo_path: str = ".") -> str:
         return self.run_tool("git_commit_gen", {"repo_path": repo_path or ".", "use_ai": True})
 
+    # -- 提交信息增强（F9 P3-3）：暂存预览 → AI 生成（可编辑）→ 确认提交 --
+
+    _GIT_EMPTY_PREVIEW: Dict[str, Any] = {
+        "is_repo": False, "has_staged": False, "staged_files": [], "diff_stat": "",
+        "files_changed": 0, "insertions": 0, "deletions": 0,
+    }
+
+    def git_commit_preview(self, repo_path: str = ".") -> Dict[str, Any]:
+        """暂存区预览（共享层 ``GitAnalyzer.get_commit_preview``）：
+        ``{is_repo, has_staged, staged_files[{status,label,path}], diff_stat, files_changed, insertions, deletions}``；
+        异常时附 ``error``。"""
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            return GitAnalyzer(repo_path or ".").get_commit_preview()
+        except BaseException as exc:  # noqa: BLE001
+            return {**self._GIT_EMPTY_PREVIEW, "error": str(exc)}
+
+    def git_commit_message(self, repo_path: str = ".") -> Dict[str, Any]:
+        """AI 生成提交信息（沿用 ``CommitMessageGenerator`` 现有提示，附录 A-4）。
+
+        返回 ``{title, body, message, error?}``；``message`` 为可直接填入编辑框的完整文本
+        （标题 + 空行 + 正文）。无暂存 / 非仓库时返回 ``error``，不调用模型。
+        """
+        preview = self.git_commit_preview(repo_path)
+        if preview.get("error"):
+            return {"title": "", "body": "", "message": "", "error": preview["error"]}
+        if not preview.get("is_repo"):
+            return {"title": "", "body": "", "message": "", "error": "当前目录不是 Git 仓库"}
+        if not preview.get("has_staged"):
+            return {"title": "", "body": "", "message": "", "error": "暂存区为空，请先 git add 要提交的文件"}
+        try:
+            from git_integration.commit_generator import CommitMessageGenerator
+
+            suggestion = CommitMessageGenerator(repo_path or ".").generate_commit_message(use_ai=True)
+        except BaseException as exc:  # noqa: BLE001
+            return {"title": "", "body": "", "message": "", "error": f"生成提交信息失败: {exc}"}
+        title = (getattr(suggestion, "title", "") or "").strip()
+        body = (getattr(suggestion, "body", "") or "").strip()
+        if not title or title.lower().startswith("no changes staged"):
+            return {"title": "", "body": "", "message": "", "error": "暂存区为空，请先 git add 要提交的文件"}
+        message = f"{title}\n\n{body}" if body else title
+        return {"title": title, "body": body, "message": message}
+
+    def git_commit(self, message: str, repo_path: str = ".") -> str:
+        """执行 ``git commit -m``（仅提交暂存区；调用方负责 ``shell_enable`` 门控与二次确认）。
+
+        不经 registry：在 service 层直接调用共享层 ``GitAnalyzer.commit``；
+        执行前用 ``CommandSafetyChecker`` 记录风险等级（git commit 为 medium）。
+        """
+        message = (message or "").strip()
+        if not message:
+            return "[提示] 请填写提交信息"
+        try:
+            from agent_tools import CommandSafetyChecker
+
+            safety = CommandSafetyChecker.analyze(f"git commit -m {message.splitlines()[0]!r}")
+            if safety.get("is_dangerous"):
+                return "[错误] 提交信息包含危险内容，已拒绝"
+            logger.info("git commit 风险等级 %s（用户已确认）", safety.get("risk_level"))
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("提交前安全分析失败，按 medium 继续: %s", exc)
+        try:
+            from git_integration.git_analyzer import GitAnalyzer
+
+            result = GitAnalyzer(repo_path or ".").commit(message)
+        except BaseException as exc:  # noqa: BLE001
+            return f"[错误] 提交失败: {exc}"
+        if not result.get("ok"):
+            return f"[错误] 提交失败: {result.get('error') or '未知错误'}"
+        return f"[成功] 已提交 {result.get('hash7', '')} · {result.get('subject', '')}".rstrip(" ·")
+
     def git_overview(self, repo_path: str = ".", max_commits: int = 20) -> Dict[str, Any]:
         """Git 仪表盘数据（结构化，来自共享层 ``GitAnalyzer.get_overview``）。
 
@@ -1483,13 +1587,18 @@ class WebService:
     DB_MAX_ROWS = 500
     """查询结果最多返回的行数（超出部分截断并在 ``truncated`` 标记）。"""
 
-    _DB_READ_PREFIXES = ("select", "with", "pragma", "explain", "values")
-
     @staticmethod
     def _db_session():
         from database_tools import session as db_session
 
         return db_session
+
+    @staticmethod
+    def _db_results():
+        """共享层结构化取数模块（Web 与 CLI ``/db-query`` ``/db-schema`` 共用）。"""
+        from database_tools import results as db_results
+
+        return db_results
 
     def db_current(self) -> Dict[str, Any]:
         """当前连接：``{connected, db_type, database, label}``。"""
@@ -1515,8 +1624,14 @@ class WebService:
         database = (database or "").strip()
         if not database:
             return "[提示] 请输入 SQLite 数据库文件路径"
-        return self.run_tool("database_connect", {"db_type": (db_type or "sqlite").strip() or "sqlite",
-                                                  "database": database})
+        result = self.run_tool("database_connect", {"db_type": (db_type or "sqlite").strip() or "sqlite",
+                                                    "database": database})
+        if result.startswith("[成功]"):
+            try:
+                self.tools_state.remember_database(database)
+            except BaseException as exc:  # noqa: BLE001
+                logger.warning("记录最近数据库失败: %s", exc)
+        return result
 
     def db_disconnect(self) -> str:
         """断开当前连接（关闭缓存的连接器）。"""
@@ -1527,76 +1642,47 @@ class WebService:
             return f"[错误] 断开失败: {exc}"
 
     def db_tables(self) -> Dict[str, Any]:
-        """当前库的表名列表：``{tables: [...], error?}``。"""
+        """当前库的表名列表：``{tables: [...], error?}``（共享层 ``results.tables_structured``）。"""
         try:
-            executor = self._db_executor()
-            if executor is None:
-                return {"tables": [], "error": "尚未连接数据库"}
-            return {"tables": executor.list_tables()}
+            return self._db_results().tables_structured(self._db_executor())
         except BaseException as exc:  # noqa: BLE001
             return {"tables": [], "error": str(exc)}
 
     def db_table_schema(self, table: str) -> Dict[str, Any]:
         """单表结构：``{table, columns: [{name, type, not_null, default_value, primary_key}], error?}``。"""
         table = (table or "").strip()
-        if not table:
-            return {"table": "", "columns": [], "error": "请选择表"}
         try:
-            executor = self._db_executor()
-            if executor is None:
-                return {"table": table, "columns": [], "error": "尚未连接数据库"}
-            schema = executor.get_table_schema(table) or {}
-            columns = list(schema.get("columns") or [])
-            if not columns:
-                return {"table": table, "columns": [], "error": f"表 {table} 不存在或没有列"}
-            return {"table": table, "columns": columns}
+            return self._db_results().table_schema_structured(self._db_executor() if table else None, table)
         except BaseException as exc:  # noqa: BLE001
             return {"table": table, "columns": [], "error": str(exc)}
 
     def db_query(self, sql: str) -> Dict[str, Any]:
-        """在当前连接上执行只读查询，返回结构化结果。
+        """在当前连接上执行只读查询，返回结构化结果（共享层 ``results.query_structured``）。
 
         ``{sql, columns, rows(list of list), row_count, execution_time, truncated, error?}``；
         ``rows`` 最多 ``DB_MAX_ROWS`` 行。非 SELECT 类语句提示改用「执行」。
         """
+        results = self._db_results()
         sql = (sql or "").strip()
-        base = {"sql": sql, "columns": [], "rows": [], "row_count": 0, "execution_time": 0.0, "truncated": False}
-        if not sql or not self._sql_head(sql):
-            return {**base, "error": "请输入 SQL 查询语句"}
-        if self._sql_head(sql) not in self._DB_READ_PREFIXES:
-            return {**base, "error": "「查询」只接受 SELECT 等只读语句；写操作请使用「执行」"}
+        head = results.sql_head(sql)
+        if not sql or not head or head not in results.READ_PREFIXES:
+            return results.query_structured(None, sql, self.DB_MAX_ROWS)  # 参数校验分支，不需要连接
         try:
-            executor = self._db_executor()
-            if executor is None:
-                return {**base, "error": "尚未连接数据库，请先连接"}
-            result = executor.execute_query(sql)
+            return results.query_structured(self._db_executor(), sql, self.DB_MAX_ROWS)
         except BaseException as exc:  # noqa: BLE001
-            return {**base, "error": str(exc)}
-        if not result.success:
-            return {**base, "execution_time": result.execution_time, "error": result.error_message or "查询失败"}
-        columns = list(result.columns)
-        rows = [[r.get(c) for c in columns] for r in result.rows[: self.DB_MAX_ROWS]]
-        return {
-            **base, "columns": columns, "rows": rows, "row_count": result.row_count,
-            "execution_time": result.execution_time, "truncated": result.row_count > len(rows),
-        }
+            return {"sql": sql, "columns": [], "rows": [], "row_count": 0, "execution_time": 0.0,
+                    "truncated": False, "error": str(exc)}
 
     def db_execute(self, sql: str) -> Dict[str, Any]:
         """在当前连接上执行写语句：``{sql, affected_rows, execution_time, error?}``（调用方负责确认）。"""
+        results = self._db_results()
         sql = (sql or "").strip()
-        base = {"sql": sql, "affected_rows": 0, "execution_time": 0.0}
         if not sql:
-            return {**base, "error": "请输入 SQL 语句"}
+            return results.execute_structured(None, sql)
         try:
-            executor = self._db_executor()
-            if executor is None:
-                return {**base, "error": "尚未连接数据库，请先连接"}
-            result = executor.execute_update(sql)
+            return results.execute_structured(self._db_executor(), sql)
         except BaseException as exc:  # noqa: BLE001
-            return {**base, "error": str(exc)}
-        if not result.success:
-            return {**base, "execution_time": result.execution_time, "error": result.error_message or "执行失败"}
-        return {**base, "affected_rows": int(result.affected_rows), "execution_time": result.execution_time}
+            return {"sql": sql, "affected_rows": 0, "execution_time": 0.0, "error": str(exc)}
 
     def db_schema(self, table: str = "") -> str:
         """文本版表结构 / 表列表（沿用 registry 工具，供 Agent 与旧调用方）。"""
@@ -1606,24 +1692,16 @@ class WebService:
 
     DB_NL2SQL_NUM_PREDICT = 256
     DB_NL2SQL_SCHEMA_MAX = 3000
-    _DB_WRITE_PREFIXES = ("insert", "update", "delete", "create", "drop", "alter", "replace", "truncate")
 
-    @staticmethod
-    def _sql_head(sql: str) -> str:
-        """去掉前导 ``--`` 行注释与左括号后的首个关键字（小写）；无内容返回空串。"""
-        lines = [ln for ln in (sql or "").splitlines() if ln.strip() and not ln.strip().startswith("--")]
-        body = "\n".join(lines).strip().lstrip("(")
-        return body.split(None, 1)[0].lower() if body.split() else ""
+    @classmethod
+    def _sql_head(cls, sql: str) -> str:
+        """去掉前导 ``--`` 行注释与左括号后的首个关键字（小写）；无内容返回空串（共享层实现）。"""
+        return cls._db_results().sql_head(sql)
 
     @classmethod
     def sql_kind(cls, sql: str) -> str:
         """按首个关键字判定 ``select`` / ``write`` / ``invalid``（空串 / 仅注释亦为 invalid）。"""
-        head = cls._sql_head(sql)
-        if head in cls._DB_READ_PREFIXES:
-            return "select"
-        if head in cls._DB_WRITE_PREFIXES:
-            return "write"
-        return "invalid"
+        return cls._db_results().sql_kind(sql)
 
     def db_schema_text(self, max_chars: Optional[int] = None) -> str:
         """当前库全部表的 ``CREATE``-风格文本（供 NL→SQL 提示），截 ``max_chars``。"""
@@ -1779,6 +1857,14 @@ class WebService:
         except BaseException as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    @staticmethod
+    def exec_succeeded(result: str) -> bool:
+        """``exec_run`` 的文本结果是否表示成功（无错误 / 提示前缀且退出码为 0）。"""
+        text = result or ""
+        if text.startswith("[错误]") or text.startswith("[提示]"):
+            return False
+        return "\n[退出码] " not in f"\n{text}"
+
     def exec_run(self, command: str) -> str:
         """执行 Shell 命令；危险命令一律拦截（调用方负责"需确认"的二次确认）。"""
         command = (command or "").strip()
@@ -1790,7 +1876,14 @@ class WebService:
         if safety.get("is_dangerous"):
             reasons = "；".join(safety.get("danger_reasons") or [])
             return f"[错误] 该命令被安全系统拦截，拒绝执行。{reasons}".rstrip()
-        return self.run_tool("execute_command", {"command": command}, auto_confirm=True)
+        result = self.run_tool("execute_command", {"command": command}, auto_confirm=True)
+        # 命令历史（F9 P3-2）：只记成功执行过的命令（工具层错误 / 提示 / 非零退出码不记）
+        if self.exec_succeeded(result):
+            try:
+                self.tools_state.remember_command(command)
+            except BaseException as exc:  # noqa: BLE001
+                logger.warning("记录命令历史失败: %s", exc)
+        return result
 
     def write_file(self, path: str, content: str, append: bool = False) -> str:
         """写入文件（等价 CLI ``/write``；调用方负责二次确认）。"""

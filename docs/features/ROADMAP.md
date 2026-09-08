@@ -18,6 +18,7 @@
 | 知识库（代码） | 代码文件按函数/类切分（tree-sitter 可选依赖），来源定位到 `文件 · 符号 · 行号`，入库进度与分块策略可见 | [F8 P4](f8-agent-modes-optimization/) |
 | Agent 工具 | 网络搜索、AST 分析、代码质量、Git 分析/提交信息、知识图谱（Plotly 3D/2D）、SQLite 数据库 | [F6](f6-capability-tools/) |
 | 入口 | CLI（几十个斜杠命令 + 智能命令推荐）、桌面托盘（状态监控 / 模型预热 / Ollama 引导）、Gradio Web UI（5 页、多主题、审批卡片） | [F4](f4-command-recommender/)、[F5](f5-desktop-packaging/)、[F7](f7-web-ui/) |
+| 工具工作台 | Web「工具」页 AI 化（代码助手 / Git 仪表盘 + 一步提交 / NL→SQL / 工作区浏览与 NL→命令、结果流转、连接记忆与命令历史）、DB 当前连接下沉共享层（Web + CLI + Agent 同修）、CLI `/git-analyze` `/db-query` `/db-schema` rich 表格 | [F9](f9-web-tools-revamp/) |
 | 发布 | GitHub Actions 打 tag 自动构建 dmg / Inno Setup exe / AppImage，自动 Release Notes 与 CHANGELOG 归档；CI 含 flake8 / pylint / bandit / pip-audit / pytest / codecov、PR 漏洞门禁 | [CI_CD.md](../development/CI_CD.md) |
 
 ---
@@ -26,7 +27,6 @@
 
 | 优先级 | 内容 | 文档 |
 |---|---|---|
-| 高 | F9 Web「工具」页重构：P1 删网络搜索 / DB 连接透传修复 / Git 仪表盘 / 结果流转 · P2 代码助手 / NL→SQL / 工作区 / NL→命令 · P3 连接记忆 / 命令历史 / 一步提交 | [F9](f9-web-tools-revamp/) |
 | 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Tesseract 引导提示、Web 配置可编辑 | [features/README.md](README.md)「残留小项」 |
 
 ## 已明确不做

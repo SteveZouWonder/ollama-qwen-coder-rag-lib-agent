@@ -2679,3 +2679,207 @@ class TestShellGenerate:
 
         assert make_service(complete_text=boom).shell_generate("x") == {"command": "", "note": "生成失败: down"}
 
+
+
+# ==================== F9 P3：连接记忆 / 命令历史 / 提交增强 ====================
+
+class TestToolsStateIntegration:
+    """P3-1 / P3-2：``db_connect`` 成功后记最近库；``exec_run`` 成功后记命令；读失败回退空。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from database_tools import session
+
+        session.clear_current()
+        yield
+        session.clear_current()
+
+    def _svc(self, tmp_path):
+        from web.tools_state import ToolsState
+
+        svc = make_service()
+        svc._tools_state = ToolsState(tmp_path / "state" / "web_tools_state.json")
+        return svc
+
+    def test_default_state_path_via_runtime_paths(self, tmp_path):
+        import runtime_paths as rp
+
+        rp.set_app_state_root(tmp_path / "root")
+        try:
+            svc = make_service()
+            assert svc.tools_state.path == tmp_path / "root" / "web_tools_state.json"
+            assert svc.recent_databases() == [] and svc.shell_history() == []
+        finally:
+            rp.set_app_state_root(None)
+
+    def test_db_connect_remembers_only_on_success(self, tmp_path):
+        svc = self._svc(tmp_path)
+        assert svc.db_connect(str(tmp_path / "a.db")).startswith("[成功]")
+        assert svc.db_connect(str(tmp_path / "b.db")).startswith("[成功]")
+        assert svc.recent_databases() == [str(tmp_path / "b.db"), str(tmp_path / "a.db")]
+        assert svc.db_connect(str(tmp_path / "a.db")).startswith("[成功]")
+        assert svc.recent_databases() == [str(tmp_path / "a.db"), str(tmp_path / "b.db")]  # 去重、最新在前
+        assert svc.db_connect(":memory:").startswith("[成功]")
+        assert ":memory:" not in svc.recent_databases()
+        assert svc.db_connect("").startswith("[提示]")
+        assert len(svc.recent_databases()) == 2
+        assert (tmp_path / "state" / "web_tools_state.json").exists()
+
+    def test_db_connect_failure_not_remembered(self, tmp_path, monkeypatch):
+        svc = self._svc(tmp_path)
+        monkeypatch.setattr(svc, "run_tool", lambda *a, **k: "[错误] 连接失败")
+        assert svc.db_connect("/nope.db").startswith("[错误]")
+        assert svc.recent_databases() == []
+
+    def test_exec_run_remembers_successful_commands(self, tmp_path, monkeypatch):
+        import sys as _sys
+
+        svc = self._svc(tmp_path)
+        outputs = {"ls": "a\nb", "pwd": "/x", "false": "[退出码] 1", "cat nope": "[错误] 执行失败"}
+        reg = MagicMock()
+        reg.execute.side_effect = lambda name, args, auto_confirm=False: outputs[args["command"]]
+        fake_at = MagicMock()
+        fake_at.registry = reg
+        fake_at.CommandSafetyChecker.analyze = lambda cmd: {"is_dangerous": False, "needs_confirm": False,
+                                                          "risk_level": "low", "danger_reasons": []}
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        svc.exec_run("ls")
+        svc.exec_run("pwd")
+        svc.exec_run("false")      # 非零退出码不记
+        svc.exec_run("cat nope")   # 工具层错误不记
+        svc.exec_run("ls")         # 去重并提前
+        assert svc.shell_history() == ["ls", "pwd"]
+
+    def test_exec_succeeded(self):
+        assert WebService.exec_succeeded("ok") is True
+        assert WebService.exec_succeeded("") is True
+        assert WebService.exec_succeeded("[错误] x") is False
+        assert WebService.exec_succeeded("[提示] x") is False
+        assert WebService.exec_succeeded("out\n[退出码] 2") is False
+        assert WebService.exec_succeeded("[退出码] 1") is False
+
+    def test_read_failures_fall_back_to_empty(self):
+        svc = make_service()
+        broken = MagicMock()
+        broken.recent_databases.side_effect = RuntimeError("io")
+        broken.shell_history.side_effect = RuntimeError("io")
+        broken.remember_database.side_effect = RuntimeError("io")
+        broken.remember_command.side_effect = RuntimeError("io")
+        svc._tools_state = broken
+        assert svc.recent_databases() == [] and svc.shell_history() == []
+        # 记录失败不影响主流程返回值
+        assert svc.db_connect(":memory:").startswith("[成功]")
+
+
+class TestGitCommitFlow:
+    """P3-3：暂存预览 / AI 生成提交信息 / 提交（真实临时仓库）。"""
+
+    @pytest.fixture(autouse=True)
+    def _real_git(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", _REAL_SUBPROCESS_RUN)
+        monkeypatch.setattr(subprocess, "Popen", _REAL_SUBPROCESS_POPEN)
+
+    def test_preview_empty_and_staged(self, tmp_path):
+        git = _init_git_repo(tmp_path, commits=1)
+        svc = make_service()
+        pv = svc.git_commit_preview(str(tmp_path))
+        assert pv["is_repo"] is True and pv["has_staged"] is False and pv["staged_files"] == []
+        (tmp_path / "f0.txt").write_text("changed\nmore\n", encoding="utf-8")
+        (tmp_path / "new.txt").write_text("n\n", encoding="utf-8")
+        git("add", ".")
+        pv = svc.git_commit_preview(str(tmp_path))
+        assert pv["has_staged"] is True
+        assert {f["path"]: f["label"] for f in pv["staged_files"]} == {"f0.txt": "修改", "new.txt": "新增"}
+        assert pv["files_changed"] == 2 and pv["insertions"] == 3 and pv["deletions"] == 1
+        assert "2 files changed" in pv["diff_stat"]
+
+    def test_preview_rename_and_non_repo(self, tmp_path, tmp_path_factory):
+        git = _init_git_repo(tmp_path, commits=1)
+        git("mv", "f0.txt", "renamed.txt")
+        pv = make_service().git_commit_preview(str(tmp_path))
+        assert pv["staged_files"][0]["path"] == "renamed.txt" and pv["staged_files"][0]["label"] == "重命名"
+        other = tmp_path_factory.mktemp("plain")  # 独立目录（tmp_path 子目录仍在仓库工作区内）
+        pv = make_service().git_commit_preview(str(other))
+        assert pv["is_repo"] is False and pv["has_staged"] is False
+
+    def test_preview_exception_wrapped(self, monkeypatch):
+        import sys as _sys
+
+        broken = MagicMock()
+        broken.GitAnalyzer.side_effect = RuntimeError("git-boom")
+        monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", broken)
+        pv = make_service().git_commit_preview(".")
+        assert pv["is_repo"] is False and pv["error"] == "git-boom"
+
+    def test_commit_message_paths(self, tmp_path, monkeypatch):
+        import sys as _sys
+
+        git = _init_git_repo(tmp_path, commits=1)
+        svc = make_service()
+        r = svc.git_commit_message(str(tmp_path))
+        assert "暂存区为空" in r["error"] and r["message"] == ""
+        (tmp_path / "f0.txt").write_text("changed\n", encoding="utf-8")
+        git("add", ".")
+        fake_mod = MagicMock()
+        fake_mod.CommitMessageGenerator.return_value.generate_commit_message.return_value = SimpleNamespace(
+            title=" feat: 改动 ", body=" 说明 ", conventional_type="feat")
+        monkeypatch.setitem(_sys.modules, "git_integration.commit_generator", fake_mod)
+        r = svc.git_commit_message(str(tmp_path))
+        assert r == {"title": "feat: 改动", "body": "说明", "message": "feat: 改动\n\n说明"}
+        fake_mod.CommitMessageGenerator.return_value.generate_commit_message.assert_called_with(use_ai=True)
+        fake_mod.CommitMessageGenerator.return_value.generate_commit_message.return_value = SimpleNamespace(
+            title="fix: x", body="", conventional_type=None)
+        assert svc.git_commit_message(str(tmp_path))["message"] == "fix: x"
+        fake_mod.CommitMessageGenerator.return_value.generate_commit_message.return_value = SimpleNamespace(
+            title="No changes staged", body="…")
+        assert "暂存区为空" in svc.git_commit_message(str(tmp_path))["error"]
+        fake_mod.CommitMessageGenerator.side_effect = RuntimeError("down")
+        assert "生成提交信息失败: down" in svc.git_commit_message(str(tmp_path))["error"]
+
+    def test_commit_message_non_repo_and_error(self, tmp_path_factory, monkeypatch):
+        other = tmp_path_factory.mktemp("plain")
+        assert "不是 Git 仓库" in make_service().git_commit_message(str(other))["error"]
+        svc = make_service()
+        monkeypatch.setattr(svc, "git_commit_preview", lambda p=".": {"error": "boom"})
+        assert svc.git_commit_message(".")["error"] == "boom"
+
+    def test_commit_end_to_end(self, tmp_path):
+        git = _init_git_repo(tmp_path, commits=1)
+        svc = make_service()
+        assert svc.git_commit("", str(tmp_path)).startswith("[提示]")
+        assert "暂存区为空" in svc.git_commit("feat: x", str(tmp_path))
+        (tmp_path / "f0.txt").write_text("changed\n", encoding="utf-8")
+        git("add", ".")
+        out = svc.git_commit("feat: 提交测试\n\n正文", str(tmp_path))
+        assert out.startswith("[成功] 已提交 ") and "feat: 提交测试" in out
+        ov = svc.git_overview(str(tmp_path))
+        assert len(ov["commits"]) == 2 and ov["commits"][0]["subject"] == "feat: 提交测试" and ov["changed"] == []
+        assert svc.git_commit_preview(str(tmp_path))["has_staged"] is False
+
+    def test_commit_non_repo_and_failures(self, tmp_path_factory, monkeypatch):
+        other = tmp_path_factory.mktemp("plain")
+        assert "不是 Git 仓库" in make_service().git_commit("x", str(other))
+        import sys as _sys
+
+        broken = MagicMock()
+        broken.GitAnalyzer.side_effect = RuntimeError("git-boom")
+        monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", broken)
+        assert make_service().git_commit("x", ".") == "[错误] 提交失败: git-boom"
+        failing = MagicMock()
+        failing.GitAnalyzer.return_value.commit.return_value = {"ok": False, "error": ""}
+        monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", failing)
+        assert make_service().git_commit("x", ".") == "[错误] 提交失败: 未知错误"
+
+    def test_commit_safety_check(self, monkeypatch):
+        import sys as _sys
+
+        fake_at = MagicMock()
+        fake_at.CommandSafetyChecker.analyze.return_value = {"is_dangerous": True, "risk_level": "critical"}
+        monkeypatch.setitem(_sys.modules, "agent_tools", fake_at)
+        assert make_service().git_commit("rm -rf /", ".") == "[错误] 提交信息包含危险内容，已拒绝"
+        # 安全分析本身异常 → 按 medium 继续，走到 GitAnalyzer
+        fake_at.CommandSafetyChecker.analyze.side_effect = RuntimeError("no checker")
+        ok = MagicMock()
+        ok.GitAnalyzer.return_value.commit.return_value = {"ok": True, "hash7": "abc1234", "subject": "s"}
+        monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", ok)
+        assert make_service().git_commit("msg", ".") == "[成功] 已提交 abc1234 · s"

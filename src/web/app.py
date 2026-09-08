@@ -627,6 +627,37 @@ def format_git_payload(overview: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+GIT_STAGED_HEADERS = ["状态", "路径"]
+
+
+def git_staged_rows(preview: Dict[str, Any]) -> List[List[Any]]:
+    return [[f.get("label") or f.get("status", ""), f.get("path", "")]
+            for f in (preview or {}).get("staged_files") or []]
+
+
+def format_git_commit_preview(preview: Dict[str, Any]) -> str:
+    """暂存区预览卡片（HTML）：暂存文件数 / 新增行 / 删除行；无暂存时给 ``.cb-hint`` 提示。"""
+    if not preview or not preview.get("is_repo"):
+        err = (preview or {}).get("error")
+        detail = f"<p>{_html_escape(err)}</p>" if err else ""
+        return f'<div class="cb-empty"><h3>当前目录不是 Git 仓库</h3>{detail}</div>'
+    if not preview.get("has_staged"):
+        return ('<div class="cb-hint cb-hint-block">💡 暂存区为空：请先在终端 <code>git add</code> 要提交的文件，'
+                '再点「AI 生成提交信息」。</div>')
+
+    def card(k: str, v: Any) -> str:
+        return f'<div class="cb-card"><div class="k">{k}</div><div class="v">{_html_escape(v)}</div></div>'
+
+    cards = [
+        card("暂存文件", preview.get("files_changed") or len(preview.get("staged_files") or [])),
+        card("新增行", f"+{int(preview.get('insertions') or 0)}"),
+        card("删除行", f"-{int(preview.get('deletions') or 0)}"),
+    ]
+    stat = _html_escape(preview.get("diff_stat") or "")
+    stat_html = f'<pre class="cb-diff-stat">{stat}</pre>' if stat else ""
+    return f'<div class="cb-cards">{"".join(cards)}</div>{stat_html}'
+
+
 def format_db_status(current: Dict[str, Any]) -> str:
     """数据库当前连接状态芯片（HTML）。"""
     if not current or not current.get("connected"):
@@ -644,18 +675,10 @@ def db_tables_rows(data: Dict[str, Any]) -> List[List[Any]]:
 
 
 def db_schema_rows(schema: Dict[str, Any]) -> List[List[Any]]:
-    """列 / 类型 / 约束（PK · NOT NULL · DEFAULT x）。"""
-    rows = []
-    for c in (schema or {}).get("columns") or []:
-        cons = []
-        if c.get("primary_key"):
-            cons.append("PK")
-        if c.get("not_null"):
-            cons.append("NOT NULL")
-        if c.get("default_value") not in (None, ""):
-            cons.append(f"DEFAULT {c.get('default_value')}")
-        rows.append([c.get("name", ""), c.get("type", "") or "—", " · ".join(cons)])
-    return rows
+    """列 / 类型 / 约束（PK · NOT NULL · DEFAULT x）；与 CLI ``/db-schema`` 共用共享层实现。"""
+    from database_tools.results import schema_rows
+
+    return schema_rows(schema)
 
 
 def format_db_query_status(result: Dict[str, Any]) -> str:
@@ -1826,8 +1849,27 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_web_cache_clear() -> str:
         return _fmt_result(service.web_cache_clear())
 
-    def on_git_commit_gen() -> str:
-        return _fmt_result(service.git_commit_gen())
+    def on_git_commit_preview() -> Tuple[str, List[List[Any]], bool]:
+        """暂存区预览：返回 (卡片 / 提示 HTML, 暂存文件行, 是否有暂存)。"""
+        pv = service.git_commit_preview()
+        return format_git_commit_preview(pv), git_staged_rows(pv), bool(pv.get("has_staged"))
+
+    def on_git_commit_gen() -> Tuple[str, List[List[Any]], str, str]:
+        """「AI 生成提交信息」：先取暂存预览，再生成；返回 (预览 HTML, 暂存行, 可编辑的提交信息, 提示行)。
+
+        无暂存时不调用模型，提交信息留空并在提示行说明。
+        """
+        html, rows, has_staged = on_git_commit_preview()
+        if not has_staged:
+            return html, rows, "", "💡 暂存区为空，请先 `git add`"
+        result = service.git_commit_message()
+        if result.get("error"):
+            return html, rows, "", f"❌ {result['error']}"
+        return html, rows, str(result.get("message") or ""), "✅ 已生成，可编辑后点「提交」"
+
+    def on_git_commit(message: str) -> str:
+        """确认后提交（``git commit -m``）；UI 负责 ``shell_enable`` 门控与 ``Confirm``。"""
+        return _fmt_result(service.git_commit(message))
 
     def on_git_overview() -> Tuple[str, List[List[Any]], List[List[Any]], List[List[Any]], str]:
         """Git 仪表盘：返回 (卡片 HTML, 变更文件行, 最近提交行, 提交者行, 解读用纯文本)。"""
@@ -1845,6 +1887,15 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         """连接：返回 (结果文案, 状态芯片 HTML, 表列表行)。"""
         msg = _fmt_result(service.db_connect(database))
         return msg, on_db_status(), on_db_tables()
+
+    def on_recent_databases() -> List[str]:
+        """连接区下拉的候选：``:memory:`` 恒在首位 + 最近成功连接过的库（F9 P3-1）。"""
+        recent = [d for d in service.recent_databases() if d and d != ":memory:"]
+        return [":memory:", *recent]
+
+    def on_shell_history() -> List[str]:
+        """命令区「历史命令」下拉候选（最新在前，F9 P3-2）。"""
+        return list(service.shell_history())
 
     def on_db_disconnect() -> Tuple[str, str, List[List[Any]]]:
         msg = _fmt_result(service.db_disconnect())
@@ -1878,10 +1929,10 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     def on_ai_explain(kind: str, payload: str, question: str = ""):
         """「用 AI 解读」：流式 yield Markdown（心跳期显示已用时；answer 直接展示）。"""
         tracker = ProgressTracker()
-        yield "⏳ 正在解读…"
+        yield "⏳ 思考中…"
         for evt in service.ai_explain_stream(kind, payload, question):
             if evt.kind in ("progress", "heartbeat"):
-                yield f"⏳ 正在解读… {format_elapsed(tracker.elapsed())}"
+                yield f"⏳ 思考中… {format_elapsed(tracker.elapsed())}"
             elif evt.kind == "answer":
                 yield evt.message
             elif evt.kind == "error":
@@ -2388,7 +2439,8 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             "files": _FILE_HEADERS, "snapshots": _SNAPSHOT_HEADERS, "summary": _SUMMARY_HEADERS,
             "tools": _TOOL_HEADERS, "models": _MODEL_HEADERS, "snapshot_docs": _SNAPSHOT_DOC_HEADERS,
             "git_changes": GIT_CHANGES_HEADERS, "git_commits": GIT_COMMITS_HEADERS,
-            "git_authors": GIT_AUTHORS_HEADERS, "db_tables": DB_TABLES_HEADERS, "db_schema": DB_SCHEMA_HEADERS,
+            "git_authors": GIT_AUTHORS_HEADERS, "git_staged": GIT_STAGED_HEADERS,
+            "db_tables": DB_TABLES_HEADERS, "db_schema": DB_SCHEMA_HEADERS,
             "symbols": SYMBOL_HEADERS, "quality_issues": QUALITY_ISSUE_HEADERS,
             "dir": DIR_HEADERS, "search": SEARCH_HEADERS,
         },
@@ -2437,6 +2489,10 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         "on_web_cache_status": on_web_cache_status,
         "on_web_cache_clear": on_web_cache_clear,
         "on_git_commit_gen": on_git_commit_gen,
+        "on_git_commit_preview": on_git_commit_preview,
+        "on_git_commit": on_git_commit,
+        "on_recent_databases": on_recent_databases,
+        "on_shell_history": on_shell_history,
         "on_git_overview": on_git_overview,
         "on_db_status": on_db_status,
         "on_db_tables": on_db_tables,

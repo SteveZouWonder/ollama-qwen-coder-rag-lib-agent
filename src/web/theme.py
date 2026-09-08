@@ -270,6 +270,14 @@ button.stop:hover { background: #fecaca !important; }
 .cb-file-preview .cm-scroller { max-height: 560px; }
 .cb-edit-box { border: 1px solid var(--cb-accent-border); background: var(--cb-accent-soft);
   border-radius: var(--cb-radius); padding: 10px 12px; gap: 8px !important; }
+/* 工具页 P3：表格空态（紧凑）/ 暂存预览提示与 diff --stat / 历史命令下拉 */
+.cb-empty-sm { padding: 10px 12px; font-size: .88rem; opacity: .65; }
+.cb-hint-block { display: block; margin: 4px 0 8px; font-size: .9rem; }
+.cb-hint-block code { font-size: .82rem; }
+.cb-diff-stat { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--cb-radius); font-size: .78rem;
+  line-height: 1.4; max-height: 180px; overflow: auto; background: var(--background-fill-secondary);
+  border: 1px solid var(--border-color-primary); white-space: pre; }
+.cb-history label > span { font-size: .78rem; opacity: .7; }
 .cb-ai-explain { min-height: 0; }
 .cb-ai-explain:has(p, ul, ol, pre, h1, h2, h3, blockquote) { padding: 10px 12px; border-radius: var(--cb-radius);
   background: var(--background-fill-secondary); border-left: 3px solid var(--cb-accent); }

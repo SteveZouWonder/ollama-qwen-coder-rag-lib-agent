@@ -76,6 +76,8 @@
 
 连接复用：`database_tools/session.py` 按 `(db_type, database)` 缓存 `DatabaseConnector`（sqlite `check_same_thread=False` + 连接器内 RLock，可跨 Web 请求线程），`clear_current()` 关闭全部。Web `WebService.db_*`、CLI `/db-*`、Agent 三端共用同一当前连接；测试用 `session.clear_current()` 隔离（`tests/conftest.py` autouse 已处理）。
 
+结构化取数（非 registry 路径）：`database_tools/results.py` 提供 `query_structured / execute_structured / tables_structured / table_schema_structured / schema_rows / sql_kind / current_executor`，输入 `QueryExecutor`（`None` 表示未连接）、输出可直接渲染的 dict。Web `WebService.db_query / db_execute / db_tables / db_table_schema` 与 CLI `/db-query` `/db-schema`（rich 表格）都调用它，不再各自解析工具文本；Agent 仍走 registry 文本工具。
+
 ## 3. `CommandSafetyChecker.analyze(command)` 四级判定
 
 按顺序匹配，返回 `{risk_level, is_dangerous, needs_confirm, reason}`：

@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F9 | Web「工具」页重构：删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· 代码助手 / NL→SQL / 工作区 / NL→命令 · CLI rich 表格（P1 高 · P2 中 · P3 低，分支 `feat/web-tools-revamp`） | 🚧 P1 / P2 已完成（2026-09-08），P3 待实现 | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
+| — | 暂无 | | |
 
 ## 已实现
 
@@ -22,6 +22,7 @@
 | F6 | 系统能力增强（Agent 工具集） | [f6-capability-tools/](f6-capability-tools/) |
 | F7 | Web 界面（Gradio） | [f7-web-ui/](f7-web-ui/) |
 | F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent）：P0 多 Agent 真实化 · P1 单 Agent 鲁棒性 · P2 RAG 推理与可核验性 · P3 入口智能路由 · P4 代码感知分块（2026-09-04 ~ 09-07，分支 `feat/agent-modes-optimization`） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| F9 | Web「工具」页重构：P1 删网络搜索 · DB 当前连接下沉共享层（Web + CLI 同修）· Git 仪表盘 · 结果流转（AI 解读 / 发送到对话）· P2 代码助手 / NL→SQL / 工作区 / NL→命令 · P3 连接记忆 / 命令历史 / 暂存预览 → 可编辑提交信息 → 确认提交 / 空态与加载态 / CLI `/git-analyze` `/db-query` `/db-schema` rich 表格（2026-09-07 ~ 09-08，分支 `feat/web-tools-revamp`） | [f9-web-tools-revamp/](f9-web-tools-revamp/) |
 
 ---
 

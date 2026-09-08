@@ -393,13 +393,13 @@ TUTORIAL_TEXT = """
   /code-quality <path>        代码质量检查
 
 Git 命令：
-  /git-analyze <type>         Git 分析（history/status/authors）
+  /git-analyze [type]         Git 概览表（分支 / 变更数 / 最近 10 次提交）；status 变更文件表 / authors 提交者表
   /git-commit-gen             AI 生成提交信息
 
 数据库命令（SQLite）：
   /db-connect <database>      连接并设为当前连接，之后 /db-query /db-execute /db-schema 作用于该库
-  /db-query <sql>             执行查询
-  /db-schema [table]          查看表结构；不带参数列出全部表
+  /db-query <sql>             执行查询，结果以表格显示（最多 50 行）
+  /db-schema [table]          表结构表（列 / 类型 / 约束）；不带参数列出全部表
 
 知识图谱命令：
   /graph-query <文本>         按实体名模糊查询（默认）
@@ -668,11 +668,11 @@ def print_help():
 
 数据库管理命令（SQLite）：
   /db-connect <database>        连接数据库并设为当前连接（默认 sqlite；也可 /db-connect sqlite <database>）
-  /db-query <sql>               在当前连接上执行SQL查询
+  /db-query <sql>               在当前连接上执行SQL查询（表格显示，最多 50 行）
   /db-execute <sql>             在当前连接上执行SQL语句（INSERT/UPDATE/DELETE/DDL）
   /db-create-table <table> <columns_json>  创建数据库表
   /db-insert <table> <data_json>           插入数据
-  /db-schema [table]            查看表结构；不带参数列出全部表
+  /db-schema [table]            表结构表（列 / 类型 / 约束）；不带参数列出全部表
 
 文件管理命令（新功能）：
   /file-list           列出知识库中的所有文件
@@ -704,7 +704,7 @@ def print_help():
   /code-quality <path>        代码质量检查
 
 Git 命令（新功能）：
-  /git-analyze <type>         Git 分析（history/status/authors）
+  /git-analyze [type]         Git 概览表（分支 / 变更 / 最近提交）；status 变更文件表 / authors 提交者表
   /git-commit-gen             AI 生成提交信息
 
 使用示例：
@@ -717,7 +717,9 @@ Git 命令（新功能）：
   >>> /snapshot-list
   >>> /web-search 最新的 Python 稳定版本
   >>> /code-quality src/
-  >>> /git-analyze history
+  >>> /git-analyze
+  >>> /db-connect ./data/app.db
+  >>> /db-query SELECT * FROM users LIMIT 5
 """
     if HAS_RICH:
         console.print(Panel(help_text, border_style="yellow", title="帮助", box=box.ROUNDED))

@@ -1698,8 +1698,84 @@ class TestGitFormatters:
         cards, changes, commits, authors, payload = build_handlers(svc)["on_git_overview"]()
         assert "cb-cards" in cards and len(changes) == 2 and len(commits) == 1 and len(authors) == 2
         assert "分支: main" in payload
-        svc.git_commit_gen.return_value = "[成功] feat: x"
-        assert build_handlers(svc)["on_git_commit_gen"]().startswith("✅")
+
+
+class TestGitCommitFlow:
+    """F9 P3-3：暂存预览卡片 / 暂存行 / 生成提交信息 / 提交 handler。"""
+
+    PV = {"is_repo": True, "has_staged": True, "files_changed": 2, "insertions": 10, "deletions": 3,
+          "diff_stat": " a.py | 5 +++--\n b.py | 8 ++++++++\n 2 files changed, 10 insertions(+), 3 deletions(-)",
+          "staged_files": [{"status": "M", "label": "修改", "path": "a.py"}, {"status": "A", "label": "新增", "path": "b.py"}]}
+
+    def test_preview_html(self):
+        from web.app import format_git_commit_preview
+        html = format_git_commit_preview(self.PV)
+        assert "cb-cards" in html and ">2<" in html and "+10" in html and "-3" in html
+        assert "cb-diff-stat" in html and "2 files changed" in html
+        hint = format_git_commit_preview({"is_repo": True, "has_staged": False, "staged_files": []})
+        assert "cb-hint" in hint and "git add" in hint and "cb-cards" not in hint
+        assert "不是 Git 仓库" in format_git_commit_preview({"is_repo": False})
+        assert "boom" in format_git_commit_preview({"is_repo": False, "error": "boom"})
+        assert "不是 Git 仓库" in format_git_commit_preview({})
+        # files_changed 缺失时回退暂存文件数；无 diff_stat 不输出 pre
+        html2 = format_git_commit_preview({**self.PV, "files_changed": 0, "diff_stat": ""})
+        assert ">2<" in html2 and "cb-diff-stat" not in html2
+
+    def test_staged_rows(self):
+        from web.app import git_staged_rows
+        assert git_staged_rows(self.PV) == [["修改", "a.py"], ["新增", "b.py"]]
+        assert git_staged_rows({}) == [] and git_staged_rows(None) == []
+        assert git_staged_rows({"staged_files": [{"status": "D", "path": "x"}]}) == [["D", "x"]]
+
+    def test_preview_handler(self):
+        svc = make_service_mock()
+        svc.git_commit_preview.return_value = self.PV
+        html, rows, has = build_handlers(svc)["on_git_commit_preview"]()
+        assert "cb-cards" in html and len(rows) == 2 and has is True
+        svc.git_commit_preview.return_value = {"is_repo": True, "has_staged": False, "staged_files": []}
+        html, rows, has = build_handlers(svc)["on_git_commit_preview"]()
+        assert "git add" in html and rows == [] and has is False
+
+    def test_commit_gen_handler(self):
+        svc = make_service_mock()
+        svc.git_commit_preview.return_value = self.PV
+        svc.git_commit_message.return_value = {"title": "feat: x", "body": "详情", "message": "feat: x\n\n详情"}
+        html, rows, message, hint = build_handlers(svc)["on_git_commit_gen"]()
+        assert "cb-cards" in html and len(rows) == 2 and message == "feat: x\n\n详情" and hint.startswith("✅")
+        svc.git_commit_message.return_value = {"error": "模型不可用"}
+        _, _, message, hint = build_handlers(svc)["on_git_commit_gen"]()
+        assert message == "" and hint == "❌ 模型不可用"
+        # 无暂存：不调用模型
+        svc.git_commit_message.reset_mock()
+        svc.git_commit_preview.return_value = {"is_repo": True, "has_staged": False, "staged_files": []}
+        _, _, message, hint = build_handlers(svc)["on_git_commit_gen"]()
+        assert message == "" and "git add" in hint
+        svc.git_commit_message.assert_not_called()
+
+    def test_commit_handler(self):
+        svc = make_service_mock()
+        svc.git_commit.return_value = "[成功] 已提交 abc1234 · feat: x"
+        assert build_handlers(svc)["on_git_commit"]("feat: x").startswith("✅ 已提交 abc1234")
+        svc.git_commit.assert_called_once_with("feat: x")
+        svc.git_commit.return_value = "[错误] 提交失败: 暂存区为空"
+        assert build_handlers(svc)["on_git_commit"]("x").startswith("❌")
+
+
+class TestToolsStateHandlers:
+    """F9 P3-1 / P3-2：最近库下拉候选与历史命令候选。"""
+
+    def test_recent_databases_prepends_memory(self):
+        svc = make_service_mock()
+        svc.recent_databases.return_value = ["/a.db", ":memory:", "", "/b.db"]
+        assert build_handlers(svc)["on_recent_databases"]() == [":memory:", "/a.db", "/b.db"]
+        svc.recent_databases.return_value = []
+        assert build_handlers(svc)["on_recent_databases"]() == [":memory:"]
+
+    def test_shell_history(self):
+        svc = make_service_mock()
+        svc.shell_history.return_value = ["ls", "pwd"]
+        assert build_handlers(svc)["on_shell_history"]() == ["ls", "pwd"]
+        assert build_handlers(svc)["headers"]["git_staged"] == ["状态", "路径"]
 
 
 class TestDbFormatters:
@@ -1803,7 +1879,8 @@ class TestResultFlow:
             StreamEvent("answer", "结论：正常"), StreamEvent("done", ""),
         ])
         out = list(build_handlers(svc)["on_ai_explain"]("db", "payload", ""))
-        assert out[0].startswith("⏳") and out[-1] == "结论：正常"
+        assert out[0].startswith("⏳ 思考中") and out[-1] == "结论：正常"
+        assert all("思考中" in o for o in out[:-1])  # heartbeat 期间显示"思考中…"（P3-4）
         svc.ai_explain_stream.assert_called_with("db", "payload", "")
 
     def test_ai_explain_handler_error_and_cancel(self):

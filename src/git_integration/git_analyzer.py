@@ -350,6 +350,81 @@ class GitAnalyzer:
         overview["last_commit_at"] = self._run_git_command(['log', '-1', '--format=%ci']) if commits else ""
         return overview
 
+    def _run_git_full(self, command: List[str]) -> Dict[str, Any]:
+        """运行 Git 命令并返回 ``{returncode, stdout, stderr}``（写操作需要看到 stderr）。"""
+        try:
+            result = subprocess.run(
+                ['git'] + command, cwd=self.repo_path, capture_output=True, text=True,
+                timeout=30, stdin=subprocess.DEVNULL,
+            )
+            return {"returncode": result.returncode, "stdout": (result.stdout or "").strip(),
+                    "stderr": (result.stderr or "").strip()}
+        except subprocess.TimeoutExpired:
+            return {"returncode": 124, "stdout": "", "stderr": f"Git 命令超时: {' '.join(command)}"}
+        except Exception as e:  # noqa: BLE001
+            return {"returncode": 1, "stdout": "", "stderr": str(e)}
+
+    def get_commit_preview(self) -> Dict[str, Any]:
+        """暂存区预览（Web「AI 生成提交信息」前置卡片 / 提交确认共用，F9 P3-3）。
+
+        返回::
+
+            {
+              "is_repo": bool, "has_staged": bool,
+              "staged_files": [{"status": "M", "label": "修改", "path": "a.py"}, ...],
+              "diff_stat": "a.py | 2 +-\\n 1 file changed, ...",     # git diff --cached --stat
+              "files_changed": int, "insertions": int, "deletions": int,
+            }
+        """
+        preview: Dict[str, Any] = {
+            "is_repo": False, "has_staged": False, "staged_files": [], "diff_stat": "",
+            "files_changed": 0, "insertions": 0, "deletions": 0,
+        }
+        if not self.is_repo():
+            return preview
+        preview["is_repo"] = True
+        staged = []
+        for line in self._run_git_command(['diff', '--cached', '--name-status']).split('\n'):
+            parts = line.strip().split('\t')
+            if len(parts) < 2 or not parts[0]:
+                continue
+            code = parts[0][:1]
+            path = parts[-1]  # 重命名 / 复制形如 ``R100\told\tnew``，取新路径
+            staged.append({"status": parts[0], "label": self.STATUS_LABELS.get(code, code), "path": path})
+        preview["staged_files"] = staged
+        preview["has_staged"] = bool(staged)
+        if not staged:
+            return preview
+        preview["diff_stat"] = self._run_git_command(['diff', '--cached', '--stat'])
+        shortstat = self._run_git_command(['diff', '--cached', '--shortstat'])
+        import re as _re
+        for key, pat in (("files_changed", r"(\d+) files? changed"), ("insertions", r"(\d+) insertions?"),
+                         ("deletions", r"(\d+) deletions?")):
+            m = _re.search(pat, shortstat)
+            preview[key] = int(m.group(1)) if m else 0
+        return preview
+
+    def commit(self, message: str) -> Dict[str, Any]:
+        """执行 ``git commit -m <message>``（仅提交暂存区）。
+
+        返回 ``{ok, hash7, subject, error}``；无暂存 / 空信息 / git 失败时 ``ok=False`` 并给出 ``error``。
+        不触碰 ``git add``，不改 hooks / 配置。
+        """
+        message = (message or "").strip()
+        if not message:
+            return {"ok": False, "hash7": "", "subject": "", "error": "提交信息不能为空"}
+        if not self.is_repo():
+            return {"ok": False, "hash7": "", "subject": "", "error": "当前目录不是 Git 仓库"}
+        if not self.get_commit_preview()["has_staged"]:
+            return {"ok": False, "hash7": "", "subject": "", "error": "暂存区为空，请先 git add"}
+        res = self._run_git_full(['commit', '-m', message])
+        if res["returncode"] != 0:
+            err = res["stderr"] or res["stdout"] or f"git commit 退出码 {res['returncode']}"
+            return {"ok": False, "hash7": "", "subject": "", "error": err}
+        hash7 = self._run_git_command(['rev-parse', '--short', 'HEAD'])
+        subject = self._run_git_command(['log', '-1', '--format=%s'])
+        return {"ok": True, "hash7": hash7, "subject": subject, "error": ""}
+    
     def analyze_code_frequency(self, file_path: str, days: int = 30) -> Dict[str, int]:
         """分析代码变更频率"""
         since_date = datetime.now().replace(day=datetime.now().day - days).strftime('%Y-%m-%d')

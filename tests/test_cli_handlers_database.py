@@ -59,30 +59,103 @@ class TestDbConnect:
 
 
 class TestDbSchema:
-    def test_no_arg_lists_all_tables(self):
-        ctx, reg = _ctx("[成功] 共 1 张表\n- t")
-        assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
-        reg.execute.assert_called_once_with("database_get_schema", {"table": ""})
-        ctx.record_command.assert_called_once_with("db_schema", "(all)")
+    """``/db-schema`` 走共享层 ``database_tools.results``（不经 registry）；表格渲染断言见
+    ``test_cli_handlers_rich_tables.py``，这里覆盖未连接 / 不存在的表 / 异常。"""
 
-    def test_with_table(self):
-        ctx, reg = _ctx("[表] t")
-        assert h.handle_db_schema(ctx, _pc("db_schema", "t")) is True
-        reg.execute.assert_called_once_with("database_get_schema", {"table": "t"})
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from database_tools import session
 
-    def test_hint_result_printed_yellow(self):
-        ctx, reg = _ctx("[提示] 数据库中没有表")
-        assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
-        assert ctx.console.print.call_args.kwargs.get("style") == "yellow"
+        session.clear_current()
+        yield
+        session.clear_current()
 
-    def test_error_result(self):
-        ctx, reg = _ctx("[错误] x")
-        assert h.handle_db_schema(ctx, _pc("db_schema", "nope")) is False
+    def _connect(self, tmp_path):
+        from database_tools import session
 
-    def test_exception_recorded(self):
+        session.set_current("sqlite", str(tmp_path / "s.db"))
+
+    def test_not_connected_hint(self):
         ctx, reg = _ctx()
-        reg.execute.side_effect = RuntimeError("boom")
+        assert h.handle_db_schema(ctx, _pc("db_schema", "")) is False
+        assert ctx.console.print.call_args.kwargs.get("style") == "dim"
+        reg.execute.assert_not_called()
+
+    def test_no_arg_lists_all_tables(self, tmp_path):
+        self._connect(tmp_path)
+        from database_tools import results
+        results.execute_structured(results.current_executor(), "CREATE TABLE t(id INTEGER)")
+        ctx, reg = _ctx()
         assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
+        printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list)
+        assert "- t" in printed
+        ctx.record_command.assert_called_once_with("db_schema", "(all)")
+        reg.execute.assert_not_called()
+
+    def test_empty_db_hint(self, tmp_path):
+        self._connect(tmp_path)
+        ctx, reg = _ctx()
+        assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
+        assert "没有表" in str(ctx.console.print.call_args.args[0])
+        assert ctx.console.print.call_args.kwargs.get("style") == "dim"
+
+    def test_with_table_plain(self, tmp_path):
+        self._connect(tmp_path)
+        from database_tools import results
+        results.execute_structured(results.current_executor(), "CREATE TABLE t(id INTEGER PRIMARY KEY, n TEXT NOT NULL)")
+        ctx, reg = _ctx()
+        assert h.handle_db_schema(ctx, _pc("db_schema", "t")) is True
+        printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list)
+        assert "id  INTEGER  PK" in printed and "NOT NULL" in printed
+        ctx.record_command.assert_called_once_with("db_schema", "t")
+
+    def test_unknown_table_error(self, tmp_path):
+        self._connect(tmp_path)
+        ctx, reg = _ctx()
+        assert h.handle_db_schema(ctx, _pc("db_schema", "nope")) is False
+        assert "不存在" in str(ctx.console.print.call_args.args[0])
+        assert ctx.record_command.call_args.args[2] == "failed"
+
+    def test_exception_recorded(self, monkeypatch):
+        ctx, reg = _ctx()
+        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
+        assert ctx.record_command.call_args.args[2] == "failed"
+
+
+class TestDbQuery:
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from database_tools import session
+
+        session.clear_current()
+        yield
+        session.clear_current()
+
+    def test_empty_sql_usage(self):
+        ctx, reg = _ctx()
+        assert h.handle_db_query(ctx, _pc("db_query", "")) is False
+
+    def test_not_connected_hint(self):
+        ctx, reg = _ctx()
+        assert h.handle_db_query(ctx, _pc("db_query", "select 1")) is False
+        assert ctx.console.print.call_args.kwargs.get("style") == "dim"
+        reg.execute.assert_not_called()
+
+    def test_error_recorded(self, tmp_path):
+        from database_tools import session
+
+        session.set_current("sqlite", str(tmp_path / "q.db"))
+        ctx, reg = _ctx()
+        assert h.handle_db_query(ctx, _pc("db_query", "SELECT * FROM nope")) is False
+        assert "no such table" in str(ctx.console.print.call_args.args[0])
+        assert ctx.record_command.call_args.args[2] == "failed"
+        assert h.handle_db_query(ctx, _pc("db_query", "DELETE FROM x")) is False  # 写语句拒绝
+
+    def test_exception_recorded(self, monkeypatch):
+        ctx, reg = _ctx()
+        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert h.handle_db_query(ctx, _pc("db_query", "select 1")) is True
         assert ctx.record_command.call_args.args[2] == "failed"
 
 
@@ -146,9 +219,9 @@ class TestRealRegistryIntegration:
         assert h.handle_db_execute(ctx, _pc("db_execute", "INSERT INTO t VALUES (1, 'Bob')")) is True
         assert h.handle_db_query(ctx, _pc("db_query", "SELECT name FROM t")) is True
         printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list)
-        assert "Bob" in printed and "返回 1 行" in printed
+        assert "Bob" in printed and "共 1 行" in printed
         assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
-        printed = str(ctx.console.print.call_args.args[0])
+        printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list)
         assert "- t" in printed
 
 
