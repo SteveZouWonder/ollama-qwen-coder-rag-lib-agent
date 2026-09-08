@@ -760,6 +760,7 @@ def print_rag_sources(sources: list):
         table.add_column("#", style="bold", justify="right", no_wrap=True)
         table.add_column("文件", style="cyan", no_wrap=True)
         table.add_column("相似度", style="green", justify="right")
+        table.add_column("引用", justify="right", no_wrap=True)
         table.add_column("内容片段", style="white")
 
         for i, src in enumerate(sources, 1):
@@ -776,7 +777,10 @@ def print_rag_sources(sources: list):
             loc = _source_code_location(src)
             if loc:
                 file_cell += f"\n[dim]{escape(loc)}[/dim]"
-            table.add_row(ref, file_cell, score, content)
+            # P0-3：被引用次数（未引用显示 —）
+            cited = src.get("cited")
+            cited_cell = str(cited) if isinstance(cited, int) and cited > 0 else "[dim]—[/dim]"
+            table.add_row(ref, file_cell, score, cited_cell, content)
         console.print(table)
     else:
         print("=== 参考来源 ===")
@@ -1151,7 +1155,7 @@ def record_command_execution(cmd_type: str, args: str = "", result: str = "", er
         
         # 更新RAG状态（可能变化）
         if rag_engine:
-            rag_available = rag_engine.query_engine is not None
+            rag_available = rag_engine.retriever is not None
             rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
             command_recommender.update_rag_status(rag_available, rag_empty)
             logger.debug(f"RAG状态已更新: available={rag_available}, empty={rag_empty}")
@@ -1243,6 +1247,9 @@ def _cli_ask_progress(event: dict):
         "web_search_failed": "yellow",
         "enrich_start": "dim",
         "enrich_page_failed": "dim",
+        "enrich_page_blocked": "cyan",   # F9 P1-3：丢弃疑似注入页面
+        "premise_unverified": "yellow",  # F9 P2-2：前提实体未在资料中出现
+        "self_check": "dim",             # F9 P2-1：LLM 自校验
         "enrich_done": "green",
         "kb_empty": "yellow",
         "kb_fallback_search": "cyan",
@@ -1355,6 +1362,38 @@ def _render_answer(answer: str):
         console.print(Panel(Markdown(answer), border_style="green"))
     else:
         print(answer)
+
+
+def _print_notices(notices, position: str = "before") -> None:
+    """渲染 ``answer_question`` 的结构化提示（F9 P0-5）。
+
+    warn → 黄色 ``⚠️ text``，info → dim ``💡 text``；``fallback`` 不在此打印（沿用
+    ``_run_ask`` 末尾的黄色 ``/agent`` 提示行）。``position`` 选择答案 Panel 之前/之后的那组。
+    """
+    from rich.markup import escape as _escape
+    for n in notices or []:
+        if not isinstance(n, dict) or n.get("code") == "fallback":
+            continue
+        if (n.get("position") or "before") != position:
+            continue
+        text = _escape(str(n.get("text") or ""))
+        if not text:
+            continue
+        if n.get("level") == "warn":
+            console.print(f"⚠️ {text}", style="yellow")
+        else:
+            console.print(f"💡 {text}", style="dim")
+
+
+def _citation_summary(citation_check) -> str:
+    """来源摘要行的引用计数文案 ``🔎 引用 {valid}/{total} 有效``；无引用返回空串。"""
+    if not isinstance(citation_check, dict):
+        return ""
+    total = int(citation_check.get("total_refs") or 0)
+    if total <= 0:
+        return ""
+    valid = int(citation_check.get("valid") or 0)
+    return f"🔎 引用 {valid}/{total} 有效"
 
 
 def handle_clear(ctx, parsed):
@@ -1497,7 +1536,7 @@ def handle_cd(ctx, parsed):
 def handle_model(ctx, parsed):
     """``/model`` 显示当前模型；``/model list`` 列出可选；``/model <name>`` 热切换。
 
-    切换会同步 RAG 引擎（重建 LLM 与 query_engine）、ReAct 引擎（模型名 +
+    切换会同步 RAG 引擎（重建 LLM 与检索器）、ReAct 引擎（模型名 +
     num_ctx）与全局 config（多 Agent 等跟随），并立即释放旧模型避免双驻留。
     """
     import model_switcher
@@ -1674,8 +1713,14 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
 
     console.print("\n🤖 回答:", style="bold blue")
     if result.get("rewritten"):
-        console.print(f"[cyan]🔗 已理解为：{result['rewritten']}[/cyan]")
+        # F9 P1-2：质疑类追问复用同一通道，文案改为「重新核对」
+        label = "🔁 用户质疑，重新核对" if result.get("challenge") else "🔗 已理解为"
+        console.print(f"[cyan]{label}：{result['rewritten']}[/cyan]")
+    # F9 P0-5：警示 / 校验等结构化提示与正文分离——before 组在 Panel 上方，after 组在下方
+    notices = result.get("notices") or []
+    _print_notices(notices, position="before")
     _render_answer(result["answer"])
+    _print_notices(notices, position="after")
 
     last_rag_sources = result.get("kb_sources", [])
     last_web_sources = result.get("web_sources", [])
@@ -1683,10 +1728,19 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
     ctx.last_web_sources = last_web_sources
 
     # 确定性双区块来源展示：明确区分知识库来源与网络来源
+    check = result.get("citation_check")
+    cite = _citation_summary(check)
+    cite_style = "yellow" if (isinstance(check, dict) and check.get("invalid")) else "dim"
     if last_rag_sources:
         n_code = count_code_sources(last_rag_sources)
         suffix = f"（{n_code} 个代码符号）" if n_code else ""
-        console.print(f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}", style="dim")
+        # P0-3：同一行追加引用计数；有无效引用时整行黄色
+        console.print(
+            f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}" + (f" · {cite}" if cite else ""),
+            style=cite_style,
+        )
+    elif cite:
+        console.print(f"\n{cite}", style=cite_style)
     if last_web_sources:
         console.print()
         print_web_sources(last_web_sources)
@@ -1699,8 +1753,9 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
         console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
 
     record_command_execution(cmd_name, original_question)
+    # 会话记录：正文 + warn 级 notice 各一行（后续轮次据此知道上一答是否有依据）
     record_conversation(
-        original_question, result.get("answer", ""),
+        original_question, rag_pipeline.answer_with_notices(result.get("answer", ""), notices),
         rewritten=result.get("rewritten"), progress=_cli_ask_progress,
     )
     _print_health_hint(pre_health, original_question)
@@ -1803,13 +1858,13 @@ def handle_natural(ctx, parsed):
     """
     text = parsed.arg
     engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else rag_engine
-    kb_available = bool(engine is not None and getattr(engine, "query_engine", None) is not None)
+    kb_available = bool(engine is not None and getattr(engine, "retriever", None) is not None)
 
     # F8 P3-2：自动路由——先判定意图，再决定走知识库问答还是 Agent
     if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
         return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
 
-    if rag_engine is not None and rag_engine.query_engine is None:
+    if rag_engine is not None and rag_engine.retriever is None:
         console.print(
             "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
             "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
@@ -2008,7 +2063,7 @@ def main():
             logger.info("CommandRecommender 初始化完成")
             
             # 更新RAG引擎状态到推荐系统
-            rag_available = rag_engine.query_engine is not None
+            rag_available = rag_engine.retriever is not None
             rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
             command_recommender.update_rag_status(rag_available, rag_empty)
             
@@ -2051,18 +2106,20 @@ def main():
 
     # ==================== 单次模式 ====================
     if args.query:
-        if rag_engine.query_engine is None:
+        if rag_engine.retriever is None:
             console.print("❌ 知识库未初始化，请使用 --data 指定数据", style="red")
             sys.exit(1)
         console.print(f"🔍 问题: {args.query}\n", style="bold")
+        # F9 P0-1：与 /ask 同一条忠实性管道（只用知识库、不联网、不记录会话）
         with console.status("[bold green]检索知识库..."):
-            result = rag_engine.query_with_sources(args.query)
+            result = rag_pipeline.answer_question(
+                rag_engine, args.query, enable_web_search=False, show_progress=False, kb_only=True,
+            )
         console.print("🤖 回答:", style="bold blue")
-        if HAS_RICH:
-            console.print(Panel(Markdown(result["answer"]), border_style="green"))
-        else:
-            print(result["answer"])
-        last_rag_sources = result["sources"]
+        _print_notices(result.get("notices"), position="before")
+        _render_answer(result.get("answer", ""))
+        _print_notices(result.get("notices"), position="after")
+        last_rag_sources = result.get("kb_sources", [])
         if last_rag_sources:
             print_rag_sources(last_rag_sources)
         return
@@ -2087,7 +2144,7 @@ def main():
         return
 
     if args.build_only:
-        if rag_engine.query_engine is not None:
+        if rag_engine.retriever is not None:
             stats = rag_engine.get_stats()
             console.print(f"\n✅ 索引构建完成！", style="bold green")
             print_knowledge_stats()

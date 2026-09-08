@@ -150,3 +150,29 @@ class TestKbToolResultP2Compat:
         from agent_tools import format_kb_tool_result, KB_NO_RELEVANT_MARK
         out = format_kb_tool_result({"kind": "fallback", "answer": "x 建议：/agent q", "kb_sources": []})
         assert out.startswith(KB_NO_RELEVANT_MARK)
+
+
+class TestKbToolResultF9:
+    """F9 P0-5 / P0-3：warn 级 notice 以 [注意] 行附在答案前；无效引用附提醒行。"""
+
+    def test_warn_notice_and_invalid_citation_lines(self):
+        from agent_tools import format_kb_tool_result
+        result = _hit_result(n=1, answer="甲[1]。乙[?]。")
+        result["notices"] = [
+            {"level": "warn", "code": "premise", "text": "资料中未出现「X」，已先核对前提", "position": "before"},
+            {"level": "info", "code": "citation", "text": "info 不显示", "position": "after"},
+        ]
+        result["citation_check"] = {"invalid": ["7"], "total_refs": 2, "valid": 1}
+        out = format_kb_tool_result(result)
+        lines = out.splitlines()
+        assert "[注意] 资料中未出现「X」，已先核对前提" in lines
+        assert "（注意：回答中 [?] 为无效引用）" in lines
+        assert "info 不显示" not in out
+        assert lines.index("[注意] 资料中未出现「X」，已先核对前提") < lines.index("答案：")
+
+    def test_no_notices_no_extra_lines(self):
+        from agent_tools import format_kb_tool_result
+        out = format_kb_tool_result(_hit_result(n=1))
+        assert "[注意]" not in out and "无效引用" not in out
+        out2 = format_kb_tool_result({**_hit_result(n=1), "citation_check": {"invalid": []}, "notices": []})
+        assert "无效引用" not in out2

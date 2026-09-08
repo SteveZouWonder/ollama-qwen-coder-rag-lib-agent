@@ -469,7 +469,7 @@ def _rag_answer(msg="答案", **data):
 
 
 class TestChatStream:
-    """``on_chat_stream`` yield 七元组 (history, status, process, sources, hint, confirm, retry)。
+    """``on_chat_stream`` yield 八元组 (history, status, process, sources, hint, confirm, retry, sources_open)。
 
     ``history`` 为 Chatbot（messages 格式）的完整多轮列表：既有会话历史 + 本轮
     用户消息，完成后追加助手回答。
@@ -478,8 +478,9 @@ class TestChatStream:
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 7, f"应为七元组: {item!r}"
+            assert len(item) == 8, f"应为八元组: {item!r}"
             assert isinstance(item[0], list)
+            assert isinstance(item[7], dict) and item[7].get("__type__") == "update"
         return out
 
     @staticmethod
@@ -516,7 +517,7 @@ class TestChatStream:
         assert "已用时" in out[0][1]
         assert [m["content"] for m in out[0][0]] == ["旧问", "旧答", "问题"]
         # 最终一条：追加助手回答 + 完成状态 + 已完成的处理过程
-        history, status, process, _, hint, _, _ = out[-1]
+        history, status, process, _, hint, _, _, _ = out[-1]
         assert self._last_assistant(history) == "答案"
         assert len(history) == 4
         assert status.startswith("✅ 完成")
@@ -565,8 +566,8 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索", True, False))
-        assert any("网络搜索中" in process for _, _, process, _, _, _, _ in out)
-        history, _, _, sources, _, _, _ = out[-1]
+        assert any("网络搜索中" in process for _, _, process, _, _, _, _, _ in out)
+        history, _, _, sources, _, _, _, _ = out[-1]
         assert self._last_assistant(history) == "最终"
         assert "f.md" in sources and "http://x" in sources
 
@@ -584,7 +585,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("它多少钱", "RAG 检索"))
-        history, status, process, _, hint, _, _ = out[-1]
+        history, status, process, _, hint, _, _, _ = out[-1]
         content = self._last_assistant(history)
         assert content.startswith("> 🔗 已理解为：DJI OSMO 360 多少钱")
         assert content.endswith("2999 元")
@@ -638,7 +639,7 @@ class TestChatStream:
         svc.rag_query_stream.return_value = iter([StreamEvent("error", "检索炸了")])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, _, _, _, _, _ = out[-1]
+        history, status, _, _, _, _, _, _ = out[-1]
         assert "检索炸了" in self._last_assistant(history)
         assert status.startswith("❌")
 
@@ -650,7 +651,7 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("q", "RAG 检索"))
-        history, status, process, _, _, _, _ = out[-1]
+        history, status, process, _, _, _, _, _ = out[-1]
         assert "已停止" in status
         assert "规划搜索" in process
         # 未产出回答：历史只到用户消息
@@ -673,11 +674,11 @@ class TestChatStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("做事", "单 Agent", True, True, "sid2"))
-        assert any("第一步" in process for _, _, process, _, _, _, _ in out)
+        assert any("第一步" in process for _, _, process, _, _, _, _, _ in out)
         # 心跳出现在状态行，但不进入执行过程列表
-        assert any("模型推理中" in status for _, status, _, _, _, _, _ in out)
-        assert not any("模型推理中" in process for _, _, process, _, _, _, _ in out)
-        history, status, process, _, _, _, _ = out[-1]
+        assert any("模型推理中" in status for _, status, _, _, _, _, _, _ in out)
+        assert not any("模型推理中" in process for _, _, process, _, _, _, _, _ in out)
+        history, status, process, _, _, _, _, _ = out[-1]
         assert self._last_assistant(history) == "完成"
         assert "执行过程" in process
         assert "上下文 10 / 100" in status
@@ -707,9 +708,9 @@ class TestChatStream:
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("任务", "多 Agent 协作"))
         # 中间能看到分解/执行阶段
-        assert any("分解任务" in process for _, _, process, _, _, _, _ in out)
-        assert any("执行子任务" in process for _, _, process, _, _, _, _ in out)
-        history, status, process, _, _, _, _ = out[-1]
+        assert any("分解任务" in process for _, _, process, _, _, _, _, _ in out)
+        assert any("执行子任务" in process for _, _, process, _, _, _, _, _ in out)
+        history, status, process, _, _, _, _, _ = out[-1]
         content = self._last_assistant(history)
         assert "协作完成" in content and "已理解为：帮我总结 X" in content
         assert status.startswith("✅")
@@ -1109,6 +1110,9 @@ class TestNewFormatters:
         assert "读取配置失败" in app.format_env_info({"error": "x"})
         out = app.format_env_info({"ollama_url": "http://h", "think": True, "cwd": "/w", "app_version": "1.0"})
         assert "http://h" in out and "| 思考模式 | 开 |" in out and "/w" in out and "1.0" in out
+        # F9 P2-1：自校验开关一行
+        assert "| 自校验（RAG_SELF_CHECK） | 关闭 |" in out
+        assert "| 自校验（RAG_SELF_CHECK） | 开启 |" in app.format_env_info({"self_check": True})
 
     def test_format_stats_cards(self):
         assert "获取统计失败" in app.format_stats_cards({"error": "x"})
@@ -1358,16 +1362,21 @@ class TestNumberedSourcesAndFallback:
 
     def test_fallback_answer_yields_retry_hint(self):
         svc = make_service_mock()
+        # F9 P0-5：answer 只含正文，⚠️ 声明与 /agent 建议都在 notices 中
         svc.rag_query_stream.return_value = iter([
-            _rag_answer("⚠️ 知识库中无相关内容…\n\n建议：/agent 冷门问题 让 Agent 用工具进一步查找",
-                        kind="fallback", fallback_question="冷门问题"),
+            _rag_answer("模型自答", kind="fallback", fallback_question="冷门问题", notices=[
+                {"level": "warn", "code": "no_evidence", "text": "无资料依据 · 模型自身知识 · 请自行核实", "position": "before"},
+                {"level": "info", "code": "fallback", "text": "建议：/agent 冷门问题 让 Agent 用工具进一步查找", "position": "after"},
+            ]),
         ])
         h = build_handlers(svc)
         out = list(h["on_chat_stream"]("冷门问题", "RAG 检索"))
-        assert all(len(o) == 7 for o in out)
-        history, status, _, _, _, _, retry = out[-1]
+        assert all(len(o) == 8 for o in out)
+        history, status, _, _, _, _, retry, _ = out[-1]
         assert "完成" in status
         assert "/agent 冷门问题" in retry and "用工具进一步查找" in retry
+        # 气泡：warn 走 blockquote，fallback 建议不入气泡
+        assert history[-1]["content"] == "> ⚠️ 无资料依据 · 模型自身知识 · 请自行核实\n\n模型自答"
         # 过程中的帧不显示重试提示
         assert all(o[6] == "" for o in out[:-1])
 
@@ -1387,7 +1396,7 @@ class TestNumberedSourcesAndFallback:
         ])
         h = build_handlers(svc)
         out = list(h["on_chat_stream"]("q", "RAG 检索"))
-        _, _, process, sources, _, _, _ = out[-1]
+        _, _, process, sources, _, _, _, _ = out[-1]
         assert "模型思考" in process and "逐片段校验" in process
         assert "**[1] a.md**" in sources
 
@@ -1404,7 +1413,7 @@ class TestAutoModeStream:
     def _collect(self, gen):
         out = list(gen)
         for item in out:
-            assert len(item) == 7, f"应为七元组: {item!r}"
+            assert len(item) == 8, f"应为八元组: {item!r}"
         return out
 
     def test_mode_auto_constant(self):
@@ -1422,7 +1431,7 @@ class TestAutoModeStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("什么是 RAG？", "自动", True, False, "sid1"))
-        history, status, process, sources, _, confirm, retry = out[-1]
+        history, status, process, sources, _, confirm, retry, _ = out[-1]
         assert history[-1]["content"] == "答[1]"
         assert status.startswith("✅ 完成") and "实际模式：RAG 检索" in status
         assert "自动路由：按 RAG 处理" in process and "检索知识库" in process
@@ -1447,7 +1456,7 @@ class TestAutoModeStream:
         ])
         h = build_handlers(svc)
         out = self._collect(h["on_chat_stream"]("修改 main.py 加日志", "自动", True, True, "sid1"))
-        history, status, process, sources, _, _, retry = out[-1]
+        history, status, process, sources, _, _, retry, _ = out[-1]
         assert history[-1]["content"] == "已加日志"
         assert "实际模式：单 Agent" in status
         assert "自动路由：按 Agent 处理" in process and "执行摘要" in process
@@ -1652,8 +1661,196 @@ class TestCodeAwareRendering:
         assert "未获得结果" in list(h["on_add_path_stream"]("/d"))[-1][0]
 
 
-# ==================== F9 P1：工具页（Git 仪表盘 / 数据库表格 / 结果流转）====================
+# ==================== F9 P0：notices / 引用校验 / 八元组 ====================
 
+class TestF9Notices:
+    def test_format_notices_before_after_and_fallback_excluded(self):
+        from web.app import format_notices
+        notices = [
+            {"level": "warn", "code": "web_only", "text": "知识库无相关内容", "position": "before"},
+            {"level": "info", "code": "citation", "text": "1 句含数字但未标来源", "position": "after"},
+            {"level": "info", "code": "fallback", "text": "建议：/agent q", "position": "after"},
+            {"level": "warn", "code": "no_evidence", "text": "无资料依据", "position": "before"},
+        ]
+        before = format_notices(notices, "before")
+        assert before == "> ⚠️ 知识库无相关内容\n> ⚠️ 无资料依据\n\n"
+        after = format_notices(notices, "after")
+        assert after == "\n\n> 💡 1 句含数字但未标来源"
+        assert "/agent" not in before + after
+        assert format_notices([], "before") == "" and format_notices(None, "after") == ""
+        assert format_notices([{"level": "warn", "code": "x", "text": "", "position": "before"}]) == ""
+
+    def test_format_citation_status(self):
+        from web.app import format_citation_status
+        assert format_citation_status(None) == ""
+        assert format_citation_status({"total_refs": 0}) == ""
+        assert format_citation_status({"total_refs": 3, "valid": 3}) == "🔎 引用 3 处已核验"
+        assert format_citation_status({"total_refs": 3, "valid": 2, "invalid": ["5"]}) == "🔎 引用 2/3 有效"
+
+    def test_format_sources_cited_and_invalid_header(self):
+        from web.app import format_sources
+        out = format_sources(
+            [{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "cited": 2},
+             {"file": "b.md", "score": 0.4, "content": "乙", "ref": "2", "cited": 0},
+             {"file": "c.md", "score": 0.3, "content": "丙", "ref": "3"}],
+            citation_check={"invalid": ["5", "W3"]},
+        )
+        lines = out.splitlines()
+        assert lines[2] == "⚠️ 无效引用：[5] [W3]（回答中已标为 [?]）"
+        assert "**[1] a.md**" in out and "（被引用 2 次）" in out
+        assert "**[2] b.md**" in out and "（未被引用）" in out
+        # 无 cited 字段（旧数据）不显示计数
+        c_line = next(l for l in lines if "[3] c.md" in l)
+        assert "引用" not in c_line
+        # 无无效编号时不出现首行提示
+        assert "无效引用" not in format_sources([{"file": "a.md", "content": "x", "cited": 1}], citation_check={"invalid": []})
+
+    def test_format_rag_side_web_only_invalid_header(self):
+        from web.app import format_rag_side
+        out = format_rag_side({"sources": [], "web_sources": [{"title": "T", "url": "http://x", "ref": "W1"}],
+                               "citation_check": {"invalid": ["W4"]}})
+        assert out.startswith("⚠️ 无效引用：[W4]") and "[W1]" in out
+
+    def test_component_update_shape(self):
+        from web.app import component_update, _noop
+        assert _noop() == {"__type__": "update"}
+        assert component_update(open=True) == {"open": True, "__type__": "update"}
+
+    def _run(self, answer_evt, mode="RAG 检索"):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            StreamEvent("progress", "检索知识库...", {"stage": "kb_retrieving"}),
+            answer_evt,
+        ])
+        h = build_handlers(svc)
+        return list(h["on_chat_stream"]("q", mode))
+
+    def test_eight_tuple_and_accordion_opens_on_invalid(self):
+        out = self._run(_rag_answer(
+            "甲[1]。乙[?]。",
+            sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "cited": 1}],
+            citation_check={"total_refs": 2, "valid": 1, "invalid": ["7"], "invalid_count": 1, "unsupported_numeric": 0},
+            notices=[{"level": "info", "code": "citation", "text": "回答中 [?] 为无效引用，请以来源面板为准", "position": "after"}],
+        ))
+        assert all(len(o) == 8 for o in out)
+        # 中间帧一律空 update
+        assert all(o[7] == {"__type__": "update"} for o in out[:-1])
+        history, status, _, sources, _, _, retry, sources_open = out[-1]
+        assert sources_open == {"open": True, "__type__": "update"}
+        assert "🔎 引用 1/2 有效" in status
+        assert history[-1]["content"] == "甲[1]。乙[?]。\n\n> 💡 回答中 [?] 为无效引用，请以来源面板为准"
+        assert "⚠️ 无效引用：[7]" in sources and "（被引用 1 次）" in sources
+        assert retry == ""
+
+    def test_all_valid_keeps_accordion_state_and_verified_status(self):
+        out = self._run(_rag_answer(
+            "甲[1]",
+            sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "cited": 1}],
+            citation_check={"total_refs": 1, "valid": 1, "invalid": [], "invalid_count": 0, "unsupported_numeric": 0},
+            notices=[],
+        ))
+        history, status, _, _, _, _, _, sources_open = out[-1]
+        assert sources_open == {"__type__": "update"}
+        assert "🔎 引用 1 处已核验" in status
+        assert history[-1]["content"] == "甲[1]"
+
+    def test_before_notices_render_as_blockquote_with_rewritten(self):
+        out = self._run(_rag_answer(
+            "网络答", rewritten="DJI 多少钱",
+            notices=[{"level": "warn", "code": "web_only", "text": "知识库无相关内容 · 回答基于网络搜索", "position": "before"}],
+        ))
+        content = out[-1][0][-1]["content"]
+        assert content == "> 🔗 已理解为：DJI 多少钱\n\n> ⚠️ 知识库无相关内容 · 回答基于网络搜索\n\n网络答"
+
+    def test_fallback_notice_not_in_bubble_but_retry_row(self):
+        out = self._run(_rag_answer(
+            "自答", kind="fallback", fallback_question="冷门",
+            notices=[{"level": "warn", "code": "no_evidence", "text": "无资料依据 · 模型自身知识 · 请自行核实", "position": "before"},
+                     {"level": "info", "code": "fallback", "text": "建议：/agent 冷门 让 Agent 用工具进一步查找", "position": "after"}],
+        ))
+        history, _, _, _, _, _, retry, sources_open = out[-1]
+        assert history[-1]["content"] == "> ⚠️ 无资料依据 · 模型自身知识 · 请自行核实\n\n自答"
+        assert "/agent 冷门" in retry and sources_open == {"__type__": "update"}
+
+
+class TestF9MultiAgentNotices:
+    def test_format_notices_md(self):
+        from collaboration.presenter import format_notices_md
+        out = format_notices_md([
+            {"level": "warn", "code": "web_only", "text": "知识库无相关内容"},
+            {"level": "info", "code": "citation", "text": "1 句含数字但未标来源"},
+            {"level": "info", "code": "fallback", "text": "建议：/agent q"},
+        ])
+        assert out == "> ⚠️ 知识库无相关内容\n> 💡 1 句含数字但未标来源"
+        assert format_notices_md([]) == ""
+
+    def test_multi_agent_result_renders_notices_before_sources(self):
+        out = format_multi_agent_result({
+            "success": True, "summary": "完成", "answer": "答", "results": [],
+            "notices": [{"level": "warn", "code": "no_evidence", "text": "无资料依据"}],
+            "sources": [{"kind": "kb", "file": "a.md"}],
+        })
+        assert "> ⚠️ 无资料依据" in out
+        assert out.index("> ⚠️ 无资料依据") < out.index("**📚 来源**")
+
+    def test_result_integrator_merges_notices(self):
+        from collaboration.result_integrator import ResultIntegrator
+        from agents.agent_types import AgentResult
+        r1 = AgentResult(task_id="1", agent_id="rag", success=True, output="a", execution_time=0,
+                         metadata={"notices": [{"level": "warn", "code": "web_only", "text": "x"}]})
+        r2 = AgentResult(task_id="2", agent_id="rag2", success=True, output="b", execution_time=0,
+                         metadata={"notices": [{"level": "warn", "code": "web_only", "text": "x"},
+                                               {"level": "info", "code": "citation", "text": "y"}, "bad"]})
+        r3 = AgentResult(task_id="3", agent_id="code", success=True, output="c", execution_time=0, metadata={})
+        merged = ResultIntegrator.merge_notices([r1, r2, r3])
+        assert [(n["code"], n["text"]) for n in merged] == [("web_only", "x"), ("citation", "y")]
+        integ = ResultIntegrator(use_llm=False)
+        out = integ.integrate([r1])
+        assert out["notices"] == [{"level": "warn", "code": "web_only", "text": "x"}]
+
+
+class TestF9ChallengeLabel:
+    def test_challenge_prefix_label(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([
+            _rag_answer("仍为 2999 元[1]", rewritten="重新核对：DJI 售价（用户认为：3999）", challenge=True),
+        ])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("不对", "RAG 检索"))
+        content = out[-1][0][-1]["content"]
+        assert content.startswith("> 🔁 用户质疑，重新核对：重新核对：DJI 售价（用户认为：3999）\n\n")
+        assert "已理解为" not in content
+
+    def test_non_challenge_keeps_understood_label(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer("答", rewritten="DJI 多少钱", challenge=False)])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("它多少钱", "RAG 检索"))
+        assert out[-1][0][-1]["content"].startswith("> 🔗 已理解为：DJI 多少钱")
+
+
+class TestF9P2Rendering:
+    def test_self_check_notice_rendered_after_body_and_premise_before(self):
+        svc = make_service_mock()
+        svc.rag_query_stream.return_value = iter([_rag_answer(
+            "售价 2999 元起[1]。重量 300g。",
+            sources=[{"file": "a.md", "score": 0.5, "content": "甲", "ref": "1", "cited": 1}],
+            citation_check={"total_refs": 1, "valid": 1, "invalid": [], "invalid_count": 0, "unsupported_numeric": 1},
+            notices=[
+                {"level": "warn", "code": "premise", "text": "资料中未出现「Pro Max」，已先核对前提", "position": "before"},
+                {"level": "warn", "code": "self_check", "text": "以下陈述未在资料中找到依据：① 重量 300g。", "position": "after"},
+                {"level": "info", "code": "citation", "text": "1 句含数字但未标来源", "position": "after"},
+            ],
+        )])
+        h = build_handlers(svc)
+        out = list(h["on_chat_stream"]("q", "RAG 检索"))
+        content = out[-1][0][-1]["content"]
+        assert content == (
+            "> ⚠️ 资料中未出现「Pro Max」，已先核对前提\n\n"
+            "售价 2999 元起[1]。重量 300g。"
+            "\n\n> ⚠️ 以下陈述未在资料中找到依据：① 重量 300g。\n> 💡 1 句含数字但未标来源"
+        )
+        assert out[-1][7] == {"__type__": "update"}  # 无无效引用 → 不改折叠状态
 class TestGitFormatters:
     OV = {
         "is_repo": True, "branch": "main", "last_commit_at": "2026-09-07 10:20:30 +0800",

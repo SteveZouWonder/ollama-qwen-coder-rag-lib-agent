@@ -167,6 +167,12 @@ RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 RAG_HYBRID = os.getenv("RAG_HYBRID", "true").strip().lower() in ("1", "true", "yes", "on")
 RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "20000"))
 
+# ==================== 抗过度顺从（F9 P2）====================
+# RAG_SELF_CHECK：知识库命中并综合完成后，再用同一模型逐句核对"回答中的事实句是否被资料支持"
+#   （一次额外 LLM 调用，think=False，num_predict≤400）；有未支持的陈述时以 self_check 警示列出，
+#   不改答案正文。默认关闭（每问多一次调用）；解析失败 / 超时静默跳过。
+RAG_SELF_CHECK = os.getenv("RAG_SELF_CHECK", "false").strip().lower() in ("1", "true", "yes", "on")
+
 # ==================== 代码感知分块（F8 P4）====================
 # CODE_AWARE_CHUNKING：代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）入库时按函数/类边界
 #   切分（tree-sitter），片段带 symbol / 行号元数据，引用可定位到 `文件 · 符号 · L起-止`。

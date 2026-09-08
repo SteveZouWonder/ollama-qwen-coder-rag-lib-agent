@@ -441,6 +441,21 @@ class TestPrintSourcesNumbered:
         assert "[1]" in cells and "[2]" in cells
         assert any("含售价" in c for c in cells) and any("关键词" in c for c in cells)
 
+    @patch("query_interface.HAS_RICH", True)
+    @patch("query_interface.console")
+    def test_rag_sources_rich_has_cited_column(self, mock_console):
+        """F9 P0-3：/sources 表新增「引用」列（次数，未引用显示 —）。"""
+        print_rag_sources([
+            {"file": "a.pdf", "score": 0.5, "content": "x", "ref": "1", "cited": 2},
+            {"file": "b.md", "score": 0.4, "content": "y", "ref": "2", "cited": 0},
+            {"file": "c.md", "score": 0.3, "content": "z", "ref": "3"},
+        ])
+        table = mock_console.print.call_args.args[0]
+        headers = [str(col.header) for col in table.columns]
+        assert headers == ["#", "文件", "相似度", "引用", "内容片段"]
+        cited_col = table.columns[3]._cells
+        assert cited_col[0] == "2" and "—" in cited_col[1] and "—" in cited_col[2]
+
     @patch("query_interface.HAS_RICH", False)
     def test_web_sources_show_w_ref(self, capsys):
         from query_interface import print_web_sources

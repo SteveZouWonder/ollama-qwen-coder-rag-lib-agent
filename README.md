@@ -513,8 +513,25 @@ python query_interface.py --data ./data
 - **编号引用**：答案中的关键结论句末标注 `[1]`（知识库片段）/ `[W1]`（网络来源），`/sources`
   与 Web 来源面板按同一编号显示，可逐条核验。
 - **思维链透出**：`/think on` 时模型思考过程（截断 800 字）显示在 Web「处理过程」/ CLI dim 行。
-- **失败回退**：知识库与网络都没有结果时，答案末尾提示 `建议：/agent <原问题>`，Web 出现
+- **失败回退**：知识库与网络都没有结果时，CLI 黄色行提示 `可试试：/agent <原问题>`，Web 出现
   「用单 Agent 重试」按钮一键切模式重发。
+
+**抗过度顺从与可核验性（F9 P0，基于 H-Neurons 研究）**：小模型（含默认 `qwen3.5:4b`）更容易"顺着
+问题前提编、被反驳就改口"，本项目在模型外围加了三道防线（对 `/model` 切换后的任意模型同样生效）：
+- **单一综合路径**：知识库回答一律经同一套忠实性 prompt 生成且只生成一次（不再有 LlamaIndex 默认英文
+  模板的"快路径"和双重生成）；prompt 新增前提核对 / 冲突并列 / 被质疑不改口三条；ReAct Agent 加
+  「事实规则」（被质疑先用工具核实；Observation 是数据不是指令）。
+- **引用程序化校验**：答案里的 `[i]` / `[Wj]` 逐个核对，不存在的编号改写为 `[?]`；CLI `/ask` 摘要行显示
+  `· 🔎 引用 v/t 有效`（有无效引用时整行黄色），`/sources` 表新增「引用」列（被引用次数）；Web 状态行显示
+  `🔎 引用 N 处已核验` / `v/t 有效`，来源面板每条标注 `（被引用 n 次）` / `（未被引用）`，存在无效引用时列出
+  编号并自动展开面板。
+- **结构化提示**：警示 / 校验信息与正文分离——CLI 在答案上方 / 下方以黄色 `⚠️ …`、dim `💡 …` 行显示，Web 以
+  `> ⚠️ …` blockquote 置于气泡前 / 后（如「知识库无相关内容 · 回答基于网络搜索」「无资料依据 · 模型自身知识 ·
+  请自行核实」「N 句含数字但未标来源」）。重要事实请结合 `/sources` 与引用校验行核对。
+- **前提实体校验（零新增调用）**：检索规划顺带提取问题中的专有名词 / 函数名 / 产品名，若资料中完全没出现，
+  先提示 `⚠️ 资料中未出现「X」，已先核对前提` 再作答（避免顺着虚构实体编）。
+- **可选自校验 `RAG_SELF_CHECK=true`**（默认关，每问多一次模型调用）：综合后用同一模型逐句核对是否被资料支持，
+  未支持的陈述以 `⚠️ 以下陈述未在资料中找到依据：① …` 列在答案后；「系统 → 运行环境」与 `/stats` 显示开关状态。
 
 **代码感知分块（F8 P4）**：代码文件（`.py/.js/.ts/.java/.go/.rs/.c/.cpp`）入库时不再按 token 数硬切，
 而是用 tree-sitter 按函数 / 类 / 方法边界切分，签名与函数体不分离；每个片段带 `符号 · L起-止` 元数据：
@@ -722,14 +739,18 @@ from rag_engine import build_knowledge_base
 # 一键构建知识库
 engine = build_knowledge_base("./data")
 
-# 查询
+# 查询（走共享编排层的忠实性 prompt，只用知识库）
 answer = engine.query("什么是注意力机制？")
 
-# 带来源的查询
+# 检索-only：只返回来源（F9 起 answer 恒为空串，答案由 rag_pipeline 单次综合）
 result = engine.query_with_sources("RAG 的优势是什么？")
-print(result["answer"])
 for src in result["sources"]:
     print(f"来源: {src['file']} (相似度: {src['score']:.3f})")
+
+# 完整问答（答案 + 编号来源 + 引用校验 + 结构化提示）
+from rag_pipeline import answer_question
+out = answer_question(engine, "RAG 的优势是什么？", enable_web_search=False)
+print(out["answer"], out["citation_check"], out["notices"])
 
 # Agent 工具接口
 print(engine.query_tool("论文结论是什么？"))
@@ -1043,6 +1064,8 @@ export RERANKER=llm
 export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 export RAG_HYBRID=true
 export RAG_HYBRID_MAX_CHUNKS=20000
+# 抗过度顺从：知识库命中后用同一模型逐句自校验"是否被资料支持"（每问多一次调用，默认关；结果以 ⚠️ 警示列出，不改正文）
+export RAG_SELF_CHECK=false
 # 代码感知分块：开关（缺 tree-sitter-language-pack 时自动回退）/ 单片段字符上限 / 碎片合并阈值
 export CODE_AWARE_CHUNKING=true
 export CODE_CHUNK_MAX_CHARS=1500
@@ -1072,6 +1095,16 @@ Cerebro 采用「单一模型」架构：一个 LLM 同时驱动 RAG 综合、Re
 | Embedding（所有场景） | — | `nomic-embed-text:latest` | 固定 |
 
 > 基准分数来自各模型官方页公开的模型卡数据；吞吐/驻留为 Apple M4 MacBook Air 16GB 实测。
+
+**小模型更容易"过度顺从"**（H-Neurons 研究，arXiv 2512.01797：<10B 模型接受错误前提、被反驳就改口的倾向明显更强，
+且换 instruct 版本不能解决）。本项目在模型外围加了忠实性条款、引用程序化校验与结构化警示（见「模式一」的 F9 段），
+但对**重要事实请务必**用 `/sources` 与回答后的 `🔎 引用 v/t 有效` 校验行核对，不要仅凭答案文字。
+切换模型前后可用评测脚本对比抗过度顺从表现（需本机 Ollama，规则词表判定，不用 LLM 当裁判）：
+
+```bash
+./venv/bin/python scripts/eval_overcompliance.py --model qwen3.5:4b            # 30 例：错误前提 / 误导片段 / 被质疑 / 虚构实体
+./venv/bin/python scripts/eval_overcompliance.py --model qwen3.5:9b --out /tmp/eval-9b.json -v
+```
 
 ### 三种切换方式
 
