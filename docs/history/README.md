@@ -16,8 +16,11 @@
 | [OCR_CONFIG_FIX_COMPLETE.md](OCR_CONFIG_FIX_COMPLETE.md) | OCR 配置六项修复：默认引擎改为 Tesseract、Homebrew 路径、`image_to_string`、缓存清理 | 2026-06 |
 | [PROGRESS_DISPLAY_IMPLEMENTATION_REPORT.md](PROGRESS_DISPLAY_IMPLEMENTATION_REPORT.md) | RAG 查询四阶段进度回调（`progress_callback`）与 5 个显示配置项 | 2026-06 |
 | [KNOWLEDGE_OPTIMIZATION_SUMMARY.md](KNOWLEDGE_OPTIMIZATION_SUMMARY.md) | 知识库 → Skills 转化、快照系统、内容安全扫描三项功能的首版实施总结（注：Skills 目标平台已由 Devin 改为 OpenCode + Claude；快照命令后续新增 `/snapshot-info|delete|prune` 与 `--apply`） | 2026-06 |
-| [SYSTEM_PROMPT_OPTIMIZATION_REPORT.md](SYSTEM_PROMPT_OPTIMIZATION_REPORT.md) | 系统提示外置到 `.devin/SYSTEM_PROMPT.md`，新增 `read_system_prompt_from_file` 与 `read_system_prompt` 工具 | 2026-06-12 |
+| [SYSTEM_PROMPT_OPTIMIZATION_REPORT.md](SYSTEM_PROMPT_OPTIMIZATION_REPORT.md) | 系统提示外置到 `.devin/SYSTEM_PROMPT.md`，新增 `read_system_prompt_from_file` 与 `read_system_prompt` 工具（该文件与工具均已被 `prompts/` + `prompt_assets.py` 取代） | 2026-06-12 |
 | [SYSTEM_PROMPT_V3_OPTIMIZATION_REPORT.md](SYSTEM_PROMPT_V3_OPTIMIZATION_REPORT.md) | 系统提示 V3：补多 Agent 说明、新工具描述、OCR 格式（F8 P1-1 将重做系统提示分层，此文为背景） | 2026-06-15 |
+| [AI_PROMPT_ENHANCEMENT_PLAN.md](AI_PROMPT_ENHANCEMENT_PLAN.md) | 为 AI 编码助手建立项目知识库（`.devin/AI_KNOWLEDGE_BASE`）的计划：提示词分层、8 个知识文件大纲、方案比较（知识库现位于 `docs/development/ai-assistant/`） | 2026-06 |
+| [AI_PROMPT_ENHANCEMENT_IMPLEMENTATION_REPORT.md](AI_PROMPT_ENHANCEMENT_IMPLEMENTATION_REPORT.md) | 上述知识库的首版实施报告（文件清单、行数统计、预期效果） | 2026-06 |
+| [MANDATORY_REQUIREMENTS_UPDATE_REPORT.md](MANDATORY_REQUIREMENTS_UPDATE_REPORT.md) | 把"依赖 / 测试 / 文档"三条强制要求写入五个提示与规范文件的更新记录（覆盖率要求当时为 95%，现行门禁 80%） | 2026-06 |
 
 ## 已清理
 

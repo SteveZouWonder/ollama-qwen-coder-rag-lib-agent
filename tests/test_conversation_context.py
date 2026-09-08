@@ -530,8 +530,13 @@ class TestClearAndNewSession:
         ctx = make_ctx(manager)
         ctx.record("q", "a")
         s = ctx.new_session(title="新")
-        assert s.title == "新" and ctx.session_id == s.session_id
+        assert s.title == "新"
+        # 跟随模式：不钉死到新会话，但当前会话即为新会话
+        assert ctx.session_id is None
+        assert ctx.session().session_id == s.session_id
         assert ctx.build_messages() == []
+        assert ctx.has_history() is False
+        assert ctx.carried_summary() == ""
 
     def test_new_session_with_carry(self, manager):
         ctx = make_ctx(manager, ratio=10, recent_turns=1)
@@ -539,20 +544,75 @@ class TestClearAndNewSession:
         ctx.record("它多少钱", "2999 元")
         ctx.compact()  # 摘要 = "LLM摘要"，live = 最近 1 轮
         carried = ctx.carry_summary_text()
-        assert carried.startswith("LLM摘要") and "2999" in carried
+        # 只携带已折叠的滚动摘要，不把 live 原文（"2999 元"）拼进去
+        assert carried == "LLM摘要"
+        assert "2999" not in carried
         s = ctx.new_session(carry_summary=True)
         built = ctx.build_messages()
         assert len(built) == 1 and built[0]["role"] == "system"
         assert "承接自上一会话" in built[0]["content"] and "LLM摘要" in built[0]["content"]
+        assert "2999" not in built[0]["content"]
         assert ctx.has_history() is True
+        assert ctx.carried_summary() == "LLM摘要"
         assert manager.get_current_session().session_id == s.session_id
 
+    def test_carry_without_compressed_summary_is_clean(self, manager):
+        """回归：上一会话从未压缩过（无滚动摘要）时，携带摘要不得把原文带入新会话。"""
+        ctx = make_ctx(manager)
+        ctx.record("OSMO 360 一代有什么特点", "DJI OSMO 360 一代主要特点……")
+        ctx.record("它多少钱", "2999 元")
+        assert ctx.carry_summary_text() == ""
+        s = ctx.new_session(carry_summary=True)
+        assert ctx.session().session_id == s.session_id
+        assert ctx.build_messages() == []
+        assert ctx.has_history() is False
+        assert ctx.carried_summary() == ""
+        assert s.metadata.get("context", {}).get("summary", "") == ""
+
     def test_carry_summary_truncated(self, manager):
-        ctx = make_ctx(manager, ratio=10, recent_turns=6)
+        ctx = make_ctx(manager, ratio=10, recent_turns=1, complete=lambda p: "摘" * 600)
         for _ in range(6):
             ctx.record("问" * 300, "答" * 300)
+        ctx.compact()
         carried = ctx.carry_summary_text()
         assert carried.endswith("…") and len(carried) <= 451
+
+    def test_follow_mode_not_pinned_after_carry(self, manager):
+        """回归：跟随模式的单例在 --carry 之后，再经管理器新建/切换会话仍应跟随当前会话。"""
+        ctx = make_ctx(manager, ratio=10, recent_turns=1)
+        ctx.record("A 问", "A 答")
+        ctx.record("A 追问", "A 再答")
+        ctx.compact()  # 折叠第 1 轮 → 摘要 "LLM摘要"
+        carried_session = ctx.new_session(carry_summary=True)
+        assert ctx.session_id is None
+        assert ctx.session().session_id == carried_session.session_id
+
+        # 之后通过管理器普通新建（等价 CLI `/session-new`）
+        plain = manager.create_session(title="plain")
+        assert ctx.session().session_id == plain.session_id
+        assert ctx.build_messages() == [] and ctx.has_history() is False
+        ctx.record("B 问", "B 答")
+        assert [m["content"] for m in ctx.all_messages()] == ["B 问", "B 答"]
+        assert carried_session_messages(manager, carried_session.session_id) == []
+
+        # 再切回携带会话（等价 CLI `/session-switch`）
+        manager.switch_session(carried_session.session_id)
+        assert ctx.session().session_id == carried_session.session_id
+        assert ctx.carried_summary() == "LLM摘要"
+
+    def test_bound_mode_rebinds_to_new_session(self, manager):
+        """绑定到具体会话的实例（Web 每次请求新建）新建后改绑到新会话。"""
+        first = manager.create_session()
+        ctx = ConversationContext(manager, session_id=first.session_id, complete=lambda p: "LLM摘要")
+        ctx.record("q", "a")
+        s = ctx.new_session()
+        assert ctx.session_id == s.session_id
+        assert ctx.all_messages() == []
+
+
+def carried_session_messages(manager, session_id):
+    s = manager.get_session(session_id)
+    return [m for m in s.messages if m.get("role") in ("user", "assistant")]
 
 
 # ==================== 旧历史迁移 ====================

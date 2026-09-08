@@ -335,8 +335,10 @@ class ReActDelegateAgent(BaseAgent):
             context=EphemeralContext(),
             on_step=self._on_engine_step,
             on_confirm=self._auto_confirm,
-            # 子角色默认只用精简内置提示（项目开发规范会诱导其去读系统提示文件等）
+            # 子角色默认只用精简内置提示 + Skills 层（项目附加规范面向单 Agent 的完整任务，
+            # 子任务不需要）；Skills 按角色名过滤（prompts/skills/*/SKILL.md 的 roles）。
             prompt_mode=self.config.get("prompt_mode", "builtin"),
+            role=str(self.agent_type),
         )
         if factory is not None:
             return factory(**kwargs)

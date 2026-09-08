@@ -30,9 +30,9 @@
 | F5.9 本地数据库工具 | sqlalchemy，SQLite/MySQL/PostgreSQL | ⚠️ SQLite 已实现 / 其余取消 | `src/database_tools/{db_connector,query_executor,sql_generator}.py`（原生 `sqlite3`）；工具 `database_*` 6 个；CLI `/db-*`。MySQL/PostgreSQL 分支 `NotImplementedError`，本地隐私助手定位下不再扩展 |
 | F5.10 时间序列分析 | statsmodels + prophet | ❌ 取消 | 与"文档 + 代码助手"定位无关，依赖极重 |
 
-## 当前注册的 Agent 工具（29 个）
+## 当前注册的 Agent 工具（28 个）
 
-- 文件/系统：`read_file` `write_file` `execute_command` `list_directory` `analyze_project_structure` `search_files` `get_current_dir` `read_system_prompt`
+- 文件/系统：`read_file` `write_file` `execute_command` `list_directory` `analyze_project_structure` `search_files` `get_current_dir`（`read_system_prompt` 已移除：项目规范由 `prompts/` 运行时注入）
 - 知识库：`query_knowledge_base` `add_to_knowledge_base` `get_knowledge_stats` `check_knowledge_status`
 - 网络：`web_search` `web_content_extract` `web_cache_status` `web_cache_clear` `clear_web_search_cache`
 - 代码分析：`ast_search` `code_quality_check`

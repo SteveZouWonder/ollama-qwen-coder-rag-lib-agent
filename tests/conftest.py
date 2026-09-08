@@ -139,12 +139,34 @@ def stub_synthesis(monkeypatch):
 
 
 @pytest.fixture(autouse=True, scope="function")
+def isolate_app_state_dir(tmp_path_factory):
+    """全局fixture：把 App 运行时状态根（.cerebro/）重定向到临时目录。
+
+    快照（RAGEngine 默认开启自动快照）、文件元数据、知识图谱的默认路径都经
+    runtime_paths.app_state_dir 解析；不隔离时用 MagicMock 文档的测试会把伪造
+    快照写进真实 .cerebro/knowledge/snapshots/。下面两个 fixture 分别再隔离
+    对应模块的进程级单例。
+    """
+    try:
+        import runtime_paths as rp
+    except ImportError:
+        yield
+        return
+    saved = getattr(rp, "_APP_STATE_ROOT_OVERRIDE", None)
+    rp.set_app_state_root(tmp_path_factory.mktemp("app_state"))
+    try:
+        yield
+    finally:
+        rp.set_app_state_root(saved)
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_file_metadata(tmp_path_factory):
     """全局fixture：将文件元数据全局单例隔离到临时目录。
 
     RAGEngine 入库时会通过 get_global_metadata_manager() 登记文件元数据；
     若不隔离，使用 MagicMock 文档的测试会把伪造路径写入真实的
-    .devin/file_metadata/metadata.json，污染用户数据。本 fixture 在每个
+    .cerebro/file_metadata/metadata.json，污染用户数据。本 fixture 在每个
     测试前后将全局单例重置为临时目录，测试间互不影响、也不触碰真实文件。
     """
     try:
@@ -166,7 +188,7 @@ def isolate_file_metadata(tmp_path_factory):
 def isolate_knowledge_graph(tmp_path_factory):
     """全局fixture：将知识图谱全局单例隔离到临时目录。
 
-    KnowledgeGraphBuilder 现在会自动持久化到 .devin/knowledge/graph.json，
+    KnowledgeGraphBuilder 会自动持久化到 .cerebro/knowledge/graph.json，
     若不隔离，测试构建/清空图谱会读写真实文件、污染用户数据，且测试间共享
     持久化状态会相互影响。本 fixture 把全局 builder/query 单例重置为临时
     路径，并在测试结束后恢复。
@@ -184,7 +206,7 @@ def isolate_knowledge_graph(tmp_path_factory):
     saved_override = getattr(gb, "_DEFAULT_PERSIST_PATH_OVERRIDE", None)
 
     # 重定向默认持久化路径：覆盖单例与“直接 KnowledgeGraphBuilder()”两类构造，
-    # 确保任何测试都写入临时目录、不触碰真实 .devin/knowledge/graph.json。
+    # 确保任何测试都写入临时目录、不触碰真实 .cerebro/knowledge/graph.json。
     gb.set_default_persist_path(str(tmp_dir / "graph.json"))
     gb._graph_builder = gb.KnowledgeGraphBuilder(
         persist_path=str(tmp_dir / "graph.json")

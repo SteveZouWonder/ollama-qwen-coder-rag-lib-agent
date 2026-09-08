@@ -51,6 +51,8 @@ def build_layout(service, handlers: Dict[str, Callable]) -> gr.Blocks:  # pragma
             )
             with gr.Row(elem_classes=["cb-session-actions"]):
                 new_session_btn = gr.Button("＋ 新建会话", size="sm", variant="primary")
+                # 默认不承接上一会话；仅在勾选时把上一会话「已折叠的滚动摘要」带入新会话，
+                # 且新建后自动复位（一次性选择）。
                 carry_cb = gr.Checkbox(value=False, label="携带摘要", container=False, scale=0, min_width=90)
             with gr.Row(elem_classes=["cb-session-actions"]):
                 archive_btn = gr.Button("归档", size="sm")

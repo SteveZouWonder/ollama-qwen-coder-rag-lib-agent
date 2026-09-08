@@ -64,9 +64,9 @@ class KnowledgeSnapshotManager:
                  cleanup_corrupted: bool = True):
         # 默认路径统一以 App 数据目录为基准，与 cwd 解耦。
         try:
-            from runtime_paths import cwd_data_dir
+            from runtime_paths import app_state_dir
         except ImportError:
-            from src.runtime_paths import cwd_data_dir  # type: ignore
+            from src.runtime_paths import app_state_dir  # type: ignore
 
         # 向量库路径必须与写入端（rag_engine 用 config.INDEX_DIR）保持同一权威来源，
         # 否则快照读取端会指向不同目录、读到空库（历史 bug 同型）。
@@ -79,7 +79,7 @@ class KnowledgeSnapshotManager:
         else:
             self.index_dir = Path(index_dir)
         if snapshot_dir is None:
-            self.snapshot_dir = cwd_data_dir(".devin/knowledge/snapshots")
+            self.snapshot_dir = app_state_dir("knowledge/snapshots")
         else:
             self.snapshot_dir = Path(snapshot_dir)
         self.max_snapshots = max_snapshots
@@ -650,7 +650,7 @@ def main():
     parser = argparse.ArgumentParser(description='知识库快照管理工具')
     # 默认 None：走管理器内部统一的 App 数据目录基准（与 /add 写入路径一致）。
     parser.add_argument('--index-dir', default=None, help='索引目录（默认：App 数据目录/index_storage）')
-    parser.add_argument('--snapshot-dir', default=None, help='快照目录（默认：App 数据目录/.devin/knowledge/snapshots）')
+    parser.add_argument('--snapshot-dir', default=None, help='快照目录（默认：App 数据目录/.cerebro/knowledge/snapshots）')
     parser.add_argument('--max-snapshots', type=int, default=10, help='最大快照数量')
     parser.add_argument('--action', choices=['create', 'list', 'restore', 'delete', 'latest'], 
                        default='list', help='操作类型')

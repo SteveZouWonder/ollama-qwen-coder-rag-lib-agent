@@ -37,6 +37,9 @@ CompleteFn = Callable[[str], str]
 # 会话 metadata 中存放上下文状态的键
 META_KEY = "context"
 
+# "携带摘要"新建会话时写入摘要开头的标记，用于前端识别并展示承接背景
+CARRY_PREFIX = "（承接自上一会话）"
+
 # 滚动摘要的目标长度（字），以及硬截断上限
 SUMMARY_TARGET_CHARS = 300
 SUMMARY_MAX_CHARS = 600
@@ -736,32 +739,48 @@ class ConversationContext:
         return True
 
     def carry_summary_text(self) -> str:
-        """当前会话可携带到新会话的背景摘要（约 200-300 token）。"""
+        """当前会话可携带到新会话的背景摘要（约 200-300 token）。
+
+        只携带**已折叠的滚动摘要**；仍以原文保留的最近几轮不会被拼进去，
+        以免把上一会话的原始问答泄漏到新会话。没有滚动摘要时返回空串。
+        """
         session = self.session(create=False)
         if session is None:
             return ""
         meta = self._meta(session)
         summary = (meta.get("summary") or "").strip()
-        live = self.live_messages(session)
-        if live:
-            # 把仍以原文保留的最近几轮也并入携带摘要（启发式，不调 LLM）
-            tail = _heuristic_summary("", live)
-            summary = (summary + " " + tail).strip() if summary else tail
         if len(summary) > 450:
             summary = summary[:450] + "…"
         return summary
 
     def new_session(self, title: Optional[str] = None, carry_summary: bool = False):
-        """新建会话并切换；``carry_summary`` 为真时把当前滚动摘要作为新会话背景。"""
+        """新建会话并切换；``carry_summary`` 为真时把当前滚动摘要作为新会话背景。
+
+        若本实例原本绑定了某个会话（``session_id`` 非空），则改绑到新会话；
+        若原本是"跟随当前会话"模式（``session_id`` 为空），新建后继续跟随管理器
+        的当前会话指针，不会被钉死到这一个会话上——否则之后通过管理器
+        新建/切换会话时，本实例仍会读写旧会话。
+        """
         carried = self.carry_summary_text() if carry_summary else ""
         session = self.manager.create_session(title=title or None)
-        self.session_id = session.session_id
+        if self.session_id:
+            self.session_id = session.session_id
         if carried:
             meta = self._meta(session)
-            meta["summary"] = f"（承接自上一会话）{carried}"
+            meta["summary"] = f"{CARRY_PREFIX}{carried}"
             meta["summary_covers"] = 0
             self._save(session)
         return session
+
+    def carried_summary(self) -> str:
+        """若当前会话是"携带摘要"新建的，返回其承接自上一会话的背景；否则空串。"""
+        session = self.session(create=False)
+        if session is None:
+            return ""
+        summary = (self._meta(session).get("summary") or "").strip()
+        if summary.startswith(CARRY_PREFIX) and int(self._meta(session).get("compressions", 0) or 0) == 0:
+            return summary[len(CARRY_PREFIX):].strip()
+        return ""
 
 
 # ==================== 辅助 ====================

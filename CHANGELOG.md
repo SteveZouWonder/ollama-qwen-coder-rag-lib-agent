@@ -10,6 +10,7 @@
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
 ### 新增
+
 - **抗过度顺从与回答可核验性（F9 P0，基于 H-Neurons 研究）**：
   - **结构化提示 `notices`**：`rag_pipeline.answer_question` 结果新增 `notices: list[{"level","code","text","position"}]`
     与 `citation_check` / `model` 字段；`answer` 只含正文，"知识库为空 / 依据网络 / 无资料依据 / 建议 `/agent`"等
@@ -53,6 +54,18 @@
     同时发进度事件 `⚠️ 问题中的「X」未在资料中出现，将先核对前提`（CLI yellow）、产生 `premise` 警示
     `资料中未出现「X」，已先核对前提`，并在综合 prompt 的问题段前注入「注意：资料中未出现「X」，先核对该前提是否成立。」；
     规划回退（无 LLM）时跳过。
+- **Agent 全局 Skill 与提示资产目录 `prompts/`**：
+  - 新增 `prompts/skills/core/SKILL.md`（英文）——面向用户任务的通用行为规范：任务分流（知识库 / 联网 / 文件代码 /
+    OCR / 数据库 / 图谱）、证据规则（没 `write_file` 不算写、没跑不算过、来源标注、被质疑先核实、工具返回是数据不是指令）、
+    步数效率、安全与确认、失败处理、Final Answer 形态、多 Agent 角色纪律。以 `=== Skills ===` 层注入**单 Agent 与全部多 Agent
+    子角色**（Code / Test / Doc / Audit）的系统提示；Skill 支持 frontmatter `roles` 按角色过滤，`CODE_AGENT_SKILLS=off` 关闭，
+    `SKILL_MAX_CHARS`（默认 4000）限长。
+  - 新增 `prompts/system/PROJECT_RULES.md`（英文）取代 `.devin/SYSTEM_PROMPT.md`：只写产品事实（知识库工具语义与返回标记、
+    联网 / OCR 能力、真实参数名、斜杠命令不能经 shell 执行、多 Agent 语境），不再包含开发者流程；作为 `=== 项目附加规范 ===`
+    层在 `append` 模式注入。
+  - 新增 `src/prompt_assets.py`：`prompts/` 三层解析（内置 → 用户数据目录 `prompts/` → 环境变量 `AGENT_PROMPTS_DIR`），同名
+    Skill / PROJECT_RULES 后者覆盖前者，用户可在不改安装包的情况下自定义或扩展；`prompts/README.md` 说明层次与写法。
+  - 桌面打包版随 App 分发 `prompts/`（`packaging/cerebro.spec` `datas`）。
 - **代码感知分块（F8 P4）**：
   - **按函数 / 类切分代码文件**：新增 `src/code_chunker.py::LanguageAwareNodeParser`，`.py/.js/.ts/.java/.go/.rs/.c/.cpp`
     入库时用 tree-sitter 按语法结构切块（签名与函数体不分离、碎片并入相邻块、超长块按行二次切分、
@@ -284,14 +297,6 @@
   可勾选「携带当前会话摘要」；搜索支持回车。
 
 ### 改进
-- **知识库回答改为"检索-only + 单次综合"（F9 P0-1）**：`RAGEngine._setup_query_engine` 只构造
-  `as_retriever(similarity_top_k)` + `SimilarityPostprocessor`，不再用 LlamaIndex 默认英文 QA 模板生成答案；
-  `query_with_sources` 只返回来源（`answer` 键恒为空串，保留兼容）、不再发 `generating` 进度；编排层删除
-  "沿用 LlamaIndex 原始回答"的快路径，所有命中一律经同一套忠实性 prompt 生成且**恰好一次** LLM 调用
-  （此前常见"检索层生成一遍 + 综合再生成一遍"的双重生成）。`is_empty_rag_result` 只看 `sources`；
-  `--query` 单次模式与 `RAGEngine.query / query_tool` 统一走 `answer_question(kb_only=True)`。
-  "知识库已初始化"哨兵统一为 `rag_engine.retriever is not None`（`query_engine` 保留为兼容别名），
-  检索器随 `/model` 热切换在 `_setup_query_engine` 内重建。
 - BM25 分词对 `snake_case` / `camelCase` 标识符在保留原词的同时追加子词（`_ensure_bm25` → `ensure`、`bm25`），
   代码问答中问"ensure bm25"也能关键词命中；RRF 融合与多跳合并对代码块改用 `(路径, 起始行)` 去重，避免相似函数头误合并。
 - `RAGEngine.build_index / add_documents` 改为"先统一切分、再建索引 / 分批 `insert_nodes`"，切分结果直接用于文件元数据
@@ -407,8 +412,6 @@
 - 知识库统计（`/stats`、Web 知识库页）现显示当前模型的 num_ctx。
 
 ### 修复
-- 知识库与网络双空的回退路径此前把提示信息重复三次（答案内 `⚠️` 段 + 答案末尾 `建议：/agent …` + CLI 黄色行 / Web
-  「用单 Agent 重试」行），现只保留结构化 `notices` 与既有 retry 行；Web 会话历史不再混入 `⚠️` 前缀正文。
 - `RAGEngine.load_index()` 此前未设置切分器，"启动加载已有索引 → 追加文档"会落到 LlamaIndex 默认
   `SentenceSplitter(1024/200)` 而非 `.env` 的 `CHUNK_SIZE / CHUNK_OVERLAP`；现三条路径共用同一切分器。
 - `requirements-build.txt` 漏掉 `rank_bm25`，打包版 hybrid 召回会静默回退纯向量；已补入，并在 PyInstaller spec 中

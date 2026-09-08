@@ -154,16 +154,19 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
         return message, "", gr.update(interactive=False), gr.update(interactive=True)
 
     def _end(sid):
-        ctx_md = handlers["on_session_select"](sid)[2]
+        # 标签页此前未绑定会话（sid 为空）时，把本轮实际使用的会话 id 写回 session_state，
+        # 之后的对话/新建/清空都钉在同一个会话上，不再随全局"当前会话"指针漂移。
         choices, sid2 = handlers["on_session_list_state"](sid)
+        ctx_md = handlers["on_session_select"](sid2 or sid)[2]
         return (
             gr.update(interactive=True), gr.update(interactive=False), ctx_md, _ctx_chip(ctx_md),
             gr.update(choices=choices, value=sid2 or None), gr.update(visible=False),
+            sid2 or sid or "",
         )
 
     _begin_outputs = [pending_msg, msg_box, send_btn, stop_btn]
     _chat_inputs = [pending_msg, mode, enable_web, auto_confirm, session_state, collab_dd]
-    _end_outputs = [send_btn, stop_btn, context_box, context_chip, session_radio, approval_row]
+    _end_outputs = [send_btn, stop_btn, context_box, context_chip, session_radio, approval_row, session_state]
 
     send_chain = send_btn.click(_begin, msg_box, _begin_outputs).then(
         _chat_stream_ui, _chat_inputs, _chat_outputs
@@ -232,17 +235,19 @@ def build_chat_page(service, handlers: Dict[str, Callable], sb: Dict[str, Any]) 
     session_radio.input(_load_session, session_radio, load_outputs)
 
     def _new_session(carry, sid):
-        choices, new_sid, history, ctx_md, hint = handlers["on_new_session"](carry, sid)
+        choices, new_sid, history, ctx_md, hint, status = handlers["on_new_session"](carry, sid)
         return (
             gr.update(choices=choices, value=new_sid), new_sid, history, ctx_md, _ctx_chip(ctx_md),
             hint, gr.update(visible=False),
-            "✨ 已新建会话" + ("（已携带摘要）" if carry else ""),
+            status,
             handlers["on_session_info"](new_sid),
+            # 「携带摘要」是一次性选择：新建后复位，避免勾选一次后每次新建都承接上一会话
+            gr.update(value=False),
         )
 
     _new_outputs = [
         session_radio, session_state, chatbot, context_box, context_chip, hint_box, hint_row,
-        status_box, session_info_md,
+        status_box, session_info_md, sb["carry_cb"],
     ]
     sb["new_session_btn"].click(_new_session, [sb["carry_cb"], session_state], _new_outputs)
     hint_new_btn.click(_new_session, [sb["carry_cb"], session_state], _new_outputs)

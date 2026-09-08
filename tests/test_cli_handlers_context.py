@@ -154,13 +154,42 @@ class TestSessionNewCarry:
 
     def test_carry_summary(self, conv, monkeypatch):
         monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        conv.recent_turns = 1
+        conv.record("DJI OSMO 360 是什么", "全景相机")
+        conv.record("它多少钱", "2999 元")
+        conv.compact()  # 产生滚动摘要 "LLM摘要"
+        ctx = _cli_ctx()
+        cli_handlers.handle_session_new(ctx, ParsedCommand("session_new", "/session-new --carry", "--carry"))
+        out = _printed(ctx.console)
+        assert "已承接上一会话的滚动摘要" in out and "LLM摘要" in out
+        assert "承接自上一会话" in conv.metrics()["summary"]
+        assert "2999" not in conv.metrics()["summary"]
+        assert conv.all_messages() == []
+
+    def test_carry_without_summary_is_clean(self, conv, monkeypatch):
+        """回归：上一会话没压缩过时，--carry 不得把原文带入新会话。"""
+        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
         conv.record("DJI OSMO 360 是什么", "全景相机")
         ctx = _cli_ctx()
         cli_handlers.handle_session_new(ctx, ParsedCommand("session_new", "/session-new --carry", "--carry"))
         out = _printed(ctx.console)
-        assert "已携带上一会话的摘要" in out
-        assert "承接自上一会话" in conv.metrics()["summary"]
-        assert conv.all_messages() == []
+        assert "未承接任何内容" in out
+        assert conv.metrics()["summary"] == ""
+        assert conv.has_history() is False
+
+    def test_plain_new_after_carry_follows_current(self, conv, monkeypatch):
+        """回归：--carry 之后再普通 /session-new，单例应跟随新会话而非钉死在携带会话。"""
+        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        conv.record("q", "a")
+        cli_handlers.handle_session_new(_cli_ctx(), ParsedCommand("session_new", "/session-new --carry", "--carry"))
+        carried_id = conv.session().session_id
+        cli_handlers.handle_session_new(_cli_ctx(), ParsedCommand("session_new", "/session-new", ""))
+        plain_id = conv.manager.get_current_session().session_id
+        assert plain_id != carried_id
+        assert conv.session().session_id == plain_id
+        conv.record("new q", "new a")
+        assert conv.manager.get_session(carried_id).messages == []
+        assert [m["content"] for m in conv.all_messages()] == ["new q", "new a"]
 
     def test_carry_failure(self, conv, monkeypatch):
         monkeypatch.setattr(conv, "new_session", lambda **k: (_ for _ in ()).throw(RuntimeError("x")))

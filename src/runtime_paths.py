@@ -78,7 +78,7 @@ def home_file(name: str) -> Path:
 
 
 def cwd_data_dir(relative: str) -> Path:
-    """App 可写数据/产物的绝对路径（如 ``.devin/...``、``index_storage``）。
+    """App 可写数据/产物的绝对路径（如 ``index_storage``）。
 
     统一以“App 数据目录”为基准，与运行时当前工作目录（cwd）彻底解耦：
 
@@ -90,10 +90,58 @@ def cwd_data_dir(relative: str) -> Path:
     数据也不会漂移到别处（历史 bug：读取端相对 cwd、写入端绝对路径导致读到空库）。
 
     注意：函数名保留 ``cwd_data_dir`` 仅为兼容既有调用点，其语义已不再相对 cwd。
-
-    参数 ``relative`` 形如 ``.devin/knowledge/snapshots``。
+    App 自身的运行时状态（快照 / 图谱 / 文件元数据）请用 :func:`app_state_dir`。
     """
     return user_data_dir() / relative
+
+
+# App 运行时状态目录名（快照、知识图谱、文件元数据等由程序生成的数据）。
+# 历史上位于 ``.devin/``（Devin 时代的遗留命名），现统一为产品名的隐藏目录。
+APP_STATE_DIRNAME = ".cerebro"
+LEGACY_STATE_DIRNAME = ".devin"
+
+# 测试隔离用：非空时 app_state_dir 以此为根（跳过迁移），避免测试写入真实 .cerebro/。
+_APP_STATE_ROOT_OVERRIDE: Path | None = None
+
+
+def set_app_state_root(path) -> None:
+    """覆盖 App 运行时状态根目录（``None`` 恢复默认）。仅供测试 / 诊断使用。"""
+    global _APP_STATE_ROOT_OVERRIDE
+    _APP_STATE_ROOT_OVERRIDE = Path(path) if path else None
+
+
+def app_state_dir(relative: str = "") -> Path:
+    """App 运行时状态的绝对路径：``<App 数据目录>/.cerebro/<relative>``。
+
+    - ``relative`` 形如 ``knowledge/snapshots``、``file_metadata``；为空返回目录根。
+    - **一次性迁移**：若目标不存在而旧位置 ``<App 数据目录>/.devin/<relative>`` 存在，
+      则把旧目录/文件整体移动到新位置（不覆盖已有数据），保证升级后既有的快照、
+      图谱、元数据不会"消失"。迁移失败只记录日志，不影响启动。
+    """
+    if _APP_STATE_ROOT_OVERRIDE is not None:
+        return _APP_STATE_ROOT_OVERRIDE / relative if relative else _APP_STATE_ROOT_OVERRIDE
+    base = user_data_dir()
+    target = base / APP_STATE_DIRNAME / relative if relative else base / APP_STATE_DIRNAME
+    if relative:
+        _migrate_legacy_state(base / LEGACY_STATE_DIRNAME / relative, target)
+    return target
+
+
+def _migrate_legacy_state(old: Path, new: Path) -> bool:
+    """把 ``old`` 移到 ``new``（仅当 new 不存在且 old 存在）。返回是否发生了迁移。"""
+    try:
+        if new.exists() or not old.exists():
+            return False
+        new.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.move(str(old), str(new))
+        import logging
+        logging.getLogger(__name__).info("已迁移运行时数据: %s -> %s", old, new)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("迁移运行时数据失败 %s -> %s: %s", old, new, exc)
+        return False
 
 
 def logs_dir() -> Path:

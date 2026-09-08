@@ -1091,6 +1091,13 @@ class WebService:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    def carried_summary(self, session_id: Optional[str] = None) -> str:
+        """若该会话是"携带摘要"新建的，返回承接自上一会话的背景文本；否则空串。"""
+        try:
+            return self._context(session_id).carried_summary()
+        except Exception:  # noqa: BLE001
+            return ""
+
     def clear_context(self, session_id: Optional[str] = None) -> bool:
         """清空指定会话的对话上下文（消息 + 滚动摘要），会话本身保留。"""
         try:

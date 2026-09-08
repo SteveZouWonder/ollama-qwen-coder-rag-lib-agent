@@ -523,16 +523,16 @@ class TestKnowledgeGraphBuilder:
         assert gb.get_graph_builder() is created
 
     def test_default_persist_path_resolution(self, monkeypatch, tmp_path):
-        """未提供 persist_path 且无覆盖时，应解析到默认 .devin/knowledge/graph.json。"""
+        """未提供 persist_path 且无覆盖时，应解析到默认 .cerebro/knowledge/graph.json。"""
         import knowledge_graph.graph_builder as gb
         # 临时清除测试的默认路径覆盖，走真实默认路径解析分支
         monkeypatch.setattr(gb, "_DEFAULT_PERSIST_PATH_OVERRIDE", None)
-        monkeypatch.setattr(
-            "runtime_paths.cwd_data_dir", lambda rel: tmp_path / rel
-        )
+        import runtime_paths as rp
+        monkeypatch.setattr(rp, "_APP_STATE_ROOT_OVERRIDE", None)  # conftest 的 app_state 根覆盖
+        monkeypatch.setattr(rp, "user_data_dir", lambda: tmp_path)
         builder = KnowledgeGraphBuilder(auto_persist=False)
-        assert builder.persist_path.name == "graph.json"
-        assert ".devin" in str(builder.persist_path)
+        assert builder.persist_path == tmp_path / ".cerebro" / "knowledge" / "graph.json"
+        assert ".devin" not in str(builder.persist_path)
 
     def test_autoload_failure_on_init_is_non_fatal(self, tmp_path, monkeypatch):
         """初始化自动加载抛异常时应告警并回退空图，不崩溃。"""
