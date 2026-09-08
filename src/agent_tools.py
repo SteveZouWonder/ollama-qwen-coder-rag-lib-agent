@@ -469,11 +469,21 @@ def format_kb_tool_result(result: Dict[str, Any]) -> str:
     lines = [
         f"[知识库命中] 相关性判定：通过（{len(sources)} 个相关片段{top}）",
         "",
+    ]
+    # F9 P0-5：warn 级 notice 以 [注意] 行附在答案前（模型可见）
+    for n in result.get("notices") or []:
+        if isinstance(n, dict) and n.get("level") == "warn" and n.get("text"):
+            lines.append(f"[注意] {n['text']}")
+    # F9 P0-3：引用校验发现无效编号时提醒模型
+    check = result.get("citation_check")
+    if isinstance(check, dict) and check.get("invalid"):
+        lines.append("（注意：回答中 [?] 为无效引用）")
+    lines.extend([
         "答案：",
         (result.get("answer") or "").strip() or "（无综合答案）",
         "",
         f"相关片段（top-{min(KB_TOOL_TOP_K, len(sources))}，原文）：",
-    ]
+    ])
     for i, src in enumerate(sources[:KB_TOOL_TOP_K], 1):
         name = src.get("file") or src.get("file_name") or os.path.basename(str(src.get("path") or "")) or "未知"
         text = str(src.get("content") or src.get("text") or "").strip()

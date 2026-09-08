@@ -111,6 +111,33 @@ def block_intent_llm(monkeypatch):
     yield
 
 
+def make_synthesis_stub(prefix: str = "答案:"):
+    """构造 ``rag_pipeline.llm_direct_answer`` 的桩：从综合 prompt 的「## 问题」段取出问题，
+    返回 ``f"{prefix}{question}"``（F9 P0-1 起检索层不再生成答案，桩引擎的 ``answer`` 键无效，
+    需要"答案里带问题"断言的测试用它模拟综合）。"""
+    import re
+
+    def _fake(prompt: str) -> str:
+        m = re.search(r"## 问题\n(.+?)(?:\n|$)", prompt or "")
+        return f"{prefix}{m.group(1)}" if m else f"{prefix}".rstrip(":")
+
+    return _fake
+
+
+@pytest.fixture
+def stub_synthesis(monkeypatch):
+    """把综合 LLM 调用打桩为 ``答案:<问题>``；返回可改前缀的工厂 ``use(prefix)``。"""
+    import rag_pipeline
+
+    def use(prefix: str = "答案:"):
+        fake = make_synthesis_stub(prefix)
+        monkeypatch.setattr(rag_pipeline, "llm_direct_answer", fake)
+        return fake
+
+    use()
+    return use
+
+
 @pytest.fixture(autouse=True, scope="function")
 def isolate_app_state_dir(tmp_path_factory):
     """全局fixture：把 App 运行时状态根（.cerebro/）重定向到临时目录。

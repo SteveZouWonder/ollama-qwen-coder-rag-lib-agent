@@ -85,6 +85,7 @@ class ResultIntegrator:
             "summary": self._generate_summary(results),
             "detailed_report": self._generate_detailed_report(results, original_tasks),
             "sources": self.merge_sources(results),
+            "notices": self.merge_notices(results),
         }
         integrated_result["answer"] = self._synthesize_answer(results, original_tasks, request)
         integrated_result["answer_method"] = self.last_answer_method
@@ -113,6 +114,23 @@ class ResultIntegrator:
                 item = dict(src)
                 item.setdefault("agent_id", r.agent_id)
                 merged.append(item)
+        return merged
+
+    @staticmethod
+    def merge_notices(results: List[AgentResult]) -> List[Dict[str, Any]]:
+        """合并各子任务（RAGAgent）透传的结构化提示，按 (code, text) 去重（F9 P0-5）。"""
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for r in results:
+            meta = getattr(r, "metadata", None) or {}
+            for n in meta.get("notices") or []:
+                if not isinstance(n, dict):
+                    continue
+                key = (n.get("code"), n.get("text"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(dict(n))
         return merged
 
     @staticmethod
@@ -372,6 +390,7 @@ class ResultIntegrator:
             "selection_criteria": criteria,
             "answer": (best_result.output or "").strip() if best_result.success else "",
             "sources": self.merge_sources([best_result]),
+            "notices": self.merge_notices([best_result]),
             "mode": "competitive",
             "timestamp": datetime.now().isoformat(),
             "summary": (

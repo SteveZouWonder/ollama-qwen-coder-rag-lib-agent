@@ -84,7 +84,7 @@ class RAGAgent(BaseAgent):
                 error_message=str(e)
             )
     
-    def _query_real_knowledge_base(self, request: str, context=None) -> Tuple[str, List[Dict[str, Any]]]:
+    def _query_real_knowledge_base(self, request: str, context=None) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
         """调用共享 RAG 编排层回答问题，与 CLI/Web 的 RAG 模式表现一致。
 
         改动说明：此前各 handler 返回硬编码占位文本，后改为直接调用底层
@@ -98,11 +98,12 @@ class RAGAgent(BaseAgent):
         再退到错误说明文本。
 
         Returns:
-            ``(答案文本, 结构化来源列表)``
+            ``(答案文本, 结构化来源列表, notices)``；``notices`` 为 ``answer_question`` 的
+            结构化提示（F9 P0-5），随 ``AgentResult.metadata["notices"]`` 透传给结果整合与渲染。
         """
         request = (request or "").strip()
         if not request:
-            return "[提示] 空请求", []
+            return "[提示] 空请求", [], []
         try:
             import agent_tools
             import rag_pipeline
@@ -110,7 +111,7 @@ class RAGAgent(BaseAgent):
             engine = getattr(agent_tools, "_rag_engine", None)
             if engine is None:
                 # 全局引擎未注入：退化为底层查询工具（保持可用）
-                return agent_tools.query_knowledge_base(request), []
+                return agent_tools.query_knowledge_base(request), [], []
 
             result = rag_pipeline.answer_question(
                 engine,
@@ -138,10 +139,11 @@ class RAGAgent(BaseAgent):
                     "title": src.get("title", ""),
                     "url": src.get("url", ""),
                 })
-            return answer, sources
+            notices = [n for n in (result.get("notices") or []) if isinstance(n, dict)]
+            return answer, sources, notices
         except Exception as e:  # noqa: BLE001
             self.logger.error(f"RAGAgent 检索失败: {e}")
-            return f"[错误] 知识库查询失败: {e}", []
+            return f"[错误] 知识库查询失败: {e}", [], []
 
     def _handle_retrieval(self, task: AgentTask) -> AgentResult:
         """所有任务类型都走真实 RAG 编排，仅按类型改写提问侧重点。"""
@@ -150,7 +152,7 @@ class RAGAgent(BaseAgent):
         question = template.format(request=request) if request else request
         # 会话上下文由协调者注入到 Agent 属性（不放进 input_data，保持任务可序列化）
         context = getattr(self, "conversation_context", None)
-        answer, sources = self._query_real_knowledge_base(question, context=context)
+        answer, sources, notices = self._query_real_knowledge_base(question, context=context)
         success = not answer.startswith("[错误]")
 
         # 输出即答案本身（单子任务时会被直接作为综合回答展示，不再带 Markdown 标题）
@@ -165,6 +167,7 @@ class RAGAgent(BaseAgent):
                 "query": question,
                 "kb_hits": sum(1 for s in sources if s.get("kind") == "kb"),
                 "web_hits": sum(1 for s in sources if s.get("kind") == "web"),
+                "notices": notices,
             },
             execution_time=0,
             error_message="" if success else answer,

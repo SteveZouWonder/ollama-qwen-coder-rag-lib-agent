@@ -533,7 +533,11 @@ class WebService:
             )
             # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
             # 在后台线程内完成，压缩期间心跳仍可刷新 UI。
-            recorded = "[知识库概览]" if result.get("kind") == "meta" else result.get("answer", "")
+            # F9 P0-5：记录正文 + warn 级 notice 各一行（后续轮次据此知道上一答是否有依据）
+            if result.get("kind") == "meta":
+                recorded = "[知识库概览]"
+            else:
+                recorded = rag_pipeline.answer_with_notices(result.get("answer", ""), result.get("notices"))
             result["context"] = self._finish_turn(
                 ctx, question, recorded, pre,
                 rewritten=result.get("rewritten"), progress=progress_cb,
@@ -561,9 +565,14 @@ class WebService:
                     "web_sources": result.get("web_sources", []),
                     "meta": result.get("meta"),
                     "rewritten": result.get("rewritten"),
+                    "challenge": bool(result.get("challenge")),
                     "context": result.get("context") or {},
                     # kind="fallback" 时附原问题，供 UI「用单 Agent 重试」
                     "fallback_question": result.get("fallback_question"),
+                    # F9：结构化提示 / 引用校验 / 本次作答模型
+                    "notices": result.get("notices") or [],
+                    "citation_check": result.get("citation_check"),
+                    "model": result.get("model"),
                 },
             )
 
@@ -672,7 +681,7 @@ class WebService:
     def kb_available(self) -> bool:
         """知识库是否可用（RAG 引擎已建索引）；引擎创建失败视为不可用。"""
         try:
-            return getattr(self.rag_engine, "query_engine", None) is not None
+            return getattr(self.rag_engine, "retriever", None) is not None
         except BaseException:  # noqa: BLE001
             return False
 
@@ -807,9 +816,10 @@ class WebService:
 
             ctx = self._context(session_id)
             pre = self._health_before(ctx, request)
-            effective, rewritten = request, None
+            effective, rewritten, challenge = request, None, False
             try:
                 rw = ctx.rewrite_question(request, progress=progress_cb)
+                challenge = bool(rw.get("challenge"))
                 if rw.get("changed"):
                     effective = rw["question"]
                     rewritten = effective
@@ -823,6 +833,7 @@ class WebService:
             answer = str(result.get("answer") or "").strip() or summary
             recorded = answer if result.get("success") else f"[协作失败] {answer}"
             result["rewritten"] = rewritten
+            result["challenge"] = challenge
             result["context"] = self._finish_turn(
                 ctx, request, recorded, pre, rewritten=rewritten, progress=progress_cb,
             )
@@ -1435,6 +1446,7 @@ class WebService:
                 "code_chunking": _code_chunking_env_text(),
                 "similarity_cutoff": getattr(config, "SIMILARITY_CUTOFF", ""),
                 "kb_relevance_threshold": getattr(config, "KB_RELEVANCE_THRESHOLD", ""),
+                "self_check": bool(getattr(config, "RAG_SELF_CHECK", False)),
                 "data_dir": str(getattr(config, "DATA_DIR", "")),
                 "index_dir": str(getattr(config, "INDEX_DIR", "")),
                 "vector_db_path": str(getattr(config, "VECTOR_DB_PATH", "")),

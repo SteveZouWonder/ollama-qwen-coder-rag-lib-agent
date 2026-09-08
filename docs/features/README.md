@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| — | （暂无；小项见下方「残留小项」） | | |
+| — | （暂无） | | |
 
 ## 已实现
 
@@ -22,6 +22,7 @@
 | F6 | 系统能力增强（Agent 工具集） | [f6-capability-tools/](f6-capability-tools/) |
 | F7 | Web 界面（Gradio） | [f7-web-ui/](f7-web-ui/) |
 | F8 | 三种对话模式优化（RAG / 单 Agent / 多 Agent）：P0 多 Agent 真实化 · P1 单 Agent 鲁棒性 · P2 RAG 推理与可核验性 · P3 入口智能路由 · P4 代码感知分块（2026-09-04 ~ 09-07，分支 `feat/agent-modes-optimization`） | [f8-agent-modes-optimization/](f8-agent-modes-optimization/) |
+| F9 | 抗过度顺从与回答可核验性（基于 H-Neurons 研究）：P0 检索-only 单次综合 + 忠实性条款 + 结构化 notices + 引用程序化校验 · P1 无依据路径 / 质疑追问改写 / 网页注入扫描 / 评测集与脚本 · P2 `RAG_SELF_CHECK` 自校验（默认关）+ 前提实体校验（2026-09-07，分支 `feat/anti-overcompliance`） | [f9-anti-overcompliance/](f9-anti-overcompliance/) |
 
 ---
 
@@ -56,4 +57,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-07
+**最后更新**: 2026-09-07（F9 全部完成，移入已实现）

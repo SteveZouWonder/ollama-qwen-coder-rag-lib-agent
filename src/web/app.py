@@ -121,11 +121,73 @@ class ProgressTracker:
 
 # ==================== 纯格式化辅助（可测试）====================
 
-def format_sources(sources: List[Dict[str, Any]]) -> str:
-    """把 sources 列表渲染为 Markdown 文本（按引用编号 ``[1]``.. 显示，与答案中的标注对应）。"""
+def component_update(**kwargs: Any) -> Dict[str, Any]:
+    """等价 ``gr.update(**kwargs)`` 的纯字典（本模块不 import gradio，便于单元测试）。
+
+    Gradio 以 ``{"__type__": "update", ...}`` 识别属性更新；无参数即"保持不变"。
+    用于「📎 引用来源」Accordion 的 ``open`` 控制（F9 P0-3）。
+    """
+    out: Dict[str, Any] = dict(kwargs)
+    out["__type__"] = "update"
+    return out
+
+
+def _noop() -> Dict[str, Any]:
+    """八元组第 8 位的默认值：不改变 Accordion 当前折叠状态。"""
+    return component_update()
+
+
+def format_notices(notices: Optional[List[Dict[str, Any]]], position: str = "before") -> str:
+    """把 ``answer_question`` 的结构化提示渲染为 blockquote（F9 P0-5）。
+
+    warn → ``> ⚠️ text``，info → ``> 💡 text``（与 ``> 🔗 已理解为`` 同款，多条各一行）；
+    ``code=="fallback"`` 不入气泡（沿用 retry 行）。返回空串表示该位置无提示；非空时
+    ``before`` 组以空行结尾、``after`` 组以空行开头，便于直接与正文拼接。
+    """
+    lines = []
+    for n in notices or []:
+        if not isinstance(n, dict) or n.get("code") == "fallback":
+            continue
+        if (n.get("position") or "before") != position:
+            continue
+        text = str(n.get("text") or "").strip()
+        if not text:
+            continue
+        icon = "⚠️" if n.get("level") == "warn" else "💡"
+        lines.append(f"> {icon} {text}")
+    if not lines:
+        return ""
+    block = "\n".join(lines)
+    return block + "\n\n" if position == "before" else "\n\n" + block
+
+
+def format_citation_status(check: Optional[Dict[str, Any]]) -> str:
+    """状态行的引用校验片段（F9 P0-3）：全部有效 ``🔎 引用 N 处已核验``，否则 ``🔎 引用 v/t 有效``。"""
+    if not isinstance(check, dict):
+        return ""
+    total = int(check.get("total_refs") or 0)
+    if total <= 0:
+        return ""
+    valid = int(check.get("valid") or 0)
+    if valid == total:
+        return f"🔎 引用 {total} 处已核验"
+    return f"🔎 引用 {valid}/{total} 有效"
+
+
+def format_sources(sources: List[Dict[str, Any]], citation_check: Optional[Dict[str, Any]] = None) -> str:
+    """把 sources 列表渲染为 Markdown 文本（按引用编号 ``[1]``.. 显示，与答案中的标注对应）。
+
+    F9 P0-3：每条标题行末追加 ``（被引用 n 次）`` / ``（未被引用）``；``citation_check``
+    有无效编号时面板首行列出 ``⚠️ 无效引用：[5] [W3]（回答中已标为 [?]）``。
+    """
     if not sources:
         return "_无引用来源_"
     lines = ["### 引用来源", ""]
+    invalid = (citation_check or {}).get("invalid") if isinstance(citation_check, dict) else None
+    if invalid:
+        refs = " ".join(f"[{r}]" for r in invalid)
+        lines.append(f"⚠️ 无效引用：{refs}（回答中已标为 [?]）")
+        lines.append("")
     for i, src in enumerate(sources, 1):
         score = src.get("score")
         score_str = f"（相似度 {score:.3f}）" if isinstance(score, (int, float)) else ""
@@ -142,7 +204,12 @@ def format_sources(sources: List[Dict[str, Any]]) -> str:
             loc += f" · L{src['start_line']}-{src.get('end_line') or src['start_line']}"
         if src.get("part"):
             loc += f"（{src['part']}）"
-        lines.append(f"**[{ref}] {file_name}**{loc} {score_str}".rstrip())
+        cited = src.get("cited")
+        if isinstance(cited, int):
+            cited_str = f"（被引用 {cited} 次）" if cited > 0 else " _（未被引用）_"
+        else:
+            cited_str = ""
+        lines.append(f"**[{ref}] {file_name}**{loc} {score_str}{cited_str}".rstrip())
         note = (src.get("rerank_note") or "").strip()
         if note:
             lines.append(f"_相关性：{note}_")
@@ -206,11 +273,16 @@ def format_meta_overview(meta: Dict[str, Any]) -> str:
 
 
 def format_rag_side(result: Dict[str, Any]) -> str:
-    """组合 RAG 回答的附加信息区：知识库来源 + 网络来源。"""
+    """组合 RAG 回答的附加信息区：知识库来源 + 网络来源（含引用校验明细，P0-3）。"""
     parts = []
-    kb = format_sources(result.get("sources", []))
+    check = result.get("citation_check")
+    kb = format_sources(result.get("sources", []), citation_check=check)
     if kb and kb != "_无引用来源_":
         parts.append(kb)
+    elif isinstance(check, dict) and check.get("invalid"):
+        # 只有网络来源时，无效编号提示同样放面板首行
+        refs = " ".join(f"[{r}]" for r in check["invalid"])
+        parts.append(f"⚠️ 无效引用：{refs}（回答中已标为 [?]）")
     web = format_web_sources(result.get("web_sources", []))
     if web:
         parts.append(web)
@@ -539,6 +611,7 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("代码分块", info.get("code_chunking", "") or "—"),
         ("相似度阈值", info.get("similarity_cutoff", "")),
         ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
+        ("自校验（RAG_SELF_CHECK）", "开启" if info.get("self_check") else "关闭"),
         ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
         ("版本", info.get("app_version", "")),
     ]
@@ -1077,7 +1150,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     ):
         """流式对话入口（供 Gradio 使用）。
 
-        yield 七元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md, retry_md)``：
+        yield 八元组 ``(history, status_md, process_md, sources_md, hint_md, confirm_md, retry_md, sources_open)``：
 
         - ``history``：Chatbot（messages 格式）的完整多轮消息列表——会话内既有
           历史 + 本轮用户消息，完成后追加助手回答；
@@ -1091,7 +1164,14 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         - ``confirm_md``：单 Agent 遇到危险操作时的审批卡片文案（非空时 UI 显示
           「允许 / 拒绝」按钮），用户决定后或任务继续推进时回到空串；
         - ``retry_md``：RAG 回答 ``kind="fallback"``（知识库无相关片段且网络无结果）
-          时的提示文案，非空时 UI 显示「用单 Agent 重试」按钮（切模式并用同一问题重发）。
+          时的提示文案，非空时 UI 显示「用单 Agent 重试」按钮（切模式并用同一问题重发）；
+        - ``sources_open``：「📎 引用来源」Accordion 的 ``gr.update``——仅最终帧且引用校验
+          发现无效编号时为 ``gr.update(open=True)``，其余一律 ``gr.update()``（不改变用户
+          当前折叠状态）（F9 P0-3）。
+
+        RAG 回答的警示 / 引用校验等结构化 ``notices``（F9 P0-5）以 blockquote 渲染：
+        ``before`` 组置于气泡正文前（与 ``> 🔗 已理解为`` 同款），``after`` 组置于正文后；
+        ``code=="fallback"`` 不入气泡（沿用 retry 行）。
 
         三种模式（RAG / 单 Agent / 多 Agent）统一走服务层带心跳与取消的事件流，
         并绑定到 ``session_id``（每个浏览器标签页自己的会话）。多 Agent 可指定
@@ -1113,11 +1193,11 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                 session_id = ""
         history = _load_history(session_id)
         if not message:
-            yield history, "_请输入内容_", "", "", "", "", ""
+            yield history, "_请输入内容_", "", "", "", "", "", _noop()
             return
 
         if service.is_running() is True:
-            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", "", ""
+            yield history, "⚠️ 已有任务在运行，请先等待完成或点击「停止」", "", "", "", "", "", _noop()
             return
 
         activity, hint = _startup_hint()
@@ -1127,7 +1207,7 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         history = history + [{"role": "user", "content": message}]
 
         # 立即反馈：点击后马上出现，消除"无响应"错觉
-        yield history, tracker.render_status(), "", "", "", "", ""
+        yield history, tracker.render_status(), "", "", "", "", "", _noop()
 
         if mode == "多 Agent 协作":
             stream = service.multi_agent_stream(
@@ -1161,19 +1241,20 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             if evt.kind == "confirm":
                 confirm_md = format_confirm_request(evt.data if isinstance(evt.data, dict) else {})
                 tracker.current = "⏸️ 等待你确认危险操作…"
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
             elif evt.kind in ("progress", "step"):
                 confirm_md = ""
                 tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", "", ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", "", "", _noop()
             elif evt.kind == "heartbeat":
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, ""
+                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
                 yield (
                     history, tracker.render_status("cancelled"),
                     tracker.render_steps(title, done=True), "", "", "", "",
+                    _noop(),
                 )
                 return
             elif evt.kind == "error":
@@ -1185,12 +1266,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
                     "",
                     "",
                     "",
+                    _noop(),
                 )
                 return
 
         steps_md = tracker.render_steps(title, done=True)
         if final is None:
-            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", "", ""
+            yield history, tracker.render_status("error", "未获得回答"), steps_md, "", "", "", "", _noop()
             return
 
         data = final.data if isinstance(final.data, dict) else {}
@@ -1213,11 +1295,13 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         prefix = ""
         rewritten = data.get("rewritten")
         if rewritten:
-            prefix = f"> 🔗 已理解为：{rewritten}\n\n"
+            # F9 P1-2：质疑类追问复用同一 blockquote，文案改为「重新核对」
+            label = "🔁 用户质疑，重新核对" if data.get("challenge") else "🔗 已理解为"
+            prefix = f"> {label}：{rewritten}\n\n"
 
         if mode == "多 Agent 协作":
             content = prefix + format_multi_agent_result(data)
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", "", _noop()
             return
 
         if render_mode == "单 Agent":
@@ -1225,30 +1309,41 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             summary = format_step_log(data.get("step_log") or [])
             if summary:
                 steps_md = f"{steps_md}\n\n{summary}" if steps_md else summary
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", "", _noop()
             return
 
         if data.get("kind") == "meta":
             content = format_meta_overview(data.get("meta") or {})
-            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", ""
+            yield history + [{"role": "assistant", "content": content}], status, steps_md, "", hint_md, "", "", _noop()
             return
         # 失败回退：知识库与网络均无结果 → 状态行下方出现「用单 Agent 重试」按钮
         retry_q = ""
         if data.get("kind") == "fallback":
             retry_q = format_fallback_hint(data.get("fallback_question") or message)
+        # F9 P0-5 / P0-3：结构化提示以 blockquote 包裹正文；状态行追加引用校验计数；
+        # 有无效引用时自动展开「📎 引用来源」
+        notices = data.get("notices") or []
+        check = data.get("citation_check")
+        cite = format_citation_status(check)
+        if cite:
+            status = f"{status} · {cite}"
+        content = prefix + format_notices(notices, "before") + (final.message or "") + format_notices(notices, "after")
+        sources_open = component_update(open=True) if (isinstance(check, dict) and check.get("invalid")) else _noop()
         yield (
-            history + [{"role": "assistant", "content": prefix + (final.message or "")}],
+            history + [{"role": "assistant", "content": content}],
             status,
             steps_md,
             format_rag_side(
                 {
                     "sources": data.get("sources", []),
                     "web_sources": data.get("web_sources", []),
+                    "citation_check": check,
                 }
             ),
             hint_md,
             "",
             retry_q,
+            sources_open,
         )
 
     def on_resolve_confirm(approved: bool) -> str:

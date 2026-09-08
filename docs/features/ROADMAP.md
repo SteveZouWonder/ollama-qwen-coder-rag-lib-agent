@@ -16,6 +16,7 @@
 | 知识库 | 14+ 格式入库、OCR（PaddleOCR / Tesseract）、快照管理、文件删除、Skills 生成 | [F1](f1-ocr-extract/)、[F3](f3-file-session-management/) |
 | 对话 | RAG 检索（hybrid 召回、逐片段 rerank、复合问题多跳、编号引用、联网回退）、单 Agent（ReAct，29 工具，危险命令拦截、协议容错、上下文预算）、多 Agent（真实 Agent 委托、LLM 分解/整合/评审、真并行）、入口自动路由、连续对话上下文记忆与滚动压缩、思考模式开关、模型热切换 | [F2](f2-multiple-agent/)、[F8](f8-agent-modes-optimization/)、CHANGELOG |
 | 知识库（代码） | 代码文件按函数/类切分（tree-sitter 可选依赖），来源定位到 `文件 · 符号 · 行号`，入库进度与分块策略可见 | [F8 P4](f8-agent-modes-optimization/) |
+| 回答可信度 | 抗过度顺从：检索-only 单次综合 + 前提核对 / 冲突并列 / 被质疑不改口条款、引用程序化校验（`[?]` 标记、被引用次数、状态行计数）、结构化警示 notices（CLI / Web / Agent 四端）、无依据路径先判断是否确知、质疑追问不吸收用户断言、网页正文注入扫描、30 例评测集与真实模型评测脚本、可选 `RAG_SELF_CHECK` 自校验与前提实体校验 | [F9](f9-anti-overcompliance/) |
 | Agent 工具 | 网络搜索、AST 分析、代码质量、Git 分析/提交信息、知识图谱（Plotly 3D/2D）、SQLite 数据库 | [F6](f6-capability-tools/) |
 | 入口 | CLI（几十个斜杠命令 + 智能命令推荐）、桌面托盘（状态监控 / 模型预热 / Ollama 引导）、Gradio Web UI（5 页、多主题、审批卡片） | [F4](f4-command-recommender/)、[F5](f5-desktop-packaging/)、[F7](f7-web-ui/) |
 | 发布 | GitHub Actions 打 tag 自动构建 dmg / Inno Setup exe / AppImage，自动 Release Notes 与 CHANGELOG 归档；CI 含 flake8 / pylint / bandit / pip-audit / pytest / codecov、PR 漏洞门禁 | [CI_CD.md](../development/CI_CD.md) |

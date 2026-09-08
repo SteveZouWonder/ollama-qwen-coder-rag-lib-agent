@@ -250,7 +250,7 @@ class TestRunAsk:
             captured["question"] = question
             return _answer(answer="2999 元", rewritten="DJI OSMO 360 多少钱")
 
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", fake_answer), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
                 patch("builtins.print"):
@@ -267,7 +267,7 @@ class TestRunAsk:
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
     def test_natural_input_uses_same_path_and_records(self, mock_console, _rec, conv):
-        rag = MagicMock(query_engine=None)
+        rag = MagicMock(retriever=None)
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
                 patch("builtins.print"):
@@ -279,8 +279,91 @@ class TestRunAsk:
 
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
+    def test_notices_rendered_before_and_after_panel(self, mock_console, _rec, conv):
+        """F9 P0-5：warn → 黄色 ⚠️ 行且在 Panel 之前；after 组在 Panel 之后；fallback 不单独打印。"""
+        result = _answer(
+            answer="正文", kind="fallback", fallback_question="冷门",
+            notices=[
+                {"level": "warn", "code": "no_evidence", "text": "无资料依据 · 模型自身知识", "position": "before"},
+                {"level": "info", "code": "citation", "text": "1 句含数字但未标来源", "position": "after"},
+                {"level": "info", "code": "fallback", "text": "建议：/agent 冷门 让 Agent 用工具进一步查找", "position": "after"},
+            ],
+        )
+        rag = MagicMock(retriever=object())
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", True):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask 冷门", "冷门"))
+        calls = mock_console.print.call_args_list
+        texts = [str(c.args[0]) if c.args else "" for c in calls]
+        warn_idx = next(i for i, t in enumerate(texts) if t == "⚠️ 无资料依据 · 模型自身知识")
+        assert calls[warn_idx].kwargs.get("style") == "yellow"
+        panel_idx = next(i for i, c in enumerate(calls) if c.args and type(c.args[0]).__name__ == "Panel")
+        info_idx = next(i for i, t in enumerate(texts) if t == "💡 1 句含数字但未标来源")
+        assert warn_idx < panel_idx < info_idx
+        assert calls[info_idx].kwargs.get("style") == "dim"
+        # fallback 建议只出现在既有黄色 /agent 行，不作为 notice 重复打印
+        assert sum(1 for t in texts if "/agent 冷门" in t) == 1
+        assert not any(t.startswith("💡 建议：/agent") for t in texts)
+        # 会话记录：正文 + warn 行
+        assert conv.all_messages()[-1]["content"] == "正文\n\n[no_evidence] 无资料依据 · 模型自身知识"
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_citation_summary_line_and_style(self, mock_console, _rec, conv):
+        """F9 P0-3：来源摘要行追加 ``🔎 引用 v/t 有效``；invalid>0 整行 yellow，否则 dim。"""
+        srcs = [{"content": "c", "file": "f.md", "score": 0.9, "ref": "1", "cited": 1}]
+        rag = MagicMock(retriever=object())
+        result = _answer(answer="甲[1]", kb_sources=srcs,
+                         citation_check={"total_refs": 2, "valid": 1, "invalid": ["5"], "invalid_count": 1, "unsupported_numeric": 0})
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q"))
+        line = next(c for c in mock_console.print.call_args_list if c.args and "📚 基于知识库" in str(c.args[0]))
+        assert "📚 基于知识库 1 个片段 · 🔎 引用 1/2 有效" in str(line.args[0])
+        assert line.kwargs.get("style") == "yellow"
+
+        mock_console.reset_mock()
+        result = _answer(answer="甲[1]", kb_sources=srcs,
+                         citation_check={"total_refs": 1, "valid": 1, "invalid": [], "invalid_count": 0, "unsupported_numeric": 0})
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q"))
+        line = next(c for c in mock_console.print.call_args_list if c.args and "📚 基于知识库" in str(c.args[0]))
+        assert "🔎 引用 1/1 有效" in str(line.args[0]) and line.kwargs.get("style") == "dim"
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_citation_summary_web_only(self, mock_console, _rec, conv):
+        rag = MagicMock(retriever=object())
+        result = _answer(answer="甲[W1]", web_sources=[{"title": "T", "url": "http://x", "ref": "W1", "cited": 1}],
+                         citation_check={"total_refs": 1, "valid": 1, "invalid": [], "invalid_count": 0, "unsupported_numeric": 0})
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q"))
+        assert any(c.args and str(c.args[0]).strip() == "🔎 引用 1/1 有效" for c in mock_console.print.call_args_list)
+
+    def test_citation_summary_helper(self):
+        assert qi._citation_summary(None) == ""
+        assert qi._citation_summary({"total_refs": 0}) == ""
+        assert qi._citation_summary({"total_refs": 3, "valid": 2}) == "🔎 引用 2/3 有效"
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
+    def test_challenge_rewritten_label(self, mock_console, _rec, conv):
+        """F9 P1-2：challenge=True 时 cyan 行文案为「🔁 用户质疑，重新核对」，复用同一通道。"""
+        rag = MagicMock(retriever=object())
+        result = _answer(answer="仍为 2999 元[1]", rewritten="重新核对：DJI 售价（用户认为：3999）", challenge=True)
+        with patch.object(rag_pipeline, "answer_question", lambda *a, **k: result), \
+                patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
+            qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask 不对", "不对，应该是 3999"))
+        out = _printed(mock_console)
+        assert "[cyan]🔁 用户质疑，重新核对：重新核对：DJI 售价（用户认为：3999）[/cyan]" in out
+        assert "已理解为" not in out
+
+    @patch("query_interface.record_command_execution")
+    @patch("query_interface.console")
     def test_meta_query_recorded(self, mock_console, _rec, conv):
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question",
                           lambda *a, **k: _answer(kind="meta", answer="[知识库概览]", meta={})), \
                 patch.object(qi, "rag_engine", rag):
@@ -294,7 +377,7 @@ class TestRunAsk:
         conv.record("q", "a")
         conv.session().metadata["context"]["compressions"] = 2
         conv.manager.save_session(conv.session())
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
                 patch("builtins.print"):
@@ -318,7 +401,7 @@ class TestRunAsk:
             captured.update(kwargs)
             return _answer()
 
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", fake_answer), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
                 patch("builtins.print"):
@@ -350,7 +433,7 @@ class TestAskP2Display:
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
     def test_fallback_kind_prints_agent_hint(self, mock_console, _rec, conv):
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question",
                           lambda *a, **k: _answer(kind="fallback", answer="无… 建议：/agent 冷门 让 Agent 用工具进一步查找",
                                                   fallback_question="冷门")), \
@@ -364,7 +447,7 @@ class TestAskP2Display:
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
     def test_answer_kind_has_no_agent_hint(self, mock_console, _rec, conv):
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
                 patch("builtins.print"):
@@ -374,7 +457,7 @@ class TestAskP2Display:
     @patch("query_interface.record_command_execution")
     @patch("query_interface.console")
     def test_sources_hint_mentions_numbering(self, mock_console, _rec, conv):
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         src = [{"file": "a.md", "content": "c", "score": 0.5, "ref": "1"}]
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer(kb_sources=src)), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "HAS_RICH", False), \
@@ -395,12 +478,30 @@ class TestAskP2Display:
         assert printed[2] == "🧭 均未找到"
         assert mock_console.print.call_args_list[2].kwargs.get("style") == "yellow"
 
+    def test_progress_f9_stages_registered(self):
+        """F9：enrich_page_blocked → cyan；context_rewritten（含质疑文案）→ cyan。"""
+        with patch.object(qi, "console") as mock_console:
+            qi._cli_ask_progress({"stage": "enrich_page_blocked", "message": "🛡️ 已丢弃疑似提示词注入的页面: http://x", "url": "http://x"})
+            qi._cli_ask_progress({"stage": "context_rewritten", "message": "🔁 用户质疑，重新核对：q", "challenge": True})
+        calls = mock_console.print.call_args_list
+        assert str(calls[0].args[0]).startswith("🛡️ 已丢弃") and calls[0].kwargs.get("style") == "cyan"
+        assert str(calls[1].args[0]).startswith("🔁 用户质疑，重新核对") and calls[1].kwargs.get("style") == "cyan"
+
+    def test_progress_p2_stages_registered(self):
+        """F9 P2：premise_unverified → yellow；self_check → dim。"""
+        with patch.object(qi, "console") as mock_console:
+            qi._cli_ask_progress({"stage": "premise_unverified", "message": "⚠️ 问题中的「X」未在资料中出现，将先核对前提"})
+            qi._cli_ask_progress({"stage": "self_check", "message": "🔍 自校验：1 句未在资料中找到依据", "count": 1})
+        calls = mock_console.print.call_args_list
+        assert calls[0].kwargs.get("style") == "yellow"
+        assert calls[1].kwargs.get("style") == "dim"
+
 
 # ==================== rag_pipeline 上下文接线 ====================
 
 class FakeRAG:
     def __init__(self):
-        self.query_engine = object()
+        self.retriever = object()
         self.seen = []
 
     def query_with_sources(self, question, progress_callback=None):
@@ -409,6 +510,11 @@ class FakeRAG:
 
 
 class TestPipelineContext:
+    @pytest.fixture(autouse=True)
+    def _synth(self, stub_synthesis):
+        """F9 P0-1：检索层不再生成答案，综合由打桩的 llm_direct_answer 产出 ``答:<问题>``。"""
+        stub_synthesis("答:")
+
     def test_no_context_keeps_behaviour(self):
         result = rag_pipeline.answer_question(FakeRAG(), "问题", enable_web_search=False)
         assert result["rewritten"] is None
@@ -431,6 +537,19 @@ class TestPipelineContext:
         assert any(e["stage"] == "context_rewritten" for e in events)
         assert "对话上下文" in prompts[0] and "DJI OSMO 360 是什么" in prompts[0]
         assert "## 问题\nDJI OSMO 360 多少钱" in prompts[0]
+
+    def test_challenge_passthrough(self, conv, monkeypatch):
+        conv.record("DJI OSMO 360 多少钱", "2999 元")
+        conv._complete = lambda p: "重新核对：DJI OSMO 360 售价（用户认为：3999）"
+        events = []
+        result = rag_pipeline.answer_question(FakeRAG(), "不对，应该是 3999", enable_web_search=False,
+                                              context=conv, progress=lambda e: events.append(e))
+        assert result["challenge"] is True and result["rewritten"].startswith("重新核对：")
+        ev = next(e for e in events if e["stage"] == "context_rewritten")
+        assert ev["challenge"] is True and ev["message"].startswith("🔁 用户质疑，重新核对：")
+
+    def test_challenge_false_without_context(self):
+        assert rag_pipeline.answer_question(FakeRAG(), "问题", enable_web_search=False)["challenge"] is False
 
     def test_context_failure_ignored(self, monkeypatch):
         bad = MagicMock()
@@ -482,7 +601,7 @@ class TestNaturalAutoRoute:
     def test_agent_intent_routes_to_agent_with_hint(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         engine = self._engine()
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         asked = MagicMock()
         with patch.object(rag_pipeline, "answer_question", asked), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
@@ -503,7 +622,7 @@ class TestNaturalAutoRoute:
     def test_rag_intent_uses_run_ask(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         engine = self._engine()
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
                 patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
@@ -519,7 +638,7 @@ class TestNaturalAutoRoute:
     def test_auto_off_same_input_goes_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
         engine = self._engine()
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         classify = MagicMock()
         import intent_router
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
@@ -538,7 +657,7 @@ class TestNaturalAutoRoute:
     def test_kb_unavailable_passed_to_classifier(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         engine = self._engine()
-        rag = MagicMock(query_engine=None)
+        rag = MagicMock(retriever=None)
         import intent_router
         seen = {}
 
@@ -560,7 +679,7 @@ class TestNaturalAutoRoute:
     @patch("query_interface.console")
     def test_no_react_engine_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", None), \
                 patch.object(qi, "HAS_RICH", False), patch("builtins.print"):
@@ -573,7 +692,7 @@ class TestNaturalAutoRoute:
     def test_classifier_error_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         engine = self._engine()
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         import intent_router
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
                 patch.object(qi, "rag_engine", rag), patch.object(qi, "react_engine", engine), \
@@ -589,7 +708,7 @@ class TestNaturalAutoRoute:
     def test_explicit_ask_and_agent_skip_classifier(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         engine = self._engine()
-        rag = MagicMock(query_engine=object())
+        rag = MagicMock(retriever=object())
         import intent_router
         classify = MagicMock()
         with patch.object(rag_pipeline, "answer_question", lambda *a, **k: _answer()), \
