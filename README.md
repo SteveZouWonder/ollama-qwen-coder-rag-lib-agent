@@ -604,8 +604,10 @@ Agent 会自动：
 `CODE_AGENT_AUTO_CONFIRM=true`（或 `--yes`）只免除 low / medium，**high / critical 一律仍需人工确认**。
 
 **路径边界**：`write_file` / `add_to_knowledge_base` 只允许操作**当前工作目录**或
-`WRITE_ALLOWED_DIRS`（冒号分隔）内的路径；`read_file` / `list_directory` / `search_files`（含 CLI
-`/file`）只允许读**写允许目录 + `READ_ALLOWED_DIRS` + 已入库文档所在目录**，越界返回
+`WRITE_ALLOWED_DIRS`（冒号分隔）内的路径；`read_file` / `list_directory` / `search_files` /
+`analyze_project_structure` / `ast_search` / `code_quality_check` / `git_analyze`（含 CLI `/file` 与
+Web「工具」页的目录浏览 / 预览 / 搜索 / 符号 / 质量 / 代码助手）只允许读**写允许目录 +
+`READ_ALLOWED_DIRS` + 已入库文档所在目录**（Web 上传的文件按上传根目录一条计），越界返回
 `[错误] 路径超出允许范围`。要让 Agent 入库项目外的 PDF/图片先
 `export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads`；只需读取则用
 `export READ_ALLOWED_DIRS=~/Documents`。当前允许范围可用 CLI `/config` 或 Web「系统 → 运行环境」查看。
@@ -939,7 +941,8 @@ orchestrator = AgentOrchestrator(config)
 （无交互场景返回 `[提示] 高风险命令需人工确认`），critical 始终拦截。
 
 路径边界：`write_file` / `add_to_knowledge_base` 只能操作当前工作目录或 `WRITE_ALLOWED_DIRS`
-内的文件；`read_file` / `list_directory` / `search_files` 只能读「写允许目录 + `READ_ALLOWED_DIRS`
+内的文件；所有读文件 / 目录的工具（`read_file` / `list_directory` / `search_files` / 项目分析 / AST /
+质量检查 / Git 分析）与 Web「工具」页的浏览、预览、搜索只能读「写允许目录 + `READ_ALLOWED_DIRS`
 + 已入库文档所在目录」。用 `/config`（CLI）或「系统 → 运行环境」（Web）查看当前允许范围。
 
 ### 内容安全防护 ⚡

@@ -13,7 +13,10 @@ from query_interface import ParsedCommand
 
 @pytest.fixture
 def scoped(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    """cwd = tmp_path/proj；额外目录放在 proj 之外（cwd 的子目录会被 cwd 吸收，不单独列出）。"""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
     monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
     monkeypatch.delenv("READ_ALLOWED_DIRS", raising=False)
     return tmp_path
@@ -34,7 +37,7 @@ class TestConfigRows:
         extra.mkdir()
         monkeypatch.setenv("READ_ALLOWED_DIRS", str(extra))
         rows = dict(h.config_rows())
-        assert str(scoped.resolve()) in rows["允许写目录"]
+        assert str((scoped / "proj").resolve()) in rows["允许写目录"]
         assert str(extra.resolve()) in rows["允许读目录"]
 
     def test_auto_confirm_scope_is_explicit(self, scoped, monkeypatch):

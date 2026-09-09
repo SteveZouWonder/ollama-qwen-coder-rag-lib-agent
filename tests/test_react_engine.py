@@ -1083,6 +1083,33 @@ class TestUserConfirmation:
         assert "高风险命令需人工确认" in engine.step_log[0]["observation"]
 
     @patch("react_engine.requests.post")
+    def test_high_risk_confirmed_once_executes_once(self, mock_post, monkeypatch):
+        """守卫：high 命令经用户确认后，真实 registry 不再二次索要确认（``[CONFIRM_REQUIRED]``）。
+
+        用真实 ``registry``（只替换 execute_command 的实现），mock registry 抓不到这种回归。
+        """
+        import agent_tools
+
+        monkeypatch.setattr(react_engine.Config, "AUTO_CONFIRM", False)
+        calls = []
+        monkeypatch.setitem(agent_tools.registry.tools["execute_command"], "function",
+                            lambda command, timeout=30: calls.append(command) or "removed")
+        mock_post.side_effect = [_resp(_action("execute_command", command="rm -rf build")),
+                                 _resp("Final Answer: 已清理")]
+        confirms = []
+
+        def on_confirm(data):
+            confirms.append(data)
+            return True
+
+        engine, ctx = make_engine(on_confirm=on_confirm)
+        assert engine.chat("清理构建产物") == "已清理"
+        assert len(confirms) == 1 and confirms[0]["safety"]["risk_level"] == "high"
+        assert calls == ["rm -rf build"]
+        assert engine.step_log[0]["confirmed"] is True
+        assert "CONFIRM_REQUIRED" not in engine.step_log[0].get("observation", "")
+
+    @patch("react_engine.requests.post")
     @patch("react_engine.registry")
     def test_auto_confirm_allows_medium_risk(self, mock_registry, mock_post, monkeypatch):
         """medium（pip install）在 AUTO_CONFIRM 下仍免确认——不得回归成需确认。"""

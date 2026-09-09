@@ -1270,6 +1270,22 @@ class WebService:
         "refactor": "列 3-5 条可落地的重构建议，每条给 动机、改法、风险。",
     }
 
+    @staticmethod
+    def path_read_error(path: str) -> Optional[str]:
+        """路径不在允许读取范围时返回错误文案（不带 ``[错误]`` 前缀），否则 ``None``。
+
+        Web「工具」页直接读文件 / 目录的入口（预览、目录、搜索、符号、质量、图谱 @文件、代码助手）
+        与 Agent 的 ``read_file`` 等工具共用 ``agent_tools`` 的读边界（F10 P0-1），两端一致、无绕过口。
+        """
+        try:
+            from agent_tools import is_read_allowed, read_scope_error
+        except ImportError:  # pragma: no cover - 裁剪部署缺少 agent_tools 时不设边界
+            return None
+        if is_read_allowed(path):
+            return None
+        msg = read_scope_error(path)
+        return msg[len("[错误] "):] if msg.startswith("[错误] ") else msg
+
     def build_code_assist_prompt(self, action: str, path: str, extra: str = "",
                                  content: Optional[str] = None) -> str:
         """组装代码助手的 ``system_prompt_extra``（附录 A-1）。``content`` 非空时内联文件内容。"""
@@ -1297,6 +1313,10 @@ class WebService:
         path = (path or "").strip() or "."
         if action not in self.CODE_ASSIST_ACTIONS:
             yield StreamEvent("error", f"未知动作 '{action}'，支持: {' / '.join(self.CODE_ASSIST_ACTIONS)}")
+            return
+        scope_err = self.path_read_error(path)
+        if scope_err:
+            yield StreamEvent("error", scope_err)
             return
         if not os.path.exists(os.path.expanduser(path)):
             yield StreamEvent("error", f"路径不存在: {path}")
@@ -1369,6 +1389,9 @@ class WebService:
         if not pattern:
             return {"symbols": [], "error": "请输入搜索模式"}
         real = os.path.expanduser(path)
+        scope_err = self.path_read_error(real)
+        if scope_err:
+            return {"symbols": [], "error": scope_err}
         if not os.path.exists(real):
             return {"symbols": [], "error": f"路径不存在: {path}"}
         try:
@@ -1409,6 +1432,9 @@ class WebService:
         real = os.path.expanduser(path)
         base = {"path": path, "files": 0, "score": 0.0, "total_issues": 0,
                 "severity": {"critical": 0, "error": 0, "warning": 0, "info": 0}, "issues": []}
+        scope_err = self.path_read_error(real)
+        if scope_err:
+            return {**base, "error": scope_err}
         if not os.path.exists(real):
             return {**base, "error": f"路径不存在: {path}"}
         try:
@@ -1824,6 +1850,9 @@ class WebService:
         if not file_path:
             return "[提示] 请输入文件路径"
         path = Path(file_path).expanduser()
+        scope_err = self.path_read_error(str(path))
+        if scope_err:
+            return f"[错误] {scope_err}"
         if not path.exists() or not path.is_file():
             return f"[错误] 文件不存在: {file_path}"
         try:
@@ -1926,6 +1955,9 @@ class WebService:
         real = os.path.abspath(os.path.expanduser(raw))
         parent = os.path.dirname(real) if os.path.dirname(real) != real else real
         base = {"path": real, "parent": parent, "entries": []}
+        scope_err = self.path_read_error(real)
+        if scope_err:
+            return {**base, "error": scope_err}
         if not os.path.exists(real):
             return {**base, "error": f"路径不存在: {raw}"}
         if not os.path.isdir(real):
@@ -1966,6 +1998,9 @@ class WebService:
         if not raw:
             return {**base, "error": "请选择文件"}
         real = os.path.expanduser(raw)
+        scope_err = self.path_read_error(real)
+        if scope_err:
+            return {**base, "error": scope_err}
         if not os.path.exists(real):
             return {**base, "error": f"文件不存在: {raw}"}
         if os.path.isdir(real):
@@ -1996,7 +2031,7 @@ class WebService:
         if not query:
             return []
         real = os.path.abspath(os.path.expanduser((path or ".").strip() or "."))
-        if not os.path.isdir(real):
+        if not os.path.isdir(real) or self.path_read_error(real):
             return []
         try:
             from agent_tools import SEARCH_FILE_EXTS as exts, SEARCH_SKIP_DIRS as skip_dirs

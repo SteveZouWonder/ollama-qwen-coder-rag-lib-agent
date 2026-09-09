@@ -367,10 +367,11 @@ class TestP01ReadBoundary:
 
     def test_read_allowed_dirs_env(self, tmp_path, monkeypatch):
         from agent_tools import read_allowed_dirs, is_read_allowed
-        ro1 = tmp_path / "ro1"
-        ro2 = tmp_path / "ro2"
+        # 额外目录放在 cwd 之外（cwd 的子目录会被 cwd 吸收，不单独列出）
+        ro1 = tmp_path.parent / f"{tmp_path.name}_ro1"
+        ro2 = tmp_path.parent / f"{tmp_path.name}_ro2"
         for d in (ro1, ro2):
-            d.mkdir()
+            d.mkdir(exist_ok=True)
         monkeypatch.setenv("READ_ALLOWED_DIRS", f"{ro1}: {ro2} :")
         dirs = read_allowed_dirs()
         assert str(ro1) in dirs and str(ro2) in dirs
@@ -445,6 +446,97 @@ class TestP01ReadBoundary:
         from agent_tools import registry
         out = registry.execute("read_file", {"path": "/etc/hosts"}, auto_confirm=True)
         assert out.startswith("[错误] 路径超出允许范围")
+
+    # ---- 允许目录收敛（F10 P0-1 后续 #5）----
+
+    def test_subsumed_dirs_are_dropped(self, tmp_path, monkeypatch):
+        """被其他允许目录包含的子目录不单独列出（cwd 已覆盖 cwd/sub）。"""
+        from agent_tools import read_allowed_dirs, write_allowed_dirs
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        monkeypatch.setenv("WRITE_ALLOWED_DIRS", str(sub))
+        monkeypatch.setenv("READ_ALLOWED_DIRS", f"{sub}:{sub / 'deep'}")
+        assert write_allowed_dirs() == [str(tmp_path.resolve())]
+        assert read_allowed_dirs() == [str(tmp_path.resolve())]
+
+    def test_parent_dir_absorbs_child_regardless_of_order(self, tmp_path, monkeypatch):
+        from agent_tools import _normalize_dirs
+        a, b = tmp_path / "a", tmp_path / "a" / "b"
+        b.mkdir(parents=True)
+        assert _normalize_dirs([str(b), str(a)]) == [str(a.resolve())]
+        # 前缀相同但不是子目录（/x/a vs /x/ab）保留两者
+        ab = tmp_path / "ab"
+        ab.mkdir()
+        assert set(_normalize_dirs([str(a), str(ab)])) == {str(a.resolve()), str(ab.resolve())}
+
+    def test_gradio_upload_dirs_collapse_to_upload_root(self, tmp_path, monkeypatch):
+        """Web 上传入库的文件落在 gradio 临时根下的随机哈希目录，统一折叠为该根目录一条。"""
+        import file_metadata as fm
+        from agent_tools import read_allowed_dirs, is_read_allowed
+        root = tmp_path.parent / f"{tmp_path.name}_gradio"
+        monkeypatch.setenv("GRADIO_TEMP_DIR", str(root))
+        for h in ("aaa111", "bbb222", "ccc333"):
+            d = root / h
+            d.mkdir(parents=True)
+            f = d / "paper.pdf"
+            f.write_text("x", encoding="utf-8")
+            fm.get_global_metadata_manager().add_file(str(f))
+        dirs = read_allowed_dirs()
+        assert str(root.resolve()) in dirs
+        assert not any(d.startswith(str(root.resolve()) + "/") for d in dirs)
+        assert is_read_allowed(str(root / "ddd444" / "new.pdf"))  # 同根下未来的上传也可读
+
+    def test_non_gradio_indexed_dir_kept_as_is(self, tmp_path, monkeypatch):
+        import file_metadata as fm
+        from agent_tools import read_allowed_dirs
+        monkeypatch.setenv("GRADIO_TEMP_DIR", str(tmp_path.parent / f"{tmp_path.name}_gradio"))
+        docs = tmp_path.parent / f"{tmp_path.name}_docs"
+        docs.mkdir(exist_ok=True)
+        (docs / "a.pdf").write_text("x", encoding="utf-8")
+        fm.get_global_metadata_manager().add_file(str(docs / "a.pdf"))
+        assert str(docs.resolve()) in read_allowed_dirs()
+
+
+class TestP01ReadBoundaryMoreTools:
+    """F10 P0-1 后续 #4a：项目分析 / AST / 质量检查 / Git 工具同样受读边界约束。"""
+
+    @pytest.fixture(autouse=True)
+    def _scoped_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
+        monkeypatch.delenv("READ_ALLOWED_DIRS", raising=False)
+        return tmp_path
+
+    @pytest.mark.parametrize("call", [
+        lambda at: at.analyze_project_structure("/etc"),
+        lambda at: at.ast_search("x", "/etc"),
+        lambda at: at.code_quality_check("/etc"),
+        lambda at: at.git_analyze("/etc"),
+        lambda at: at.git_commit_gen("/etc", use_ai=False),
+    ])
+    def test_out_of_scope(self, call):
+        import agent_tools
+        out = call(agent_tools)
+        assert out.startswith("[错误] 路径超出允许范围"), out
+        assert "READ_ALLOWED_DIRS" in out
+
+    def test_in_scope_still_works(self, tmp_path):
+        from agent_tools import analyze_project_structure, ast_search, code_quality_check
+        (tmp_path / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        (tmp_path / "requirements.txt").write_text("x\n", encoding="utf-8")
+        assert "Python" in analyze_project_structure(".")
+        assert "函数: f" in ast_search("f", "a.py")
+        assert "[错误]" not in code_quality_check("a.py")
+
+    def test_env_grants_access(self, tmp_path, monkeypatch):
+        from agent_tools import analyze_project_structure, ast_search
+        outside = tmp_path.parent / f"{tmp_path.name}_proj"
+        outside.mkdir(exist_ok=True)
+        (outside / "m.py").write_text("def g(): pass\n", encoding="utf-8")
+        assert analyze_project_structure(str(outside)).startswith("[错误] 路径超出允许范围")
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(outside))
+        assert "根文件数: 1" in analyze_project_structure(str(outside))
+        assert "函数: g" in ast_search("g", str(outside / "m.py"))
 
 
 class TestWritePathBoundary:

@@ -373,16 +373,32 @@ PATH_OUT_OF_SCOPE_ERROR = "[错误] 路径超出允许范围"
 _SCOPE_HINT_MAX_DIRS = 5
 
 
+def _is_subpath(child: str, parent: str) -> bool:
+    return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
 def _normalize_dirs(dirs) -> List[str]:
-    """展开 ``~``、解析符号链接与 ``..``，按原顺序去重。"""
+    """展开 ``~``、解析符号链接与 ``..``，按原顺序去重，并丢弃被其他目录包含的子目录。
+
+    ``cwd`` 已覆盖 ``cwd/sub``，再单独列出只会让 ``/config`` / 系统页的目录列表越来越长。
+    """
     seen: List[str] = []
     for d in dirs:
         if not d or not str(d).strip():
             continue
         real = os.path.realpath(os.path.expanduser(str(d).strip()))
-        if real not in seen:
-            seen.append(real)
+        if any(_is_subpath(real, kept) for kept in seen):
+            continue
+        seen = [kept for kept in seen if not _is_subpath(kept, real)]
+        seen.append(real)
     return seen
+
+
+def _upload_root() -> str:
+    """Web 上传文件的临时根目录（Gradio：``$GRADIO_TEMP_DIR`` 或 ``<tmp>/gradio``）。"""
+    import tempfile
+
+    return os.path.realpath(os.getenv("GRADIO_TEMP_DIR") or os.path.join(tempfile.gettempdir(), "gradio"))
 
 
 def write_allowed_dirs() -> List[str]:
@@ -397,13 +413,23 @@ def _indexed_document_dirs() -> List[str]:
 
     知识库文档常在工作区之外（``~/Documents/论文.pdf``），既然用户已显式入库，
     Agent 就应能读回原文；元数据不可用时忽略该来源。
+
+    Web 上传的文件落在 Gradio 临时根下的随机哈希目录（每个文件一个），逐个列出会让允许目录
+    越积越多；这些都是用户自己上传的内容，统一折叠为上传根目录一条。
     """
     try:
         from file_metadata import get_global_metadata_manager
 
         manager = get_global_metadata_manager()
-        return [os.path.dirname(os.path.abspath(fm.file_path))
-                for fm in manager.list_files() if getattr(fm, "file_path", "")]
+        upload_root = _upload_root()
+        dirs: List[str] = []
+        for fm in manager.list_files():
+            path = getattr(fm, "file_path", "")
+            if not path:
+                continue
+            d = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+            dirs.append(upload_root if _is_subpath(d, upload_root) else d)
+        return dirs
     except Exception:  # noqa: BLE001 - 元数据缺失/损坏不应影响读操作可用性
         return []
 
@@ -544,6 +570,9 @@ def list_directory(path: str = ".") -> str:
 
 def analyze_project_structure(project_path: str = ".") -> str:
     """分析项目结构，提供项目概览"""
+    project_path = os.path.expanduser(str(project_path or "."))
+    if not is_read_allowed(project_path):
+        return read_scope_error(project_path)
     if not os.path.exists(project_path):
         return "[错误] 项目路径不存在: " + project_path
     if not os.path.isdir(project_path):
@@ -767,7 +796,6 @@ def query_knowledge_base(question: str) -> str:
     模型相关性判定），只取知识库结论、不联网、不兜底；返回"答案 + 相关性结论 +
     top-3 片段原文"，不相关时返回 ``[知识库无相关内容]``。
     """
-    global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
     try:
@@ -782,7 +810,6 @@ def query_knowledge_base(question: str) -> str:
 
 def add_to_knowledge_base(file_path: str) -> str:
     """将文档添加到知识库"""
-    global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
     if not is_path_allowed(file_path):
@@ -794,7 +821,6 @@ def add_to_knowledge_base(file_path: str) -> str:
 
 def get_knowledge_stats() -> str:
     """获取知识库统计信息"""
-    global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
     try:
@@ -804,7 +830,6 @@ def get_knowledge_stats() -> str:
 
 def check_knowledge_status() -> str:
     """检查知识库状态，包括持久化和数据情况"""
-    global _rag_engine
     if _rag_engine is None:
         return "[错误] 知识库引擎未初始化"
     try:
@@ -1032,7 +1057,7 @@ registry.register("execute_command", execute_command, "执行shell命令（如py
                   {"command": "命令字符串(必填)", "timeout": "超时秒数，默认30"}, safe=False)
 registry.register("list_directory", list_directory, "列出目录内容（仅限允许目录）",
                   {"path": "目录路径，默认当前目录"}, safe=True)
-registry.register("analyze_project_structure", analyze_project_structure, "分析项目结构，识别技术栈和关键文件",
+registry.register("analyze_project_structure", analyze_project_structure, "分析项目结构，识别技术栈和关键文件（仅限允许目录）",
                   {"project_path": "项目路径，默认当前目录"}, safe=True)
 registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件（仅限允许目录）",
                   {"query": "搜索关键字(必填)", "path": "搜索目录，默认当前目录", "max_results": "最大结果数，默认10"}, safe=True)
@@ -1072,6 +1097,8 @@ registry.register("web_cache_clear", web_cache_clear, "清空搜索缓存", {}, 
 def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
     """AST 语法树搜索（函数、类、变量）"""
     path = os.path.expanduser(str(path or "."))
+    if not is_read_allowed(path):
+        return read_scope_error(path)
     try:
         from code_analyzer import get_ast_analyzer
         
@@ -1114,6 +1141,8 @@ def ast_search(pattern: str, path: str = ".", search_by: str = "name") -> str:
 def code_quality_check(path: str = ".", check_type: str = "basic") -> str:
     """代码质量分析（安全、性能、复杂度）"""
     path = os.path.expanduser(str(path or "."))
+    if not is_read_allowed(path):
+        return read_scope_error(path)
     try:
         from code_analyzer import get_quality_checker
         
@@ -1150,14 +1179,17 @@ def code_quality_check(path: str = ".", check_type: str = "basic") -> str:
         return f"[错误] 代码质量检查失败: {str(e)}"
 
 
-registry.register("ast_search", ast_search, "AST 语法树搜索（函数、类、变量）",
+registry.register("ast_search", ast_search, "AST 语法树搜索（函数、类、变量；仅限允许目录）",
                   {"pattern": "搜索模式(必填)", "path": "搜索路径，默认当前目录", "search_by": "搜索类型（name/parameter/return/base/method），默认name"}, safe=True)
-registry.register("code_quality_check", code_quality_check, "代码质量分析（安全、性能、复杂度）",
+registry.register("code_quality_check", code_quality_check, "代码质量分析（安全、性能、复杂度；仅限允许目录）",
                   {"path": "代码路径，默认当前目录", "check_type": "检查类型（basic/security/complexity/pylint），默认basic"}, safe=True)
 
 # Git 工具
 def git_analyze(repo_path: str = ".", analysis_type: str = "history") -> str:
     """Git 历史分析和变更追踪"""
+    repo_path = os.path.expanduser(str(repo_path or "."))
+    if not is_read_allowed(repo_path):
+        return read_scope_error(repo_path)
     try:
         from git_integration import get_git_analyzer
         
@@ -1213,6 +1245,9 @@ def git_analyze(repo_path: str = ".", analysis_type: str = "history") -> str:
 
 def git_commit_gen(repo_path: str = ".", use_ai: bool = True) -> str:
     """生成提交信息"""
+    repo_path = os.path.expanduser(str(repo_path or "."))
+    if not is_read_allowed(repo_path):
+        return read_scope_error(repo_path)
     try:
         from git_integration import get_commit_generator
         
@@ -1235,9 +1270,9 @@ def git_commit_gen(repo_path: str = ".", use_ai: bool = True) -> str:
         return f"[错误] 生成提交信息失败: {str(e)}"
 
 
-registry.register("git_analyze", git_analyze, "Git 历史分析和变更追踪",
+registry.register("git_analyze", git_analyze, "Git 历史分析和变更追踪（仅限允许目录）",
                   {"repo_path": "仓库路径，默认当前目录", "analysis_type": "分析类型（history/status/authors），默认history"}, safe=True)
-registry.register("git_commit_gen", git_commit_gen, "生成提交信息",
+registry.register("git_commit_gen", git_commit_gen, "生成提交信息（仅限允许目录）",
                   {"repo_path": "仓库路径，默认当前目录", "use_ai": "是否使用AI生成，默认true"}, safe=True)
 
 # 知识图谱工具

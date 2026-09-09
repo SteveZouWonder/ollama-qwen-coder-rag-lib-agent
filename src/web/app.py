@@ -2151,7 +2151,10 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
             return "", "💡 先在左侧选择文件，或在上方输入新文件路径"
         preview = service.file_preview(path, 0, FILE_EDIT_MAX_LINES)
         if preview.get("error"):
-            return "", f"💡 {preview['error']} · 保存将创建新文件"
+            err = str(preview["error"])
+            if "路径超出允许范围" in err:  # 写边界 ⊆ 读边界：保存同样会被拒，不要暗示"可新建"
+                return "", f"❌ {err}"
+            return "", f"💡 {err} · 保存将创建新文件"
         if int(preview.get("pages", 1) or 1) > 1:
             return "", (f"⚠️ 文件超过 {FILE_EDIT_MAX_LINES} 行，编辑框未加载全文；"
                         "覆盖保存会替换整个文件，建议勾选「追加」")
@@ -2162,6 +2165,9 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
         query = (query or "").strip()
         if not query:
             return "", []
+        scope_err = service.path_read_error(path or ".")
+        if scope_err:  # search_in_dir 没有 error 槽位：越界必须在这里可见，不能伪装成"未找到"
+            return f"❌ {scope_err}", []
         results = service.search_in_dir(query, path or ".")
         if not results:
             return f"💡 未找到包含「{query}」的文件", []

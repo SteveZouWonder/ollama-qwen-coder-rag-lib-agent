@@ -814,7 +814,6 @@ def count_code_sources(sources: list) -> int:
     return sum(1 for s in sources or [] if isinstance(s, dict) and s.get("symbol"))
 
 def print_knowledge_stats():
-    global rag_engine
     if rag_engine is None:
         console.print("⚠️  知识库未初始化", style="yellow")
         return

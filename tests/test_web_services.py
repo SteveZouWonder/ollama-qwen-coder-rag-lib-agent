@@ -1557,13 +1557,15 @@ class TestGraphTyped:
         assert make_service().graph_query_typed("")["text"].startswith("[提示]")
 
     def test_build_file(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(tmp_path))  # F10 P0-1：读边界
         reg = _FakeRegistry("built")
         svc = self._svc(monkeypatch, reg)
         f = tmp_path / "a.py"
         f.write_text("def f(): pass", encoding="utf-8")
         assert svc.graph_build_file(f"@{f}") == "built"
         assert reg.calls[0][1]["doc_type"] == "code" and reg.calls[0][1]["doc_id"] == "a.py"
-        assert "[错误] 文件不存在" in svc.graph_build_file("/nope/x.txt")
+        assert "[错误] 文件不存在" in svc.graph_build_file(str(tmp_path / "nope.txt"))
+        # 越界用例见 TestWorkspaceReadBoundary（此处 agent_tools 被替换为 MagicMock，边界不生效）
         empty = tmp_path / "e.txt"
         empty.write_text("", encoding="utf-8")
         assert "[提示] 文件内容为空" in svc.graph_build_file(str(empty))
@@ -1865,13 +1867,15 @@ class TestShellAndFiles:
 
     def test_env_info_exposes_allowed_dirs(self, tmp_path, monkeypatch):
         """F10 P0-1-d：service 暴露读 / 写允许目录，供系统页展示。"""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
+        proj = tmp_path / "proj"
         extra = tmp_path / "ro"
+        proj.mkdir()
         extra.mkdir()
+        monkeypatch.chdir(proj)
+        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
         monkeypatch.setenv("READ_ALLOWED_DIRS", str(extra))
         info = make_service().env_info()
-        assert str(tmp_path.resolve()) in info["write_allowed_dirs"]
+        assert str(proj.resolve()) in info["write_allowed_dirs"]
         assert str(extra.resolve()) in info["read_allowed_dirs"]
         assert set(info["write_allowed_dirs"]) <= set(info["read_allowed_dirs"])
 
@@ -2350,8 +2354,9 @@ class TestReactFactoryPassthrough:
 
 class TestCodeAssist:
     @pytest.fixture(autouse=True)
-    def _reset(self):
+    def _reset(self, tmp_path, monkeypatch):
         _KwReact.captured = []
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(tmp_path))  # F10 P0-1：读边界
         yield
 
     def _svc(self, **kw):
@@ -2440,6 +2445,10 @@ class TestCodeAssist:
 
 
 class TestCodeSymbolsAndQuality:
+    @pytest.fixture(autouse=True)
+    def _allow_tmp(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(tmp_path))  # F10 P0-1：读边界
+
     @pytest.fixture
     def proj(self, tmp_path):
         (tmp_path / "a.py").write_text(
@@ -2631,6 +2640,10 @@ class TestDbNl2Sql:
 
 
 class TestWorkspaceBrowse:
+    @pytest.fixture(autouse=True)
+    def _allow_tmp(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(tmp_path))  # F10 P0-1：读边界
+
     @pytest.fixture
     def tree(self, tmp_path):
         (tmp_path / "src").mkdir()
@@ -2663,6 +2676,7 @@ class TestWorkspaceBrowse:
         assert "不是目录" in out["error"]
         root = svc.list_dir("/")
         assert root["path"] == "/" and root["parent"] == "/"
+        assert "路径超出允许范围" in root["error"] and root["entries"] == []  # F10 P0-1：根目录越界
         assert svc.list_dir("")["path"] == __import__("os").getcwd()
 
     def test_list_dir_truncated(self, tree, monkeypatch):
@@ -2945,3 +2959,60 @@ class TestGitCommitFlow:
         ok.GitAnalyzer.return_value.commit.return_value = {"ok": True, "hash7": "abc1234", "subject": "s"}
         monkeypatch.setitem(_sys.modules, "git_integration.git_analyzer", ok)
         assert make_service().git_commit("msg", ".") == "[成功] 已提交 abc1234 · s"
+
+
+class TestWorkspaceReadBoundary:
+    """F10 P0-1 后续 #4b：Web「工具」页直接读文件 / 目录的 7 个入口与 Agent 共用同一读边界。
+
+    此前 Agent 读 ``~/.ssh`` 被拦，但 Web 工作区输入同一路径可直接预览——两端不一致。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _scoped(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
+        monkeypatch.delenv("READ_ALLOWED_DIRS", raising=False)
+        (tmp_path / "ok.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        return tmp_path
+
+    def test_path_read_error_helper(self, tmp_path):
+        svc = make_service()
+        assert svc.path_read_error("ok.py") is None
+        err = svc.path_read_error("/etc/hosts")
+        assert err and err.startswith("路径超出允许范围") and "READ_ALLOWED_DIRS" in err
+
+    def test_list_dir_and_preview_and_search(self):
+        svc = make_service()
+        listing = svc.list_dir("/etc")
+        assert "路径超出允许范围" in listing["error"] and listing["entries"] == []
+        preview = svc.file_preview("/etc/hosts")
+        assert "路径超出允许范围" in preview["error"] and preview["content"] == ""
+        assert svc.search_in_dir("root", "/etc") == []
+        # 范围内正常
+        assert any(e["name"] == "ok.py" for e in svc.list_dir(".")["entries"])
+        assert "return 1" in svc.file_preview("ok.py")["content"]
+        assert svc.search_in_dir("return", ".")
+
+    def test_code_symbols_and_quality(self):
+        svc = make_service()
+        assert "路径超出允许范围" in svc.code_symbols("f", "/etc")["error"]
+        assert "路径超出允许范围" in svc.code_quality_report("/etc")["error"]
+        assert svc.code_symbols("f", "ok.py")["symbols"]
+
+    def test_graph_build_file(self):
+        assert make_service().graph_build_file("@/etc/hosts").startswith("[错误] 路径超出允许范围")
+
+    def test_code_assist_stream(self):
+        events = list(make_service().code_assist_stream("explain", "/etc/hosts"))
+        assert len(events) == 1 and events[0].kind == "error"
+        assert "路径超出允许范围" in events[0].message
+
+    def test_env_grants_access(self, tmp_path, monkeypatch):
+        outside = tmp_path.parent / f"{tmp_path.name}_ws"
+        outside.mkdir(exist_ok=True)
+        (outside / "n.txt").write_text("needle\n", encoding="utf-8")
+        svc = make_service()
+        assert "路径超出允许范围" in svc.file_preview(str(outside / "n.txt"))["error"]
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(outside))
+        assert "needle" in svc.file_preview(str(outside / "n.txt"))["content"]
+        assert svc.search_in_dir("needle", str(outside))

@@ -20,6 +20,10 @@
   只能读取「当前工作目录 + `WRITE_ALLOWED_DIRS` + 新环境变量 `READ_ALLOWED_DIRS` + 已入库文档所在目录」，
   越界返回 `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）`。
   此前 Agent 可读取工作区外任意文件（如 `~/.ssh/id_rsa`）。
+  同一边界覆盖 `analyze_project_structure` / `ast_search` / `code_quality_check` / `git_analyze` / `git_commit_gen`，
+  以及 Web「工具」页直接读盘的 7 个入口（目录浏览、文件预览 / 编辑加载、关键词搜索、符号搜索、质量检查、
+  图谱 `@文件`、代码助手）——此前 Agent 被拦的路径在 Web 工作区输入仍可直接预览。搜索目录越界时明确报错，
+  不再伪装成"未找到"。
 - **`CODE_AGENT_AUTO_CONFIRM` / `--yes` 可绕过高风险命令（F10 P0-1）**：自动确认现在只放行 low / medium，
   high 仍需人工确认；无交互场景拒绝执行并返回 `[提示] 高风险命令需人工确认`（critical 维持直接拦截）。
   判定收敛到共享层 `agent_tools.auto_confirm_allows()`，由 ReAct 引擎、CLI `/exec`、CLI 确认提示与子 Agent 共用。
@@ -29,6 +33,8 @@
 - **允许目录可见（F10 P0-1）**：新增 CLI `/config` 命令，一行 `key: value` 显示模型 / 自动确认（标注只放行
   low / medium）/ **允许读目录 · 允许写目录** / 数据与索引目录 / Agent 步数与超时；Web「系统 → 运行环境」
   同步新增「允许读目录 / 允许写目录」两行，未配置时提示可用 `READ_ALLOWED_DIRS` / `WRITE_ALLOWED_DIRS` 放行。
+  允许目录列表自动收敛：被其他允许目录包含的子目录不再单独列出；Web 上传入库的文件（散落在临时根下的随机
+  哈希目录）统一折叠为上传根目录一条，列表不再随入库数量增长。
 
 ### 新增
 

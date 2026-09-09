@@ -195,6 +195,8 @@ def make_service_mock():
     # 默认会话不是"携带摘要"新建的：无承接背景；标签页未绑定会话时钉到 "sid0"
     svc.carried_summary.return_value = ""
     svc.ensure_session.return_value = "sid0"
+    # 读边界：默认视为在允许范围内（None）；越界用例显式改 return_value
+    svc.path_read_error.return_value = None
     return svc
 
 
@@ -2324,6 +2326,23 @@ class TestWorkspaceHandlers:
         svc.search_in_dir.assert_called_with("q", ".")
         svc.search_in_dir.return_value = [{"file": "a", "line": i, "text": "q"} for i in range(50)]
         assert "仅显示前 50 条" in h["on_dir_search"]("q", "/p")[0]
+
+    def test_dir_search_out_of_scope_is_visible(self):
+        """F10 P0-1：搜索目录越界时明确报错，而不是伪装成"未找到"。"""
+        svc = make_service_mock()
+        svc.path_read_error.return_value = "路径超出允许范围: /etc（允许读取 /w；可设置环境变量 READ_ALLOWED_DIRS 放行）"
+        h = build_handlers(svc)
+        status, rows = h["on_dir_search"]("q", "/etc")
+        assert status.startswith("❌") and "READ_ALLOWED_DIRS" in status and rows == []
+        svc.search_in_dir.assert_not_called()
+
+    def test_file_edit_load_out_of_scope(self):
+        """越界文件不提示"保存将创建新文件"（写边界 ⊆ 读边界，保存同样会被拒）。"""
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        svc.file_preview.return_value = {"error": "路径超出允许范围: /etc/x（允许读取 /w；可设置环境变量 READ_ALLOWED_DIRS 放行）"}
+        content, hint = h["on_file_edit_load"]("/etc/x")
+        assert content == "" and "路径超出允许范围" in hint and "创建新文件" not in hint
 
     def test_shell_generate_handler(self):
         svc = make_service_mock()
