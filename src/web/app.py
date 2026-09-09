@@ -137,6 +137,17 @@ def _noop() -> Dict[str, Any]:
     return component_update()
 
 
+def _starts_new_round(kind: str, data: Optional[Dict[str, Any]]) -> bool:
+    """单 Agent 进入新一轮模型推理（非心跳的 ``thinking`` step 事件）——F10 P1-1。
+
+    极少数情况下模型在一轮里先写 ``Final Answer:`` 又写 ``Action:``，协议解析按工具
+    调用处理并进入下一轮；此时已流出的半截答案作废，UI 清空重来。
+    """
+    if kind != "step" or not isinstance(data, dict):
+        return False
+    return data.get("phase") == "thinking" and not data.get("transient")
+
+
 def format_notices(notices: Optional[List[Dict[str, Any]]], position: str = "before") -> str:
     """把 ``answer_question`` 的结构化提示渲染为 blockquote（F9 P0-5）。
 
@@ -1615,22 +1626,42 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
 
         final = None
         confirm_md = ""
+        # F10 P1-1：token 事件逐段拼接为"正在生成"的助手气泡；answer 到达后以完整文本替换
+        partial = ""
+
+        def live_history() -> List[Dict[str, Any]]:
+            return history + [{"role": "assistant", "content": partial}] if partial else history
+
         for evt in stream:
-            if evt.kind == "confirm":
+            if evt.kind == "token":
+                tracker.current = "✍️ 生成回答中…"
+                partial += evt.message or ""
+                yield live_history(), tracker.render_status(), tracker.render_steps(title), "", "", "", "", _noop()
+            elif evt.kind == "confirm":
                 confirm_md = format_confirm_request(evt.data if isinstance(evt.data, dict) else {})
                 tracker.current = "⏸️ 等待你确认危险操作…"
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
+                yield live_history(), tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
             elif evt.kind in ("progress", "step"):
                 confirm_md = ""
-                tracker.add(evt.message, evt.data if isinstance(evt.data, dict) else None)
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", "", "", _noop()
+                data = evt.data if isinstance(evt.data, dict) else None
+                if partial and _starts_new_round(evt.kind, data):
+                    partial = ""  # 上一轮的半截 Final Answer 被工具调用推翻，清掉重来
+                if partial and data and data.get("transient"):
+                    # 正在逐字输出时，推理心跳不再覆盖「✍️ 生成回答中…」状态
+                    yield live_history(), tracker.render_status(), tracker.render_steps(title), "", "", "", "", _noop()
+                    continue
+                tracker.add(evt.message, data)
+                yield live_history(), tracker.render_status(), tracker.render_steps(title), "", "", "", "", _noop()
             elif evt.kind == "heartbeat":
-                yield history, tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
+                yield live_history(), tracker.render_status(), tracker.render_steps(title), "", "", confirm_md, "", _noop()
             elif evt.kind == "answer":
                 final = evt
             elif evt.kind == "cancelled":
+                # 已流出的部分答案保留在气泡里并注明已停止，用户能看到中断前的内容
+                if partial:
+                    partial = partial.rstrip() + "\n\n> ⏹️ 已停止，以上为中断前的部分回答"
                 yield (
-                    history, tracker.render_status("cancelled"),
+                    live_history(), tracker.render_status("cancelled"),
                     tracker.render_steps(title, done=True), "", "", "", "",
                     _noop(),
                 )

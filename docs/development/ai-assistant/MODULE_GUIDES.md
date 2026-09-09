@@ -42,7 +42,7 @@
 
 ### `react_engine.py`
 - `build_system_prompt(tools, extra, mode, role)`：四层组装（内置 / Skills / 项目附加规范 / 角色说明），不落盘。`CODE_AGENT_PROMPT_MODE` 只剩 `builtin|append`。
-- `ReActEngine(model, host, on_step, on_confirm, context, allowed_tools, system_prompt_extra, max_iterations, prompt_mode, role)`；`chat(task)` 主循环与鲁棒性机制（格式重试 / 重复检测 / 安全拦截 / 确认协议 / Observation 截断 / 预算折叠 / 强制总结）见 ARCHITECTURE §2.3。
+- `ReActEngine(model, host, on_step, on_confirm, context, allowed_tools, system_prompt_extra, max_iterations, prompt_mode, role, on_token)`；`chat(task, on_token=None)` 主循环（`on_token` 只收到 `Final Answer:` 之后的增量，见 ARCHITECTURE §2.6；`stop()` 会 `abort_response` 关闭流式连接）与鲁棒性机制（格式重试 / 重复检测 / 安全拦截 / 确认协议 / Observation 截断 / 预算折叠 / 强制总结）见 ARCHITECTURE §2.3。
 - `on_step(evt)` 的 `phase` 取值：`thinking / action / blocked / rejected / executing / observed / final / format_retry / repeat / budget_fold / forced_summary / error / context`；`transient=True` 为心跳。CLI 与 Web 的进度渲染都消费它，新增 phase 要两端同步。
 - `on_confirm(evt)` 收到 `{step, tool, command|args, safety?, message}`，返回 bool。无回调视为拒绝。
 - `step_log` 供 CLI `/summary` 与 Web 执行摘要；`_record_turn` 只把"任务 + 最终答案 + 一句 trace"写回会话。
@@ -65,7 +65,7 @@
 - 四种 `CollaborationMode` 的执行分支都在 `master_agent.py`（`_execute_sequential` / `_execute_parallel` / `_run_competitive`）；`_attach_upstream` 把上游输出（每条 ≤1500 字）放进下游 `input_data["upstream"]`。
 - `collaboration/task_decomposer.py`：LLM 优先（`DECOMPOSE_PROMPT`, ≤512 token）→ 关键词表回退，`last_method` 记录用了哪种。`MAX_SUBTASKS=5`。
 - `collaboration/result_integrator.py`：`INTEGRATE_PROMPT` 综合；`REVIEW_PROMPT` 供 COMPETITIVE 评审 `{"best","reason"}`，失败回退最长成功输出；`merge_sources` 合并引用。
-- `collaboration/llm_helper.py`：`complete_text` / `complete_json`（`/api/chat`, think=False, temperature 0.2）、`strip_think`、`truncate`。
+- `collaboration/llm_helper.py`：`complete_text(prompt, num_predict, timeout, temperature, on_token=None, should_stop=None)` / `complete_json`（`/api/chat`, think=False, temperature 0.2）、`consume_ndjson_stream`（Ollama NDJSON 逐行解析，ReActEngine 也复用）、`abort_response`（跨线程 socket shutdown + close）、`strip_think`、`truncate`。
 - `collaboration/task_scheduler.py`：按 capability 分配（`schedule / schedule_parallel / schedule_sequential / schedule_competitive`）。`message_bus.py` 消息总线；`presenter.py` 多 Agent 结果 Markdown 渲染（CLI / Web 共用）。
 - `agent_registry.py` 注册与查找 Agent；`agent_config.py` 默认配置（各角色 `specialized_tools` 即白名单）。
 
@@ -113,7 +113,7 @@
 - 模块级全局 `react_engine` / `rag_engine` / `console`；测试用 `patch("query_interface.console")` 与 `conftest.reset_module_state`。
 
 ### `web/`
-- `services.py` `WebService`：所有业务入口（对话流 / 模型 / 知识库 / 会话 / 图谱 / 工具），流式统一经 `_bridge`（后台线程 + 队列 → `StreamEvent(kind, message, data)`，kinds `progress | answer | step | error | done | heartbeat | cancelled`）。构造参数全部可注入工厂。单例 `get_web_service()` / `reset_web_service()`。
+- `services.py` `WebService`：所有业务入口（对话流 / 模型 / 知识库 / 会话 / 图谱 / 工具），流式统一经 `_bridge`（后台线程 + 队列 → `StreamEvent(kind, message, data)`，kinds `progress | answer | step | token | error | done | heartbeat | cancelled | confirm`；`token` 为最终答案增量，`_token_sink(q, cancel)` 生成对应 `on_token`）。构造参数全部可注入工厂。单例 `get_web_service()` / `reset_web_service()`。
 - `app.py`：`format_*` 纯函数（可单测）+ `build_handlers(service)`（返回 handler dict，可单测）+ `build_app / launch / main`（`pragma: no cover`）。`on_chat_stream` yield 七元组，`session_id` 为空时先 `ensure_session()` 钉死。
 - `ui/layout.py` 骨架与侧栏（`session_state = gr.State("")` 每标签页一份）；`ui/chat.py` 对话页事件链（`_begin → _chat_stream_ui → _end`，`_end` 把实际会话 id 写回 `session_state`）；`ui/knowledge.py` / `graph.py` / `tools.py` / `system.py` 各页；`ui/common.py` 二步确认按钮等复用件；`theme.py` 主题。
 - `tools_state.py` `ToolsState`：工具页轻量持久状态（最近数据库 ≤8 / 命令历史 ≤50，`.cerebro/web_tools_state.json` 经 `runtime_paths.app_state_dir`；损坏 JSON 回退空）。`WebService.tools_state` 惰性持有，测试直接赋值指向 `tmp_path` 的实例。

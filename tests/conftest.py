@@ -117,9 +117,13 @@ def make_synthesis_stub(prefix: str = "答案:"):
     需要"答案里带问题"断言的测试用它模拟综合）。"""
     import re
 
-    def _fake(prompt: str) -> str:
+    def _fake(prompt: str, on_token=None, should_stop=None) -> str:
         m = re.search(r"## 问题\n(.+?)(?:\n|$)", prompt or "")
-        return f"{prefix}{m.group(1)}" if m else f"{prefix}".rstrip(":")
+        text = f"{prefix}{m.group(1)}" if m else f"{prefix}".rstrip(":")
+        # F10 P1-1：Web 服务层总会传 on_token；桩按 LLM_STREAM=false 的语义一次性回调完整文本
+        if on_token is not None:
+            on_token(text)
+        return text
 
     return _fake
 

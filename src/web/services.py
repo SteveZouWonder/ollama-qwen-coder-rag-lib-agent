@@ -145,14 +145,17 @@ _DONE = object()  # 内部结束哨兵
 class StreamEvent:
     """服务层向 UI 层输出的统一流式事件。
 
-    - ``kind``：``progress`` | ``answer`` | ``step`` | ``error`` | ``done`` |
-      ``heartbeat`` | ``cancelled``
+    - ``kind``：``progress`` | ``answer`` | ``step`` | ``token`` | ``error`` | ``done`` |
+      ``heartbeat`` | ``cancelled`` | ``confirm``
     - ``message``：人类可读文本
     - ``data``：附加结构化数据（如 sources 列表、step_log 等）
 
-    ``heartbeat`` 在后台任务长时间无新事件时按固定间隔发出（``data`` 含
+    ``token``（F10 P1-1）：最终答案的一段增量文本（``message`` 为 delta），UI 逐段拼接到
+    Chatbot 最后一条消息；随后仍会收到携带完整文本的 ``answer``，以 ``answer`` 为准。
+    ``heartbeat`` 在后台任务长时间无新事件（含 token）时按固定间隔发出（``data`` 含
     ``elapsed`` 秒数），让 UI 能刷新"已用时"，消除"卡死"错觉。
     ``cancelled`` 表示用户主动停止，任务未产出最终结果。
+    ``confirm`` 为单 Agent 危险操作的审批请求（``data`` 含命令与风险等级）。
     """
 
     __slots__ = ("kind", "message", "data")
@@ -295,9 +298,10 @@ class WebService:
     def stop_current(self) -> bool:
         """停止当前正在运行的对话任务（任一模式）。
 
-        - 置位当前运行的取消信号：RAG 编排在阶段边界看到后中止，桥接生成器
-          立刻停止转发并产出 ``cancelled`` 事件。
-        - 若单 Agent 引擎在跑，同时调用其 ``stop()``。
+        - 置位当前运行的取消信号：RAG 编排在阶段边界（及流式综合的每个 token 之间）
+          看到后中止，桥接生成器立刻停止转发并产出 ``cancelled`` 事件。
+        - 若单 Agent 引擎在跑，同时调用其 ``stop()``（会关闭正在流式读取的 HTTP
+          响应，模型端随之停止生成；F10 P1-1）。
 
         返回是否有任务被通知停止。
         """
@@ -352,6 +356,14 @@ class WebService:
             if self._pending_confirm is pending:
                 self._pending_confirm = None
 
+    @staticmethod
+    def _token_sink(q: "queue.Queue", cancel: threading.Event) -> Callable[[str], None]:
+        """构造 ``on_token`` 回调：把每段增量作为 ``token`` 事件入队；取消后丢弃（F10 P1-1）。"""
+        def on_token(delta: str) -> None:
+            if delta and not cancel.is_set():
+                q.put(StreamEvent("token", delta))
+        return on_token
+
     def _bridge(
         self,
         run: Callable[["queue.Queue", threading.Event], Any],
@@ -367,9 +379,11 @@ class WebService:
                 ``(result_holder, error_holder)``，产出收尾事件（answer/error）。
 
         行为：
-        - 队列 ``get`` 带超时，超时即产出 ``heartbeat``（含 ``elapsed``）。
+        - 队列 ``get`` 带超时，仅在 ``heartbeat_interval`` 内**没有任何事件**（含
+          ``token``）时产出 ``heartbeat``（含 ``elapsed``）；流式输出期间不发心跳。
         - 每次循环检查取消信号；命中则产出 ``cancelled`` 并停止转发（后台
-          线程为 daemon，继续跑完当前阻塞调用后自行退出，其结果被丢弃）。
+          线程为 daemon，继续跑完当前阻塞调用后自行退出，其结果被丢弃；单 Agent
+          的流式读取会被 ``stop()`` 立刻关闭连接）。
         - 生成器被消费方关闭（Gradio ``cancels`` 触发 GeneratorExit）时同样
           置位取消信号，让编排层尽快停止。
         """
@@ -598,6 +612,7 @@ class WebService:
                 rag_progress_callback=progress_cb,
                 should_stop=cancel.is_set,
                 context=ctx,
+                on_token=self._token_sink(q, cancel),
             )
             # 对话落库（与 CLI 一致）：即使是元查询也记录，便于历史回看。
             # 在后台线程内完成，压缩期间心跳仍可刷新 UI。
@@ -711,7 +726,8 @@ class WebService:
             engine = self._react_factory(on_step=on_step, on_confirm=on_confirm, context=ctx)
             engine_holder["engine"] = engine
             self._active_react = engine
-            answer = engine.chat(user_input)
+            # F10 P1-1：Final Answer 增量以 token 事件推给 UI（工具调用轮不产生 token）
+            answer = engine.chat(user_input, on_token=self._token_sink(q, cancel))
             # 引擎已在 chat() 结束时把本轮折叠写回会话，这里只汇总健康度
             return {
                 "answer": answer,
@@ -809,8 +825,11 @@ class WebService:
     # ---------- 多 Agent 协作 ----------
 
     def _run_orchestrator(self, request: str, mode: Optional[str], progress=None,
-                          context=None) -> Dict[str, Any]:
-        """创建编排器执行一次协作请求，结束后释放；异常转为失败 dict。"""
+                          context=None, on_token=None) -> Dict[str, Any]:
+        """创建编排器执行一次协作请求，结束后释放；异常转为失败 dict。
+
+        ``on_token``（F10 P1-1）透传给编排器：仅整合阶段的模型综合流式回调。
+        """
         # 确保知识库引擎已注入全局注册表：RAGAgent 承接通用任务时会复用
         # rag_pipeline.answer_question，需要全局 rag_engine 才能真正检索。
         try:
@@ -826,6 +845,8 @@ class WebService:
                 kwargs["progress"] = progress
             if context is not None:
                 kwargs["context"] = context
+            if on_token is not None:
+                kwargs["on_token"] = on_token
             return orchestrator.process_request(request, resolved, **kwargs)
         except BaseException as exc:  # noqa: BLE001
             return {"success": False, "error": str(exc), "summary": "协作执行失败"}
@@ -893,7 +914,8 @@ class WebService:
                     rewritten = effective
             except Exception:  # noqa: BLE001 - 改写失败沿用原请求
                 pass
-            result = self._run_orchestrator(effective, mode, progress=progress_cb, context=ctx)
+            result = self._run_orchestrator(effective, mode, progress=progress_cb, context=ctx,
+                                            on_token=self._token_sink(q, cancel))
             if not isinstance(result, dict):
                 result = {"success": False, "summary": str(result)}
             summary = str(result.get("summary", ""))

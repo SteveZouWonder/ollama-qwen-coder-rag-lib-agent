@@ -31,7 +31,7 @@ class _Orch:
         self.calls = []
         self.shutdown_called = 0
 
-    def process_request(self, request, mode, progress=None, context=None):
+    def process_request(self, request, mode, progress=None, context=None, on_token=None):
         self.calls.append({"request": request, "mode": mode, "context": context})
         if progress:
             progress({"stage": "decompose", "message": "🧩 分解任务（模型推理）..."})

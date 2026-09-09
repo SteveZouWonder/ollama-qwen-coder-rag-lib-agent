@@ -1050,6 +1050,7 @@ pytest tests/ --cov=src --cov-report=html
 # 模型配置
 LLM_MODEL = "qwen3.5:4b"            # 全局唯一 LLM（Agent/RAG/多 Agent 共用），见下方「模型选择指南」
 LLM_THINK = False                   # 思考模式，默认关闭（4B 模型响应 31s → 2.8s）
+LLM_STREAM = True                   # 真流式输出：最终答案逐字出现、可随时中断（首字 6.6s → 0.2s）
 LLM_NUM_CTX = 自动                  # 按模型参数量推导（4B→16K，7~9B→8K，12B+→4K），可用环境变量覆盖
 EMBED_MODEL = "nomic-embed-text"     # 嵌入模型
 
@@ -1076,6 +1077,9 @@ LOG_LEVEL = "INFO"                   # 日志级别
 ```bash
 export LLM_MODEL="qwen3.5:9b"
 export LLM_THINK=false
+# 真流式输出（默认 true）：/ask /agent /multi 与 Web 三种模式的最终答案逐字出现，Ctrl+C / 「停止」立即关闭连接；
+# 设为 false 回到整段一次性输出（请求体与旧版完全一致，适合排查问题或不支持流式的代理）
+export LLM_STREAM=true
 export LLM_NUM_CTX=16384
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true

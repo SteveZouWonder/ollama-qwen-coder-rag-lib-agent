@@ -109,6 +109,87 @@ def _sql_safety(sql: str) -> dict | None:
         return None
 
 
+# ==================== 流式答案渲染（F10 P1-1） ====================
+
+class LiveAnswer:
+    """终端流式答案渲染：``rich.live.Live(Markdown(buffer))`` 随 token 增量刷新。
+
+    供 ``/ask`` / ``/agent`` / 自然语言输入 / ``/multi`` 整合阶段共用。作为 ``on_token``
+    回调传给编排层；首个 token 到达时才启动 Live（工具步骤期间不会出现空面板），
+    ``finish()`` 停止并**清除**实时区域（``transient=True``），随后由调用方按既有格式
+    打印完整答案（含来源 / 提示 / 引用校验），保证最终输出与非流式时完全一致。
+
+    非 Rich 终端或 ``console`` 不可用时全部为空操作。
+
+    ``LiveAnswer.streaming()`` 为进程内"是否有实时面板在刷新"的标志：ReAct 的推理心跳
+    （``\\r`` 单行刷新）在面板刷新期间应静默，否则会在面板上方反复刷出"模型推理中…"。
+    """
+
+    _current: "LiveAnswer | None" = None
+
+    @classmethod
+    def streaming(cls) -> bool:
+        return cls._current is not None and cls._current._live is not None
+
+    def __init__(self, console, has_rich: bool = True, title: str | None = None,
+                 border_style: str = "green", refresh_per_second: int = 8):
+        self.console = console
+        self.has_rich = bool(has_rich)
+        self.title = title
+        self.border_style = border_style
+        self.refresh_per_second = refresh_per_second
+        self.buffer = ""
+        self.tokens = 0
+        self._live = None
+
+    def _renderable(self):
+        from rich.markdown import Markdown
+        from rich.panel import Panel
+
+        return Panel(Markdown(self.buffer), border_style=self.border_style, title=self.title)
+
+    def on_token(self, delta: str) -> None:
+        """追加一段增量并刷新实时面板（首个 token 时启动 Live）。"""
+        if not delta or not self.has_rich:
+            return
+        self.buffer += delta
+        self.tokens += 1
+        try:
+            if self._live is None:
+                from rich.live import Live
+
+                self._live = Live(
+                    self._renderable(), console=self.console,
+                    refresh_per_second=self.refresh_per_second, transient=True,
+                )
+                self._live.start()
+                LiveAnswer._current = self
+            else:
+                self._live.update(self._renderable())
+        except Exception as exc:  # noqa: BLE001 - 渲染问题不影响问答
+            logger.debug("LiveAnswer render failed: %s", exc)
+            self._stop()
+
+    def _stop(self) -> None:
+        live, self._live = self._live, None
+        if LiveAnswer._current is self:
+            LiveAnswer._current = None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def finish(self) -> bool:
+        """停止并清除实时区域；返回是否曾输出过 token。"""
+        self._stop()
+        return self.tokens > 0
+
+    @property
+    def active(self) -> bool:
+        return self._live is not None
+
+
 # ==================== 多 Agent 协作 ====================
 
 _MULTI_MODES = ("hierarchy", "parallel", "sequential", "competitive")
@@ -180,19 +261,24 @@ def handle_multi(ctx, parsed):
 
     factory = ctx.orchestrator_factory or _default_orchestrator
     orchestrator = factory()
+    # F10 P1-1：仅整合阶段（模型综合最终回答）逐 token 刷新实时面板
+    live = LiveAnswer(console, ctx.has_rich, title="综合回答")
     try:
         console.print(f"🤝 多 Agent 协作（模式: {mode or '默认'}）…", style="bold cyan")
-        kwargs = {"progress": progress}
+        kwargs = {"progress": progress, "on_token": live.on_token}
         if context is not None:
             kwargs["context"] = context
         result = orchestrator.process_request(task, resolved, **kwargs)
     except KeyboardInterrupt:
-        console.print("\n用户中断，协作已停止。", style="yellow")
+        live.finish()
+        console.print("\n已中断：用户中断，协作已停止。", style="yellow")
         return False
     except Exception as e:  # noqa: BLE001
+        live.finish()
         console.print(f"❌ 协作执行失败: {e}", style="red")
         return False
     finally:
+        live.finish()
         shutdown = getattr(orchestrator, "shutdown", None)
         if callable(shutdown):
             try:

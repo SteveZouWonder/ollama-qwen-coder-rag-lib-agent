@@ -329,6 +329,9 @@ TUTORIAL_TEXT = """
   >>> 什么是 RAG？                    → 知识库问答
   >>> 修改 main.py 加上日志           → Agent 处理（用 /ask 可强制知识库）
 
+  # 流式输出（默认开）：/ask、/agent、/multi 的最终答案逐字出现，Ctrl+C 随时中断并关闭连接
+  # （环境变量 LLM_STREAM=false 可回到整段一次性输出）
+
   # 快捷命令
   >>> /file main.py          快速读取文件
   >>> /exec git status       执行命令
@@ -468,6 +471,15 @@ STEP_PHASE_COLOR = {
     "error": "red",
 }
 
+def _live_streaming() -> bool:
+    """当前是否有流式答案面板在刷新（见 ``cli_handlers.LiveAnswer``）。"""
+    try:
+        from cli_handlers import LiveAnswer
+        return LiveAnswer.streaming()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def on_step_callback(data: dict):
     from config import Config
     
@@ -478,6 +490,11 @@ def on_step_callback(data: dict):
     total = data.get("total", "?")
     phase = data.get("phase", "?")
     msg = data.get("message", "")
+
+    # F10 P1-1：Final Answer 正在逐 token 刷新实时面板时，推理心跳（\r 单行刷新）静默，
+    # 否则会在面板上方反复刷出"模型推理中…"
+    if data.get("transient") and _live_streaming():
+        return
 
     phase_emoji = STEP_PHASE_EMOJI.get(phase, "[?]")
 
@@ -619,8 +636,8 @@ def print_help():
 内置命令：
   /help              显示本帮助
   /tutorial          显示使用指引教程
-  /ask <question>    直接查询知识库（基于上传的文档）
-  /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
+  /ask <question>    直接查询知识库（基于上传的文档；答案逐字流式输出，Ctrl+C 中断）
+  /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务；最终答案流式输出，Ctrl+C 中断）
   /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
   /config            显示运行配置（模型 / 自动确认 / 允许读写目录 / 数据与索引目录）
@@ -1369,6 +1386,13 @@ def _render_answer(answer: str):
         print(answer)
 
 
+def _live_answer(title: str = None):
+    """构造终端流式答案渲染器（F10 P1-1；非 Rich 终端为空操作）。"""
+    from cli_handlers import LiveAnswer
+
+    return LiveAnswer(console, HAS_RICH, title=title)
+
+
 def _print_notices(notices, position: str = "before") -> None:
     """渲染 ``answer_question`` 的结构化提示（F9 P0-5）。
 
@@ -1699,16 +1723,26 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
         conv = None
 
     # 调用共享编排层：网络搜索规划、双区综合、0 命中回退、元查询直答一体化。
+    # F10 P1-1：综合回答阶段逐 token 刷新实时面板；Ctrl+C 关闭连接并提示已中断。
     rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
-    result = rag_pipeline.answer_question(
-        rag_engine,
-        question,
-        enable_web_search=True,
-        show_progress=Config.SHOW_PROGRESS,
-        progress=_cli_ask_progress,
-        rag_progress_callback=rag_progress,
-        context=conv,
-    )
+    live = _live_answer()
+    try:
+        result = rag_pipeline.answer_question(
+            rag_engine,
+            question,
+            enable_web_search=True,
+            show_progress=Config.SHOW_PROGRESS,
+            progress=_cli_ask_progress,
+            rag_progress_callback=rag_progress,
+            context=conv,
+            on_token=live.on_token,
+        )
+    except KeyboardInterrupt:
+        live.finish()
+        console.print("\n[yellow]已中断，已关闭与模型的连接。[/yellow]")
+        return False
+    finally:
+        live.finish()
 
     # 元查询：概览已在 _cli_ask_progress 中渲染，这里只记录并返回。
     if result.get("kind") == "meta":
@@ -1830,15 +1864,25 @@ def handle_agent(ctx, parsed):
     answer = ""
     engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
     pre_health = _health_before(task)
+    # F10 P1-1：Final Answer 逐 token 刷新实时面板（工具步骤仍走 on_step 面板输出）；
+    # Ctrl+C 时 engine.stop() 关闭流式连接。
+    live = _live_answer(title="Agent")
+    prev_sink = getattr(engine, "on_token", None)
+    engine.on_token = live.on_token  # 引擎级回调：本次 chat() 生效，结束后恢复
     try:
         answer = engine.chat(task)
     except KeyboardInterrupt:
-        console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
+        live.finish()
         engine.stop()
+        console.print("\n[yellow]已中断：用户中断，任务已停止，已关闭与模型的连接。[/yellow]")
         return False
     except Exception as e:  # noqa: BLE001
+        live.finish()
         console.print(f"[red]错误: {e}[/red]")
         return False
+    finally:
+        engine.on_token = prev_sink
+        live.finish()
 
     if HAS_RICH:
         if "```" in answer or "**" in answer or "#" in answer:
@@ -2135,12 +2179,16 @@ def main():
 
     if args.agent:
         console.print(f"🤖 Agent 任务: {args.agent}\n", style="bold cyan")
+        live = _live_answer(title="Agent")
         try:
-            answer = react_engine.chat(args.agent)
+            answer = react_engine.chat(args.agent, on_token=live.on_token)
         except KeyboardInterrupt:
-            console.print("\n[yellow]用户中断[/yellow]")
+            live.finish()
             react_engine.stop()
+            console.print("\n[yellow]已中断：用户中断，已关闭与模型的连接。[/yellow]")
             return
+        finally:
+            live.finish()
         if HAS_RICH:
             if "```" in answer or "**" in answer or "#" in answer:
                 console.print(Markdown(answer))

@@ -121,6 +121,27 @@ request ─▶ TaskDecomposer.decompose（LLM ≤512 token → 关键词规则�
 - `new_session(carry_summary)` 只承接**已折叠的滚动摘要**；跟随模式（`session_id=None`）不钉死到新会话。
 - CLI 使用进程级单例 `get_conversation_context()`（跟随当前会话）；Web 每次请求按 `gr.State` 里的 `session_id` 新建绑定实例；多 Agent 子角色用 `EphemeralContext`（不读写会话）。
 
+### 2.6 流式回调路径（F10 P1-1，三种模式共用）
+
+所有 LLM 调用都接受可选 `on_token(delta: str)`；**不传时请求保持 `stream: False`，行为与旧版字节级一致**。传入且 `Config.LLM_STREAM`（默认 `true`）开启时改为 `stream: True` 逐行读 NDJSON、每个增量回调一次；`LLM_STREAM=false` 时仍非流式但把完整文本一次性回调，因此消费方无需区分。
+
+```
+                      ┌ CLI：cli_handlers.LiveAnswer.on_token（rich Live(Markdown) 面板，transient；finish() 后按原格式打印全文）
+  on_token ◀──────────┤
+                      └ Web：WebService._token_sink(q, cancel) → StreamEvent("token", delta) → app.on_chat_stream 逐段拼到最后一条气泡
+                                                                                              （answer 到达后以完整文本替换）
+  RAG    answer_question(on_token) → generate_answer → 只有最终综合那次 llm_direct_answer(prompt, on_token, should_stop)
+         → _complete → _stream_complete：Settings.llm.stream_chat(...)，should_stop 为真即 break + gen.close()
+  单 Agent ReActEngine(on_token) / chat(task, on_token) → 每轮 _call_model(on_token=FinalAnswerStream(cb))
+         FinalAnswerStream：缓冲到看见 "Final Answer:" 才转发其后的增量；缓冲区出现 "Action:" 则丢弃本轮
+         _call_model → requests.post(stream=True) → llm_helper.consume_ndjson_stream(resp, cb, should_stop=_stop_event.is_set)
+         stop()：置位 + llm_helper.abort_response(_active_response)（socket.shutdown + close → 读线程立刻退出、模型停止生成）
+  多 Agent orchestrator.process_request(on_token) → coordinate_task(on_token) → ResultIntegrator.on_token（仅整合阶段）
+         → complete_text(prompt, on_token=…)（子任务执行不流式）
+```
+
+约定：`answer` / 最终返回值仍是**完整文本**（经 `<think>` 剥离、引用校验等后处理），流出的 token 只是原始增量，UI 以最终文本为准；`_bridge` 的心跳只在心跳间隔内没有任何事件（含 token）时发出；单 Agent 在 `_call_model` 返回后再查一次 `_stop_event`，被中断的半截文本不进协议解析。
+
 ## 3. 系统提示层次（`react_engine.build_system_prompt`）
 
 | 层 | 来源 | 作用范围 |

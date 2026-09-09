@@ -138,6 +138,7 @@ class AgentOrchestrator:
         mode: CollaborationMode = None,
         progress: Optional[Callable[[Dict[str, Any]], None]] = None,
         context=None,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """
         处理用户请求
@@ -148,6 +149,7 @@ class AgentOrchestrator:
             progress: 可选进度回调，透传给 ``MasterAgent.coordinate_task``，
                 用于实时展示"分解 → 调度 → 执行 → 整合"各阶段。
             context: 可选会话上下文，透传给 RAGAgent（追问改写 / 历史注入）。
+            on_token: 整合阶段模型综合的增量回调（F10 P1-1），透传给 ``coordinate_task``。
             
         Returns:
             Dict[str, Any]: 处理结果
@@ -163,6 +165,8 @@ class AgentOrchestrator:
                 kwargs["progress"] = progress
             if context is not None:
                 kwargs["context"] = context
+            if on_token is not None:
+                kwargs["on_token"] = on_token
             result = self.master_agent.coordinate_task(request, mode, **kwargs)
             return result
         except Exception as e:

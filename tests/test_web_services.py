@@ -94,7 +94,7 @@ class FakeReact:
         self.step_log = [{"phase": "final", "answer": answer}]
         self.stopped = False
 
-    def chat(self, user_input):
+    def chat(self, user_input, on_token=None):
         if self._raise:
             raise RuntimeError("agent-boom")
         for s in self._steps:
@@ -488,7 +488,7 @@ class TestMultiAgentStream:
 
         seen = {}
 
-        def fake_process(request, mode, progress=None, context=None):
+        def fake_process(request, mode, progress=None, context=None, on_token=None):
             seen["context"] = context
             progress({"stage": "decompose", "message": "🧩 分解任务"})
             progress({"stage": "execute", "message": "⚙️ 执行 1/1", "current": 1, "total": 1})
@@ -1226,7 +1226,7 @@ class TestConversationContextWiring:
         orch = MagicMock()
         seen = {}
 
-        def fake_process(request, mode, progress=None, context=None):
+        def fake_process(request, mode, progress=None, context=None, on_token=None):
             seen["request"] = request
             return {"success": True, "summary": "执行了 1 个任务", "answer": "综合回答：优点是…",
                     "results": []}
@@ -1257,7 +1257,7 @@ class TestConversationContextWiring:
 
     def test_multi_agent_non_dict_result_wrapped(self):
         class Weird:
-            def process_request(self, request, mode, progress=None, context=None):
+            def process_request(self, request, mode, progress=None, context=None, on_token=None):
                 return "plain"
         svc = make_service(orchestrator_factory=lambda: Weird())
         events = list(svc.multi_agent_stream("任务"))
@@ -1397,7 +1397,7 @@ class TestSessionContextHelpers:
 class _ConfirmingReact(FakeReact):
     """执行中调用 on_confirm 一次，把结果写入答案。"""
 
-    def chat(self, user_input):
+    def chat(self, user_input, on_token=None):
         ok = self.on_confirm({"tool": "execute_command", "command": "rm x", "message": "确认?"})
         return f"confirmed={ok}"
 

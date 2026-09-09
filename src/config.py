@@ -63,6 +63,11 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text:latest")
 # （本机实测约 40 秒）。默认关闭以换取响应速度；需要复杂推理时可设 LLM_THINK=true。
 LLM_THINK = os.getenv("LLM_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
 
+# 是否以流式（Ollama NDJSON）接收模型输出，让 CLI / Web 逐字显示最终答案并可随时中断
+# （F10 P1-1）。默认开启；设为 false 时所有 on_token 回调退化为"完整文本一次性回调"，
+# 请求体与此前非流式行为完全一致。
+LLM_STREAM = os.getenv("LLM_STREAM", "true").strip().lower() in ("1", "true", "yes", "on")
+
 
 def resolve_num_ctx(model: str) -> int:
     """按模型规格自动推导安全且够用的上下文窗口（num_ctx），用户零配置。
@@ -355,6 +360,7 @@ class Config:
     OLLAMA_HOST: str = OLLAMA_BASE_URL
     MODEL: str = LLM_MODEL
     LLM_MODEL: str = LLM_MODEL
+    LLM_STREAM: bool = LLM_STREAM
     HISTORY_FILE: str = HISTORY_FILE
     MAX_HISTORY: int = MAX_HISTORY
     MAX_ITERATIONS: int = MAX_ITERATIONS

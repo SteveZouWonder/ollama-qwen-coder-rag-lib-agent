@@ -263,6 +263,53 @@ def build_system_prompt(tools: Optional[set] = None, extra: Optional[str] = None
     return prompt
 
 
+class FinalAnswerStream:
+    """把 ReAct 一轮的原始 token 流过滤为"只转发 ``Final Answer:`` 之后的文本"（F10 P1-1）。
+
+    模型每轮输出 ``Thought → Action/Action Input`` 或 ``Thought → Final Answer``。
+    直接把原始增量推给 UI 会让用户先看到一段"Thought: … Action: read_file …"再被
+    整段替换；因此先缓冲，看到 ``Final Answer:`` 后才开始转发其后的增量；一旦缓冲
+    区出现 ``Action:``（本轮是工具调用）则丢弃本轮全部增量。每轮新建一个实例。
+    ``_parse_response`` 的协议与解析不受影响（它仍拿到累积后的完整文本）。
+    """
+
+    MARKER = "Final Answer:"
+    _ACTION_RE = re.compile(r"\bAction:")
+
+    def __init__(self, on_token: Callable[[str], None]):
+        self._cb = on_token
+        self._buf = ""
+        self._state = "buffer"  # buffer | forward | drop
+        self.forwarded = 0
+
+    def __call__(self, delta: str) -> None:
+        if not delta:
+            return
+        if self._state == "forward":
+            if self.forwarded == 0:
+                delta = delta.lstrip()  # 标记后的首段去掉前导空白
+                if not delta:
+                    return
+            self.forwarded += 1
+            self._cb(delta)
+            return
+        if self._state == "drop":
+            return
+        self._buf += delta
+        idx = self._buf.find(self.MARKER)
+        if idx >= 0:
+            self._state = "forward"
+            rest = self._buf[idx + len(self.MARKER):].lstrip()
+            self._buf = ""
+            if rest:
+                self.forwarded += 1
+                self._cb(rest)
+            return
+        if self._ACTION_RE.search(self._buf):
+            self._state = "drop"
+            self._buf = ""
+
+
 class ReActEngine:
     """ReAct 推理引擎。
 
@@ -276,7 +323,8 @@ class ReActEngine:
                  on_step: Callable = None, on_confirm: Callable = None,
                  context=None, allowed_tools: Optional[set] = None,
                  system_prompt_extra: str = "", max_iterations: Optional[int] = None,
-                 prompt_mode: Optional[str] = None, role: Optional[str] = None):
+                 prompt_mode: Optional[str] = None, role: Optional[str] = None,
+                 on_token: Optional[Callable[[str], None]] = None):
         """
         Args:
             allowed_tools: 限定可用工具集（工具描述与可执行集合同时过滤）；
@@ -286,6 +334,9 @@ class ReActEngine:
             prompt_mode: 覆盖 ``CODE_AGENT_PROMPT_MODE``（builtin|append|replace）。
             role: Skills 层的角色过滤名（``agent`` / ``code`` / ``test`` / ``doc`` /
                 ``audit``），默认 ``agent``。
+            on_token: 最终答案的增量回调（F10 P1-1）：每轮模型输出中 ``Final Answer:``
+                之后的文本逐段回调；工具调用轮不回调。``chat(on_token=...)`` 可按次覆盖。
+                为 None 时请求保持非流式，行为与此前完全一致。
         """
         self.model = model or Config.LLM_MODEL
         self.host = host or Config.OLLAMA_HOST
@@ -312,6 +363,10 @@ class ReActEngine:
         self._stop_event = threading.Event()
         self.on_step = on_step
         self.on_confirm = on_confirm
+        self.on_token = on_token
+        self._turn_on_token: Optional[Callable[[str], None]] = None  # 本次 chat() 生效的回调
+        # 流式读取中的 HTTP 响应（``stop()`` 时关闭以立刻中断阻塞读取）
+        self._active_response = None
         self.step_log: List[Dict] = []
         # ---- 本轮鲁棒性状态（每次 chat() 重置）----
         self._turn_start = 0            # messages 中本轮往返的起始下标（其前为系统提示 + 历史）
@@ -357,7 +412,19 @@ class ReActEngine:
         return self.think
 
     def stop(self):
+        """请求中断：置位停止标志，并关闭正在流式读取的 HTTP 响应（F10 P1-1）。
+
+        非流式调用只能等当前请求返回后在下一轮边界退出；流式调用则立刻中断读取，
+        模型端也会因连接关闭而停止生成。
+        """
         self._stop_event.set()
+        resp = self._active_response
+        if resp is not None:
+            try:
+                from collaboration.llm_helper import abort_response
+                abort_response(resp)  # shutdown socket + close：读线程立刻退出，模型端停止生成
+            except Exception:  # noqa: BLE001 - 关闭失败不影响停止
+                pass
 
     def reset_stop(self):
         self._stop_event.clear()
@@ -505,12 +572,32 @@ class ReActEngine:
             if self.on_step:
                 self.on_step({"step": "?", "phase": "context", "message": f"⚠️ 记录会话失败: {e}"})
 
-    def chat(self, user_input: str) -> str:
+    def _round_token_sink(self) -> Optional[Callable[[str], None]]:
+        """本轮模型调用的增量回调：有 ``on_token`` 时包一层 Final Answer 过滤器，否则 None。"""
+        cb = self._turn_on_token
+        return FinalAnswerStream(cb) if cb is not None else None
+
+    def _call_model_streaming(self, **kwargs) -> str:
+        """按是否有 token 回调决定是否传 ``on_token``（无回调时调用形态与此前完全一致）。"""
+        sink = self._round_token_sink()
+        if sink is None:
+            return self._call_model(**kwargs)
+        return self._call_model(on_token=sink, **kwargs)
+
+    def chat(self, user_input: str, on_token: Optional[Callable[[str], None]] = None) -> str:
+        """执行一轮 ReAct 任务并返回最终答案。
+
+        Args:
+            user_input: 用户任务。
+            on_token: 本次调用的最终答案增量回调（F10 P1-1），覆盖构造时的
+                ``on_token``；两者都为空时不流式。
+        """
         self.reset_stop()
         self.step_log = []
         self._format_retries = 0
         self._call_counts = {}
         self._obs_index = []
+        self._turn_on_token = on_token if on_token is not None else self.on_token
         self._load_context(user_input)
 
         max_iter = self.max_iterations
@@ -520,7 +607,11 @@ class ReActEngine:
 
             self._emit(step, "thinking", f"Step {step}/{max_iter}: 模型推理中...", total=max_iter)
 
-            response = self._call_model()
+            response = self._call_model_streaming()
+
+            # 流式读取被 stop() 中断：response 只是半截文本，不能进入协议解析
+            if self._stop_event.is_set():
+                return "[用户中断] 任务已停止。"
 
             # P1-2：模型调用本身失败（连不上 / 超时 / 异常）→ 直接返回错误，不写入会话
             if response.startswith("[错误]"):
@@ -765,7 +856,7 @@ class ReActEngine:
         self._emit(step, "forced_summary",
                    f"Step {step}: {'步数已用尽' if reason == 'max_iterations' else '重复调用终止'}，请模型总结已完成/未完成/建议")
         self._push("user", self._FORCED_PROMPTS.get(reason, self._FORCED_PROMPTS["max_iterations"]))
-        resp = self._call_model(num_predict=SUMMARY_NUM_PREDICT, think=False)
+        resp = self._call_model_streaming(num_predict=SUMMARY_NUM_PREDICT, think=False)
         if resp.startswith("[错误]") or not resp.strip():
             body = (f"模型总结失败（{resp.strip() or '空响应'}）。"
                     f"执行摘要：{self._trace_summary() or '无工具调用'}")
@@ -783,8 +874,32 @@ class ReActEngine:
         """追加到本轮内存工作列表（不落盘；中间往返在轮末被折叠）。"""
         self.messages.append({"role": role, "content": content})
 
+    def _consume_stream(self, resp, on_token: Callable[[str], None]) -> str:
+        """逐行解析 Ollama ``/api/chat`` 的 NDJSON 流，每个增量回调 ``on_token``，返回累积文本。
+
+        - 每行 ``{"message": {"content": delta}, "done": bool}``；``done`` 为真即结束；
+        - ``stop()`` 置位后不再回调、关闭响应并返回已累积文本（调用方按中断处理）；
+        - 服务端在流中返回 ``{"error": ...}`` 时抛 ``RuntimeError``。
+        """
+        from collaboration.llm_helper import consume_ndjson_stream
+
+        self._active_response = resp
+        try:
+            # 连接被 stop() 关闭时底层会抛读错误：consume_ndjson_stream 在 should_stop 为真时
+            # 吞掉该错误并返回已累积文本，调用方按中断处理
+            return consume_ndjson_stream(resp, on_token, should_stop=self._stop_event.is_set)
+        finally:
+            self._active_response = None
+
     def _call_model(self, messages: Optional[List[Dict]] = None,
-                    num_predict: int = NUM_PREDICT, think: Optional[bool] = None) -> str:
+                    num_predict: int = NUM_PREDICT, think: Optional[bool] = None,
+                    on_token: Optional[Callable[[str], None]] = None) -> str:
+        """调用模型并返回完整文本。
+
+        ``on_token`` 为空时非流式（``stream: False``，请求体与此前完全一致）；非空且
+        ``Config.LLM_STREAM`` 开启时用 ``stream: True`` 逐行读 NDJSON 并逐增量回调；
+        ``LLM_STREAM=false`` 时仍非流式，但把完整文本一次性回调给 ``on_token``。
+        """
         messages = self.messages if messages is None else messages
         clean_messages = []
         for m in messages:
@@ -815,27 +930,34 @@ class ReActEngine:
         progress_thread = threading.Thread(target=update_progress, daemon=True)
         progress_thread.start()
 
+        streaming = on_token is not None and bool(getattr(Config, "LLM_STREAM", True))
         try:
-            resp = requests.post(
-                self.host + "/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": clean_messages,
-                    "stream": False,
-                    # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
-                    # 不支持的模型 Ollama 会忽略该字段。
-                    "think": self.think if think is None else bool(think),
-                    "options": {
-                        "temperature": 0.3,
-                        "num_ctx": self.num_ctx,
-                        "num_predict": int(num_predict)
-                    }
-                },
-                timeout=Config.TIMEOUT
-            )
+            payload = {
+                "model": self.model,
+                "messages": clean_messages,
+                "stream": streaming,
+                # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
+                # 不支持的模型 Ollama 会忽略该字段。
+                "think": self.think if think is None else bool(think),
+                "options": {
+                    "temperature": 0.3,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": int(num_predict)
+                }
+            }
+            if streaming:
+                resp = requests.post(self.host + "/api/chat", json=payload,
+                                     timeout=Config.TIMEOUT, stream=True)
+                resp.raise_for_status()
+                return self._consume_stream(resp, on_token)
+            resp = requests.post(self.host + "/api/chat", json=payload, timeout=Config.TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("message", {}).get("content", "")
+            text = data.get("message", {}).get("content", "")
+            if on_token is not None:
+                # LLM_STREAM=false：退化为一次性回调完整文本
+                on_token(text)
+            return text
         except requests.exceptions.ConnectionError:
             return "[错误] 无法连接到 Ollama，请确认服务已启动: ollama serve"
         except requests.exceptions.Timeout:
