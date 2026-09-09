@@ -62,6 +62,9 @@ for pkg in (
     "llama_index.core",
     "llama_index.embeddings.ollama",
     "llama_index.llms.ollama",
+    # OpenAI 兼容后端（LLM_PROVIDER=openai，F10 P1-2）
+    "llama_index.llms.openai_like",
+    "llama_index.llms.openai",
     "llama_index.readers.file",
     "llama_index.vector_stores.chroma",
     # trafilatura 自带 settings.cfg 数据文件（含 DOWNLOAD_TIMEOUT 等默认配置），

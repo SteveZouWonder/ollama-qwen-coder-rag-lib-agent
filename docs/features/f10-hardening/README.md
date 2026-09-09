@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 已完成 2026-09-09；其余五项待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+**进行中**（P0-1 / P0-2 / P1-1 / P1-2 已完成 2026-09-09；其余四项待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
 · 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 八个独立任务逐项落地
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
@@ -11,7 +11,7 @@
 | P0-2 | 依赖钉版本 + `requirements-dev.txt` · CI PR 触发 + 三平台矩阵 · CHANGELOG 归档 v0.1.0 | 高 | 低 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-1 | 真流式输出（Ollama NDJSON → Web token 事件 / CLI rich Live）· `LLM_STREAM` 开关 · 可中断 | 高 | 中 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-3 | RAG 评测集（≥30 例 + 小语料）· `src/rag_eval.py` 指标 · `scripts/eval_rag.py` 报表与 Δ | 中 | 中 | — | 待实现 | | |
-| P1-2 | `src/llm_client.py` 后端抽象（Ollama / OpenAI 兼容）· 五处直连替换 · 模型列表 / 健康检查 | 中 | 中高 | P1-1 | 待实现 | | |
+| P1-2 | `src/llm_client.py` 后端抽象（Ollama / OpenAI 兼容）· 五处直连替换 · 模型列表 / 健康检查 | 中 | 中高 | P1-1 | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | 待实现 | | |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | 待实现 | | |
 | P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | 待实现 | | |
@@ -77,6 +77,16 @@ P3-1 Tesseract + README
 | P1-1-d CLI | `src/cli_handlers.py`、`src/query_interface.py` | 新增 **`LiveAnswer`**（`rich.live.Live(Panel(Markdown(buffer)), refresh_per_second=8, transient=True)`，首个 token 才启动，`finish()` 停止并清除实时区域；类级 `LiveAnswer.streaming()` 标志；非 Rich 终端为空操作）。`_run_ask`（`/ask` 与自然语言）传 `on_token=live.on_token`，`KeyboardInterrupt` → `live.finish()` + 打印「已中断，已关闭与模型的连接。」；`handle_agent` 以 `engine.on_token = live.on_token` 方式注入（结束后恢复，`engine.chat(task)` 调用形态不变），`Ctrl+C` → `engine.stop()`（关闭连接）+「已中断：…」；单次 `--agent` 同理；`handle_multi` 传 `on_token`（仅整合阶段有 token）。`on_step_callback` 在 `LiveAnswer.streaming()` 时静默 transient 推理心跳（否则 `\r` 单行刷新会在面板上方反复刷出）。Live 面板为 transient：完成后仍按既有格式打印完整答案 + 来源 + notices，最终输出与非流式完全一致。`print_help`（`/ask` `/agent` 行）与 `TUTORIAL_TEXT`（新增"流式输出"示例段）同步。 |
 | P1-1-e 文档 | `README.md`、`CHANGELOG.md`、`docs/development/ai-assistant/ARCHITECTURE.md` §2.6、`MODULE_GUIDES.md` | 环境变量表加 `LLM_STREAM`（配置块 + export 示例）；CHANGELOG `[Unreleased]` 新增「真流式输出」、改进「回答可中断」；ARCHITECTURE 新增 §2.6「流式回调路径」；MODULE_GUIDES 更新 `ReActEngine` 签名、`llm_helper` 新函数、`StreamEvent` kinds。 |
 
+### P1-2 LLM 后端抽象层（Ollama / OpenAI 兼容）（2026-09-09）
+
+| 子项 | 实现位置 | 做了什么 |
+|---|---|---|
+| P1-2-a 抽象 | **新增** `src/llm_client.py`；`src/config.py` | `LLMClient` Protocol（`chat / list_models / health`，`chat` 在需求四个关键字之外另接受 `should_stop` / `on_response` / `timeout`）。**`OllamaClient`**：请求体 `{model, messages, stream, think, options}` 与之前的直连**逐字节一致**，`options` 原样透传，非流式 `requests.post(url, json=, timeout=)` 不带 `stream=` 关键字（现有 90+ 处对 `requests.post` 的测试打桩全部沿用）；流式复用 P1-1 的 `consume_ndjson_stream`（从 `llm_helper` 迁入，`llm_helper` 保留同名重导出）；另有 Ollama 专有 `unload(model)`。**`OpenAICompatClient`**：`POST {base}/v1/chat/completions`（`base_url` 带不带 `/v1` 均可）、`Authorization: Bearer`、`map_options`（`temperature` 直传、`num_predict→max_tokens`、`num_ctx` 忽略 + debug 日志一次、其余忽略）、新增 `consume_sse_stream`（`data:` 行 / `[DONE]` / `choices[0].delta.content` / 错误对象）。错误约定：`ConnectionError / Timeout` 原样抛出（调用方文案不变），HTTP ≥400 / 流中 error / 非法 JSON / 缺 `choices` 抛 `LLMError(status_code=)`。工厂 `get_llm_client()` 按 `(LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY)` 缓存单例、配置变化自动重建；`client_for_host(host)`（兼容 `ReActEngine(host=)` / 托盘配置）、`ollama_client()`、`available_models() -> ModelList(names, fallback, notice)`、`describe_backend(check_health)`、`connection_error_hint()`。`config.py` 新增 `LLM_PROVIDERS` / `LLM_PROVIDER` / `LLM_BASE_URL`（默认取 `OLLAMA_BASE_URL`）/ `LLM_API_KEY` / `LLM_REASONING_EFFORT` 与 `Config.*` 映射。 |
+| P1-2-b 替换调用点 | `src/react_engine.py`、`src/collaboration/llm_helper.py`、`src/conversation_context.py`、`src/git_integration/commit_generator.py`、`src/desktop_app.py`、`src/model_switcher.py`、`src/rag_engine.py` | 五处直连全部改为 `get_llm_client().chat(...)`：`react_engine._call_model`（`self.llm_client` = `client_for_host(self.host)`；`on_response=_track_response` 记录 `_active_response` 供 `stop()`；删除 `_consume_stream`；连接失败文案经 `connection_error_hint()`，ollama 模式文案不变）、`complete_text`（`LLM_STREAM=false` 时回调文本仍 strip）、`_default_complete`、`commit_generator`（`/api/generate` + `prompt` → chat `messages`，超时抽成 `TIMEOUT=60`，空响应也回退）、`OllamaWarmer.warm_up`（`LLMError` 按 `HTTP {status}` 归类，嵌入模型仍 `/api/embed`）。**需求未点名但同样直连 `/api/generate` 的 `model_switcher.unload_model`** 改经 `OllamaClient.unload`（否则 grep 验收不过）。`rag_engine._setup_llm` 在 openai 模式用 `OpenAILike(api_base=…/v1, is_chat_model=True, context_window=num_ctx, additional_kwargs={"reasoning_effort": …})`，嵌入保持 `OllamaEmbedding`。新依赖 `llama-index-llms-openai-like==0.8.0`（`requirements.txt` / `requirements-build.txt`；`cerebro.spec` `collect_all` 补 `llama_index.llms.openai_like` 与其依赖 `llama_index.llms.openai`）。 |
+| P1-2-b 思考模式映射（需求外，必需） | `src/llm_client.py`、`src/rag_engine.py`、`src/config.py` | 手测发现：OpenAI 协议没有 `think` 字段，qwen3.5 在 Ollama `/v1` 上默认开启思考，**把 `max_tokens` 预算全部花在 `reasoning` 上、`content` 为空**，ReAct / 摘要 / 提交信息全部失效；RAG 规划调用也因此 120s 超时。因此 `think=False` 时随请求发送标准字段 `reasoning_effort=none`（Ollama `/v1` 与 OpenAI 均识别，实测立即恢复正常），后端返回 400 时自动去掉重试一次、成功即记住此后不发送；`think=True` 不发送任何字段。开关 `LLM_REASONING_EFFORT`（默认 `none`，可 `low/medium/high`，空串不发送），`OpenAILike` 同一开关经 `additional_kwargs` 生效。 |
+| P1-2-c 模型列表 / 健康 | `src/bootstrap.py`、`src/model_switcher.py`、`src/query_interface.py`、`src/cli_handlers.py`、`src/web/services.py`、`src/web/app.py`、`src/desktop_app.py` | `bootstrap.ollama_running / list_installed_models` 经 `OllamaClient(OLLAMA_BASE_URL)`（去掉 urllib 回退，requests 是硬依赖）；`ensure_ollama_ready` 在 openai 模式走新增 `_ensure_openai_backend_ready`：只探测后端 `health`（不可达 → 通知并返回 False），不引导安装 Ollama / 不拉对话模型，Ollama 未运行或缺 `EMBED_MODEL` 时只提示「知识库嵌入仍需 Ollama」。`model_switcher.list_installed_models` 按 provider 分流，新增 `models_notice()`；`switch_model` 在 openai 且后端无列表时放行任意名字并注明「未校验」、不卸载旧模型；`current_model_info` 多返回 `provider / base_url`，openai 模式不查 `/api/ps`。**CLI**：启动横幅 `Ollama: url` → openai 模式 `后端: openai @ url`（新 `backend_banner_text()`）；`/model` 显示后端与「num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama」，不再显示 Ollama 专有的驻留状态；`/model list` 打印回退提示（黄色）并把标题改为「可用模型」；`/config` 新增 `LLM 后端 / 后端地址`，openai 模式再加 `API Key / Ollama 地址（嵌入模型）`。**Web**：`WebService.env_info()` 新增 `llm_provider / llm_base_url / llm_api_key_set / backend_healthy`（经 `describe_backend(check_health=True)`），`format_env_info` 顶部三行「LLM 后端 / 后端地址 / 后端状态 ✅❌」+ openai 模式的 API Key 行；`WebService.models_notice()` + `on_model_status` 把回退提示拼进模型状态行；`format_model_status` / `format_model_chip` 在 openai 模式显示 `后端 openai @ url`，不显示驻留 / ctx / 思考。**托盘**：`OllamaWarmer.check_service → health`，`StatusMonitor.check_status → list_models`（键 `ollama_service` 不变，另加 `provider`）。 |
+| P1-2-d 文档 | `README.md`、`CHANGELOG.md`、`docs/development/ai-assistant/ARCHITECTURE.md`、`MODULE_GUIDES.md` | README 新章节「接入 OpenAI 兼容后端」（LM Studio / vLLM / 内网网关 / 用 Ollama `/v1` 验证的示例、生效范围、五条注意事项表）+ 配置块与 export 示例四个新变量 + 项目结构树加 `llm_client.py`；CHANGELOG `[Unreleased]` 新增「OpenAI 兼容后端」；ARCHITECTURE 基础层加 `llm_client` 与「LLM 调用只经 llm_client」段、§2.6 流式路径更新、扩展点表加「新增 LLM 后端协议」；MODULE_GUIDES 新增 `llm_client.py` 条目并更新 `config` / `react_engine` / `llm_helper` / `rag_engine` / `commit_generator` / `desktop_app` / `bootstrap` / `model_switcher` 条目。 |
+
 ### P0-2 依赖钉版本 + 归档发版 + CI 矩阵（2026-09-09）
 
 | 子项 | 实现位置 | 做了什么 |
@@ -88,6 +98,77 @@ P3-1 Tesseract + README
 | P0-2-c 归档 | `CHANGELOG.md`、`docs/features/ROADMAP.md` | `python scripts/bump_changelog.py bump --version 0.1.0 --date 2026-09-09` 把 `[Unreleased]` 的 **112 条**一级要点归档为 `## [v0.1.0] - 2026-09-09`（F8 / F9 为破坏性体验升级，按 minor 递增）；新 `[Unreleased]` 只写 P0-2 自身的「发布流程」4 条。ROADMAP「当前版本」由 v0.0.13 改为 v0.1.0。**未打 tag、未推送**，命令交由用户执行。 |
 
 ## 验证结果
+
+### P1-2（2026-09-09）
+
+| 项 | 结果 |
+|---|---|
+| 全量测试 | `./venv/bin/python -m pytest -q -n 4` → **3390 passed, 36 skipped**，覆盖率 **91.71%**（门禁 80%）；`llm_client.py` 自身 98% |
+| 新增测试 | **+103 个**（新文件 `tests/test_llm_client.py`）：`OllamaClient` 普通 / 流式（token 拼接 == 返回、`on_response` 钩子、`should_stop`）/ 流中 error / 超时 / 连接错误 / 401 / 5xx（JSON 与纯文本 body）/ 流式 5xx 先于钩子抛出 / 非法 JSON / 非 dict / `list_models` `health` `unload`；`OpenAICompatClient` `/v1` 归一化 / 请求体与 `Authorization` / options 映射（`num_ctx` debug 一次）/ `think=False → reasoning_effort` / 400 重试一次并记住 / 其它 400 不误判 / `think=True` 不重试 / `LLM_REASONING_EFFORT` 可配 / SSE 流（垃圾行、空 choices、`[DONE]`、错误对象、裸 JSON 错误行、`should_stop` 吞读错误、非停止读错误抛出）/ 超时 / 401 提示 `LLM_API_KEY` / 404 / 429 / 5xx / 非法 JSON / 缺 choices / `list_models` `health`；工厂：默认 ollama、openai 选择与缓存、配置变化重建、`LLM_BASE_URL` 默认回落 `OLLAMA_BASE_URL`、未知 provider 回退 + warning 一次、config 不可导入的兜底、`client_for_host`（ollama 专用实例 / openai 忽略）、`ollama_client`、`connection_error_hint`、`describe_backend`；`available_models` 三种回退；五处调用点在 openai 模式的请求形态（react_engine 流式 / 连接错误文案 / `host` 专用 client / `stop()` 关闭 SSE 流、`complete_text`、`_default_complete`、托盘预热 `HTTP 503` / 非法 JSON、`check_service` / `check_status`）；`commit_generator` 两 provider × 成功 + 五种失败回退（参数化 12 例）；`model_switcher` / `bootstrap` / CLI（`config_rows`、横幅、`/model`、`/model list` 两种回退）/ Web（`env_info` + `format_env_info` 三态、`format_model_status` / `format_model_chip`、`models_notice` + `on_model_status`）的 provider 感知；`rag_engine._setup_llm` openai → `OpenAILike`（含 `reasoning_effort` 随 `set_think` 变化、`/v1` 后缀、无 key）；**grep 守卫** `TestNoDirectEndpointsOutsideLLMClient` |
+| 现有测试断言 | 改了 **2 条**（详见差异表 #1）：`tests/test_desktop_app.py::test_warm_up_chat_model` 的 `/api/generate` → `/api/chat`（并加 `options == {"num_predict": 1}` 断言）、`tests/test_git_analyzer_commit.py::test_request_payload_and_parse` 的 `/api/generate` + `json["prompt"]` / `{"response"}` → `/api/chat` + `messages[0]` / `{"message": {"content"}}`。其余 3200+ 条一条未改 |
+| grep 验收 | `grep -rn '"/api/chat"\|/api/generate' src/` → 仅 `src/llm_client.py:271`（docstring）、`:298`（`/api/chat`）、`:338`（`unload` 的 `/api/generate`）三处 |
+| 依赖 | `llama-index-llms-openai-like==0.8.0`（无新增传递依赖：`llama-index-llms-openai 0.7.9` 已在 venv）；`bash scripts/verify_deps.sh` 全 ✓；`pip-audit -r requirements.txt` 带 CI 同一组 ignore → `No known vulnerabilities found, 5 ignored`（与 P0-2 相同的 5 条，**未新增**）；`packaging/cerebro.spec` `collect_all` 加 `llama_index.llms.openai_like` / `llama_index.llms.openai` |
+| flake8 语法门禁 | `flake8 --select=E9,F63,F7,F82 src tests` → rc=0 |
+| 手测后端 | 未装 LM Studio / vLLM，用 **Ollama 自带的 OpenAI 兼容端点** `LLM_PROVIDER=openai LLM_BASE_URL=http://localhost:11434` 作为"任意兼容服务"（走 `/v1/chat/completions` SSE + `/v1/models`，与 Ollama 原生协议无关）。`OpenAICompatClient` 直接调用：`health=True`、`/v1/models` 列出 5 个模型、流式 60 token 首字 **0.29s**、全文 2.14s、45 个增量 |
+| 手测 CLI `/ask` | `python src/query_interface.py --no-history --query "知识库里主要有哪些主题？用三句话概括"`：横幅显示 `模型: qwen3.5:4b | 后端: openai @ http://localhost:11434`，`🤖 加载 LLM 模型: … (后端 openai @ http://localhost:11434/v1, context_window=16384, think=False)`，回答三段 + `[1]` 引用 + 来源表正常（终端输出见下） |
+| 手测 CLI `/agent` | `--agent "读取 README.md 的前 5 行并原样列出"`：Step 1 `get_current_dir` → Step 2 `read_file` → Final Answer 渲染 README 首部，ReAct 协议经 OpenAI 兼容后端解析正常 |
+| 手测 CLI `/config` `/model` `/model list` | 输出见下 |
+| 手测 Web | `LLM_PROVIDER=openai … a.launch(server_port=7862)` + Playwright：对话页 RAG 检索流式（帧 1 @1.1s、帧 2 @26.4s、帧 3 @27.5s 气泡增长，状态行「✍️ 生成回答中… · 已用时 27 秒」），最终「✅ 完成 · 用时 32 秒 · 实际模式: RAG 检索 · 🔍 引用 3 处已核验」；系统页「模型」tab 状态行 `模型: qwen3.5:4b · 后端 openai @ http://localhost:11434 · num_ctx / 思考模式由后端决定`，「运行环境」tab 顶部 `LLM 后端 openai（OpenAI 兼容；num_ctx / 思考模式由后端决定）/ 后端地址 / 后端状态 ✅ 可达 / API Key 未设置（本地服务通常无需）/ Ollama 地址（嵌入模型）`。截图见下 |
+| 首次手测暴露的缺陷 | 未加 `reasoning_effort` 时：`OpenAICompatClient.chat(..., num_predict=60)` 返回空串（60 token 全部是 `reasoning`）；CLI `/ask` 的 RAG 规划调用 `Request timed out.`（120s）后整条问答 >400s 未完成。加映射后全部恢复（见实现记录「思考模式映射」） |
+
+Web 截图（`LLM_PROVIDER=openai`）：
+
+| 系统 → 运行环境 | 系统 → 模型 |
+|---|---|
+| ![](assets/p12-web-system-env.png) | ![](assets/p12-web-system-model.png) |
+
+| 对话 · 流式中（27s，气泡增长） | 对话 · 完成（32s，引用 3 处已核验） |
+|---|---|
+| ![](assets/p12-web-chat-stream.png) | ![](assets/p12-web-chat-final.png) |
+
+CLI `/ask`（`--query` 单次，`LLM_PROVIDER=openai`）：
+
+```
+│ 模型: qwen3.5:4b | 后端: openai @ http://localhost:11434                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+🤖 加载 LLM 模型: qwen3.5:4b (后端 openai @ http://localhost:11434/v1, context_window=16384, think=False)
+🔢 加载 Embedding 模型: nomic-embed-text:latest
+…
+🔍 问题: 知识库里主要有哪些主题？用三句话概括
+🤖 回答:
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 知识库里关于 Cloudflare Tunnel                                               │
+│ 的主题主要集中在内网穿透的技术原理与实施步骤、前置准备所需的硬件与软件环境以 │
+│ 及具体的操作指南（如 DNS 迁移与服务暴露）。                                  │
+│  1 技术定位与优势：… [1]。                                                   │
+│  2 前置环境要求：… [1]。                                                     │
+│  3 操作时间与流程：… [1]。                                                   │
+│ 主要依据来自知识库 [1]。                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                      📚 参考来源（编号与回答中的  对应）
+│ [1] │ cloudflare-tunnel-guide_v2.md │ 0.455 (关键词) │    4 │ 🚀 Cloudflare … │
+```
+
+CLI `/config` / `/model` / `/model list`（`LLM_PROVIDER=openai`，后端为 Ollama `/v1` 故列表可得）：
+
+```
+模型: qwen3.5:4b
+LLM 后端: openai（OpenAI 兼容；num_ctx 由后端决定）
+后端地址: http://localhost:11434
+API Key: 未设置（本地服务通常无需）
+Ollama 地址（嵌入模型）: http://localhost:11434
+自动确认: 关
+== /model
+模型: qwen3.5:4b
+后端: openai @ http://localhost:11434
+num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama
+自动确认: False
+== /model list
+本机已安装模型:
+  - SparkLLM/Spark-X2.5-4B:latest
+  - qwen3.5:4b  [当前/已加载]
+  …
+```
 
 ### P1-1（2026-09-09）
 
@@ -220,6 +301,23 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 > 浏览器截图未提交：本次在无头环境实现，用 service → formatter 的真实渲染输出替代（系统页即 `gr.Markdown(format_env_info(...))`，无额外交互逻辑）。
 
 ## 与需求的差异
+
+### P1-2
+
+| # | 需求 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | 「现有测试全部不改断言」 | 改了 2 条断言 | 两条恰好把被替换的端点写进了断言：`test_warm_up_chat_model` 断言预热 URL 含 `/api/generate`，`test_request_payload_and_parse` 断言提交信息请求 URL 为 `/api/generate`、载荷键为 `prompt`、响应键为 `response`。需求 P1-2-b 明确要求这两处改为 chat 消息格式，二者互斥；改为断言 `/api/chat` + `messages[0]`，其余部分（`think=False`、`stream=False`、`options`、`timeout=60`、解析结果）原样保留。 |
+| 2 | 「`think` 忽略」 | `think=False` → 发送标准字段 `reasoning_effort=LLM_REASONING_EFFORT`（默认 `none`）；后端 400 时自动去掉重试并记住；`think=True` 不发送 | 手测证明"忽略"不可用：qwen3.5 在 Ollama `/v1` 上默认思考，`max_tokens=60` 的调用返回空 `content`，RAG 规划 120s 超时，整个产品在 openai 模式下不可用。`reasoning_effort` 是 OpenAI 官方字段（Ollama 兼容层与 OpenAI 均识别），不识别的后端经一次 400 自动降级到"忽略"，即需求原语义。 |
+| 3 | 「CLI `/models`、`/status`」 | CLI 没有这两个命令，落在既有的 **`/model list`**（列表 + 回退提示）、**`/model`**（后端 / 地址 / 由后端决定的提示）、**`/config`**（`LLM 后端 / 后端地址 / API Key / Ollama 地址（嵌入模型）`）与**启动横幅** | 立项 §0.4 写的是「模型列表 / 健康：`model_switcher`、`bootstrap`、`desktop_app` 状态轮询」，命令名系笔误；未新建命令以免与 `/stats`（知识库统计）混淆。 |
+| 4 | §0.4 列「五处直连」 | 另改了 **`model_switcher.unload_model`**（`/api/generate` + `keep_alive: 0`） | 它同样直连 `/api/generate`，不改则 grep 验收不过；作为 Ollama 专有能力放进 `OllamaClient.unload`，openai 模式下 `switch_model` 不再调用。 |
+| 5 | 「`bootstrap` 的 Ollama 安装 / 拉模型引导仅在 `LLM_PROVIDER=ollama` 时触发」 | openai 模式改走 `_ensure_openai_backend_ready`：探测后端 health（不可达 → 通知 + 返回 False），并**提示**嵌入模型是否就绪（Ollama 未运行 / 缺 `EMBED_MODEL`），不安装、不拉取 | 只"不触发"会让 openai 用户在后端没起、或知识库因缺嵌入模型静默失效时毫无提示（违反 §5「失败可见」）。 |
+| 6 | 「`openai` 模式 `list_models` 失败时回退 `[LLM_MODEL]` 并提示」 | 同需求；另让 `switch_model` 在此情形下**放行任意模型名**并在结果中注明「未校验模型是否存在」 | 回退列表只有当前模型时，沿用"必须已安装"的校验会让 `/model <name>` 永远失败，用户无法切到后端里的其它模型。 |
+| 7 | 未提及 | `ReActEngine(host=…)` 语义：ollama 模式且 `host` 与全局地址不同 → 该地址的专用 `OllamaClient`；openai 模式忽略 `host` | `agent_config.py` 给子 Agent 硬编码 `host="http://localhost:11434"`，若一律用全局 client 会改变现有行为；若一律按 `host` 建 client，openai 模式下子 Agent 会打到 Ollama。`client_for_host` 兼顾两者，`engine.host` 属性与测试断言不变。 |
+| 8 | 未提及 | 新环境变量 `LLM_REASONING_EFFORT`（需求为三项，实际四项） | 见 #2；给出关闭 / 调级的口子，避免把行为写死。README 环境变量表、`Config`、Web 系统页（隐含在 `LLM 后端` 行说明中）同步。 |
+| 9 | 未提及 | `desktop_app.StatusMonitor.check_status` 的状态键仍叫 `ollama_service`，另加 `provider` | `status.log` 历史记录与托盘「系统状态」弹窗读该键；改名要迁移旧日志，收益为零。 |
+| 10 | 「Web 系统页 … 经 `health`」 | `env_info()` 内做一次 `health()` 探测（超时 2s）并渲染「后端状态 ✅ / ❌ / —」 | 系统页本就在进入时刷新一次 `env_info`，探测成本可接受；`format_env_info` 对 `backend_healthy=None`（异常）显示「—」不阻断页面。 |
+
+已知限制（openai 模式）：**嵌入仍需 Ollama**（`EMBED_MODEL` 走 `OLLAMA_BASE_URL`，只用 Agent 对话可不开 Ollama）；**`num_ctx` 由后端决定**（`LLM_NUM_CTX` 仅用于历史 / 片段 token 预算，需手动与 vLLM `--max-model-len` 等对齐）；模型驻留 / 释放 / `/api/ps` 为 Ollama 专有，openai 模式不显示；`OpenAILike` 路径没有 `reasoning_effort` 的 400 自动降级（后端不识别时需设 `LLM_REASONING_EFFORT=` 空）；LM Studio / vLLM 本机未安装，仅以 Ollama `/v1` 兼容端点完成手测。
 
 ### P1-1
 

@@ -330,6 +330,16 @@ def format_model_status(info: Dict[str, Any]) -> str:
     else:
         state = "未加载（首次提问时按需加载）"
     think = "开" if info.get("think") else "关"
+    provider = str(info.get("provider") or "ollama")
+    if provider != "ollama":
+        # OpenAI 兼容后端：驻留 / num_ctx / 思考模式均由后端决定
+        line = (
+            f"**模型**: `{info.get('model', '?')}`  ·  后端 `{provider}` @ `{info.get('base_url', '')}`"
+            f"  ·  num_ctx / 思考模式由后端决定"
+        )
+        if info.get("models_notice"):
+            line += f"  ·  ⚠️ {info['models_notice']}"
+        return line
     line = (
         f"**模型**: `{info.get('model', '?')}`  ·  {state}  ·  "
         f"num_ctx={info.get('num_ctx', '?')}  ·  思考模式 {think}"
@@ -347,6 +357,13 @@ def format_model_chip(info: Dict[str, Any]) -> str:
         return (
             f'<span class="cb-status-chip"><span class="dot off"></span>'
             f'<code>{model}</code> · 连接失败</span>'
+        )
+    provider = str(info.get("provider") or "ollama")
+    if provider != "ollama":
+        # OpenAI 兼容后端：驻留 / ctx / 思考由后端决定，只显示 provider 与地址
+        return (
+            f'<span class="cb-status-chip"><span class="dot"></span>'
+            f'<code>{model}</code> · {provider} · <code>{info.get("base_url", "")}</code></span>'
         )
     if info.get("loaded"):
         gb = (info.get("size_bytes") or 0) / (1024 ** 3)
@@ -622,8 +639,18 @@ def format_env_info(info: Dict[str, Any]) -> str:
         return ""
     if info.get("error"):
         return f"_读取配置失败：{info['error']}_"
+    provider = str(info.get("llm_provider") or "ollama")
+    healthy = info.get("backend_healthy")
+    health_text = "—" if healthy is None else ("✅ 可达" if healthy else "❌ 不可达（请确认服务已启动、地址正确）")
     rows = [
-        ("Ollama 地址", f"`{info.get('ollama_url', '')}`"),
+        ("LLM 后端", f"`{provider}`" + ("" if provider == "ollama" else "（OpenAI 兼容；`num_ctx` / 思考模式由后端决定）")),
+        ("后端地址", f"`{info.get('llm_base_url') or info.get('ollama_url', '')}`"),
+        ("后端状态", health_text),
+    ]
+    if provider != "ollama":
+        rows.append(("API Key（LLM_API_KEY）", "已设置" if info.get("llm_api_key_set") else "未设置（本地服务通常无需）"))
+    rows += [
+        ("Ollama 地址" + ("（嵌入模型）" if provider != "ollama" else ""), f"`{info.get('ollama_url', '')}`"),
         ("LLM 模型", f"`{info.get('llm_model', '')}`"),
         ("Embedding 模型", f"`{info.get('embed_model', '')}`"),
         ("num_ctx", info.get("num_ctx", "")),
@@ -1958,7 +1985,11 @@ def build_handlers(service: WebService) -> Dict[str, Callable]:
     # ---------- 模型管理（热切换）----------
 
     def on_model_status() -> str:
-        return format_model_status(service.current_model())
+        info = dict(service.current_model())
+        notice = service.models_notice() if hasattr(service, "models_notice") else ""
+        if notice:
+            info["models_notice"] = notice
+        return format_model_status(info)
 
     def on_model_chip() -> str:
         return format_model_chip(service.current_model())

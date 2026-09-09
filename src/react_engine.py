@@ -874,31 +874,31 @@ class ReActEngine:
         """追加到本轮内存工作列表（不落盘；中间往返在轮末被折叠）。"""
         self.messages.append({"role": role, "content": content})
 
-    def _consume_stream(self, resp, on_token: Callable[[str], None]) -> str:
-        """逐行解析 Ollama ``/api/chat`` 的 NDJSON 流，每个增量回调 ``on_token``，返回累积文本。
+    @property
+    def llm_client(self):
+        """本引擎使用的 LLM 后端 client（F10 P1-2）。
 
-        - 每行 ``{"message": {"content": delta}, "done": bool}``；``done`` 为真即结束；
-        - ``stop()`` 置位后不再回调、关闭响应并返回已累积文本（调用方按中断处理）；
-        - 服务端在流中返回 ``{"error": ...}`` 时抛 ``RuntimeError``。
+        默认为 ``llm_client.get_llm_client()`` 的进程内单例；显式传入的 ``host`` 与全局地址
+        不同且 provider 为 ollama 时，用该地址的专用 OllamaClient（多 Agent 配置文件可为子
+        Agent 指定不同 Ollama 实例）。openai 模式下 ``host`` 被忽略，统一走全局后端。
         """
-        from collaboration.llm_helper import consume_ndjson_stream
+        from llm_client import client_for_host
 
+        return client_for_host(self.host)
+
+    def _track_response(self, resp) -> None:
+        """流式读取开始时记住底层响应，``stop()`` 据此立即关闭连接。"""
         self._active_response = resp
-        try:
-            # 连接被 stop() 关闭时底层会抛读错误：consume_ndjson_stream 在 should_stop 为真时
-            # 吞掉该错误并返回已累积文本，调用方按中断处理
-            return consume_ndjson_stream(resp, on_token, should_stop=self._stop_event.is_set)
-        finally:
-            self._active_response = None
 
     def _call_model(self, messages: Optional[List[Dict]] = None,
                     num_predict: int = NUM_PREDICT, think: Optional[bool] = None,
                     on_token: Optional[Callable[[str], None]] = None) -> str:
-        """调用模型并返回完整文本。
+        """调用模型并返回完整文本（经 ``llm_client`` 后端抽象，F10 P1-2）。
 
         ``on_token`` 为空时非流式（``stream: False``，请求体与此前完全一致）；非空且
-        ``Config.LLM_STREAM`` 开启时用 ``stream: True`` 逐行读 NDJSON 并逐增量回调；
-        ``LLM_STREAM=false`` 时仍非流式，但把完整文本一次性回调给 ``on_token``。
+        ``Config.LLM_STREAM`` 开启时流式读取并逐增量回调（Ollama NDJSON / OpenAI SSE 由
+        client 处理）；``LLM_STREAM=false`` 时仍非流式，但把完整文本一次性回调给 ``on_token``。
+        ``stop()`` 置位后 client 停止回调并关闭响应，返回已累积文本（调用方按中断处理）。
         """
         messages = self.messages if messages is None else messages
         clean_messages = []
@@ -930,41 +930,34 @@ class ReActEngine:
         progress_thread = threading.Thread(target=update_progress, daemon=True)
         progress_thread.start()
 
-        streaming = on_token is not None and bool(getattr(Config, "LLM_STREAM", True))
         try:
-            payload = {
-                "model": self.model,
-                "messages": clean_messages,
-                "stream": streaming,
-                # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
-                # 不支持的模型 Ollama 会忽略该字段。
-                "think": self.think if think is None else bool(think),
-                "options": {
+            # 显式传 think：对支持思考模式的模型（qwen3.5 等）默认关闭，
+            # 不支持的模型 Ollama 会忽略该字段；OpenAI 兼容后端忽略。
+            # 连接被 stop() 关闭时底层会抛读错误：client 在 should_stop 为真时吞掉该错误并
+            # 返回已累积文本，调用方按中断处理。
+            return self.llm_client.chat(
+                clean_messages,
+                model=self.model,
+                think=self.think if think is None else bool(think),
+                options={
                     "temperature": 0.3,
                     "num_ctx": self.num_ctx,
                     "num_predict": int(num_predict)
-                }
-            }
-            if streaming:
-                resp = requests.post(self.host + "/api/chat", json=payload,
-                                     timeout=Config.TIMEOUT, stream=True)
-                resp.raise_for_status()
-                return self._consume_stream(resp, on_token)
-            resp = requests.post(self.host + "/api/chat", json=payload, timeout=Config.TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
-            text = data.get("message", {}).get("content", "")
-            if on_token is not None:
-                # LLM_STREAM=false：退化为一次性回调完整文本
-                on_token(text)
-            return text
+                },
+                on_token=on_token,
+                should_stop=self._stop_event.is_set,
+                on_response=self._track_response,
+                timeout=Config.TIMEOUT,
+            )
         except requests.exceptions.ConnectionError:
-            return "[错误] 无法连接到 Ollama，请确认服务已启动: ollama serve"
+            from llm_client import connection_error_hint
+            return "[错误] " + connection_error_hint()
         except requests.exceptions.Timeout:
             return "[错误] 模型响应超时，请检查模型是否已加载到内存"
         except Exception as e:
             return "[错误] 模型调用失败: " + str(e)
         finally:
+            self._active_response = None
             stop_progress.set()
             progress_thread.join(timeout=1.0)
 

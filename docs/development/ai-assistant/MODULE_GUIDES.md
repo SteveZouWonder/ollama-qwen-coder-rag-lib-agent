@@ -10,6 +10,16 @@
 - `resolve_num_ctx(model)`：按参数量推导安全上下文窗口（≤4B→16384，7–9B→8192，≥12B→4096），`LLM_NUM_CTX` 可覆盖。
 - 两个阈值不要混：`SIMILARITY_CUTOFF`(0.3) 是底层召回保护，`KB_RELEVANCE_THRESHOLD`(0.45) 是编排层"命中"判定。
 - `READONLY_COMMANDS` / `DANGEROUS_PATTERNS` **无人引用**；命令安全规则在 `agent_tools.CommandSafetyChecker`。
+- LLM 后端（F10 P1-2）：`LLM_PROVIDER`（`ollama` | `openai`，其他值回退 ollama 并 warning）、`LLM_BASE_URL`（默认取 `OLLAMA_BASE_URL`）、`LLM_API_KEY`、`LLM_REASONING_EFFORT`（默认 `none`）；均有 `Config.*` 映射。`OLLAMA_BASE_URL` 仍是嵌入模型与 Ollama 专有操作（卸载 / `/api/ps`）的地址。
+
+### `llm_client.py`（F10 P1-2）
+- **项目内唯一允许出现 `"/api/chat"` / `/api/generate` 字面量的文件**（`tests/test_llm_client.py::TestNoDirectEndpointsOutsideLLMClient` 守卫）。
+- `LLMClient` Protocol：`chat(messages, *, model=None, options=None, think=False, on_token=None, should_stop=None, on_response=None, timeout=None) -> str`、`list_models() -> list[str]`、`health() -> bool`。`model=None` 时每次调用读 `config.LLM_MODEL`（所以 `set_llm_model` 不需要重建 client）。
+- `OllamaClient(base_url)`：请求体 `{model, messages, stream, think, options}` 与 P1-2 之前的直连**逐字节一致**（`options` 原样透传；非流式 `requests.post(url, json=, timeout=)` 不带 `stream=` 关键字，现有测试对 `requests.post` 的打桩全部沿用）；流式 `consume_ndjson_stream`。另有 Ollama 专有 `unload(model)`（`/api/generate` + `keep_alive: 0`，`model_switcher.unload_model` 调用）。
+- `OpenAICompatClient(base_url, api_key)`：`base_url` 带不带 `/v1` 均可；`Authorization: Bearer`；`map_options`：`temperature` 直传、`num_predict → max_tokens`、`num_ctx` 忽略（debug 日志一次）、其余忽略；`think=False` → `reasoning_effort=LLM_REASONING_EFFORT`（后端 400 时去掉重试一次，成功则记住不再发送；`think=True` 不发送）；流式 `consume_sse_stream`（`data:` 行、`[DONE]`、`choices[0].delta.content`，忽略 `reasoning` 增量）。
+- 错误约定：`requests.exceptions.ConnectionError / Timeout` 原样抛出（调用方文案不变）；HTTP ≥400（含 401 提示检查 `LLM_API_KEY`）、流中 `error`、非法 JSON、缺 `choices` 抛 `LLMError(status_code=)`（`RuntimeError` 子类）。`_check_status` 只在 `status_code` 为整型时判断——`MagicMock()` 响应会被放过，测试替身无需设 `status_code`。
+- 工厂 / 辅助：`get_llm_client()`（按 `(provider, base_url, api_key)` 缓存，配置变化自动重建；`reset_llm_client()` 测试用）、`client_for_host(host)`（`ReActEngine(host=…)` / 托盘配置的显式地址：ollama 模式且与全局不同 → 专用 `OllamaClient`，否则全局）、`ollama_client()`（始终指向 `OLLAMA_BASE_URL`，bootstrap 嵌入检查用）、`available_models() -> ModelList(names, fallback, notice)`（openai 失败回退 `[LLM_MODEL]` + 「后端未提供模型列表」）、`describe_backend(check_health)`、`connection_error_hint()`、`abort_response(resp)`（跨线程 socket shutdown + close；`collaboration.llm_helper` 保留同名重导出）。
+- 调用方：`react_engine._call_model`（`on_response=_track_response` 记录 `_active_response` 供 `stop()`）、`llm_helper.complete_text`、`conversation_context._default_complete`、`commit_generator._generate_ai_commit_message`、`desktop_app.OllamaWarmer / StatusMonitor`、`bootstrap.ollama_running / list_installed_models`、`model_switcher`。RAG 综合不经此模块而经 LlamaIndex（`rag_engine._setup_llm`：openai 模式 `OpenAILike(api_base=…/v1, additional_kwargs={"reasoning_effort": …})`）。
 
 ### `runtime_paths.py`
 - 源码 / 打包双场景路径解析：`resource_root` / `user_data_dir` / `config_dir` / `home_file` / `logs_dir` / `app_state_dir`。
@@ -42,7 +52,7 @@
 
 ### `react_engine.py`
 - `build_system_prompt(tools, extra, mode, role)`：四层组装（内置 / Skills / 项目附加规范 / 角色说明），不落盘。`CODE_AGENT_PROMPT_MODE` 只剩 `builtin|append`。
-- `ReActEngine(model, host, on_step, on_confirm, context, allowed_tools, system_prompt_extra, max_iterations, prompt_mode, role, on_token)`；`chat(task, on_token=None)` 主循环（`on_token` 只收到 `Final Answer:` 之后的增量，见 ARCHITECTURE §2.6；`stop()` 会 `abort_response` 关闭流式连接）与鲁棒性机制（格式重试 / 重复检测 / 安全拦截 / 确认协议 / Observation 截断 / 预算折叠 / 强制总结）见 ARCHITECTURE §2.3。
+- `ReActEngine(model, host, on_step, on_confirm, context, allowed_tools, system_prompt_extra, max_iterations, prompt_mode, role, on_token)`；`chat(task, on_token=None)` 主循环（`on_token` 只收到 `Final Answer:` 之后的增量，见 ARCHITECTURE §2.6；`stop()` 会 `abort_response` 关闭流式连接）；`_call_model` 经 `llm_client`（`self.llm_client` = `client_for_host(self.host)`，`host` 仅在 ollama 模式且与全局地址不同时生效）与鲁棒性机制（格式重试 / 重复检测 / 安全拦截 / 确认协议 / Observation 截断 / 预算折叠 / 强制总结）见 ARCHITECTURE §2.3。
 - `on_step(evt)` 的 `phase` 取值：`thinking / action / blocked / rejected / executing / observed / final / format_retry / repeat / budget_fold / forced_summary / error / context`；`transient=True` 为心跳。CLI 与 Web 的进度渲染都消费它，新增 phase 要两端同步。
 - `on_confirm(evt)` 收到 `{step, tool, command|args, safety?, message}`，返回 bool。无回调视为拒绝。
 - `step_log` 供 CLI `/summary` 与 Web 执行摘要；`_record_turn` 只把"任务 + 最终答案 + 一句 trace"写回会话。
@@ -65,7 +75,7 @@
 - 四种 `CollaborationMode` 的执行分支都在 `master_agent.py`（`_execute_sequential` / `_execute_parallel` / `_run_competitive`）；`_attach_upstream` 把上游输出（每条 ≤1500 字）放进下游 `input_data["upstream"]`。
 - `collaboration/task_decomposer.py`：LLM 优先（`DECOMPOSE_PROMPT`, ≤512 token）→ 关键词表回退，`last_method` 记录用了哪种。`MAX_SUBTASKS=5`。
 - `collaboration/result_integrator.py`：`INTEGRATE_PROMPT` 综合；`REVIEW_PROMPT` 供 COMPETITIVE 评审 `{"best","reason"}`，失败回退最长成功输出；`merge_sources` 合并引用。
-- `collaboration/llm_helper.py`：`complete_text(prompt, num_predict, timeout, temperature, on_token=None, should_stop=None)` / `complete_json`（`/api/chat`, think=False, temperature 0.2）、`consume_ndjson_stream`（Ollama NDJSON 逐行解析，ReActEngine 也复用）、`abort_response`（跨线程 socket shutdown + close）、`strip_think`、`truncate`。
+- `collaboration/llm_helper.py`：`complete_text(prompt, num_predict, timeout, temperature, on_token=None, should_stop=None)` / `complete_json`（经 `llm_client.get_llm_client().chat`，think=False，temperature 0.2，返回值 strip）、`strip_think`、`truncate`；`consume_ndjson_stream` / `abort_response` 已迁入 `llm_client`，此处仅保留同名重导出。
 - `collaboration/task_scheduler.py`：按 capability 分配（`schedule / schedule_parallel / schedule_sequential / schedule_competitive`）。`message_bus.py` 消息总线；`presenter.py` 多 Agent 结果 Markdown 渲染（CLI / Web 共用）。
 - `agent_registry.py` 注册与查找 Agent；`agent_config.py` 默认配置（各角色 `specialized_tools` 即白名单）。
 
@@ -78,7 +88,7 @@
 ## 能力层
 
 ### `rag_engine.py`
-- `RAGEngine`：LlamaIndex + Ollama + ChromaDB；`build_index` / `load_index` / `add_documents` / `remove_file` / `query`；hybrid（BM25 + RRF，`RAG_HYBRID`）；`progress_callback` 事件。三条入库路径共用 `node_parser`（`load_index()` 曾漏设切分器）。
+- `RAGEngine`：LlamaIndex + Ollama + ChromaDB（`_setup_llm` 在 `LLM_PROVIDER=openai` 时改用 `llama_index.llms.openai_like.OpenAILike`，嵌入始终 `OllamaEmbedding`）；`build_index` / `load_index` / `add_documents` / `remove_file` / `query`；hybrid（BM25 + RRF，`RAG_HYBRID`）；`progress_callback` 事件。三条入库路径共用 `node_parser`（`load_index()` 曾漏设切分器）。
 - `document_loader.py`：多格式加载（PDF / MD / TXT / 代码 / 图片 OCR），入库前 `content_security` 扫描与 `file_validator` 校验；代码文件走 `code_chunker`（tree-sitter 按函数 / 类切分，F8 P4）。
 - `file_metadata.py`：入库文件元数据（分类 / 大小 / hash / `chunk_strategy` / `symbol_count`），持久化到 `app_state_dir("file_metadata")`；`from_dict` 忽略未知键以兼容旧文件。全局单例 `_global_metadata_manager`（测试隔离）。
 - `knowledge_snapshot.py`：快照创建 / 恢复 / 清理，目录 `app_state_dir("knowledge/snapshots")`。
@@ -97,7 +107,7 @@
 ### `code_analyzer/` · `database_tools/` · `git_integration/`
 - `ast_analyzer.py`（stdlib ast 搜索函数 / 类 / 变量）、`quality_checker.py`（pylint / bandit / radon 子进程，缺工具时降级）。
 - `db_connector.py` / `query_executor.py`（含 `list_tables`）/ `sql_generator.py`：SQLite 为主。`session.py` 进程级「当前连接」（`set_current / get_current / clear_current / resolve / current_connector`，按 `(db_type, database)` 复用连接器；Web / CLI / Agent 三端共用）。`results.py` 结构化取数（`query_structured / execute_structured / tables_structured / table_schema_structured / schema_rows / sql_kind`，以 `QueryExecutor | None` 为输入），Web `WebService.db_*` 与 CLI `/db-query` `/db-schema` 都调它（F9）。
-- `git_analyzer.py`（`subprocess git`，非 gitpython）：历史 / 状态 / 作者统计，`get_overview(max_commits)` 供 Web 仪表盘与 CLI `/git-analyze` 表格共用；`get_commit_preview()`（暂存文件 / `diff --cached --stat` / 增删行数）与 `commit(message)`（仅提交暂存区，返回 `ok / hash7 / subject / error`）供 Web 一步提交（F9 P3）。`commit_generator.py`：AI 生成提交信息（`/api/generate`，`think=False` + `num_predict=256`，失败回退规则生成）。
+- `git_analyzer.py`（`subprocess git`，非 gitpython）：历史 / 状态 / 作者统计，`get_overview(max_commits)` 供 Web 仪表盘与 CLI `/git-analyze` 表格共用；`get_commit_preview()`（暂存文件 / `diff --cached --stat` / 增删行数）与 `commit(message)`（仅提交暂存区，返回 `ok / hash7 / subject / error`）供 Web 一步提交（F9 P3）。`commit_generator.py`：AI 生成提交信息（经 `llm_client` chat 消息格式，`think=False` + `num_predict=256` + 60s 超时，HTTP 非 200 / 超时 / 空响应回退规则生成；`ollama_base_url` 参数仅为兼容保留）。
 
 ### `ocr_processor/`
 - `base.py` 抽象 → `tesseract_ocr.py`（默认）/ `paddle_ocr.py`；`preprocessor.py`（去噪 / 二值化 / 纠偏）、`image_extractor.py`（PDF 内嵌图）、`cache.py`（按内容 hash 缓存）。依赖不在 requirements 中，缺失时 `document_loader` 降级为跳过图片。
@@ -122,6 +132,11 @@
 
 ### `desktop_app.py`
 - 托盘 + 自启动 + 模型预热 + 启动 Web 子进程（需剔除 `_MEIPASS2` / `_PYI_*` 环境变量）+ 状态监控。
+- `OllamaWarmer.warm_up`：对话模型经 `llm_client.chat`（`num_predict=1`），嵌入模型仍直连 Ollama `/api/embed`；`check_service` → `LLMClient.health`。`StatusMonitor.check_status` → `LLMClient.list_models`（状态键 `ollama_service` 保持不变，另加 `provider`）。
+
+### `bootstrap.py` / `model_switcher.py`
+- `bootstrap`：`ollama_running` / `list_installed_models` 经 `llm_client.OllamaClient(OLLAMA_BASE_URL)`；`ensure_ollama_ready` 在 `LLM_PROVIDER=openai` 时走 `_ensure_openai_backend_ready`（只探测后端 health、提示嵌入模型是否就绪，不安装、不拉取）。
+- `model_switcher`：`list_installed_models` 按 provider 分流（ollama → bootstrap；openai → `available_models`），`models_notice()` 给两端展示回退提示；`switch_model` 在 openai 且后端无列表时放行任意名字并在消息里注明「未校验」；`unload_model` / `list_loaded_models`（`/api/ps`）为 Ollama 专有，openai 模式不调用；`current_model_info` 多返回 `provider` / `base_url`。
 
 ## 改动前的最小检查
 

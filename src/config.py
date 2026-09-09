@@ -68,6 +68,25 @@ LLM_THINK = os.getenv("LLM_THINK", "false").strip().lower() in ("1", "true", "ye
 # 请求体与此前非流式行为完全一致。
 LLM_STREAM = os.getenv("LLM_STREAM", "true").strip().lower() in ("1", "true", "yes", "on")
 
+# ==================== LLM 后端（F10 P1-2）====================
+# LLM_PROVIDER：对话模型走哪种后端协议。
+#   ollama（默认）：Ollama 原生 /api/chat（NDJSON 流、think / num_ctx 等 options 原样透传）；
+#   openai：任意 OpenAI 兼容服务（vLLM / LM Studio / llama.cpp server / 内网网关，含 Ollama 自带的 /v1），
+#           走 POST {LLM_BASE_URL}/v1/chat/completions，SSE 流式；options 映射 temperature、
+#           num_predict→max_tokens，num_ctx 由后端决定（忽略），think 忽略。
+# 未识别的取值回退 ollama 并打 warning。嵌入模型（EMBED_MODEL）始终走 Ollama（OLLAMA_BASE_URL）。
+LLM_PROVIDERS = ("ollama", "openai")
+LLM_PROVIDER = (os.getenv("LLM_PROVIDER", "ollama").strip().lower() or "ollama")
+# LLM_BASE_URL：对话后端地址；未设置时取 OLLAMA_BASE_URL（openai 模式下即 Ollama 自带的兼容端点）。
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip() or OLLAMA_BASE_URL
+# LLM_API_KEY：openai 模式的 Bearer 令牌；本地服务通常不需要，留空即可。
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+# LLM_REASONING_EFFORT：openai 模式下、思考模式关闭（LLM_THINK=false）时随请求发送的标准字段
+# reasoning_effort（OpenAI 协议没有 Ollama 的 think 字段；思考型模型在兼容端点上默认开启思考，
+# 会把 max_tokens 预算全部花在 reasoning 上而 content 为空）。默认 none；Ollama /v1 与 OpenAI 均识别。
+# 后端返回 400 不认识该字段时 llm_client 会自动去掉重试并记住。设为空串则不发送任何字段。
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "none").strip().lower()
+
 
 def resolve_num_ctx(model: str) -> int:
     """按模型规格自动推导安全且够用的上下文窗口（num_ctx），用户零配置。
@@ -361,6 +380,10 @@ class Config:
     MODEL: str = LLM_MODEL
     LLM_MODEL: str = LLM_MODEL
     LLM_STREAM: bool = LLM_STREAM
+    LLM_PROVIDER: str = LLM_PROVIDER
+    LLM_BASE_URL: str = LLM_BASE_URL
+    LLM_API_KEY: str = LLM_API_KEY
+    LLM_REASONING_EFFORT: str = LLM_REASONING_EFFORT
     HISTORY_FILE: str = HISTORY_FILE
     MAX_HISTORY: int = MAX_HISTORY
     MAX_ITERATIONS: int = MAX_ITERATIONS

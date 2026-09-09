@@ -463,11 +463,20 @@ class WebService:
     # ---------- 模型管理（热切换）----------
 
     def list_models(self) -> List[str]:
-        """本机 Ollama 已安装模型名列表（失败返回空列表）。"""
+        """可选模型名列表（失败返回空列表；openai 模式后端未提供列表时为 ``[当前模型]``）。"""
         try:
             return list(self._model_switcher_factory().list_installed_models())
         except BaseException:  # noqa: BLE001
             return []
+
+    def models_notice(self) -> str:
+        """模型列表不可用时的提示（空串表示正常）；openai 模式回退 ``[LLM_MODEL]`` 时非空（F10 P1-2-c）。"""
+        try:
+            switcher = self._model_switcher_factory()
+            fn = getattr(switcher, "models_notice", None)
+            return str(fn() or "") if callable(fn) else ""
+        except BaseException:  # noqa: BLE001
+            return ""
 
     def current_model(self) -> Dict[str, Any]:
         """当前模型概况：``model`` / ``num_ctx`` / ``think`` / ``loaded`` / ``size_bytes``。"""
@@ -2147,6 +2156,9 @@ class WebService:
             import config
             info.update({
                 "ollama_url": getattr(config, "OLLAMA_BASE_URL", ""),
+                "llm_provider": getattr(config, "LLM_PROVIDER", "ollama"),
+                "llm_base_url": getattr(config, "LLM_BASE_URL", ""),
+                "llm_api_key_set": bool(getattr(config, "LLM_API_KEY", "")),
                 "llm_model": getattr(config, "LLM_MODEL", ""),
                 "embed_model": getattr(config, "EMBED_MODEL", ""),
                 "num_ctx": getattr(config, "LLM_NUM_CTX", ""),
@@ -2182,6 +2194,16 @@ class WebService:
         except BaseException:  # noqa: BLE001
             info["write_allowed_dirs"] = []
             info["read_allowed_dirs"] = []
+        # LLM 后端（F10 P1-2-c）：provider 归一化（未识别值已回退）+ 健康探测（经 LLMClient.health）
+        try:
+            from llm_client import describe_backend
+            backend = describe_backend(check_health=True)
+            info["llm_provider"] = backend.get("provider", info.get("llm_provider", "ollama"))
+            info["llm_base_url"] = backend.get("base_url", info.get("llm_base_url", ""))
+            info["llm_api_key_set"] = bool(backend.get("api_key_set", info.get("llm_api_key_set", False)))
+            info["backend_healthy"] = backend.get("healthy")
+        except BaseException:  # noqa: BLE001
+            info["backend_healthy"] = None
         return info
 
     # ---------- 文件管理 ----------

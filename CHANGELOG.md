@@ -11,6 +11,18 @@
 
 ### 新增
 
+- **OpenAI 兼容后端（F10 P1-2）**：新增 `LLM_PROVIDER=openai`，可把对话模型接到 vLLM / LM Studio / llama.cpp server /
+  内网 OpenAI 兼容网关（`LLM_BASE_URL`、`LLM_API_KEY`），不再必须用 Ollama 跑对话模型；Ollama 自带的 `/v1` 端点也可直接接入。
+  - 新模块 `src/llm_client.py`：`LLMClient` 协议 + `OllamaClient`（NDJSON 流）/ `OpenAICompatClient`（SSE 流、
+    `Authorization: Bearer`、`num_predict → max_tokens`）；ReAct Agent、多 Agent、RAG 综合（LlamaIndex `OpenAILike`）、
+    会话摘要、AI 提交信息、托盘预热与状态轮询全部经它调用，`src/` 内不再有直连 `/api/chat` / `/api/generate` 的代码。
+  - 思考关闭时 openai 模式随请求发送标准字段 `reasoning_effort=none`（`LLM_REASONING_EFFORT` 可改），避免
+    qwen3.5 等思考型模型在兼容端点上把输出预算全部花在 reasoning 上、回答为空；后端不识别时自动去掉重试并记住。
+  - CLI `/config` `/model` 与启动横幅、Web「系统」页显示 `LLM 后端 / 后端地址 / 后端状态（health）`；`/model list` 与 Web
+    模型下拉读取后端 `/v1/models`，后端不提供时回退为当前模型并明确提示「后端未提供模型列表」。
+  - 启动引导在 openai 模式下不再引导安装 Ollama / 拉取对话模型，只探测后端是否可达，并提示「知识库嵌入仍需 Ollama」。
+  - 未设置 `LLM_PROVIDER` 时行为与之前完全一致（请求体逐字节相同）。已知限制：嵌入模型仍由 Ollama 提供；`num_ctx`
+    由后端决定；模型驻留 / 释放为 Ollama 专有能力。
 - **真流式输出（F10 P1-1）**：模型输出改为 Ollama NDJSON 流式接收，最终答案在 CLI 与 Web 逐字出现，不再全程只见
   "思考中 / 心跳"。默认模型实测首字可见从 **6.6s → 0.2s**（全文到达时间不变）。
   - CLI：`/ask`、`/agent`、自然语言输入与 `/multi` 的综合回答阶段用 `rich Live` 面板实时刷新（8 帧/秒），

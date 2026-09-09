@@ -7,6 +7,9 @@
 2. 检测 Ollama 服务是否在运行（HTTP 探测 ``/api/tags``）。
 3. 检测所需模型是否已拉取，缺失则引导拉取。
 
+``LLM_PROVIDER=openai`` 时（F10 P1-2）跳过以上引导，只探测兼容后端是否可达，并提示
+"知识库嵌入仍需 Ollama"（嵌入模型始终由 Ollama 提供）。
+
 所有"下载/安装第三方软件或模型"的动作都需要用户**明确确认**，
 不会静默执行，避免安全与权限问题。
 
@@ -81,44 +84,40 @@ def ollama_installed() -> bool:
     return find_ollama_executable() is not None
 
 
-def ollama_running(timeout: float = 2.0) -> bool:
-    """Ollama 服务是否在运行。"""
-    url = f"{OLLAMA_BASE_URL}/api/tags"
+def _ollama_client():
+    """始终指向 ``OLLAMA_BASE_URL`` 的 Ollama client（F10 P1-2：本模块只关心 Ollama 本身，
+    与 ``LLM_PROVIDER`` 无关——嵌入模型始终由 Ollama 提供）。"""
+    from llm_client import OllamaClient
+
+    return OllamaClient(OLLAMA_BASE_URL)
+
+
+def llm_provider() -> str:
+    """当前对话后端 provider（``ollama`` / ``openai``）。"""
     try:
-        import requests  # 项目已依赖
+        from llm_client import provider_name
 
-        resp = requests.get(url, timeout=timeout)
-        return resp.status_code == 200
-    except Exception:  # noqa: BLE001 回退到标准库
-        try:
-            import urllib.request
+        return provider_name()
+    except Exception:  # noqa: BLE001
+        return "ollama"
 
-            with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec B310
-                return resp.status == 200
-        except Exception:  # noqa: BLE001
-            return False
+
+def ollama_running(timeout: float = 2.0) -> bool:
+    """Ollama 服务是否在运行（``/api/tags`` 经 ``OllamaClient.health``）。"""
+    del timeout  # health 内部固定短超时
+    try:
+        return bool(_ollama_client().health())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def list_installed_models(timeout: float = 3.0) -> List[str]:
-    """返回已安装模型名列表（失败返回空列表）。"""
-    url = f"{OLLAMA_BASE_URL}/api/tags"
+    """返回本机 Ollama 已安装模型名列表（失败返回空列表）。"""
+    del timeout
     try:
-        import requests
-
-        resp = requests.get(url, timeout=timeout)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
+        return [str(n) for n in _ollama_client().list_models()]
     except Exception:  # noqa: BLE001
-        try:
-            import json
-            import urllib.request
-
-            with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec B310
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception:  # noqa: BLE001
-            return []
-    return [m.get("name", "") for m in data.get("models", [])]
+        return []
 
 
 def missing_models(required: Optional[List[str]] = None) -> List[str]:
@@ -324,6 +323,11 @@ def ensure_ollama_ready(
                 pass
         print(f"[Cerebro] {title}: {message}")
 
+    # F10 P1-2：对话后端不是 Ollama 时，不做 Ollama 安装 / 拉 LLM 模型引导，
+    # 只探测后端是否可达，并提示"知识库嵌入仍需 Ollama（EMBED_MODEL）"。
+    if llm_provider() != "ollama":
+        return _ensure_openai_backend_ready(_notify)
+
     # 0) 服务已在运行 —— 最强信号：Ollama 必然已安装且就绪，直接进入模型检查。
     #    （优先于"命令是否存在"的判断，避免 GUI 下 PATH 不全导致误判未安装）
     if ollama_running():
@@ -365,6 +369,41 @@ def ensure_ollama_ready(
             else:
                 pull_models(missing, interactive=interactive)
 
+    return True
+
+
+def _ensure_openai_backend_ready(_notify) -> bool:
+    """``LLM_PROVIDER=openai``：探测兼容后端健康，并提示嵌入模型是否就绪；不安装、不拉取。"""
+    try:
+        from llm_client import describe_backend, get_llm_client
+
+        backend = describe_backend()
+        healthy = bool(get_llm_client().health())
+    except Exception as exc:  # noqa: BLE001
+        backend, healthy = {"base_url": "?"}, False
+        print(f"[Cerebro] 后端探测异常: {exc}")
+    base_url = backend.get("base_url", "?")
+    if not healthy:
+        _notify(
+            "LLM 后端不可达",
+            f"LLM_PROVIDER=openai，但 {base_url} 无响应。请确认服务已启动且 LLM_BASE_URL 正确。",
+        )
+        return False
+    print(f"[Cerebro] LLM 后端: openai @ {base_url}（已连通）")
+
+    # 嵌入模型仍走 Ollama：只提示、不引导安装
+    try:
+        from config import EMBED_MODEL
+    except Exception:  # noqa: BLE001
+        EMBED_MODEL = "nomic-embed-text:latest"
+    if not ollama_running():
+        _notify(
+            "知识库嵌入需要 Ollama",
+            f"当前未检测到 Ollama 服务（{OLLAMA_BASE_URL}）。Agent 对话可正常使用，"
+            f"但知识库入库 / 检索需要 Ollama 提供嵌入模型 {EMBED_MODEL}。",
+        )
+    elif missing_models([EMBED_MODEL]):
+        _notify("缺少嵌入模型", f"请执行：ollama pull {EMBED_MODEL}")
     return True
 
 

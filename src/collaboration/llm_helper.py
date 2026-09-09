@@ -11,6 +11,10 @@ import json
 import re
 from typing import Any, Callable, Dict, Optional
 
+# F10 P1-2：流解析与中止工具迁入共享层 llm_client，此处保留同名导出
+# （react_engine / 测试仍从这里导入 consume_ndjson_stream / abort_response）
+from llm_client import abort_response, consume_ndjson_stream  # noqa: F401
+
 CompleteFn = Callable[[str], str]
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -29,79 +33,16 @@ def _stream_enabled() -> bool:
         return True
 
 
-def abort_response(resp) -> None:
-    """从另一线程中止一个正在流式读取的 ``requests.Response``（F10 P1-1）。
-
-    仅 ``close()`` 在 macOS / Linux 上不会唤醒阻塞在 ``recv`` 的读线程（要等下一段数据到达
-    才报错）；先对底层 socket ``shutdown(SHUT_RDWR)`` 可让读线程立刻退出，服务端也随即
-    感知连接断开而停止生成。所有步骤尽力而为，失败静默。
-    """
-    if resp is None:
-        return
-    try:
-        import socket as _socket
-
-        sock = resp.raw._fp.fp.raw._sock  # urllib3 HTTPResponse → http.client → socket
-        sock.shutdown(_socket.SHUT_RDWR)
-    except Exception:  # noqa: BLE001 - 结构随库版本变化，拿不到就只做 close
-        pass
-    try:
-        resp.close()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def consume_ndjson_stream(resp, on_token: TokenCallback,
-                          should_stop: Optional[StopCheck] = None) -> str:
-    """逐行解析 Ollama ``/api/chat`` 的 NDJSON 流并回调增量，返回累积文本（F10 P1-1）。
-
-    ``should_stop()`` 为真时停止读取、不再回调并关闭响应（返回已累积部分）；流中出现
-    ``{"error": ...}`` 抛 ``RuntimeError``。响应总会被关闭。
-    """
-    parts = []
-    try:
-        for line in resp.iter_lines():
-            if should_stop is not None and should_stop():
-                break
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("error"):
-                raise RuntimeError(str(data["error"]))
-            delta = (data.get("message") or {}).get("content") or ""
-            if delta:
-                parts.append(delta)
-                on_token(delta)
-            if data.get("done"):
-                break
-    except RuntimeError:
-        raise
-    except Exception:
-        if not (should_stop is not None and should_stop()):
-            raise
-    finally:
-        try:
-            resp.close()
-        except Exception:  # noqa: BLE001
-            pass
-    return "".join(parts)
-
-
 def complete_text(prompt: str, num_predict: int = 512, timeout: Optional[int] = None,
                   temperature: float = 0.2, on_token: Optional[TokenCallback] = None,
                   should_stop: Optional[StopCheck] = None) -> str:
-    """用全局唯一模型做一次补全（``/api/chat``，``think=False``）。失败抛异常。
+    """用全局唯一模型做一次补全（经 ``llm_client`` 后端抽象，``think=False``）。失败抛异常。
 
     ``on_token`` 非空且 ``Config.LLM_STREAM`` 开启时流式读取并逐增量回调（F10 P1-1）；
     ``LLM_STREAM=false`` 时非流式，完整文本一次性回调。无 ``on_token`` 时请求与此前完全一致。
     """
-    import requests
     from config import Config
+    from llm_client import get_llm_client
 
     try:
         import config as _cfg
@@ -111,32 +52,22 @@ def complete_text(prompt: str, num_predict: int = 512, timeout: Optional[int] = 
         model, num_ctx = Config.LLM_MODEL, 8192
 
     streaming = on_token is not None and _stream_enabled()
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": streaming,
-        "think": False,
-        "options": {
+    # 非流式且有回调时：回调拿到的是 strip 后的完整文本（与返回值一致，沿用 P1-1 语义）
+    callback = on_token if (on_token is None or streaming) else (lambda t: on_token(str(t).strip()))
+    text = get_llm_client().chat(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        think=False,
+        options={
             "temperature": temperature,
             "num_ctx": num_ctx,
             "num_predict": int(num_predict),
         },
-    }
-    if streaming:
-        resp = requests.post(Config.OLLAMA_HOST + "/api/chat", json=payload,
-                             timeout=timeout or Config.TIMEOUT, stream=True)
-        resp.raise_for_status()
-        return consume_ndjson_stream(resp, on_token, should_stop).strip()
-    resp = requests.post(
-        Config.OLLAMA_HOST + "/api/chat",
-        json=payload,
+        on_token=callback,
+        should_stop=should_stop,
         timeout=timeout or Config.TIMEOUT,
     )
-    resp.raise_for_status()
-    text = str(resp.json().get("message", {}).get("content", "")).strip()
-    if on_token is not None:
-        on_token(text)
-    return text
+    return str(text).strip()
 
 
 def strip_think(text: str) -> str:

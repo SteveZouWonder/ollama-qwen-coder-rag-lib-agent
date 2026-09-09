@@ -151,6 +151,38 @@ class RAGEngine:
             # 首次初始化读 config；后续切换模型时保留当前开关状态
             think = getattr(self, "llm_think", LLM_THINK)
         self.llm_think = bool(think)
+        provider = self._llm_provider()
+        if provider == "openai":
+            # F10 P1-2：OpenAI 兼容后端（vLLM / LM Studio / 内网网关）。num_ctx 由后端决定，
+            # think 无对应字段；context_window 仍按模型名推导，用于历史 / 片段的 token 预算。
+            from llama_index.llms.openai_like import OpenAILike
+            from llm_client import describe_backend
+
+            backend = describe_backend()
+            base = str(backend.get("base_url", "")).rstrip("/")
+            if not base.endswith("/v1"):
+                base += "/v1"
+            # 思考模式关闭时随请求发送 reasoning_effort（与 OpenAICompatClient 同一开关 LLM_REASONING_EFFORT），
+            # 否则思考型模型会把输出预算全部用于 reasoning、综合回答为空
+            extra = {}
+            effort = self._reasoning_effort()
+            if not self.llm_think and effort:
+                extra["reasoning_effort"] = effort
+            print(f"🤖 加载 LLM 模型: {self.llm_model} (后端 openai @ {base}, context_window={self.llm_num_ctx}, "
+                  f"think={self.llm_think})")
+            Settings.llm = OpenAILike(
+                model=self.llm_model,
+                api_base=base,
+                api_key=self._openai_api_key() or "not-needed",
+                is_chat_model=True,
+                is_function_calling_model=False,
+                timeout=120.0,
+                temperature=0.1,
+                context_window=self.llm_num_ctx,
+                max_retries=1,
+                additional_kwargs=extra,
+            )
+            return
         print(f"🤖 加载 LLM 模型: {self.llm_model} (num_ctx={self.llm_num_ctx}, think={self.llm_think})")
         Settings.llm = Ollama(
             model=self.llm_model,
@@ -164,6 +196,30 @@ class RAGEngine:
             # 默认关闭思考模式：RAG 综合/相关性判定无需长思维链，显著缩短响应。
             thinking=self.llm_think,
         )
+
+    @staticmethod
+    def _llm_provider() -> str:
+        try:
+            from llm_client import provider_name
+            return provider_name()
+        except Exception:  # noqa: BLE001
+            return "ollama"
+
+    @staticmethod
+    def _reasoning_effort() -> str:
+        try:
+            from llm_client import reasoning_effort_setting
+            return reasoning_effort_setting()
+        except Exception:  # noqa: BLE001
+            return "none"
+
+    @staticmethod
+    def _openai_api_key() -> str:
+        try:
+            import config as _cfg
+            return str(getattr(_cfg, "LLM_API_KEY", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     @property
     def query_engine(self):

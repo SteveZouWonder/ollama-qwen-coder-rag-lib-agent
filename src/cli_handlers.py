@@ -360,9 +360,21 @@ def config_rows() -> list[tuple[str, str]]:
         read_dirs, write_dirs = [], []
 
     auto = "开（只放行 low / medium，high 仍需确认）" if Config.AUTO_CONFIRM else "关"
-    return [
+    try:
+        from llm_client import describe_backend
+        backend = describe_backend()
+    except Exception:  # noqa: BLE001
+        backend = {"provider": "ollama", "base_url": str(Config.OLLAMA_HOST), "api_key_set": False}
+    provider = backend.get("provider", "ollama")
+    rows = [
         ("模型", str(Config.LLM_MODEL)),
-        ("Ollama 地址", str(Config.OLLAMA_HOST)),
+        ("LLM 后端", provider + ("" if provider == "ollama" else "（OpenAI 兼容；num_ctx 由后端决定）")),
+        ("后端地址", str(backend.get("base_url") or Config.OLLAMA_HOST)),
+    ]
+    if provider != "ollama":
+        rows.append(("API Key", "已设置" if backend.get("api_key_set") else "未设置（本地服务通常无需）"))
+        rows.append(("Ollama 地址（嵌入模型）", str(Config.OLLAMA_HOST)))
+    return rows + [
         ("自动确认", auto),
         ("自动路由", "开" if getattr(Config, "AUTO_ROUTE", False) else "关"),
         ("工作目录", os.getcwd()),

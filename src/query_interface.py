@@ -620,7 +620,7 @@ def print_banner():
             f"[bold cyan]{CEREBRO_ASCII}[/bold cyan]\n"
             "[white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
             "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
-            f"[green]模型: {LLM_MODEL}[/green] | [green]Ollama: {OLLAMA_BASE_URL}[/green]",
+            f"[green]模型: {LLM_MODEL}[/green] | [green]{backend_banner_text()}[/green]",
             border_style="cyan", box=box.ROUNDED
         ))
     else:
@@ -628,8 +628,20 @@ def print_banner():
         print(CEREBRO_ASCII)
         print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
         print("=" * 60)
-        print(f"模型: {LLM_MODEL} | Ollama: {OLLAMA_BASE_URL}")
+        print(f"模型: {LLM_MODEL} | {backend_banner_text()}")
         print("=" * 60)
+
+
+def backend_banner_text() -> str:
+    """横幅中的后端一段：ollama 模式保持 ``Ollama: <url>``，openai 模式显示 ``后端: openai @ <url>``。"""
+    try:
+        from llm_client import describe_backend
+        info = describe_backend()
+    except Exception:  # noqa: BLE001
+        return f"Ollama: {OLLAMA_BASE_URL}"
+    if info.get("provider") == "openai":
+        return f"后端: openai @ {info.get('base_url', '')}"
+    return f"Ollama: {info.get('base_url') or OLLAMA_BASE_URL}"
 
 def print_help():
     help_text = """
@@ -1579,13 +1591,20 @@ def handle_model(ctx, parsed):
 
     if not arg:
         info = model_switcher.current_model_info()
-        state = (
-            f"已加载，驻留 {model_switcher.format_size(info['size_bytes'])}"
-            if info["loaded"] else "未加载（首次请求时按需加载）"
-        )
-        console.print(f"[green]模型: {info['model']}[/green]  ({state})")
-        console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
-        console.print(f"[green]Ollama: {react_engine.host if react_engine else Config.OLLAMA_HOST}[/green]")
+        provider = info.get("provider") or "ollama"
+        if provider == "ollama":
+            state = (
+                f"已加载，驻留 {model_switcher.format_size(info['size_bytes'])}"
+                if info["loaded"] else "未加载（首次请求时按需加载）"
+            )
+            console.print(f"[green]模型: {info['model']}[/green]  ({state})")
+            console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
+            console.print(f"[green]Ollama: {react_engine.host if react_engine else Config.OLLAMA_HOST}[/green]")
+        else:
+            # OpenAI 兼容后端：驻留 / num_ctx / 思考模式由后端管理，不显示 Ollama 专有状态
+            console.print(f"[green]模型: {info['model']}[/green]")
+            console.print(f"[green]后端: {provider} @ {info.get('base_url') or Config.LLM_BASE_URL}[/green]")
+            console.print("[dim]num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama[/dim]")
         console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
         others = [m for m in info["loaded_models"] if m != info["model"]]
         if others:
@@ -1595,12 +1614,16 @@ def handle_model(ctx, parsed):
 
     if arg.lower() in ("list", "ls"):
         installed = model_switcher.list_installed_models()
+        notice = model_switcher.models_notice()
         if not installed:
-            console.print("[red]无法获取模型列表，请确认 Ollama 已启动[/red]")
+            console.print(f"[red]{notice or '无法获取模型列表，请确认 Ollama 已启动'}[/red]")
             return True
+        if notice:
+            # openai 模式后端未提供 /v1/models：列表只有当前模型，/model <name> 可切到任意名字
+            console.print(f"[yellow]{notice}[/yellow]")
         loaded = {m["name"] for m in model_switcher.list_loaded_models()}
         current = Config.LLM_MODEL
-        console.print("[bold]本机已安装模型:[/bold]")
+        console.print("[bold]本机已安装模型:[/bold]" if not notice else "[bold]可用模型:[/bold]")
         for name in installed:
             marks = []
             if name == current:

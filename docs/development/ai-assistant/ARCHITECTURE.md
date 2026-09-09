@@ -32,8 +32,18 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 │  基础层                                                 │
 │  config.py (env → 常量)   runtime_paths.py (路径解析)    │
 │  prompt_assets.py (prompts/ 加载)   content_security.py │
+│  llm_client.py (LLM 后端抽象：Ollama / OpenAI 兼容)      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**LLM 调用只经 `llm_client`（F10 P1-2）**：编排层 / 能力层 / 入口层里所有"向对话模型发请求"的地方
+（`react_engine._call_model`、`collaboration.llm_helper.complete_text`、`conversation_context._default_complete`、
+`git_integration.commit_generator`、`desktop_app` 预热 / 状态轮询、`bootstrap` / `model_switcher` 的模型列表与健康检查）
+都调用 `llm_client.get_llm_client()` 返回的 `LLMClient`（`chat / list_models / health`），由 `LLM_PROVIDER` 决定是
+`OllamaClient`（`/api/chat` NDJSON、`options` 原样透传）还是 `OpenAICompatClient`（`/v1/chat/completions` SSE、
+`num_predict → max_tokens`、思考关闭时 `reasoning_effort=none`）。RAG 综合走 LlamaIndex：`rag_engine._setup_llm`
+在 openai 模式用 `OpenAILike`；嵌入始终是 `OllamaEmbedding`。`src/` 内除 `llm_client.py` 外不得出现
+`"/api/chat"` / `/api/generate` 字面量（`tests/test_llm_client.py::TestNoDirectEndpointsOutsideLLMClient` 守卫）。
 
 依赖只能自上向下。能力层模块之间不互相 import 编排层；`web/` 只依赖 `WebService`，不直接触碰引擎（测试通过 `WebService(rag_factory=..., react_factory=..., orchestrator_factory=...)` 注入）。
 
@@ -134,8 +144,9 @@ request ─▶ TaskDecomposer.decompose（LLM ≤512 token → 关键词规则�
          → _complete → _stream_complete：Settings.llm.stream_chat(...)，should_stop 为真即 break + gen.close()
   单 Agent ReActEngine(on_token) / chat(task, on_token) → 每轮 _call_model(on_token=FinalAnswerStream(cb))
          FinalAnswerStream：缓冲到看见 "Final Answer:" 才转发其后的增量；缓冲区出现 "Action:" 则丢弃本轮
-         _call_model → requests.post(stream=True) → llm_helper.consume_ndjson_stream(resp, cb, should_stop=_stop_event.is_set)
-         stop()：置位 + llm_helper.abort_response(_active_response)（socket.shutdown + close → 读线程立刻退出、模型停止生成）
+         _call_model → llm_client.get_llm_client().chat(..., on_token=cb, should_stop=_stop_event.is_set, on_response=_track_response)
+                       （OllamaClient → consume_ndjson_stream；OpenAICompatClient → consume_sse_stream）
+         stop()：置位 + llm_client.abort_response(_active_response)（socket.shutdown + close → 读线程立刻退出、模型停止生成）
   多 Agent orchestrator.process_request(on_token) → coordinate_task(on_token) → ResultIntegrator.on_token（仅整合阶段）
          → complete_text(prompt, on_token=…)（子任务执行不流式）
 ```
@@ -191,3 +202,4 @@ prompts/                  模型输入资产（只读，版本化）
 | 新增 CLI 命令 | `query_interface.parse_command` 加分支 + `cli_handlers` 处理函数 + `COMMAND_HANDLERS` 表 + README 命令表 |
 | 新增搜索源 | `web_search/search_engine.py` 实现 `SearchEngine` 子类并加入聚合器 |
 | 新增 OCR 引擎 | `ocr_processor/base.py` 抽象类实现 + `config.OCR_ENGINE` 选项 |
+| 新增 LLM 后端协议 | `llm_client.py` 实现 `LLMClient`（`chat / list_models / health`）+ `make_client` 分支 + `config.LLM_PROVIDERS`；RAG 综合另在 `rag_engine._setup_llm` 选对应 LlamaIndex LLM 类 |

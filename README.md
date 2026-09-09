@@ -365,6 +365,7 @@ ollama-qwen-coder-rag-lib/
 │   └── cache.py           # OCR 结果缓存
 ├── rag_engine.py          # RAG 核心引擎（向量索引 + Agent 工具接口）
 ├── react_engine.py        # ReAct 推理引擎（qwen3.5:4b，支持运行时热切换）
+├── llm_client.py          # LLM 后端抽象：Ollama /api/chat 与 OpenAI 兼容 /v1/chat/completions（LLM_PROVIDER）
 ├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
 ├── conversation_context.py # 连续对话上下文（会话记忆、token 预算、滚动压缩、追问改写）
@@ -1052,7 +1053,11 @@ LLM_MODEL = "qwen3.5:4b"            # 全局唯一 LLM（Agent/RAG/多 Agent 共
 LLM_THINK = False                   # 思考模式，默认关闭（4B 模型响应 31s → 2.8s）
 LLM_STREAM = True                   # 真流式输出：最终答案逐字出现、可随时中断（首字 6.6s → 0.2s）
 LLM_NUM_CTX = 自动                  # 按模型参数量推导（4B→16K，7~9B→8K，12B+→4K），可用环境变量覆盖
-EMBED_MODEL = "nomic-embed-text"     # 嵌入模型
+LLM_PROVIDER = "ollama"             # 对话后端协议：ollama（默认）| openai（vLLM / LM Studio / 内网网关，见「接入 OpenAI 兼容后端」）
+LLM_BASE_URL = OLLAMA_BASE_URL      # 对话后端地址（openai 模式下带不带 /v1 均可）
+LLM_API_KEY = ""                    # openai 模式的 Bearer 令牌，本地服务留空
+LLM_REASONING_EFFORT = "none"       # openai 模式 + 思考关闭时随请求发送的 reasoning_effort（空串则不发送）
+EMBED_MODEL = "nomic-embed-text"     # 嵌入模型（始终由 Ollama 提供）
 
 # RAG 配置
 CHUNK_SIZE = 1024                   # 分块大小
@@ -1081,6 +1086,12 @@ export LLM_THINK=false
 # 设为 false 回到整段一次性输出（请求体与旧版完全一致，适合排查问题或不支持流式的代理）
 export LLM_STREAM=true
 export LLM_NUM_CTX=16384
+# LLM 后端（F10 P1-2）：默认 ollama；接 vLLM / LM Studio / llama.cpp server / 内网 OpenAI 兼容网关时设 openai。
+# LLM_BASE_URL 未设置时取 OLLAMA_BASE_URL（Ollama 自带 /v1 兼容端点，可直接用来验证）；嵌入模型仍走 Ollama。
+export LLM_PROVIDER=openai
+export LLM_BASE_URL=http://localhost:1234
+export LLM_API_KEY=                          # 本地服务通常不需要
+export LLM_REASONING_EFFORT=none             # 思考关闭时发送的 reasoning_effort；后端不认识会自动去掉重试；设空不发送
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
 # 入口智能路由：自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（默认 true；CLI 可 /auto on|off）
@@ -1115,6 +1126,45 @@ export CODE_CHUNK_MIN_CHARS=120
 
 python query_interface.py --data ./data
 ```
+
+---
+
+## 接入 OpenAI 兼容后端
+
+默认对话模型由本机 Ollama 提供。如果你已经有 **vLLM / LM Studio / llama.cpp server / 公司内网的 OpenAI 兼容网关**，
+可以不装对话模型、直接让 Cerebro 复用它（F10 P1-2）：
+
+```bash
+# LM Studio（默认端口 1234；「Local Server」页启动后即可）
+export LLM_PROVIDER=openai
+export LLM_BASE_URL=http://localhost:1234        # 带不带 /v1 都行
+export LLM_MODEL=qwen2.5-7b-instruct             # 后端里的模型 id（/v1/models 可查）
+
+# vLLM
+python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-7B-Instruct --port 8000
+export LLM_PROVIDER=openai LLM_BASE_URL=http://localhost:8000 LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+
+# 内网网关（需要令牌）
+export LLM_PROVIDER=openai LLM_BASE_URL=https://llm.corp.example LLM_API_KEY=sk-xxx LLM_MODEL=gpt-4o-mini
+
+# 验证：Ollama 自带 /v1 兼容端点，可先用它跑通 openai 模式再换真实后端
+export LLM_PROVIDER=openai LLM_BASE_URL=http://localhost:11434
+python src/query_interface.py --query "知识库里有什么"
+```
+
+生效范围：ReAct Agent、多 Agent 协作、RAG 综合回答（LlamaIndex `OpenAILike`）、会话摘要压缩、AI 提交信息、
+托盘预热与状态轮询。CLI `/config` `/model`、Web「系统」页会显示 `LLM 后端 / 后端地址 / 后端状态`；
+`/model list` 读取后端 `/v1/models`，后端不提供时回退为当前模型并提示「后端未提供模型列表」（此时 `/model <name>` 可切到任意名字，不做校验）。
+
+注意事项：
+
+| 项 | 说明 |
+|---|---|
+| **嵌入仍需 Ollama** | 知识库入库 / 检索用的 `EMBED_MODEL`（默认 `nomic-embed-text`）始终走 `OLLAMA_BASE_URL`。只用 Agent 对话可以不开 Ollama；要用知识库就需要 `ollama pull nomic-embed-text`。启动引导会提示但不会安装。 |
+| **`num_ctx` 由后端决定** | OpenAI 协议没有 Ollama 的 `num_ctx`，上下文窗口以后端启动参数为准（vLLM `--max-model-len`、LM Studio 加载时的 Context Length）。Cerebro 仍按模型名推导 `LLM_NUM_CTX` 只用于历史 / 片段的 token 预算，可用 `LLM_NUM_CTX` 对齐后端实际值。 |
+| **思考模式** | 没有 `think` 字段。思考关闭（默认）时随请求发送标准字段 `reasoning_effort=none`（Ollama `/v1`、OpenAI 均识别；否则 qwen3.5 这类模型会把输出预算全部花在 reasoning 上、回答为空）；后端返回 400 不认识该字段时自动去掉重试并记住。可用 `LLM_REASONING_EFFORT` 改为 `low/medium/high` 或设空不发送。 |
+| **模型切换 / 卸载** | `/model <name>` 只改全局模型名；「释放旧模型」「已加载 / 驻留大小」是 Ollama 专有能力，openai 模式下不显示。 |
+| **options 映射** | `temperature` 直传，`num_predict → max_tokens`，其余 Ollama `options` 忽略。 |
 
 ---
 
