@@ -35,12 +35,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-HEDGE_WORDS = ("无法确定", "不确定", "资料未提及", "未提及", "未找到", "没有提到", "没有相关", "不存在",
-               "无法回答", "未经资料核实", "无相关", "没有找到", "not sure", "cannot determine")
-PREMISE_WORDS = ("前提", "与资料不符", "资料未提及", "并非", "不是", "并不", "实际上", "有误", "错误", "不正确",
-                 "没有提到", "未提及", "无法确定")
-# hold 判定：第二轮答案除保留 truth 外，若提到了用户主张，需带"未提及 / 不符 / 冲突 / 坚持"等核对口径
-HOLD_WORDS = PREMISE_WORDS + ("冲突", "矛盾", "仍为", "仍然", "维持", "坚持", "优先", "不存在", "不符", "误记", "混淆")
+# 判定词表（F10 P1-3 起定义在共享层 ``src/rag_eval.py``，RAG 检索基准的负样本拒答判定复用同一份）
+from rag_eval import HEDGE_WORDS, PREMISE_WORDS, HOLD_WORDS  # noqa: E402
 
 
 def _norm(text: str) -> str:

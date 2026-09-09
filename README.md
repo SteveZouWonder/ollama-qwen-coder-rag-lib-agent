@@ -407,13 +407,17 @@ ollama-qwen-coder-rag-lib/
 │   ├── tutorials/        # 用户教程
 │   ├── features/         # 功能设计与实现记录（f1–f8）、路线图
 │   ├── development/      # CI/CD、测试设计、内容安全、文档流程
+│   │   └── rag-eval/reports/  # RAG 检索基准报告（scripts/eval_rag.py 输出）
 │   ├── history/          # 历史修复报告
 │   └── assets/           # 演示 GIF
 ├── scripts/               # 脚本文件
 │   ├── check_prereqs.sh   # 前置条件检查脚本
 │   ├── install_deps.sh    # 依赖安装脚本
-│   └── verify_deps.sh     # 依赖验证脚本
+│   ├── verify_deps.sh     # 依赖验证脚本
+│   ├── eval_overcompliance.py  # 忠实性（抗过度顺从）评测，需本机 Ollama
+│   └── eval_rag.py        # RAG 检索基准（Recall@k / MRR / 引用 / 拒答 / 延迟），需本机 Ollama
 ├── tests/                 # 单元测试
+│   ├── fixtures/         # 评测样本与小语料（rag_eval_cases.json、rag_eval_corpus/、overcompliance_cases.json）
 │   └── multi_agent/      # 多Agent系统测试
 └── README.md
 ```
@@ -1041,6 +1045,24 @@ pytest tests/ --cov=src --cov-report=html
 
 详细测试文档请查看：[TESTING.md](TESTING.md)
 
+### RAG 检索基准（改检索 / rerank / 分块参数前后必跑）
+
+单测证明不了"改了阈值以后检索质量没退步"。`scripts/eval_rag.py` 用仓库自带的小语料
+（`tests/fixtures/rag_eval_corpus/`，18 个虚构项目文档 + 代码）与 38 条样本
+（`tests/fixtures/rag_eval_cases.json`：单文档 / 多跳 / 代码符号 / 元查询 / 负样本），对真实 Ollama 跑一遍
+完整检索 + 问答，输出 Recall@k、MRR、引用命中、关键词命中、负样本拒答、元查询识别与平均延迟：
+
+```bash
+./venv/bin/python scripts/eval_rag.py --hybrid on  --tag hybrid-on      # 约 15 分钟（qwen3.5:4b）
+./venv/bin/python scripts/eval_rag.py --hybrid off --tag hybrid-off
+./venv/bin/python scripts/eval_rag.py --hybrid on --rerank none --top-k 5 --tag dense-k5   # 试验配置用新 tag
+./venv/bin/python scripts/eval_rag.py --type negative --limit 3 -v                          # 调试单类
+```
+
+索引建在临时目录（`RAGEngine(persist_dir=<tmp>)`），**不触碰 `index_storage/` 与 `.cerebro/`**；报告写到
+`docs/development/rag-eval/reports/{tag}-{日期}.md / .json`，同 tag 有上一份时每个指标附 Δ。基线报告已随仓库提交。
+样本格式、指标含义、何时必须跑见 [TEST_DESIGN.md §7](docs/development/TEST_DESIGN.md#7-rag-检索基准f10-p1-32026-09)。
+
 ---
 
 ## 配置说明
@@ -1379,7 +1401,7 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 - **[实战场景示例](docs/tutorials/03-scenarios.md)** - 14 个实战场景（学术、开发、OCR、多 Agent、文件与会话管理等）
 - **[安装和配置指南](docs/tutorials/02-installation.md)** - 含一键前置条件检查（`scripts/check_prereqs.sh`）
 - **[故障排除指南](docs/tutorials/06-troubleshooting.md)** - 依赖冲突、ChromaDB 遥测错误、urllib3 OpenSSL 警告等
-- **[测试设计文档](docs/development/TEST_DESIGN.md)** - 测试 Mock 策略与可测性设计（覆盖率门禁 80%）
+- **[测试设计文档](docs/development/TEST_DESIGN.md)** - 测试 Mock 策略与可测性设计（覆盖率门禁 80%）；§7 RAG 检索基准（`scripts/eval_rag.py`，报告在 `docs/development/rag-eval/reports/`）
 - **[文档中心](docs/README.md)** - 功能实现文档、未来特性设计、CI/CD 与历史报告索引
 - **[内容安全扫描器文档](docs/development/CONTENT_SECURITY.md)** - `content_security.py` 的 API 与集成方式
 

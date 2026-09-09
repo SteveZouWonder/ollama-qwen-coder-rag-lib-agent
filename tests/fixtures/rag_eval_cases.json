@@ -1,0 +1,463 @@
+{
+  "version": 1,
+  "corpus": "rag_eval_corpus",
+  "description": "F10 P1-3 RAG 检索基准样本：针对 tests/fixtures/rag_eval_corpus/（虚构的 Lumen 任务调度库文档 + 代码）。type ∈ single / multi_hop / code_symbol / meta / negative；expected_files 为语料文件名（basename）；expected_keywords 中以 | 分隔的为同义可选项。",
+  "cases": [
+    {
+      "id": "s01-python-version",
+      "question": "Lumen 要求的最低 Python 版本是多少？",
+      "type": "single",
+      "expected_files": [
+        "02-installation.md",
+        "09-release-notes.md"
+      ],
+      "expected_keywords": [
+        "3.11"
+      ],
+      "notes": "安装文档环境要求；2.0.0 发布说明也提到提升到 3.11"
+    },
+    {
+      "id": "s02-redis-version",
+      "question": "生产环境使用 Lumen 需要哪个版本的 Redis？",
+      "type": "single",
+      "expected_files": [
+        "02-installation.md"
+      ],
+      "expected_keywords": [
+        "7"
+      ],
+      "notes": "Redis 7 或更高"
+    },
+    {
+      "id": "s03-retry-limit-default",
+      "question": "配置项 retry_limit 的默认值是多少？",
+      "type": "single",
+      "expected_files": [
+        "03-configuration.md"
+      ],
+      "expected_keywords": [
+        "3"
+      ],
+      "notes": "配置表格"
+    },
+    {
+      "id": "s04-heartbeat-default",
+      "question": "heartbeat_interval 的默认值是多少秒？",
+      "type": "single",
+      "expected_files": [
+        "03-configuration.md"
+      ],
+      "expected_keywords": [
+        "15"
+      ],
+      "notes": "配置表格"
+    },
+    {
+      "id": "s05-leader-lock-ttl",
+      "question": "调度器选主用的 Redis 锁 TTL 是多长？领导者多久续期一次？",
+      "type": "single",
+      "expected_files": [
+        "04-scheduler-design.md"
+      ],
+      "expected_keywords": [
+        "30",
+        "10"
+      ],
+      "notes": "选主章节"
+    },
+    {
+      "id": "s06-misfire-policy",
+      "question": "调度器停机重启后，错过触发时间的任务如何处理？",
+      "type": "single",
+      "expected_files": [
+        "04-scheduler-design.md"
+      ],
+      "expected_keywords": [
+        "misfire_grace|60",
+        "跳过"
+      ],
+      "notes": "Misfire 策略"
+    },
+    {
+      "id": "s07-backoff-cap",
+      "question": "重试退避的等待时间上限是多少秒？",
+      "type": "single",
+      "expected_files": [
+        "05-retry-policy.md"
+      ],
+      "expected_keywords": [
+        "300"
+      ],
+      "notes": "cap 默认 300"
+    },
+    {
+      "id": "s08-dead-letter-key",
+      "question": "死信队列在 Redis 中的键名是什么？",
+      "type": "single",
+      "expected_files": [
+        "05-retry-policy.md"
+      ],
+      "expected_keywords": [
+        "lumen:dead"
+      ],
+      "notes": "死信队列章节"
+    },
+    {
+      "id": "s09-sqlite-table",
+      "question": "SQLite 后端用哪个表存储任务？",
+      "type": "single",
+      "expected_files": [
+        "06-storage-backends.md"
+      ],
+      "expected_keywords": [
+        "lumen_jobs"
+      ],
+      "notes": "SQLite 后端章节"
+    },
+    {
+      "id": "s10-purge-command",
+      "question": "lumen purge 命令有哪些选项？",
+      "type": "single",
+      "expected_files": [
+        "07-cli-reference.md"
+      ],
+      "expected_keywords": [
+        "older-than",
+        "dry-run"
+      ],
+      "notes": "CLI 参考"
+    },
+    {
+      "id": "s11-metrics-port",
+      "question": "Prometheus 指标默认在哪个端口暴露？",
+      "type": "single",
+      "expected_files": [
+        "13-metrics.md",
+        "08-faq.md",
+        "03-configuration.md"
+      ],
+      "expected_keywords": [
+        "9464"
+      ],
+      "notes": "多个文件都提到 9464，任一命中即可"
+    },
+    {
+      "id": "s12-error-e305",
+      "question": "错误码 E305 是什么原因导致的？",
+      "type": "single",
+      "expected_files": [
+        "11-troubleshooting.txt"
+      ],
+      "expected_keywords": [
+        "序列化"
+      ],
+      "notes": "故障排查 txt"
+    },
+    {
+      "id": "s13-key-rotation",
+      "question": "签名密钥建议多久轮换一次？",
+      "type": "single",
+      "expected_files": [
+        "12-security.md"
+      ],
+      "expected_keywords": [
+        "90"
+      ],
+      "notes": "安全文档"
+    },
+    {
+      "id": "s14-release-2-4",
+      "question": "Lumen 2.4.0 版本新增了什么功能？",
+      "type": "single",
+      "expected_files": [
+        "09-release-notes.md"
+      ],
+      "expected_keywords": [
+        "优先级"
+      ],
+      "notes": "发布说明"
+    },
+    {
+      "id": "s15-glossary-lease",
+      "question": "术语表中 Lease（租约）是什么意思？",
+      "type": "single",
+      "expected_files": [
+        "10-glossary.txt"
+      ],
+      "expected_keywords": [
+        "独占|接管|45"
+      ],
+      "notes": "术语表 txt"
+    },
+    {
+      "id": "m01-retry-then-dead",
+      "question": "retry_limit 默认是多少次？超过后任务会进入哪个 Redis 键？",
+      "type": "multi_hop",
+      "expected_files": [
+        "03-configuration.md",
+        "05-retry-policy.md"
+      ],
+      "expected_keywords": [
+        "3",
+        "lumen:dead"
+      ],
+      "notes": "配置 + 重试策略"
+    },
+    {
+      "id": "m02-sqlite-version-table",
+      "question": "SQLite 后端是在哪个版本引入的？它的任务表叫什么？",
+      "type": "multi_hop",
+      "expected_files": [
+        "09-release-notes.md",
+        "06-storage-backends.md"
+      ],
+      "expected_keywords": [
+        "2.3",
+        "lumen_jobs"
+      ],
+      "notes": "发布说明 + 存储后端；两个文件都同时含两条信息，任一命中即可"
+    },
+    {
+      "id": "m03-heartbeat-e204",
+      "question": "heartbeat_interval 默认值是多少？错误码 E204 与它有什么关系？",
+      "type": "multi_hop",
+      "expected_files": [
+        "03-configuration.md",
+        "11-troubleshooting.txt"
+      ],
+      "expected_keywords": [
+        "15",
+        "lease_ttl|租约"
+      ],
+      "notes": "配置 + 故障排查"
+    },
+    {
+      "id": "m04-purge-jobttl",
+      "question": "lumen purge 默认依据哪个配置项清理？该配置项默认值是多少秒？",
+      "type": "multi_hop",
+      "expected_files": [
+        "07-cli-reference.md",
+        "03-configuration.md"
+      ],
+      "expected_keywords": [
+        "job_ttl",
+        "86400"
+      ],
+      "notes": "CLI + 配置"
+    },
+    {
+      "id": "m05-signing-env-rotation",
+      "question": "任务签名密钥用哪个环境变量配置？建议的轮换周期是多少天？",
+      "type": "multi_hop",
+      "expected_files": [
+        "02-installation.md",
+        "12-security.md"
+      ],
+      "expected_keywords": [
+        "LUMEN_SIGNING_KEY",
+        "90"
+      ],
+      "notes": "安装环境变量 + 安全"
+    },
+    {
+      "id": "m06-metrics-alert-lease",
+      "question": "哪个指标对应租约过期？租约过期时应检查哪两个配置项？",
+      "type": "multi_hop",
+      "expected_files": [
+        "13-metrics.md",
+        "11-troubleshooting.txt"
+      ],
+      "expected_keywords": [
+        "lumen_lease_expired_total",
+        "heartbeat_interval",
+        "lease_ttl"
+      ],
+      "notes": "指标（lumen_lease_expired_total）+ 故障排查 E204（检查 heartbeat_interval / lease_ttl）"
+    },
+    {
+      "id": "m07-tz-env-dst",
+      "question": "调度时区用哪个环境变量设置？夏令时切换时不存在的时刻如何处理？",
+      "type": "multi_hop",
+      "expected_files": [
+        "04-scheduler-design.md",
+        "08-faq.md"
+      ],
+      "expected_keywords": [
+        "LUMEN_TZ",
+        "顺延"
+      ],
+      "notes": "FAQ（LUMEN_TZ 设置）+ 调度器设计（夏令时顺延）"
+    },
+    {
+      "id": "c01-compute-backoff",
+      "question": "compute_backoff 函数的参数有哪些，默认值分别是什么？",
+      "type": "code_symbol",
+      "expected_files": [
+        "retry.py"
+      ],
+      "expected_keywords": [
+        "attempt",
+        "base",
+        "cap",
+        "jitter"
+      ],
+      "notes": "函数签名"
+    },
+    {
+      "id": "c02-next-run-time",
+      "question": "CronScheduler 的 next_run_time 方法做什么？",
+      "type": "code_symbol",
+      "expected_files": [
+        "scheduler.py"
+      ],
+      "expected_keywords": [
+        "cron",
+        "下一个|下次"
+      ],
+      "notes": "方法 docstring"
+    },
+    {
+      "id": "c03-open-backend",
+      "question": "open_backend 函数如何根据 URL 决定使用哪个后端？",
+      "type": "code_symbol",
+      "expected_files": [
+        "storage.py"
+      ],
+      "expected_keywords": [
+        "scheme",
+        "RedisBackend",
+        "SQLiteBackend"
+      ],
+      "notes": "工厂函数"
+    },
+    {
+      "id": "c04-worker-run-forever",
+      "question": "Worker.run_forever 的主循环做了哪些事？",
+      "type": "code_symbol",
+      "expected_files": [
+        "worker.py"
+      ],
+      "expected_keywords": [
+        "lease|租约",
+        "_execute_job|执行"
+      ],
+      "notes": "主循环"
+    },
+    {
+      "id": "c05-dead-letter-methods",
+      "question": "DeadLetterQueue 类提供了哪些方法？",
+      "type": "code_symbol",
+      "expected_files": [
+        "retry.py"
+      ],
+      "expected_keywords": [
+        "push",
+        "list",
+        "replay",
+        "purge"
+      ],
+      "notes": "类方法列表"
+    },
+    {
+      "id": "c06-build-parser",
+      "question": "build_parser 注册了哪些子命令？",
+      "type": "code_symbol",
+      "expected_files": [
+        "cli.py"
+      ],
+      "expected_keywords": [
+        "run",
+        "enqueue",
+        "status",
+        "purge",
+        "dead"
+      ],
+      "notes": "argparse 子命令"
+    },
+    {
+      "id": "c07-acquire-leadership",
+      "question": "acquire_leadership 方法里的锁 TTL 常量叫什么、值是多少？",
+      "type": "code_symbol",
+      "expected_files": [
+        "scheduler.py"
+      ],
+      "expected_keywords": [
+        "LEADER_LOCK_TTL_MS",
+        "30000|30_000"
+      ],
+      "notes": "模块常量"
+    },
+    {
+      "id": "meta01-what-docs",
+      "question": "知识库里有哪些文档？",
+      "type": "meta",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "元查询：应走概览，不检索"
+    },
+    {
+      "id": "meta02-list-files",
+      "question": "列出知识库中的文件",
+      "type": "meta",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "元查询"
+    },
+    {
+      "id": "meta03-contains",
+      "question": "当前知识库包含哪些资料？",
+      "type": "meta",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "元查询（正则变体）"
+    },
+    {
+      "id": "meta04-how-many",
+      "question": "知识库有多少个文件？",
+      "type": "meta",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "元查询"
+    },
+    {
+      "id": "n01-kafka",
+      "question": "Lumen 的 Kafka 后端如何配置 partition 数量？",
+      "type": "negative",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "语料无 Kafka 后端；会召回存储后端文档，期望拒答"
+    },
+    {
+      "id": "n02-mobile-app",
+      "question": "Lumen 的 iOS 客户端在哪里下载？",
+      "type": "negative",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "语料无移动端"
+    },
+    {
+      "id": "n03-version-3",
+      "question": "Lumen 3.0 计划在哪一天发布？",
+      "type": "negative",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "发布说明只到 2.4，期望拒答而非编造日期"
+    },
+    {
+      "id": "n04-gpu",
+      "question": "如何让 Lumen Worker 使用 GPU 加速任务执行？",
+      "type": "negative",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "语料无 GPU 相关内容"
+    },
+    {
+      "id": "n05-pricing",
+      "question": "Lumen 企业版的价格是多少？",
+      "type": "negative",
+      "expected_files": [],
+      "expected_keywords": [],
+      "notes": "MIT 开源，无企业版定价"
+    }
+  ]
+}

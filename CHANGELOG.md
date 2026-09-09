@@ -11,6 +11,16 @@
 
 ### 新增
 
+- **RAG 检索基准脚本（F10 P1-3）**：新增 `scripts/eval_rag.py`，一条命令对真实 Ollama 跑完整检索 + 问答并出报表，
+  调 `SIMILARITY_CUTOFF` / rerank 策略 / hybrid 开关 / 分块参数前后有了可对比的数字，不再靠几条问题人眼看。
+  - 仓库自带评测集：`tests/fixtures/rag_eval_corpus/`（18 个虚构项目文档 + 代码，约 36 KB，无隐私）与
+    `tests/fixtures/rag_eval_cases.json`（38 条：单文档 15 / 多跳 7 / 代码符号 7 / 元查询 4 / 负样本 5）。
+  - 指标（`src/rag_eval.py` 纯函数）：Recall@k、MRR、引用命中（`[n]` 映射到来源文件）、关键词命中、负样本拒答
+    （复用 F9-1 词表）、元查询识别、平均延迟；按类型分组汇总 + 合计；同 tag 有上一份报告时每个指标附 Δ。
+  - 参数 `--hybrid on|off --rerank llm|cross-encoder|none --top-k N --tag NAME [--cases] [--limit] [--type] [--model]`；
+    索引建在临时目录（`RAGEngine(persist_dir=…)` 新参数），**不触碰 `index_storage/` 与 `.cerebro/`**；报告写到
+    `docs/development/rag-eval/reports/{tag}-{日期}.md / .json`，`hybrid-on` / `hybrid-off` 两份基线已随仓库提交。
+  - 文档：`docs/development/TEST_DESIGN.md` §7（样本格式、加样本、指标含义、何时必须跑）、`TESTING_GUIDELINES.md`、README「测试」章节。
 - **OpenAI 兼容后端（F10 P1-2）**：新增 `LLM_PROVIDER=openai`，可把对话模型接到 vLLM / LM Studio / llama.cpp server /
   内网 OpenAI 兼容网关（`LLM_BASE_URL`、`LLM_API_KEY`），不再必须用 Ollama 跑对话模型；Ollama 自带的 `/v1` 端点也可直接接入。
   - 新模块 `src/llm_client.py`：`LLMClient` 协议 + `OllamaClient`（NDJSON 流）/ `OpenAICompatClient`（SSE 流、

@@ -1,0 +1,26 @@
+Lumen 故障排查：错误码一览
+
+E101  Redis 不可达
+      现象：lumen status / lumen run 启动即退出，日志 "E101 cannot connect to redis"。
+      原因：LUMEN_REDIS_URL 配置错误、Redis 未启动、网络策略拦截 6379 端口。
+      处理：用 redis-cli -u $LUMEN_REDIS_URL ping 验证连通性；开发环境可清空 LUMEN_REDIS_URL 改用 SQLite。
+
+E204  租约过期（lease expired）
+      现象：任务执行到一半被另一个 Worker 重复领取，日志 "E204 lease expired before ack"。
+      原因：heartbeat_interval 大于或接近 lease_ttl；任务阻塞导致心跳线程饿死；系统时钟回拨。
+      处理：保证 lease_ttl >= 3 * heartbeat_interval（默认 45 / 15）；长任务内部避免持有 GIL 的密集计算。
+
+E305  载荷序列化失败
+      现象：enqueue 时抛出 "E305 payload not serializable"。
+      原因：任务参数含不可 JSON 序列化的对象（datetime、Decimal、自定义类实例）。
+      处理：入队前转换为字符串或基本类型；或注册自定义编码器 lumen.codec.register()。
+
+E410  签名校验失败
+      现象：Worker 拒绝执行任务，日志 "E410 signature mismatch"。
+      原因：生产者与消费者的 LUMEN_SIGNING_KEY 不一致，或密钥轮换期间只更新了一侧。
+      处理：轮换时先在消费者侧同时接受新旧两把密钥（见安全文档），再更新生产者。
+
+E502  调度器未能获得领导权
+      现象：任务不再被投递，lumen status 显示 leader 为空。
+      原因：Redis 中的 leader 锁被手工删除后残留 TTL；或所有实例都以 --no-scheduler 启动。
+      处理：至少保证一个实例不带 --no-scheduler；必要时 DEL lumen:leader 后等待一个 tick。

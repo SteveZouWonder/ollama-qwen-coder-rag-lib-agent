@@ -84,7 +84,16 @@ except ImportError:
 class RAGEngine:
     """RAG 知识库引擎 - 支持独立查询和 Agent 工具调用"""
 
-    def __init__(self, enable_auto_snapshot: bool = True, enable_security: bool = True):
+    def __init__(
+        self,
+        enable_auto_snapshot: bool = True,
+        enable_security: bool = True,
+        persist_dir: Optional[str] = None,
+    ):
+        # F10 P1-3：``persist_dir`` 只改变本实例的存储位置（Chroma 库 / LlamaIndex 持久化 /
+        # 快照目录），供评测脚本在临时目录建索引而不触碰 ``index_storage/``；为 None 时
+        # 沿用 config 的 ``INDEX_DIR`` / ``VECTOR_DB_PATH``（行为与此前完全一致）。
+        self._persist_dir: Optional[Path] = Path(persist_dir) if persist_dir else None
         self.index: Optional[VectorStoreIndex] = None
         # F9 P0-1：引擎只做检索（retriever + 相似度过滤），答案一律由
         # rag_pipeline.synthesize_prompt 单次综合生成；``retriever is not None``
@@ -112,7 +121,7 @@ class RAGEngine:
         self.auto_snapshot_trigger = None
         if SNAPSHOT_AVAILABLE and enable_auto_snapshot:
             try:
-                self.snapshot_manager = KnowledgeSnapshotManager(index_dir=str(INDEX_DIR))
+                self.snapshot_manager = KnowledgeSnapshotManager(index_dir=str(self.index_dir))
                 self.auto_snapshot_trigger = AutoSnapshotTrigger(self.snapshot_manager)
                 print("✅ 自动快照已启用")
             except Exception as e:
@@ -266,10 +275,22 @@ class RAGEngine:
             ollama_additional_kwargs={"mirostat": 0},
         )
 
+    @property
+    def index_dir(self) -> Path:
+        """本实例的索引根目录：构造时传入的 ``persist_dir``，否则 config ``INDEX_DIR``。"""
+        return self._persist_dir if self._persist_dir is not None else Path(INDEX_DIR)
+
+    @property
+    def vector_db_path(self) -> str:
+        """本实例的 Chroma 持久化路径：``persist_dir/chroma_db``，否则 config ``VECTOR_DB_PATH``。"""
+        if self._persist_dir is not None:
+            return str(self._persist_dir / "chroma_db")
+        return VECTOR_DB_PATH
+
     def _setup_chroma(self):
         """配置 ChromaDB 向量存储"""
-        print(f"💾 向量数据库: {VECTOR_DB_PATH}")
-        self.chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
+        print(f"💾 向量数据库: {self.vector_db_path}")
+        self.chroma_client = chromadb.PersistentClient(path=self.vector_db_path)
         self.chroma_collection = self.chroma_client.get_or_create_collection(
             name="rag_knowledge_base"
         )
@@ -383,8 +404,8 @@ class RAGEngine:
 
     def _persist_index(self):
         """持久化索引到磁盘"""
-        persist_dir = INDEX_DIR / "llama_index"
-        persist_dir.mkdir(exist_ok=True)
+        persist_dir = self.index_dir / "llama_index"
+        persist_dir.mkdir(parents=True, exist_ok=True)
         self.index.storage_context.persist(persist_dir=str(persist_dir))
         print(f"💾 索引已保存到: {persist_dir}")
 
@@ -522,7 +543,7 @@ class RAGEngine:
 
     def load_index(self) -> Optional[VectorStoreIndex]:
         """从磁盘加载索引"""
-        persist_dir = INDEX_DIR / "llama_index"
+        persist_dir = self.index_dir / "llama_index"
         if not persist_dir.exists():
             print("⚠️  未找到持久化索引，请先构建索引")
             return None
@@ -1046,7 +1067,7 @@ class RAGEngine:
         count = self.chroma_collection.count()
         return {
             "total_documents": count,
-            "vector_db_path": VECTOR_DB_PATH,
+            "vector_db_path": self.vector_db_path,
             "llm_model": self.llm_model,
             "llm_num_ctx": self.llm_num_ctx,
             "llm_think": self.llm_think,

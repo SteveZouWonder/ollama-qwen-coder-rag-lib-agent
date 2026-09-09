@@ -1,0 +1,1510 @@
+{
+  "meta": {
+    "hybrid": "on",
+    "rerank": "llm",
+    "top_k": 10,
+    "tag": "hybrid-on",
+    "model": "qwen3.5:4b",
+    "embed_model": "nomic-embed-text:latest",
+    "provider": "ollama",
+    "similarity_cutoff": 0.3,
+    "kb_relevance_threshold": 0.45,
+    "date": "2026-09-09",
+    "cases_file": "tests/fixtures/rag_eval_cases.json",
+    "corpus_dir": "tests/fixtures/rag_eval_corpus",
+    "n_cases": 38,
+    "type_distribution": {
+      "single": 15,
+      "multi_hop": 7,
+      "code_symbol": 7,
+      "meta": 4,
+      "negative": 5
+    },
+    "corpus_docs": 18,
+    "chunks": 91,
+    "total_seconds": 949.4,
+    "filters": {
+      "type": null,
+      "limit": null
+    }
+  },
+  "aggregate": {
+    "n": 38,
+    "errors": 0,
+    "passed": 32,
+    "by_type": {
+      "single": {
+        "n": 15,
+        "passed": 11,
+        "recall_at_k": 1.0,
+        "mrr": 0.6133333333333333,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 0.7333333333333333,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 22.36333403333168
+      },
+      "multi_hop": {
+        "n": 7,
+        "passed": 7,
+        "recall_at_k": 0.9285714285714286,
+        "mrr": 0.7428571428571429,
+        "citation_hit_rate": 0.7380952380952381,
+        "keyword_hit": 0.7857142857142857,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 35.92723239901742
+      },
+      "code_symbol": {
+        "n": 7,
+        "passed": 6,
+        "recall_at_k": 1.0,
+        "mrr": 0.7619047619047619,
+        "citation_hit_rate": 0.7619047619047619,
+        "keyword_hit": 0.8928571428571429,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 34.78841676771741
+      },
+      "meta": {
+        "n": 4,
+        "passed": 3,
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": null,
+        "meta_detected": 0.75,
+        "latency": 5.963838343988755
+      },
+      "negative": {
+        "n": 5,
+        "passed": 5,
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": 1.0,
+        "meta_detected": null,
+        "latency": 18.16574707480613
+      }
+    },
+    "overall": {
+      "n": 38,
+      "passed": 32,
+      "recall_at_k": 0.9827586206896551,
+      "mrr": 0.6804597701149425,
+      "citation_hit_rate": 0.6206896551724138,
+      "keyword_hit": 0.7844827586206896,
+      "negative_rejected": 1.0,
+      "meta_detected": 0.75,
+      "latency": 24.872201142555383
+    }
+  },
+  "rows": [
+    {
+      "id": "s01-python-version",
+      "type": "single",
+      "question": "Lumen 要求的最低 Python 版本是多少？",
+      "retrieved": [
+        "09-release-notes.md",
+        "01-intro.md",
+        "07-cli-reference.md",
+        "02-installation.md",
+        "02-installation.md",
+        "01-intro.md",
+        "02-installation.md",
+        "06-storage-backends.md",
+        "07-cli-reference.md",
+        "08-faq.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "Lumen 要求的最低 Python 版本是 **3.11**。\n\n这一结论基于以下事实：\n*   **官方起售要求**：在 Lumen 2.0.0 版本的发布说明中，明确将最低 Python 版本提升至 3.11 [1]。\n*   **技术原因**：该版本使用了 `tomllib` 模块和 `ExceptionGroup` 类，这两个特性仅在 Python 3.11 及以上版本中可用，因此 Python 3.10 及以下版本不再受支持 [2]。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "09-release-notes.md",
+        "02-installation.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 13.712933750008233
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.031,
+      "answer_seconds": 13.682,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s02-redis-version",
+      "type": "single",
+      "question": "生产环境使用 Lumen 需要哪个版本的 Redis？",
+      "retrieved": [
+        "12-security.md",
+        "02-installation.md",
+        "02-installation.md",
+        "02-installation.md",
+        "07-cli-reference.md",
+        "09-release-notes.md",
+        "05-retry-policy.md",
+        "06-storage-backends.md",
+        "05-retry-policy.md",
+        "01-intro.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "资料中**未提及**「Lumen」这一对象或产品，因此无法确认是否存在名为\"Lumen\"的生产环境及其对应的 Redis 版本要求。\n\n现有知识库仅提供了名为 **LlamaIndex**（推测您所指的对象）的安装与环境要求信息：\n- 对于 LlamaIndex 的**生产环境**，明确要求使用 **Redis 7** 或更高版本 [1]。\n- 开发环境则可使用内置 SQLite 后端，无需 Redis [1]。\n\n由于资料中不存在\"Lumen\"相关条目，无法回答其所需的 Redis 版本。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "02-installation.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 13.000198499998078
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.058,
+      "answer_seconds": 12.942,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s03-retry-limit-default",
+      "type": "single",
+      "question": "配置项 retry_limit 的默认值是多少？",
+      "retrieved": [
+        "05-retry-policy.md",
+        "retry.py",
+        "08-faq.md",
+        "03-configuration.md",
+        "05-retry-policy.md",
+        "retry.py",
+        "09-release-notes.md",
+        "05-retry-policy.md",
+        "01-intro.md",
+        "retry.py"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "配置项 `retry_limit` 的默认值是 **3**。\n\n该数值表示任务失败后的最大重试次数，当超过此次数后，任务将进入死信队列 [1]。\n\n**主要依据来源：**\n本答案的主要依据来自知识库（本地文档）。",
+      "cited_files": [
+        "03-configuration.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.25,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 11.519209624966606
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.091,
+      "answer_seconds": 11.429,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s04-heartbeat-default",
+      "type": "single",
+      "question": "heartbeat_interval 的默认值是多少秒？",
+      "retrieved": [
+        "08-faq.md",
+        "03-configuration.md",
+        "03-configuration.md",
+        "worker.py",
+        "13-metrics.md",
+        "worker.py",
+        "05-retry-policy.md",
+        "10-glossary.txt",
+        "05-retry-policy.md",
+        "04-scheduler-design.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "在 Lumen 系统中，`heartbeat_interval` 的默认值是 **15 秒**。\n\n该参数用于控制 Worker 周期性刷新租约的动作间隔，其默认值明确为 15 秒 [1]。若此间隔设置过短或过长，可能会影响任务的调度效率与系统的稳定性，例如在 `tick_interval`（默认 1.0 秒）与 `heartbeat_interval`（默认 15 秒）之间形成层级关系，确保租约的持续有效性 [1]。\n\n主要依据来自知识库",
+      "cited_files": [
+        "10-glossary.txt"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 14.493885834002867
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.061,
+      "answer_seconds": 14.433,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s05-leader-lock-ttl",
+      "type": "single",
+      "question": "调度器选主用的 Redis 锁 TTL 是多长？领导者多久续期一次？",
+      "retrieved": [
+        "07-cli-reference.md",
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "12-security.md",
+        "10-glossary.txt",
+        "08-faq.md",
+        "08-faq.md",
+        "12-security.md",
+        "scheduler.py",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "调度器选主使用的 Redis 锁 TTL 为 **30 秒**[1]；领导者续期频率为 **每 10 秒一次**[1]。\n\n具体细节如下：\n*   **锁机制与 TTL**：Lumen 使用分布式锁进行选主，命令为 `SET lumen:leader NX PX 30000`，其中 `PX 30000` 明确设定了过期时间为 30 秒 [1]。\n*   **续期策略**：领导者实例需每隔 10 秒执行一次续期操作以维持锁的有效性 [1]。\n*   **超时后果**：若领导者失联且未能在 30 秒内完成续期，该锁将自动过期；其他实例将在下一个时间片（tick）竞争获取该锁，切换期间最多产生一个 tick 的投递延迟 [1]。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "04-scheduler-design.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.3333333333333333,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 22.387457208009437
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.094,
+      "answer_seconds": 22.294,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s06-misfire-policy",
+      "type": "single",
+      "question": "调度器停机重启后，错过触发时间的任务如何处理？",
+      "retrieved": [
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "08-faq.md",
+        "10-glossary.txt",
+        "03-configuration.md",
+        "05-retry-policy.md",
+        "09-release-notes.md",
+        "06-storage-backends.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "调度器在停机重启后，若任务因错过触发时间（misfire）而未被处理，**资料明确指出存在修复前的问题：任务未补投**。\n\n具体而言，在发布说明 2.2.0（2025-09-03）中提到的修复项为：\"`misfire_grace` 内的任务重启后未补投”[1]。这意味着在修复之前，当调度器停机并重启时，处于 `misfire_grace`（错过触发时间宽容期）配置范围内的任务会被跳过，不会重新执行。\n\n关于该问题的处理状态：\n*   **修复前**：任务会错过触发时间且未被补投 [1]。\n*   **修复后（2.2.0 版本）**：资料仅陈述了“修复”这一事实，未提供具体的修复机制或代码逻辑细节（如是否自动重试、如何计算补偿时间等），因此无法确定具体的处理行为是“立即重投”还是“按原计划继续等待”，只能确认该缺陷已被解决 [1]。\n\n主要依据来自知识库",
+      "cited_files": [
+        "09-release-notes.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 30.591127083986066
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.067,
+      "answer_seconds": 30.524,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s07-backoff-cap",
+      "type": "single",
+      "question": "重试退避的等待时间上限是多少秒？",
+      "retrieved": [
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "10-glossary.txt",
+        "12-security.md",
+        "04-scheduler-design.md",
+        "retry.py"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "重试退避的等待时间上限为 **300 秒** [1][2]。\n\n该上限由配置参数 `cap` 决定，具体规则如下：\n\n*   **计算公式**：第 $n$ 次重试的理论等待时间为 $\\min(\\text{base} \\times 2^{(n-1)}, \\text{cap})$ [1][2]。\n*   **默认上限值**：参数 `cap` 的默认值为 **300 秒** [1][2]。\n*   **实际生效时间**：由于默认开启抖动（jitter），实际等待时间在计算值的 50%–100% 之间随机，因此实际等待时间不会超过 **300 秒** [1]。\n\n若未设置自定义的 `cap` 值，则始终遵循此 300 秒的上限；若设置了更大的 `cap` 值，则上限将随之改变（资料中未提供自定义 `cap` 的具体数值示例）。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "05-retry-policy.md",
+        "retry.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.25,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 36.49757645803038
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.093,
+      "answer_seconds": 36.405,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s08-dead-letter-key",
+      "type": "single",
+      "question": "死信队列在 Redis 中的键名是什么？",
+      "retrieved": [
+        "06-storage-backends.md",
+        "05-retry-policy.md",
+        "12-security.md",
+        "12-security.md",
+        "07-cli-reference.md",
+        "retry.py",
+        "08-faq.md",
+        "06-storage-backends.md",
+        "09-release-notes.md",
+        "07-cli-reference.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "死信队列在 Redis 中的键名并非固定值，而是由配置参数 `queue_prefix` 与常量 `DEAD_LETTER_KEY` 拼接生成的动态字符串。\n\n根据资料，其生成逻辑如下：\n1. **默认前缀**：若未指定，默认使用 `\"lumen:\"` [1]。\n2. **固定后缀**：拼接的常量名为 `DEAD_LETTER_KEY` [1]。\n3. **最终键名公式**：`f\"{queue_prefix}{DEAD_LETTER_KEY}\"` [1]。\n\n由于资料中未提供 `DEAD_LETTER_KEY` 的具体字符串值（如 \"dead\" 或 \"dlq\"），因此无法给出完整的键名，只能确定其结构为以 `\"lumen:\"` 开头并包含该常量后缀的字符串 [1]。此外，死信队列不受 `job_ttl` 约束，需手动管理过期 [2]。\n\n主要依据来自知识库",
+      "cited_files": [
+        "retry.py",
+        "08-faq.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 0.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 34.024034667003434
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.068,
+      "answer_seconds": 33.956,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s09-sqlite-table",
+      "type": "single",
+      "question": "SQLite 后端用哪个表存储任务？",
+      "retrieved": [
+        "06-storage-backends.md",
+        "06-storage-backends.md",
+        "04-scheduler-design.md",
+        "storage.py",
+        "08-faq.md",
+        "storage.py",
+        "storage.py",
+        "09-release-notes.md",
+        "storage.py",
+        "06-storage-backends.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "SQLite 后端使用名为 **`lumen_jobs`** 的表来存储任务 [1][2]。\n\n该表的具体信息如下：\n*   **表名**：`lumen_jobs`（用于存储任务）[1][2]。\n*   **配套表**：`lumen_leases`（用于存储租约）[1][2]。\n*   **引入版本**：SQLite 后端（含该表结构）于 **2.3** 版本引入 [1][2]。\n*   **文件位置**：数据存放在单个默认文件 `./lumen.db` 中 [1]。\n\n关于多进程并发处理，虽然任务存储在 `lumen_jobs` 表中，但多个 Worker 进程共用同一数据库文件时，会通过 `BEGIN IMMEDIATE` 事务进行串行化以获取任务，不支持跨进程选主 [1]。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "06-storage-backends.md",
+        "storage.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 31.976728957961313
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.089,
+      "answer_seconds": 31.888,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s10-purge-command",
+      "type": "single",
+      "question": "lumen purge 命令有哪些选项？",
+      "retrieved": [
+        "07-cli-reference.md",
+        "07-cli-reference.md",
+        "07-cli-reference.md",
+        "05-retry-policy.md",
+        "08-faq.md",
+        "07-cli-reference.md",
+        "05-retry-policy.md",
+        "cli.py",
+        "02-installation.md",
+        "07-cli-reference.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "资料未提及「lumen purge」命令的具体选项。\n\n根据提供的知识库内容 [1]，`lumen` 工具中确实存在 `purge` 命令（对应代码中的 `args.command == \"purge\"`），该命令会调用 `cmd_purge` 函数并接收两个参数：`args.older_than` 和 `args.dry_run`。然而，资料中**并未列出**这些参数的具体名称、含义或可用选项（例如是否支持 `-t`、`--dry-run` 等标志），也未说明 `cmd_purge` 函数内部处理了哪些具体的命令行参数。\n\n因此，无法从现有资料中提取出「lumen purge 命令有哪些选项」的确切列表。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "cli.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 27.130111665988807
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.184,
+      "answer_seconds": 26.946,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s11-metrics-port",
+      "type": "single",
+      "question": "Prometheus 指标默认在哪个端口暴露？",
+      "retrieved": [
+        "08-faq.md",
+        "09-release-notes.md",
+        "01-intro.md",
+        "13-metrics.md",
+        "02-installation.md",
+        "08-faq.md",
+        "08-faq.md",
+        "03-configuration.md",
+        "07-cli-reference.md",
+        "13-metrics.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 0.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 11.451216292043682
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.791,
+      "answer_seconds": 10.66,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s12-error-e305",
+      "type": "single",
+      "question": "错误码 E305 是什么原因导致的？",
+      "retrieved": [
+        "05-retry-policy.md",
+        "03-configuration.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "08-faq.md",
+        "11-troubleshooting.txt",
+        "08-faq.md",
+        "13-metrics.md",
+        "05-retry-policy.md",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "根据提供的知识库检索内容，**资料中未提及错误码 E305 的具体原因**。\n\n在本地文档《11-troubleshooting.txt》的故障排查一览中，仅列出了 E101（Redis 不可达）和 E204（租约过期），E305 条目后直接结束，没有任何关于其现象、原因或处理方法的描述 [1]。由于网络搜索补充部分也为空，因此无法确定该错误码的具体含义。\n\n主要依据来自知识库",
+      "cited_files": [
+        "11-troubleshooting.txt"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.16666666666666666,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 0.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 22.87332570797298
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.191,
+      "answer_seconds": 22.683,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s13-key-rotation",
+      "type": "single",
+      "question": "签名密钥建议多久轮换一次？",
+      "retrieved": [
+        "12-security.md",
+        "12-security.md",
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "02-installation.md",
+        "11-troubleshooting.txt",
+        "08-faq.md",
+        "09-release-notes.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 0.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 10.161340249993373
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.086,
+      "answer_seconds": 10.076,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s14-release-2-4",
+      "type": "single",
+      "question": "Lumen 2.4.0 版本新增了什么功能？",
+      "retrieved": [
+        "09-release-notes.md",
+        "09-release-notes.md",
+        "09-release-notes.md",
+        "07-cli-reference.md",
+        "02-installation.md",
+        "09-release-notes.md",
+        "02-installation.md",
+        "01-intro.md",
+        "08-faq.md",
+        "09-release-notes.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "Lumen 2.4.0 版本新增的核心功能为**优先级队列**机制，具体包括：\n- **配置项**：`priority_levels`（默认值为 3）[1]；\n- **命令行工具**：支持 `--priority` 参数 [1]；\n- **API 接口**：`enqueue(job, priority=)` 函数用于提交带优先级的任务 [1]。\n\n此外，该版本还新增了一个辅助命令 `lumen purge --dry-run`，用于在不实际执行清理操作的情况下预览删除内容 [1]。\n\n> **主要依据来源**：知识库（本地文档）[1]",
+      "cited_files": [
+        "09-release-notes.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 26.377332000003662
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.066,
+      "answer_seconds": 26.311,
+      "hybrid_applied": true
+    },
+    {
+      "id": "s15-glossary-lease",
+      "type": "single",
+      "question": "术语表中 Lease（租约）是什么意思？",
+      "retrieved": [
+        "08-faq.md",
+        "03-configuration.md",
+        "06-storage-backends.md",
+        "05-retry-policy.md",
+        "10-glossary.txt",
+        "storage.py",
+        "12-security.md",
+        "storage.py",
+        "12-security.md",
+        "storage.py"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "在 Lumen 术语表中，**Lease（租约）** 是指 Worker 取到任务时获得的独占权 [2]。其核心属性与运作机制如下：\n\n*   **有效期**：由 `lease_ttl` 参数决定，默认值为 45 秒 [1][2]。\n*   **续期机制**：通过 Worker 周期性发送心跳（Heartbeat）来刷新租约，心跳间隔由 `heartbeat_interval` 决定，默认值为 15 秒 [2]。\n*   **过期后果**：若租约过期且未续期，该任务将失去独占权并被移回队列，从而可以被其他 Worker 接管 [1][2]。\n\n资料中未提及 Lease 在其他系统或语境下的含义，以上定义严格基于 Lumen 术语表内容。",
+      "cited_files": [
+        "10-glossary.txt",
+        "08-faq.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.2,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 29.25353250000626
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.087,
+      "answer_seconds": 29.167,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m01-retry-then-dead",
+      "type": "multi_hop",
+      "question": "retry_limit 默认是多少次？超过后任务会进入哪个 Redis 键？",
+      "retrieved": [
+        "05-retry-policy.md",
+        "retry.py",
+        "05-retry-policy.md",
+        "03-configuration.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "04-scheduler-design.md",
+        "05-retry-policy.md",
+        "04-scheduler-design.md",
+        "retry.py"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "根据资料，`retry_limit` 的默认值为 **3** 次 [1][2]。当任务重试次数超过该限制后，任务会进入死信队列（Dead Letter Queue），其对应的 Redis 键前缀为 `lumen:dlq:`（由配置项 `queue_prefix` 默认值 `\"lumen:\"` 与死信队列后缀组合而成）[2]。\n\n具体细节如下：\n1. **重试次数上限**：由配置项 `retry_limit` 控制，默认值为 **3** [1][2]。这意味着任务最多会被尝试执行 3 次；若第 3 次仍失败，则不再重试。\n2. **超时后的去向**：超过 `retry_limit` 后，任务不会无限重试，而是被移入死信队列 [2]。在 Redis 中，该队列的键通常遵循 `queue_prefix + \"dlq:\"` 的格式，即默认前缀 `\"lumen:\"` 加上后缀，形成 `lumen:dlq:` 开头的键（资料未明确给出完整键名字符串，但明确了进入死信队列这一逻辑及前缀规则）[2]。\n3. **重试机制补充**：在达到上限之前，Worker 采用指数退避策略重新入队，第 n 次重试的等待时间计算公式为 `min(base * 2^(n-1), cap)`，其中 `base` 默认 2 秒，`cap` 默认 300 秒 [1]。\n\n主要依据来自知识库",
+      "cited_files": [
+        "05-retry-policy.md",
+        "03-configuration.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 0.5,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 46.22413858299842
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.155,
+      "answer_seconds": 46.069,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m02-sqlite-version-table",
+      "type": "multi_hop",
+      "question": "SQLite 后端是在哪个版本引入的？它的任务表叫什么？",
+      "retrieved": [
+        "06-storage-backends.md",
+        "02-installation.md",
+        "06-storage-backends.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "storage.py",
+        "04-scheduler-design.md",
+        "storage.py",
+        "01-intro.md",
+        "02-installation.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "SQLite 后端是在 **2.3** 版本引入的 [1][2]；其任务表名为 **`lumen_jobs`** [1][2]。\n\n具体细节如下：\n*   **引入版本**：SQLite 后端（类 `SQLiteBackend`）于 **2.3** 版本正式加入，此时开发环境不再强制依赖 Redis [1][2]。\n*   **任务表名称**：该后端使用的任务表名为 **`lumen_jobs`** [1][2]；同时包含租约表 `lumen_leases` [2]。\n*   **其他关键特性**：\n    *   数据默认存放在单个文件（如 `./lumen.db`）[2]。\n    *   打开数据库时会自动启用 **WAL 模式**（`PRAGMA journal_mode=WAL`），以支持读写并发 [1][2]。\n    *   不支持跨进程选主，若多个 Worker 进程共用同一文件，会通过 `BEGIN IMMEDIATE` 事务进行串行化取任务 [2]。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "09-release-notes.md",
+        "06-storage-backends.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 43.64287850004621
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.093,
+      "answer_seconds": 43.55,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m03-heartbeat-e204",
+      "type": "multi_hop",
+      "question": "heartbeat_interval 默认值是多少？错误码 E204 与它有什么关系？",
+      "retrieved": [
+        "05-retry-policy.md",
+        "03-configuration.md",
+        "08-faq.md",
+        "03-configuration.md",
+        "13-metrics.md",
+        "13-metrics.md",
+        "worker.py",
+        "worker.py",
+        "11-troubleshooting.txt",
+        "04-scheduler-design.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "根据提供的资料，关于 `heartbeat_interval` 默认值及其与错误码 E204 的关系，回答如下：\n\n**1. `heartbeat_interval` 的默认值**\n`heartbeat_interval` 的默认值为 **15 秒**。\n*   该数值在资料中明确提及为租赁超时时间（`lease_ttl`）默认值 45 秒与 `heartbeat_interval` 默认值的比例关系（45 / 15），即 `lease_ttl` 是 `heartbeat_interval` 的 3 倍 [2][3]。\n\n**2. 错误码 E204 与 `heartbeat_interval` 的关系**\n错误码 **E204**（租约过期，lease expired）的发生与 `heartbeat_interval` 设置不当有直接因果关系：\n*   **触发机制**：当 `heartbeat_interval` 大于或接近 `lease_ttl` 时，Worker 会在两次心跳之间丢失租约，从而触发 E204 错误 [2][3]。\n*   **具体现象**：任务执行到一半被另一个 Worker 重复领取，日志显示 \"E204 lease expired before ack\" [3]。\n*   **根本原因**：资料指出这通常是因为 `heartbeat_interval` 被",
+      "cited_files": [
+        "03-configuration.md",
+        "11-troubleshooting.txt",
+        "08-faq.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.6666666666666666,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 46.63560408400372
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.155,
+      "answer_seconds": 46.481,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m04-purge-jobttl",
+      "type": "multi_hop",
+      "question": "lumen purge 默认依据哪个配置项清理？该配置项默认值是多少秒？",
+      "retrieved": [
+        "07-cli-reference.md",
+        "09-release-notes.md",
+        "03-configuration.md",
+        "07-cli-reference.md",
+        "05-retry-policy.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "05-retry-policy.md",
+        "01-intro.md",
+        "08-faq.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "`lumen purge` 命令默认依据配置项 **`job_ttl`**（任务保留期）进行清理，其默认值为 **86400 秒**[1]。\n\n具体取值逻辑如下：\n*   **主答案（默认行为）**：若未指定额外参数，命令将执行 `lumen purge`，依据配置项 `job_ttl` 的默认值 **86400 秒**清理已完成且超过该期限的任务记录 [1]。\n*   **其他取值情况**：用户可通过命令行参数覆盖默认值。例如使用 `--older-than` 参数时（如 `lumen purge --older-than 3600`），将忽略 `job_ttl` 的默认值，转而依据指定的时间（此处为 3600 秒）进行清理 [1]。\n\n主要依据来自知识库",
+      "cited_files": [
+        "07-cli-reference.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 31.848125959048048
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.072,
+      "answer_seconds": 31.776,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m05-signing-env-rotation",
+      "type": "multi_hop",
+      "question": "任务签名密钥用哪个环境变量配置？建议的轮换周期是多少天？",
+      "retrieved": [
+        "08-faq.md",
+        "12-security.md",
+        "12-security.md",
+        "08-faq.md",
+        "02-installation.md",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "03-configuration.md",
+        "05-retry-policy.md",
+        "11-troubleshooting.txt"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "关于“任务签名密钥”的配置与环境变量轮换周期，基于现有资料回答如下：\n\n### 1. 配置环境变量\n**任务签名密钥**使用环境变量 **`LUMEN_SIGNING_KEY`** 进行配置。\n*   **功能说明**：该变量用于设置任务载荷的 HMAC-SHA256 签名密钥，若为空则不执行签名操作 [1]。\n*   **版本背景**：此功能是在 Lumen 2.2.0 版本中新增的 [2]。\n\n### 2. 轮换周期\n**资料未提及**该密钥的建议轮换周期。\n*   现有文档仅说明了变量名及其默认行为（空值表示不签名），并未包含关于密钥安全策略、有效期或轮换频率的具体数值建议 [1][2]。因此无法提供具体的天数作为答案。\n\n### 3. 补充说明\n*   **概念区分**：资料中明确列出的 `LUMEN_SIGNING_KEY` 是用于“任务载荷 HMAC 签名”的密钥，而非其他类型的“任务签名密钥”。若存在其他特定场景下的密钥（如 API 认证等），当前检索资料中无相关记录 [1]。\n*   **默认值逻辑**：该变量的默认值为“空”，意味着在未手动配置的情况下，系统不会为任务载荷添加签名 [1]。\n\n主要依据来自知识库。",
+      "cited_files": [
+        "02-installation.md",
+        "09-release-notes.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 0.5,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 39.45053650002228
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.093,
+      "answer_seconds": 39.357,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m06-metrics-alert-lease",
+      "type": "multi_hop",
+      "question": "哪个指标对应租约过期？租约过期时应检查哪两个配置项？",
+      "retrieved": [
+        "08-faq.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "08-faq.md",
+        "13-metrics.md",
+        "13-metrics.md",
+        "08-faq.md",
+        "03-configuration.md",
+        "08-faq.md",
+        "04-scheduler-design.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "对应“租约过期”的监控指标是 `rate(lumen_lease_expired_total[5m])`，其值大于 0 表示租约频繁过期 [1]。\n\n当检测到租约频繁过期时，应检查以下两个配置项：\n1. **`heartbeat_interval`**（心跳间隔）\n2. **`lease_ttl`**（租约生存时间）[1]\n\n主要依据来自知识库",
+      "cited_files": [
+        "13-metrics.md"
+      ],
+      "metrics": {
+        "recall_at_k": 0.5,
+        "mrr": 0.2,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 25.1688616250176
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.178,
+      "answer_seconds": 24.991,
+      "hybrid_applied": true
+    },
+    {
+      "id": "m07-tz-env-dst",
+      "type": "multi_hop",
+      "question": "调度时区用哪个环境变量设置？夏令时切换时不存在的时刻如何处理？",
+      "retrieved": [
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "12-security.md",
+        "08-faq.md",
+        "08-faq.md",
+        "08-faq.md",
+        "scheduler.py",
+        "06-storage-backends.md",
+        "02-installation.md",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "调度时区由环境变量 `LUMEN_TZ` 设置，其默认值为 `UTC`[1]。\n\n关于夏令时切换时不存在的时刻（例如 DST 转换期间跳过的那一小时），资料中**未提及**具体的处理机制或策略。",
+      "cited_files": [
+        "02-installation.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.0,
+        "keyword_hit": 0.5,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 18.520481541985646
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.421,
+      "answer_seconds": 18.099,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c01-compute-backoff",
+      "type": "code_symbol",
+      "question": "compute_backoff 函数的参数有哪些，默认值分别是什么？",
+      "retrieved": [
+        "05-retry-policy.md",
+        "retry.py",
+        "09-release-notes.md",
+        "06-storage-backends.md",
+        "02-installation.md",
+        "10-glossary.txt",
+        "06-storage-backends.md",
+        "05-retry-policy.md",
+        "03-configuration.md",
+        "retry.py"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "`compute_backoff` 函数的参数及其默认值如下：\n\n*   **`attempt`**：整数类型，表示当前重试次数（从 1 开始计数），该参数为必填项，资料中未提供默认值 [1]。\n*   **`base`**：浮点数类型，表示基础退避倍率，默认值为 `2.0` [1]。\n*   **`cap`**：浮点数类型，表示最大延迟秒数上限，默认值为 `300.0` [1]。\n*   **`jitter`**：布尔类型，表示是否启用 50%–100% 的随机抖动（Jitter），默认值为 `True` [1]。\n\n该函数计算第 `attempt` 次重试前的等待时间，公式为 `min(base * (2 ** (attempt - 1)), cap)`；若 `jitter` 为真，则会在计算结果上乘以 `random.uniform(0.5, 1.0)` [1]。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "retry.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 32.677445582987275
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.049,
+      "answer_seconds": 32.628,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c02-next-run-time",
+      "type": "code_symbol",
+      "question": "CronScheduler 的 next_run_time 方法做什么？",
+      "retrieved": [
+        "scheduler.py",
+        "scheduler.py",
+        "04-scheduler-design.md",
+        "04-scheduler-design.md",
+        "scheduler.py",
+        "scheduler.py",
+        "scheduler.py",
+        "scheduler.py",
+        "scheduler.py",
+        "04-scheduler-design.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "CronScheduler 的 `next_run_time` 方法用于**计算并返回指定 Cron 表达式在给定时间之后（`after` 参数）的下一个触发时刻**。其核心逻辑与行为如下：\n\n1. **起始时间设定**：  \n   方法以 `after` 参数的时间为起点，将其秒和微秒重置为 0，并自动增加 1 分钟作为初始候选时间 [1]。\n\n2. **遍历搜索机制**：  \n   通过循环最多检查 366 × 24 × 60（即一年中所有可能的分钟数）个时间点，逐一判断该时刻是否满足给定的 Cron 表达式条件 [1]。\n\n3. **匹配判定方式**：  \n   使用内部方法 `self._matches()` 来判断候选时间是否符合 Cron 表达式的规则，该方法会解析 Cron 字符串中的分、时、日、月、星期字段进行比对 [1]。\n\n4. **夏令时处理策略**：  \n   若某时刻因夏令时不存在而无效（例如时钟跳过），`next_run_time` 不会跳过整天，而是顺延至下一个有效的分钟数继续检查 [1]。\n\n5. **返回结果格式**：  \n   一旦找到满足条件的第一个时间，立即返回该 `datetime` 对象作为下一个触发时刻 [1]。\n\n> 注：资料中代码片段在循环末尾被截断（`candidate += timedelta(min`），但根据上下文可推断其意",
+      "cited_files": [
+        "scheduler.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 39.23503416700987
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.156,
+      "answer_seconds": 39.079,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c03-open-backend",
+      "type": "code_symbol",
+      "question": "open_backend 函数如何根据 URL 决定使用哪个后端？",
+      "retrieved": [
+        "06-storage-backends.md",
+        "09-release-notes.md",
+        "storage.py",
+        "06-storage-backends.md",
+        "06-storage-backends.md",
+        "02-installation.md",
+        "09-release-notes.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "02-installation.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "`open_backend` 函数根据 URL 的协议（scheme）来决定使用哪个后端实现：若 URL 以 `redis://` 或 `rediss://` 开头，则返回 `RedisBackend`；若 URL 以 `sqlite:///` 开头或为空字符串，则返回 `SQLiteBackend`[1][2]。\n\n具体映射规则如下：\n*   **`redis://...` / `rediss://...`**：对应后端为 `RedisBackend`[1]。\n*   **`sqlite:///path/to/file.db`**：对应后端为 `SQLiteBackend`，路径部分由 URL 解析后传入[1]。\n*   **空字符串**：对应后端为 `SQLiteBackend`，默认使用本地文件 `./lumen.db`[1]。\n\n若提供的 URL scheme 不被上述规则支持（例如其他协议），函数将抛出 `ConfigError` 异常[1][2]。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "06-storage-backends.md",
+        "storage.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.3333333333333333,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 37.68027437501587
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.199,
+      "answer_seconds": 37.482,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c04-worker-run-forever",
+      "type": "code_symbol",
+      "question": "Worker.run_forever 的主循环做了哪些事？",
+      "retrieved": [
+        "worker.py",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "scheduler.py",
+        "04-scheduler-design.md",
+        "worker.py",
+        "scheduler.py",
+        "13-metrics.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "`Worker.run_forever` 的主循环执行了以下核心步骤：\n\n1. **持续运行直到停止信号**：循环条件为 `while not self._stop.is_set()`，只要未收到停止信号（由 `Worker.stop` 设置）就会一直执行 [1]。\n2. **尝试获取任务（租约）**：每次循环首先调用 `self.backend.lease(self.worker_id, self.lease_ttl)` 尝试从后端获取一个任务（即刷新或获取租约），若返回 `None` 表示当前无可用任务 [1]。\n3. **休眠等待**：若未获取到任务（`job is None`），则调用 `time.sleep(idle_sleep)` 休眠指定的空闲时间（默认 0.5 秒）后继续循环 [1]。\n4. **执行任务**：若成功获取到任务（`job` 不为空），则立即调用 `self._execute_job(job)` 执行该任务 [1]。\n\n需注意，后台续租逻辑由独立的 `heartbeat` 方法处理，它每 `heartbeat_interval` 秒刷新一次租约，失败会记录错误并退出，这与 `run_forever` 的主循环是并行或独立运行的机制 [2]。\n\n主要依据来自知识库 [1][2]。",
+      "cited_files": [
+        "worker.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 35.17064808297437
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.08,
+      "answer_seconds": 35.091,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c05-dead-letter-methods",
+      "type": "code_symbol",
+      "question": "DeadLetterQueue 类提供了哪些方法？",
+      "retrieved": [
+        "retry.py",
+        "13-metrics.md",
+        "08-faq.md",
+        "worker.py",
+        "05-retry-policy.md",
+        "09-release-notes.md",
+        "06-storage-backends.md",
+        "07-cli-reference.md",
+        "worker.py",
+        "08-faq.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "DeadLetterQueue 类目前资料中仅明确列出了 `__init__` 和 `push` 两个方法，其余方法未提及。\n\n1. **`__init__(self, backend, queue_prefix: str = \"lumen:\")`**  \n   用于初始化死信队列对象，设置后端实例（backend）和队列前缀（默认 `\"lumen:\"`），并生成内部键名 `DEAD_LETTER_KEY`[1]。\n\n2. **`push(self, job_id: str, payload: dict, error: str, attempts: int) -> None`**  \n   将任务及其最后一次异常信息、重试次数写入死信队列，记录内容包括 `job_id`、`payload`、`error`、`attempts` 及当前时间戳（通过 `time.time()` 生成）[1]。\n\n资料未提及该类的其他方法（如 `pop`、`clear` 等），因此无法确认是否存在更多公开接口。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "retry.py"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 1.0,
+        "keyword_hit": 0.25,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 27.553375874995254
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.081,
+      "answer_seconds": 27.472,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c06-build-parser",
+      "type": "code_symbol",
+      "question": "build_parser 注册了哪些子命令？",
+      "retrieved": [
+        "cli.py",
+        "cli.py",
+        "cli.py",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "08-faq.md",
+        "07-cli-reference.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "`build_parser` 函数注册了以下子命令：\n\n1. **run**：用于执行任务 [1]。\n2. **enqueue**：用于提交任务 [1]。\n3. **status**：用于查看任务状态 [1]。\n4. **purge**：用于清理资源（如死信队列）[1][2]。\n5. **dead**：专门用于管理死信队列，包含 `list`、`replay` 和 `purge` 等子操作 [2][3]。\n\n其中，文档 [1] 明确提到注册了\"run / enqueue / status / purge / dead\"这五个子命令 [1]；而文档 [2] 补充说明了 `lumen dead` 下具体包含 `list`、`replay` 和 `purge` 操作 [2]。\n\n主要依据来自知识库 [1][2][3]。",
+      "cited_files": [
+        "cli.py",
+        "07-cli-reference.md",
+        "09-release-notes.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "citation_hit_rate": 0.3333333333333333,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 36.904692416021135
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.078,
+      "answer_seconds": 36.827,
+      "hybrid_applied": true
+    },
+    {
+      "id": "c07-acquire-leadership",
+      "type": "code_symbol",
+      "question": "acquire_leadership 方法里的锁 TTL 常量叫什么、值是多少？",
+      "retrieved": [
+        "04-scheduler-design.md",
+        "scheduler.py",
+        "08-faq.md",
+        "08-faq.md",
+        "04-scheduler-design.md",
+        "08-faq.md",
+        "12-security.md",
+        "scheduler.py",
+        "08-faq.md",
+        "03-configuration.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "在 `acquire_leadership` 方法中，锁的 TTL 常量名为 **`LEADER_LOCK_TTL_MS`**，其值为 **30000 毫秒（即 30 秒）** [2]。\n\n具体细节如下：\n1. **常量名称与数值**：代码中定义常量为 `LEADER_LOCK_TTL_MS`，在调用后端锁函数时传入的值为该常量，对应 Redis 命令中的 `PX 30000`（设置过期时间为 30000 毫秒）[2]。\n2. **续期机制**：持有锁的领导者实例每 **10 秒**（由常量 `LEADER_RENEW_SECONDS` 定义）续期一次，若未续期超过 30 秒则视为失联 [2]。\n3. **后端差异**：该 TTL 仅适用于 Redis 等支持分布式锁的后端；对于 SQLite 单进程假设的后端，`acquire_leadership()` 方法恒返回 `True`，不涉及锁的 TTL 概念 [1]。\n\n主要依据来自知识库 [2]。",
+      "cited_files": [
+        "scheduler.py",
+        "04-scheduler-design.md"
+      ],
+      "metrics": {
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "citation_hit_rate": 0.5,
+        "keyword_hit": 1.0,
+        "negative_rejected": null,
+        "meta_detected": null,
+        "latency": 34.29744687501807
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.053,
+      "answer_seconds": 34.244,
+      "hybrid_applied": true
+    },
+    {
+      "id": "meta01-what-docs",
+      "type": "meta",
+      "question": "知识库里有哪些文档？",
+      "retrieved": [
+        "12-security.md",
+        "08-faq.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "02-installation.md",
+        "08-faq.md",
+        "06-storage-backends.md",
+        "13-metrics.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "meta",
+      "answer": "[知识库概览]",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": null,
+        "meta_detected": true,
+        "latency": 0.10008766700048
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.043,
+      "answer_seconds": 0.057,
+      "hybrid_applied": true
+    },
+    {
+      "id": "meta02-list-files",
+      "type": "meta",
+      "question": "列出知识库中的文件",
+      "retrieved": [
+        "06-storage-backends.md",
+        "08-faq.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "01-intro.md",
+        "12-security.md",
+        "05-retry-policy.md",
+        "01-intro.md",
+        "01-intro.md",
+        "03-configuration.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "知识库中列出的文件如下：\n\n1. **`01-intro.md`** [1]  \n   - 该文件包含 Lumen 项目的简介与组成结构，明确列出四个核心组件及其对应模块：\n     - `lumen.scheduler`（调度器）[1]\n     - `lumen.worker`（工作节点）[1]\n     - `lumen.storage`（存储层）[1]\n     - `lumen.cli`（命令行工具）[1]\n\n2. **其他文件**  \n   - 当前知识库中未提供除 `01-intro.md` 外的其他文件名或路径信息，因此无法确认是否存在其他文档。\n\n主要依据来自知识库 [1]。",
+      "cited_files": [
+        "01-intro.md"
+      ],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": null,
+        "meta_detected": false,
+        "latency": 23.682508624973707
+      },
+      "passed": false,
+      "error": null,
+      "retrieval_seconds": 0.024,
+      "answer_seconds": 23.659,
+      "hybrid_applied": true
+    },
+    {
+      "id": "meta03-contains",
+      "type": "meta",
+      "question": "当前知识库包含哪些资料？",
+      "retrieved": [
+        "08-faq.md",
+        "13-metrics.md",
+        "06-storage-backends.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "13-metrics.md",
+        "05-retry-policy.md",
+        "cli.py",
+        "08-faq.md",
+        "01-intro.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "meta",
+      "answer": "[知识库概览]",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": null,
+        "meta_detected": true,
+        "latency": 0.05162595899309963
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.047,
+      "answer_seconds": 0.005,
+      "hybrid_applied": true
+    },
+    {
+      "id": "meta04-how-many",
+      "type": "meta",
+      "question": "知识库有多少个文件？",
+      "retrieved": [
+        "08-faq.md",
+        "06-storage-backends.md",
+        "05-retry-policy.md",
+        "13-metrics.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "12-security.md",
+        "03-configuration.md",
+        "12-security.md",
+        "04-scheduler-design.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "meta",
+      "answer": "[知识库概览]",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": null,
+        "meta_detected": true,
+        "latency": 0.02113112498773262
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.021,
+      "answer_seconds": 0.0,
+      "hybrid_applied": true
+    },
+    {
+      "id": "n01-kafka",
+      "type": "negative",
+      "question": "Lumen 的 Kafka 后端如何配置 partition 数量？",
+      "retrieved": [
+        "08-faq.md",
+        "03-configuration.md",
+        "07-cli-reference.md",
+        "07-cli-reference.md",
+        "13-metrics.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "01-intro.md",
+        "02-installation.md",
+        "07-cli-reference.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": true,
+        "meta_detected": null,
+        "latency": 11.854288082977291
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.026,
+      "answer_seconds": 11.828,
+      "hybrid_applied": true
+    },
+    {
+      "id": "n02-mobile-app",
+      "type": "negative",
+      "question": "Lumen 的 iOS 客户端在哪里下载？",
+      "retrieved": [
+        "08-faq.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "01-intro.md",
+        "12-security.md",
+        "08-faq.md",
+        "02-installation.md",
+        "12-security.md",
+        "05-retry-policy.md",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": true,
+        "meta_detected": null,
+        "latency": 18.577706083015073
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.029,
+      "answer_seconds": 18.549,
+      "hybrid_applied": true
+    },
+    {
+      "id": "n03-version-3",
+      "type": "negative",
+      "question": "Lumen 3.0 计划在哪一天发布？",
+      "retrieved": [
+        "09-release-notes.md",
+        "12-security.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "02-installation.md",
+        "09-release-notes.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "02-installation.md",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "资料未提及 Lumen 3.0 的具体发布日期。\n\n现有资料仅包含 **Lumen 2.3.0** 的发布记录（2026-01-20），其中列出了新增 SQLite 后端、`open_backend` 自动选择机制及 Redis 脚本优化等细节 [1]，但并未出现\"Lumen 3.0\"或任何关于其发布日期的信息。\n\n主要依据来自知识库",
+      "cited_files": [
+        "09-release-notes.md"
+      ],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": true,
+        "meta_detected": null,
+        "latency": 20.31800241698511
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.043,
+      "answer_seconds": 20.275,
+      "hybrid_applied": true
+    },
+    {
+      "id": "n04-gpu",
+      "type": "negative",
+      "question": "如何让 Lumen Worker 使用 GPU 加速任务执行？",
+      "retrieved": [
+        "08-faq.md",
+        "02-installation.md",
+        "08-faq.md",
+        "07-cli-reference.md",
+        "07-cli-reference.md",
+        "08-faq.md",
+        "05-retry-policy.md",
+        "12-security.md",
+        "12-security.md",
+        "12-security.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "根据现有资料，**无法确定**如何让 Lumen Worker 使用 GPU 加速任务执行。\n\n资料中仅提供了 `lumen run` 命令的参考用法，其中包含的参数如下：\n*   `--workers N`：用于覆盖配置中的最大工作进程数 [1]。\n*   `--queues a,b`：用于指定要消费的队列名称 [1]。\n*   `--no-scheduler`：用于仅启动 Worker 而不参与选主 [1]。\n\n资料中未提及任何与\"GPU\"、“图形加速”或相关配置参数（如 `--gpu`、`--accelerate` 等）相关的内容，也未说明 Lumen Worker 是否支持 GPU 加速或其具体启用方式。",
+      "cited_files": [
+        "07-cli-reference.md"
+      ],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": true,
+        "meta_detected": null,
+        "latency": 24.711679083004128
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.051,
+      "answer_seconds": 24.661,
+      "hybrid_applied": true
+    },
+    {
+      "id": "n05-pricing",
+      "type": "negative",
+      "question": "Lumen 企业版的价格是多少？",
+      "retrieved": [
+        "08-faq.md",
+        "01-intro.md",
+        "02-installation.md",
+        "01-intro.md",
+        "13-metrics.md",
+        "02-installation.md",
+        "08-faq.md",
+        "09-release-notes.md",
+        "06-storage-backends.md",
+        "05-retry-policy.md"
+      ],
+      "retrieved_count": 10,
+      "answer_kind": "answer",
+      "answer": "",
+      "cited_files": [],
+      "metrics": {
+        "recall_at_k": null,
+        "mrr": null,
+        "citation_hit_rate": null,
+        "keyword_hit": null,
+        "negative_rejected": true,
+        "meta_detected": null,
+        "latency": 15.367059708049055
+      },
+      "passed": true,
+      "error": null,
+      "retrieval_seconds": 0.051,
+      "answer_seconds": 15.316,
+      "hybrid_applied": true
+    }
+  ]
+}

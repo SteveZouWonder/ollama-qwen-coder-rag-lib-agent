@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 / P1-2 已完成 2026-09-09；其余四项待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 已完成 2026-09-09；其余三项待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
 · 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 八个独立任务逐项落地
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
@@ -10,7 +10,7 @@
 | P0-1 | 命令安全分级修正（token 级匹配）· 读路径边界 · `AUTO_CONFIRM` 不放行 high · 两端显示允许目录 | 高 | 低 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P0-2 | 依赖钉版本 + `requirements-dev.txt` · CI PR 触发 + 三平台矩阵 · CHANGELOG 归档 v0.1.0 | 高 | 低 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-1 | 真流式输出（Ollama NDJSON → Web token 事件 / CLI rich Live）· `LLM_STREAM` 开关 · 可中断 | 高 | 中 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
-| P1-3 | RAG 评测集（≥30 例 + 小语料）· `src/rag_eval.py` 指标 · `scripts/eval_rag.py` 报表与 Δ | 中 | 中 | — | 待实现 | | |
+| P1-3 | RAG 评测集（38 例 + 18 文档小语料）· `src/rag_eval.py` 指标 · `scripts/eval_rag.py` 报表与 Δ · 两份 hybrid 基线 | 中 | 中 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-2 | `src/llm_client.py` 后端抽象（Ollama / OpenAI 兼容）· 五处直连替换 · 模型列表 / 健康检查 | 中 | 中高 | P1-1 | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | 待实现 | | |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | 待实现 | | |
@@ -77,6 +77,15 @@ P3-1 Tesseract + README
 | P1-1-d CLI | `src/cli_handlers.py`、`src/query_interface.py` | 新增 **`LiveAnswer`**（`rich.live.Live(Panel(Markdown(buffer)), refresh_per_second=8, transient=True)`，首个 token 才启动，`finish()` 停止并清除实时区域；类级 `LiveAnswer.streaming()` 标志；非 Rich 终端为空操作）。`_run_ask`（`/ask` 与自然语言）传 `on_token=live.on_token`，`KeyboardInterrupt` → `live.finish()` + 打印「已中断，已关闭与模型的连接。」；`handle_agent` 以 `engine.on_token = live.on_token` 方式注入（结束后恢复，`engine.chat(task)` 调用形态不变），`Ctrl+C` → `engine.stop()`（关闭连接）+「已中断：…」；单次 `--agent` 同理；`handle_multi` 传 `on_token`（仅整合阶段有 token）。`on_step_callback` 在 `LiveAnswer.streaming()` 时静默 transient 推理心跳（否则 `\r` 单行刷新会在面板上方反复刷出）。Live 面板为 transient：完成后仍按既有格式打印完整答案 + 来源 + notices，最终输出与非流式完全一致。`print_help`（`/ask` `/agent` 行）与 `TUTORIAL_TEXT`（新增"流式输出"示例段）同步。 |
 | P1-1-e 文档 | `README.md`、`CHANGELOG.md`、`docs/development/ai-assistant/ARCHITECTURE.md` §2.6、`MODULE_GUIDES.md` | 环境变量表加 `LLM_STREAM`（配置块 + export 示例）；CHANGELOG `[Unreleased]` 新增「真流式输出」、改进「回答可中断」；ARCHITECTURE 新增 §2.6「流式回调路径」；MODULE_GUIDES 更新 `ReActEngine` 签名、`llm_helper` 新函数、`StreamEvent` kinds。 |
 
+### P1-3 RAG 评测集与基准脚本（2026-09-09）
+
+| 子项 | 实现位置 | 做了什么 |
+|---|---|---|
+| P1-3-a 语料与样本 | **新增** `tests/fixtures/rag_eval_corpus/`（18 个文件）、`tests/fixtures/rag_eval_cases.json`（38 条） | 语料是一个**虚构的任务调度库 Lumen** 的文档与代码：13 个 md（简介 / 安装 / 配置表格 / 调度器设计 / 重试策略 / 存储后端 / CLI 参考 / FAQ / 发布说明 / 安全 / 指标）、2 个 txt（术语表 / 错误码排查）、5 个 py（`scheduler.py` / `retry.py` / `storage.py` / `worker.py` / `cli.py`，含类 / 函数 / 模块常量），总量 **36 KB**，无隐私、不依赖外部包（`import redis` 在未执行的分支内）。同一事实刻意在多个文件重复出现（如 9464 端口、`lumen:dead`、`3.11`）以制造多跳与"多个正确来源"的情形。样本 `{id, question, type, expected_files, expected_keywords, notes}`：**single 15 / multi_hop 7 / code_symbol 7 / meta 4 / negative 5**；`expected_files` 列出所有直接含答案的文件（Recall 取标准定义）；`expected_keywords` 支持 `a\|b` 同义可选；negative 选"会召回相近文档但语料确实没有答案"的问题（Kafka 后端 / iOS 客户端 / 3.0 发布日 / GPU / 企业版价格）。 |
+| P1-3-b 打分纯函数 | **新增** `src/rag_eval.py` | `recall_at_k(sources, expected_files, k)`、`mrr`、`citation_hit_rate(answer, sources, expected_files)`（`cited_refs` 解析 `[n]`、忽略代码块 / `[W1]` / `[?]`；`resolve_citation` 优先按来源 `ref` 键、都没有时按位置，越界为 None 计未命中）、`keyword_hit`（`norm_text` 归一化 + `\|` 可选项）、`negative_rejected(answer, sources)`（无来源 / 空答案 / 含 `REJECT_WORDS`）、`evaluate_case(case, retrieval_sources, answer_result, k, latency, error)` → 明细行（含 `passed` 判定、`retrieved` / `cited_files`）、`aggregate(rows)`（按 type 分组均值 + overall，None 不计）、`render_markdown(agg, meta, previous=None, rows=None)`（运行信息表 + 汇总表 + 逐例表 + 指标说明；有 `previous` 时每格附 `(+0.05)` / `(-1.5s)` / `(±0.00)` Δ 与「对比基线」行）。样本工具 `load_cases / type_distribution / validate_cases`。**F9-1 的 `HEDGE_WORDS / PREMISE_WORDS / HOLD_WORDS` 迁到这里作唯一定义**，`scripts/eval_overcompliance.py` 改为 `from rag_eval import …`（其单测不改）。 |
+| P1-3-c 脚本 | **新增** `scripts/eval_rag.py`；`src/rag_engine.py` | `--hybrid on\|off --rerank llm\|cross-encoder\|none --top-k N --tag NAME [--cases] [--corpus] [--out-dir] [--limit] [--type] [--model] [-v] [--debug]`，未给的参数取 config 默认（`RAG_HYBRID` / `RERANKER` / `TOP_K` / `LLM_MODEL`），`--tag` 默认 `hybrid-<on\|off>`。`apply_env` 在 `import config` 之前把参数写入环境变量（config 导入时固化）；`--rerank none` 不写 env，而是把 `rag_rerank.rerank` 在本进程打成恒等（不改源码）。**隔离**：`tempfile.TemporaryDirectory` 内 `runtime_paths.set_app_state_root` + 替换 `file_metadata._global_metadata_manager` + `knowledge_graph` 默认持久化路径 + **`RAGEngine(persist_dir=<tmp>/index, enable_auto_snapshot=False, enable_security=False)`**——为此给 `RAGEngine.__init__` 增加可选 `persist_dir`（`index_dir` / `vector_db_path` 两个属性，Chroma / `llama_index` 持久化 / 快照目录 / `get_stats` 全部经它；不传时读模块常量，与此前完全一致，现有 66 条 rag_engine 测试零改动）。逐例：`query_with_sources(q, hybrid=)` 记检索来源 → `answer_question(engine, q, enable_web_search=False, show_progress=False, kb_only=True)` 记答案 / `kb_sources` / `kind`，两段各自计时；异常记入行、不中断。`write_reports` 写 `{tag}-{YYYYMMDD}.md/.json`，`find_previous_report` 取同 tag 最近一份（排除本次路径，同日重跑仍与更早一份对比）。`quiet_logging` 默认把知识图谱 / httpx 的 INFO 刷屏压到 WARNING。`main` 标 `# pragma: no cover`。 |
+| P1-3-d 文档 | `docs/development/TEST_DESIGN.md` §7、`docs/development/ai-assistant/TESTING_GUIDELINES.md`、`README.md`、`CHANGELOG.md` | TEST_DESIGN 新章节「RAG 检索基准」：组成 / 样本格式与加样本 / 指标含义表 / **何时必须跑**（改 `rag_engine` / `rag_rerank` / `rag_pipeline` / `code_chunker` / 检索阈值 / 换模型）/ 判读口径 / 单测写法；TESTING_GUIDELINES §3 补两个遗漏的 autouse fixture、§4 加"检索质量回归不靠单测"指引、§5 加注入手段一行；README「测试」章节新增「RAG 检索基准」小节 + 项目结构树 + 文档资源链接；CHANGELOG `[Unreleased]` 新增条目。 |
+
 ### P1-2 LLM 后端抽象层（Ollama / OpenAI 兼容）（2026-09-09）
 
 | 子项 | 实现位置 | 做了什么 |
@@ -98,6 +107,43 @@ P3-1 Tesseract + README
 | P0-2-c 归档 | `CHANGELOG.md`、`docs/features/ROADMAP.md` | `python scripts/bump_changelog.py bump --version 0.1.0 --date 2026-09-09` 把 `[Unreleased]` 的 **112 条**一级要点归档为 `## [v0.1.0] - 2026-09-09`（F8 / F9 为破坏性体验升级，按 minor 递增）；新 `[Unreleased]` 只写 P0-2 自身的「发布流程」4 条。ROADMAP「当前版本」由 v0.0.13 改为 v0.1.0。**未打 tag、未推送**，命令交由用户执行。 |
 
 ## 验证结果
+
+### P1-3（2026-09-09）
+
+| 项 | 结果 |
+|---|---|
+| 全量测试 | `./venv/bin/python -m pytest -q -n 4` → **3463 passed, 36 skipped**，覆盖率 **92%**（门禁 80%）；`src/rag_eval.py` 100%、`scripts/eval_rag.py` 98%（未覆盖：`main` 与 `quiet_logging` 的导入失败分支） |
+| 新增测试 | **+68 个**：`tests/test_rag_eval.py` 45（`norm_text` / `source_file` / 词表关系；`recall_at_k` 全命中 / 部分 / k 截断 / 重复来源 / 大小写与带目录 / 空来源 / 空期望 None / 非 dict 来源；`mrr` 各名次 / 无命中 / 重复不改首命中；`cited_refs` 去重、忽略代码块与 `[W1]` `[?]`；`resolve_citation` 按 ref / 按位置 / 越界 / ref 优先于位置；`citation_hit_rate` 全中 / 半中 / 越界 / 重复 / 无引用 / 无来源；`keyword_hit` 归一化 / `\|` 可选 / 空；`negative_rejected` 无来源 / 空答案 / 有来源需词表 / 英文；`evaluate_case` 检索类通过与不通过 / 无关键词 / 多跳部分命中 / `sources` 键回退 / meta / negative 有来源编造 / 出错最差值 / 截断 / 未知 type；`aggregate` 分组均值忽略 None / 空 / 错误计数 / 未知 type 排序；样本 fixture 分布下限与语料约束（≤20 文件、<200 KB、含 md/py/txt 与表格）、`load_cases` 过滤与裸列表、`validate_cases` 六类问题；`fmt_metric` / `fmt_delta`、`render_markdown` 无 previous 无 Δ / 有 previous 有 Δ 与「对比基线」行 / previous 直接传 aggregate / 上份缺某 type / 逐例表标记与错误明细）；`tests/test_eval_rag_script.py` 21（`--help` 含全部参数、choices 校验、`apply_env` 映射与 `none` 不写 env、`resolve_settings` 取 config 默认与 tag 默认；`isolate_runtime_state` 三处重定向与子模块故障容错、`disable_rerank` 恒等、`build_engine` 传 `persist_dir=<tmp>/index` + 关快照 / 安全 + `hybrid_enabled` + `file_paths` 去重排序 + 空语料抛错 + `count()` 失败为 -1、`quiet_logging`；`run_case` 成功（`answer_question` kwargs 精确断言）/ meta / negative / 检索出错不再问答、`run` 进度与 verbose 输出；`report_paths`、`find_previous_report` 排序与排除自身、`load_previous` 坏 JSON、`write_reports` 首份无 Δ → 第二份有 Δ → 同日重跑仍与更早对比 → 不同 tag 不对比、`summary_lines`）；`tests/test_rag_engine.py` +2（默认存储与 config 一致；`persist_dir` 重定向 Chroma / `llama_index` / 快照 / 统计且 `load_index` 空目录返回 None） |
+| 现有测试断言 | **一条未改**；`scripts/eval_overcompliance.py` 词表改为导入后其 9 条单测原样通过 |
+| flake8 语法门禁 | `flake8 --select=E9,F63,F7,F82 src tests scripts` → rc=0（语料 `.py` 也通过） |
+| 样本验收 | 38 条：single 15 ≥12 ✓ / multi_hop 7 ≥6 ✓ / code_symbol 7 ≥5 ✓ / meta 4 ≥3 ✓ / negative 5 ≥4 ✓；语料 18 个文件 ≤20 ✓、36 KB <200 KB ✓、含 md / py / txt 与表格 md ✓ |
+| 隔离验收 | 两次基线 + 一次 `--limit 2` 冒烟前后 `index_storage/chroma_db` 与 `.cerebro` 的 mtime 不变；临时目录运行后自动删除。顺带发现**既有**问题：全量测试会改写真实 `index_storage/chroma_db/chroma.sqlite3` 的 mtime，逐文件排查定位到 `tests/test_cli_handlers_rich_tables.py`（本任务新增的三个测试文件单独运行不触碰），记为待办 |
+| 基线报告 | `docs/development/rag-eval/reports/hybrid-on-20260909.{md,json}`（38 例 949s）与 `hybrid-off-20260909.{md,json}`（751s），默认模型 `qwen3.5:4b` + `nomic-embed-text`，rerank `llm`，top_k 10。核心指标见下 |
+
+两份基线的核心指标（合计行）：
+
+| 指标 | hybrid-on | hybrid-off | 说明 |
+|---|---|---|---|
+| 通过 | **32/38** | 22/38 | |
+| Recall@10 | **0.98** | 0.75 | BM25 补齐了 dense 漏掉的精确词命中（`retry_limit`、`E305`、`lease` 等）：single 1.00 vs 0.71，multi_hop 0.93 vs 0.57，code_symbol 两者 1.00 |
+| MRR | **0.68** | 0.50 | |
+| 引用命中 | **0.62** | 0.49 | |
+| 关键词命中 | **0.78** | 0.56 | |
+| 负样本拒答 | 1.00 | 1.00 | 5 例全部拒答（rerank 全部判无关 → `kb_only` 空答案，或答案含「资料未提及」） |
+| 元查询识别 | 0.75 | 0.75 | `列出知识库中的文件` 未被 `is_meta_query` 识别（见风险） |
+| 平均延迟 | 24.9s | **19.6s** | hybrid 多召回 → rerank 逐片段判定更多 → 慢约 5s/例；检索本身 <0.1s |
+
+按类型（hybrid-on → off）：single 通过 11/15 → 4/15、multi_hop 7/7 → 4/7、code_symbol 6/7 → 6/7、meta 3/4 → 3/4、negative 5/5 → 5/5。
+
+基线暴露的**既有管道问题**（本任务只记录不修，作为后续调参 / P2-1 的对照）：
+
+| 用例 | 现象 | 指向 |
+|---|---|---|
+| `s11-metrics-port`、`s13-key-rotation`（hybrid-on） | Recall 1.0 但答案为空——`13-metrics.md` / `12-security.md` 已召回且排第 1，rerank（LLM）把全部片段判为无关 | rerank 过度过滤；`CONFIDENT_SCORE=0.6` 之下全部走 LLM 判定 |
+| `s08-dead-letter-key` | 召回了明确写着 `lumen:dead` 的 `05-retry-policy.md`（第 2 名），rerank 只保留 `retry.py` 的类片段，答案称"资料未给出 `DEAD_LETTER_KEY` 的值" | 同上；另 `retry.py` 的模块常量与类被切成不同片段 |
+| `s12-error-e305` | 答案称"E305 条目后直接结束"——`11-troubleshooting.txt` 在 E305 标题处被切块，正文落在下一块未被召回 | 文本分块边界（`CHUNK_SIZE=1024`）对"标题 + 正文"结构不友好 |
+| `c05-dead-letter-methods` | 只看到 `__init__` / `push`，其余方法在另一片段 | 代码分块把类拆成多块后 rerank 只留一块 |
+| `meta02-list-files` | 「列出知识库中的文件」走了检索，答案只列出 `01-intro.md` | `_META_QUERY_PATTERNS` 有 `列出文件` 但不匹配中间插词；正则的询问动词表无「列出」 |
 
 ### P1-2（2026-09-09）
 
@@ -302,6 +348,19 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 > 浏览器截图未提交：本次在无头环境实现，用 service → formatter 的真实渲染输出替代（系统页即 `gr.Markdown(format_env_info(...))`，无额外交互逻辑）。
 
 ## 与需求的差异
+
+### P1-3
+
+| # | 需求 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | 「`RAGEngine(persist_dir=tmp)`」 | `RAGEngine.__init__` 此前**没有** `persist_dir` 参数（存储路径来自模块常量 `INDEX_DIR` / `VECTOR_DB_PATH`），本次新增 | 立项 §0.5 未记录这一事实。加参数只改存储位置（`index_dir` / `vector_db_path` 属性），不传时读模块常量，检索 / rerank / 编排逻辑与现有测试零改动；比在脚本里 patch 模块常量更安全（快照管理器等同样跟随）。 |
+| 2 | 「`negative_rejected` 复用 F9-1 的 `HOLD_WORDS`」 | 用 `REJECT_WORDS = HEDGE_WORDS ∪ HOLD_WORDS`（去重保序），三份词表都迁到 `src/rag_eval.py`，`eval_overcompliance.py` 改为导入 | `HOLD_WORDS` 是"被质疑仍坚持"的核对口径（含「前提」「实际上」），单独用来判拒答会漏掉「未找到」「无法回答」「没有相关」这些 `HEDGE_WORDS` 里的典型拒答词。词表放 `src/` 是因为 `src` 不应反向 import `scripts/`。 |
+| 3 | 「`--tag NAME`」（必填语义） | 可选，默认 `hybrid-<on\|off>` | 两份基线正好对应两个默认 tag，少一个必填参数；显式 `--tag` 仍用于试验配置。 |
+| 4 | 「对每条用例调用 `query_with_sources` 与 `answer_question`」 | 同需求，且 `answer_question(..., enable_web_search=False, kb_only=True)` | 评测不联网、不做模型兜底：negative 在知识库无命中时得到空答案（计为拒答），而不是走网络 / 自身知识作答把"拒答率"变成"联网质量"。meta 类同样跑一次检索（<0.1s），使逐例表能看到"若不识别会召回什么"。 |
+| 5 | 「`aggregate(results)`：按 type 分组均值 + 总均值 + 平均延迟」 | 另加每组 `n` / `passed` 与顶层 `errors`；逐例行有 `passed` 判定（检索类 Recall>0 且关键词 ≥0.5；meta 识别；negative 拒答） | 汇总表需要"通过 x/y"一列才能一眼看出退步在哪一类；判定阈值写在报告「指标说明」里，可按需调整。 |
+| 6 | 未提及 | `--corpus` / `--out-dir` / `--model` / `--debug` 参数；`validate_cases` 在运行前校验样本（id 唯一、type 合法、`expected_files` 存在于语料、meta / negative 无期望文件） | 换语料 / 换输出目录 / 换模型对比是脚本的主要用法；样本写错（文件名打错）会让 Recall 永远为 0 而不报错，先校验再跑。 |
+| 7 | 未提及 | 逐例 JSON 另记 `retrieval_seconds` / `answer_seconds` / `hybrid_applied` / `answer_kind` / `answer`（前 600 字） | 平均延迟几乎全是模型生成时间；分开记才能判断变慢是检索还是 rerank / 规划调用数增加。答案摘录用于事后核对"为什么没通过"。 |
+| 8 | 「样本 `expected_files`」 | 采用标准 Recall（命中数 / 期望数），期望文件列出**所有**直接含答案的文件；不做"任一命中即可"的特殊匹配 | 冒烟时发现 `s01` 的 `3.11` 同时出现在安装文档与 2.0.0 发布说明，模型引用了后者；与其加 `match_any` 开关让指标定义分叉，不如把样本标注补全。已在 TEST_DESIGN §7.2 写明标注规则。 |
 
 ### P1-2
 
