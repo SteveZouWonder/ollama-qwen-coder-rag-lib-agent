@@ -70,7 +70,8 @@ class TestParse:
 
     def test_help_and_tutorial_mention_multi(self):
         import inspect
-        assert "/multi <task>" in inspect.getsource(print_help)
+        from cli.help_text import print_help as help_impl  # F10 P2-2：/help 文案随实现迁至 cli.help_text
+        assert "/multi <task>" in inspect.getsource(help_impl)
         assert "/multi" in TUTORIAL_TEXT
 
 

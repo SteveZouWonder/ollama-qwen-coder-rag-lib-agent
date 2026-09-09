@@ -928,7 +928,8 @@ class TestCliStreamingWiring:
         import query_interface as qi
         assert "LLM_STREAM" in qi.TUTORIAL_TEXT and "流式" in qi.TUTORIAL_TEXT
         import inspect
-        assert "流式" in inspect.getsource(qi.print_help)
+        from cli.help_text import print_help as help_impl  # F10 P2-2：/help 文案随实现迁至 cli.help_text
+        assert "流式" in inspect.getsource(help_impl)
 
 
 class TestConfigStream:

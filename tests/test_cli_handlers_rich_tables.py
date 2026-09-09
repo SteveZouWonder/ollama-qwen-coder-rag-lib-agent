@@ -15,6 +15,8 @@ import pytest
 from rich.console import Console
 
 import cli_handlers as h
+import cli.handlers.db as h_db  # F10 P2-2：打桩目标为实现所在子模块
+import cli.handlers.git as h_git
 from database_tools import results as R
 from database_tools import session
 from query_interface import ParsedCommand
@@ -57,7 +59,7 @@ class TestGitAnalyzeTables:
             self.calls.append(max_commits)
             return dict(getattr(self, "ov", _OV))
 
-        monkeypatch.setattr(h, "_git_overview", fake)
+        monkeypatch.setattr(h_git, "_git_overview", fake)
 
     def test_overview_default(self):
         ctx, console = _ctx()
@@ -148,7 +150,7 @@ class TestDbTables:
 
     def test_query_truncated_hint(self, tmp_path, monkeypatch):
         self._connected(tmp_path)
-        monkeypatch.setattr(h, "DB_QUERY_MAX_ROWS", 1)
+        monkeypatch.setattr(h_db, "DB_QUERY_MAX_ROWS", 1)
         ctx, console = _ctx()
         h.handle_db_query(ctx, _pc("db_query", "SELECT name FROM users"))
         out = _text(console)
@@ -230,7 +232,7 @@ class TestWebCliParity:
         assert cli_ov["branch"] == "main" and len(cli_ov["commits"]) == 2
         assert [c["path"] for c in cli_ov["changed"]] == ["f0.txt"]
         # CLI 渲染读取的就是这份数据
-        monkeypatch.setattr(h, "_git_overview", lambda repo_path=".", max_commits=10: cli_ov)
+        monkeypatch.setattr(h_git, "_git_overview", lambda repo_path=".", max_commits=10: cli_ov)
         ctx, console = _ctx()
         h.handle_git_analyze(ctx, _pc("git_analyze"))
         out = _text(console)

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import cli_handlers as h
+import cli.handlers.db as h_db  # F10 P2-2：打桩目标为实现所在子模块
 from query_interface import ParsedCommand
 
 
@@ -118,7 +119,7 @@ class TestDbSchema:
 
     def test_exception_recorded(self, monkeypatch):
         ctx, reg = _ctx()
-        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(h_db, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
         assert ctx.record_command.call_args.args[2] == "failed"
 
@@ -154,7 +155,7 @@ class TestDbQuery:
 
     def test_exception_recorded(self, monkeypatch):
         ctx, reg = _ctx()
-        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(h_db, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert h.handle_db_query(ctx, _pc("db_query", "select 1")) is True
         assert ctx.record_command.call_args.args[2] == "failed"
 

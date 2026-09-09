@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import cli_handlers
+import cli.handlers.session as cli_session  # F10 P2-2：打桩目标为实现所在子模块
 import conversation_context as cc
 import query_interface as qi
 import rag_pipeline
@@ -146,14 +147,14 @@ class TestContextCommands:
 
 class TestSessionNewCarry:
     def test_plain_new_session(self, conv, monkeypatch):
-        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        monkeypatch.setattr(cli_session, "_get_session_manager", lambda: conv.manager)
         ctx = _cli_ctx()
         cli_handlers.handle_session_new(ctx, ParsedCommand("session_new", "/session-new 标题", "标题"))
         out = _printed(ctx.console)
         assert "新会话已创建" in out and "标题" in out and "携带" not in out
 
     def test_carry_summary(self, conv, monkeypatch):
-        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        monkeypatch.setattr(cli_session, "_get_session_manager", lambda: conv.manager)
         conv.recent_turns = 1
         conv.record("DJI OSMO 360 是什么", "全景相机")
         conv.record("它多少钱", "2999 元")
@@ -168,7 +169,7 @@ class TestSessionNewCarry:
 
     def test_carry_without_summary_is_clean(self, conv, monkeypatch):
         """回归：上一会话没压缩过时，--carry 不得把原文带入新会话。"""
-        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        monkeypatch.setattr(cli_session, "_get_session_manager", lambda: conv.manager)
         conv.record("DJI OSMO 360 是什么", "全景相机")
         ctx = _cli_ctx()
         cli_handlers.handle_session_new(ctx, ParsedCommand("session_new", "/session-new --carry", "--carry"))
@@ -179,7 +180,7 @@ class TestSessionNewCarry:
 
     def test_plain_new_after_carry_follows_current(self, conv, monkeypatch):
         """回归：--carry 之后再普通 /session-new，单例应跟随新会话而非钉死在携带会话。"""
-        monkeypatch.setattr(cli_handlers, "_get_session_manager", lambda: conv.manager)
+        monkeypatch.setattr(cli_session, "_get_session_manager", lambda: conv.manager)
         conv.record("q", "a")
         cli_handlers.handle_session_new(_cli_ctx(), ParsedCommand("session_new", "/session-new --carry", "--carry"))
         carried_id = conv.session().session_id
