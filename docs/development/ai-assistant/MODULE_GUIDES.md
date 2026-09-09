@@ -125,14 +125,18 @@
 
 ## 入口层
 
-### `query_interface.py` / `cli_handlers.py`
-- `parse_command()` → `ParsedCommand(cmd_type, raw, arg)`；分发：`_ENGINE_HANDLERS`（依赖引擎状态）+ `cli_handlers.COMMAND_HANDLERS`（表驱动）。
-- `handle_natural` → 自动路由；`_run_ask`（RAG + 会话）；`handle_agent`；`cli_handlers.handle_multi`；会话命令 `handle_session_*`；模型 `/model` `/think`。
-- 模块级全局 `react_engine` / `rag_engine` / `console`；测试用 `patch("query_interface.console")` 与 `conftest.reset_module_state`。
+### `query_interface.py` / `cli/`（F10 P2-2 拆包）
+- `cli/parser.py`：`parse_command()` → `ParsedCommand(cmd_type, raw, arg)`、`classify_mode()`（纯函数）；`query_interface` 重导出三者。
+- `cli/help_text.py`：`TUTORIAL_TEXT`、`print_help(console, has_rich)`（`/help` 文案内联在函数体内，`inspect.getsource` 可校验）；`query_interface.print_help()` 为零参包装（读模块级 `console` / `HAS_RICH`）。
+- `cli/handlers/`：`base.py`（`CLIContext` dataclass、`_is_error` / `_confirm(…, safety=)` / `_sql_safety`、`LiveAnswer`）、`agent.py`（`/multi`）、`system.py`（`/help /tutorial /tools /config`，`config_rows`）、`knowledge.py`（`/stats /sources /add /generate-skills /snapshot-* /knowledge-summary`）、`files.py`（`/file-*`）、`session.py`（`/session-* /context /compact`）、`tools.py`（`/web-* /code-* /graph-*`）、`git.py`（`/git-*`，`_rich_table`）、`db.py`（`/db-*`）；`__init__.py` 汇总 `COMMAND_HANDLERS` 并重导出全部名字。顶层 `cli_handlers.py` 只剩兼容重导出。
+- `query_interface.py` 保留：解释器自保护、日志 / 控制台、回调、渲染（`print_rag_sources` 等）、共享 RAG 编排适配、引擎耦合命令（`_ENGINE_HANDLERS`：ask / agent / natural / model / think / exec …）、`dispatch_command`、`main`。分发：`_ENGINE_HANDLERS` → `cli.handlers.COMMAND_HANDLERS`。
+- 模块级全局 `react_engine` / `rag_engine` / `console`；测试用 `patch("query_interface.console")` 与 `conftest.reset_module_state`。**打桩 handler 内部依赖须以实际子模块为目标**（如 `cli.handlers.git._git_overview`、`cli.handlers.db._db_results`、`cli.handlers.session._get_session_manager`），patch `cli_handlers.X` 不再生效。
 
 ### `web/`
-- `services.py` `WebService`：所有业务入口（对话流 / 模型 / 知识库 / 会话 / 图谱 / 工具），流式统一经 `_bridge`（后台线程 + 队列 → `StreamEvent(kind, message, data)`，kinds `progress | answer | step | token | error | done | heartbeat | cancelled | confirm`；`token` 为最终答案增量，`_token_sink(q, cancel)` 生成对应 `on_token`）。构造参数全部可注入工厂。单例 `get_web_service()` / `reset_web_service()`。
-- `app.py`：`format_*` 纯函数（可单测）+ `build_handlers(service)`（返回 handler dict，可单测）+ `build_app / launch / main`（`pragma: no cover`）。`on_chat_stream` yield 七元组，`session_id` 为空时先 `ensure_session()` 钉死。
+- `services/`（F10 P2-2 拆包）`WebService = ChatMixin + KnowledgeMixin + ToolsMixin + DatabaseMixin + GraphMixin + SystemMixin + WebServiceBase`：`base.py` 含引擎工厂 `_default_*`、`ScratchContext`、`StreamEvent`、`WebServiceBase`（工厂注入、`is_running / stop_current`、交互式确认 `pending_confirm / resolve_confirm / _ask_confirm`、`_token_sink`、`_bridge`、`rag_engine / session_manager / graph_query` 惰性单例）；`chat.py`（会话上下文、`rag_query_stream / agent_chat_stream / chat_auto_stream / multi_agent_stream`、会话管理与会话高级）；`knowledge.py`（入库 / 统计 / 文件管理 / 摘要与技能 / 快照，含 `_describe_chunking`）；`tools.py`（`run_tool`、代码助手 / 符号 / 质量、Git、AI 解读、Shell / 文件读写、工作区浏览、命令生成、`cwd / chdir`）；`db.py`（SQLite 连接 / 查询 / 写 / NL→SQL）；`graph.py`（图谱查询 / 构建 / 可视化数据）；`system.py`（模型热切换 / 思考模式 / `env_info`，含 `_code_chunking_env_text`）。流式统一经 `_bridge`（后台线程 + 队列 → `StreamEvent(kind, message, data)`，kinds `progress | answer | step | token | error | done | heartbeat | cancelled | confirm`）。`__init__.py` 重导出全部旧公开名与单例 `get_web_service()` / `reset_web_service()`；`from web.services import WebService` 路径不变。
+- `formatters.py`：全部 `format_*` / `*_rows` / 表头常量 / `ProgressTracker` / `component_update` / `_fmt_result` / `build_graph_figure` 等纯函数（可单测）。
+- `handlers/`：`build_chat_handlers`（对话 / 流式 / 审批 / 会话控件 / 会话页 / 侧栏）、`build_knowledge_handlers`（入库流 / 卡片 / 文件 / 快照 / 摘要）、`build_tools_handlers`（Git / DB / AI 解读 / 代码 / NL→SQL / 工作区 / 命令生成 / Shell）、`build_graph_handlers`、`build_system_handlers`（模型 / 网络缓存 / 环境 / 工具表 / 模型表）；各返回 dict，带表头的组附 `"headers"` 子字典。
+- `app.py`：`build_handlers(service)` 汇总五组并合并 `headers`（返回结构与拆包前完全一致）+ `build_app / serve_blocking / launch / main`；重导出 `formatters` 全部名字。`on_chat_stream` yield 八元组，`session_id` 为空时先 `ensure_session()` 钉死。
 - `ui/layout.py` 骨架与侧栏（`session_state = gr.State("")` 每标签页一份）；`ui/chat.py` 对话页事件链（`_begin → _chat_stream_ui → _end`，`_end` 把实际会话 id 写回 `session_state`）；`ui/knowledge.py` / `graph.py` / `tools.py` / `system.py` 各页；`ui/common.py` 二步确认按钮等复用件；`theme.py` 主题。
 - `tools_state.py` `ToolsState`：工具页轻量持久状态（最近数据库 ≤8 / 命令历史 ≤50，`.cerebro/web_tools_state.json` 经 `runtime_paths.app_state_dir`；损坏 JSON 回退空）。`WebService.tools_state` 惰性持有，测试直接赋值指向 `tmp_path` 的实例。
 - `ui/tools.py` 工具页：`_result_actions`（结果流转行）、`_empty_note / _vis_empty`（表格空态）、`_lock / _locked`（长任务锁按钮；单输出组件须返回标量 `gr.update`）。Gradio 惰性渲染子页：对未渲染子页内 Markdown 的 `visible` 更新会丢失，需在 `tab.select` 时重同步。

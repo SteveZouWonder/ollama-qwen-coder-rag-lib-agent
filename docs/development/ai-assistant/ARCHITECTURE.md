@@ -8,8 +8,10 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 ┌──────────────────────── 入口层 ────────────────────────┐
 │  CLI                    Web (Gradio)         Desktop   │
 │  query_interface.py     web/app.py           desktop_  │
-│  cli_handlers.py        web/ui/*             app.py    │
-│                         web/services.py      (托盘)    │
+│  cli/parser.py          web/ui/*             app.py    │
+│  cli/help_text.py       web/handlers/*       (托盘)    │
+│  cli/handlers/*         web/formatters.py              │
+│                         web/services/*                 │
 └──────────────┬──────────────────┬─────────────────────┘
                │                  │  WebService 是 Web 的唯一业务门面
 ┌──────────────▼──────────────────▼─────────────────────┐
@@ -48,6 +50,21 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 依赖只能自上向下。能力层模块之间不互相 import 编排层；`web/` 只依赖 `WebService`，不直接触碰引擎（测试通过 `WebService(rag_factory=..., react_factory=..., orchestrator_factory=...)` 注入）。
 
 `src/` 内模块以**顶层名**导入（`from config import ...`），`sys.path` 由入口脚本插入 `src/`；打包时 spec 同样 `sys.path.insert(0, "src")`。
+
+### 1.1 入口层内部结构（F10 P2-2 拆包）
+
+| 端 | 模块 | 职责 |
+|---|---|---|
+| Web | `web/services/` | `base.py`（`WebServiceBase`：工厂注入、`StreamEvent`、取消 / 确认、`_bridge` 心跳桥接、惰性单例）+ `chat / knowledge / tools / db / graph / system` 六个 mixin；`__init__.py` 组合为 `WebService` 并重导出全部旧公开名。**唯一接引擎处** |
+| Web | `web/formatters.py` | 全部 `format_*` / `*_rows` / 表头常量 / `ProgressTracker` / `build_graph_figure` 等纯函数 |
+| Web | `web/handlers/` | `build_{chat,knowledge,tools,graph,system}_handlers(service)` 各返回 handler dict（可单测，不依赖 gradio） |
+| Web | `web/app.py` | `build_handlers` 汇总五组 + `headers`，`build_app / launch / serve_blocking`；重导出 `formatters` 全部名字（`from web.app import format_*` 旧路径不变） |
+| Web | `web/ui/*` | Gradio 组件与事件接线（覆盖率排除） |
+| CLI | `cli/parser.py` | `ParsedCommand / parse_command / classify_mode`（纯函数） |
+| CLI | `cli/help_text.py` | `TUTORIAL_TEXT` + `print_help(console, has_rich)`（`/help` 文案内联） |
+| CLI | `cli/handlers/` | `base.py`（`CLIContext`、`_confirm`、`LiveAnswer`）+ `agent / system / knowledge / files / session / tools / git / db`；`__init__.py` 汇总 `COMMAND_HANDLERS` |
+| CLI | `query_interface.py` | 主循环、渲染、引擎耦合命令（`_ENGINE_HANDLERS`）与模块级状态；重导出 parser / help_text 公开名 |
+| CLI | `cli_handlers.py` | 兼容重导出 shim（`from cli_handlers import X` 仍可用；打桩请以 `cli.handlers.<子模块>` 为目标） |
 
 ## 2. 四种工作模式
 
@@ -198,8 +215,8 @@ prompts/                  模型输入资产（只读，版本化）
 | 新增 Agent 工具 | `agent_tools.py` `registry.register(...)`；同步 `prompts/system/PROJECT_RULES.md` 参数名段、`TOOL_USAGE.md`、子角色白名单（如需）与测试 |
 | 新增子 Agent 角色 | `agents/agent_types.py` 加枚举；新建 `agents/xxx_agent.py` 继承 `ReActDelegateAgent`；`agent_config.py` 默认配置；`agent_registry` 注册；`prompts/skills` 的 `roles` 可选值随之扩展 |
 | 新增 / 调整 Agent 行为规范 | `prompts/skills/<name>/SKILL.md`（全局）或 `PROJECT_RULES.md`（产品事实） |
-| 新增 Web 页面 | `web/ui/<page>.py` 构建组件 + `web/app.py build_handlers` 加 handler + `WebService` 加业务方法 |
-| 新增 CLI 命令 | `query_interface.parse_command` 加分支 + `cli_handlers` 处理函数 + `COMMAND_HANDLERS` 表 + README 命令表 |
+| 新增 Web 页面 | `web/ui/<page>.py` 构建组件 + `web/handlers/<page>.py build_<page>_handlers` 加 handler（`web/app.py build_handlers` 汇总）+ `web/formatters.py` 加 `format_*` + `web/services/<page>.py` mixin 加业务方法 |
+| 新增 CLI 命令 | `cli/parser.py parse_command` 加分支（`classify_mode` 归类）+ `cli/handlers/<组>.py` 处理函数 + `cli/handlers/__init__.py COMMAND_HANDLERS` 表 + `cli/help_text.py` 帮助 / 教程文案 + README 命令表 |
 | 新增搜索源 | `web_search/search_engine.py` 实现 `SearchEngine` 子类并加入聚合器 |
 | 新增 OCR 引擎 | `ocr_processor/base.py` 抽象类实现 + `config.OCR_ENGINE` 选项 |
 | 新增 LLM 后端协议 | `llm_client.py` 实现 `LLMClient`（`chat / list_models / health`）+ `make_client` 分支 + `config.LLM_PROVIDERS`；RAG 综合另在 `rag_engine._setup_llm` 选对应 LlamaIndex LLM 类 |

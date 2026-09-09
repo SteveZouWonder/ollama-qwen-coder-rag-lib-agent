@@ -11,6 +11,7 @@
 - 类型提示：公共函数写完整签名；返回 dict 的函数在 docstring 中列出字段。
 - Docstring 用中文，首段一句话说职责；说明"为什么这样做"（历史 bug、约束）比复述代码更有价值。
 - 每个模块顶部 docstring 说明职责与在分层中的位置（新模块必须有，`MODULE_GUIDES.md` 以它为准）。
+- 入口层文件规模（F10 P2-2 起）：`web/app.py` ≤300 行；`web/services/*.py`、`web/handlers/*.py` 单文件 ≤800 行；`cli/handlers/*.py` ≤600 行。新增 Web 功能按页面落到对应 `services/<页>.py` mixin + `handlers/<页>.py` + `formatters.py`；新增 CLI 命令落到 `cli/handlers/<组>.py` 并登记 `COMMAND_HANDLERS`，不要再往 `query_interface.py` / 旧 `cli_handlers.py` shim 里加代码。拆包保留的兼容重导出（`web.app` → `formatters`、`cli_handlers` → `cli.handlers`）只为旧导入路径服务，新代码直接从实现模块导入；`monkeypatch` / `patch` 的目标必须是实现所在模块。
 
 ## 2. 配置与环境变量
 
@@ -45,7 +46,7 @@
 |---|---|---|
 | `_context_singleton` | `conversation_context` | `reset_conversation_context()` / monkeypatch |
 | `_session_manager_singleton` | `session_manager` | 构造 `SessionManager(tmp)` 注入 |
-| `_web_service_singleton` | `web/services` | `reset_web_service()` / 直接 `WebService(...factory)` |
+| `_web_service_singleton` | `web/services/__init__` | `reset_web_service()` / 直接 `WebService(...factory)` |
 | `_rag_engine` | `agent_tools` | `set_rag_engine(None)`（conftest `reset_module_state`） |
 | `_global_metadata_manager` | `file_metadata` | conftest `isolate_file_metadata` |
 | `_graph_builder` / `_DEFAULT_PERSIST_PATH_OVERRIDE` | `knowledge_graph.graph_builder` | conftest `isolate_knowledge_graph` |

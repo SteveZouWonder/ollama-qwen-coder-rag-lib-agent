@@ -124,8 +124,10 @@ for py in SRC_DIR.glob("*.py"):
     if py.stem == "__init__":
         continue
     hiddenimports.append(py.stem)
-# src 下的子包（agents、code_analyzer 等）也以顶层名收集
-# （SRC_DIR 已加入 sys.path，collect_submodules 可按顶层名解析）
+# src 下的子包（agents、code_analyzer、web、cli 等）也以顶层名递归收集
+# （SRC_DIR 已加入 sys.path，collect_submodules 可按顶层名解析；F10 P2-2 拆出的
+# web.services / web.handlers / web.formatters 与 cli.handlers / cli.parser / cli.help_text
+# 均由此循环覆盖，无需逐个列出）
 for sub in SRC_DIR.iterdir():
     if sub.is_dir() and (sub / "__init__.py").exists():
         try:

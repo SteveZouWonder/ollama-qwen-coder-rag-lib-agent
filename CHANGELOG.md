@@ -55,6 +55,14 @@
 
 ### 改进
 
+- **入口层拆包（F10 P2-2，内部结构，行为零变化）**：Web 与 CLI 的五个大文件（2000–2800 行）按功能面拆成包：
+  `web/services/`（`base` + `chat / knowledge / tools / db / graph / system` 六个 mixin 组合为 `WebService`）、
+  `web/formatters.py`（全部 `format_*` 纯函数）+ `web/handlers/`（五个页面的 `build_*_handlers`）+ `web/app.py`
+  只做汇总与装配（2821 → 244 行）；`cli/handlers/`（`base / agent / system / knowledge / files / session / tools / git / db`，
+  `__init__` 汇总 `COMMAND_HANDLERS`）+ `cli/parser.py`（`parse_command / classify_mode`）+ `cli/help_text.py`
+  （`/help` 与教程文案），`query_interface.py` 2274 → 1799 行。`from web.services import WebService`、
+  `from web.app import format_*`、`from cli_handlers import COMMAND_HANDLERS`、`from query_interface import parse_command`
+  等旧导入路径全部保留（兼容重导出），功能与文案一字未改；`packaging/cerebro.spec` 按子包递归收集，打包无需改动。
 - **BM25 增量持久化（F10 P2-1）**：混合检索的 BM25 语料改为按片段 id 持久化到 `index_storage/bm25/store.json.gz`
   （新模块 `bm25_store`），入库 / 删除只做增量 `upsert` / `remove`，索引在首次查询或有变更时用已存的词频直接装配——
   不再每次入库后全量拉取向量库重新分词。1 万块库入库后首次查询 1.45s → 15ms，冷启动 1.45s → 0.7s；旧库首次查询

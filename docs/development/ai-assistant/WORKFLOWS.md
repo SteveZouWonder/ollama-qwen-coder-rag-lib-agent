@@ -56,7 +56,7 @@
 
 ## 6. 改 Web UI
 
-- 业务进 `WebService`，渲染进 `app.py format_*`，接线进 `ui/*.py`。`build_handlers` 与 `format_*` 有单测；`ui/*` 没有，改完必须 `python src/web/app.py` 手动验证事件链（尤其 outputs 元组长度）。
+- 业务进 `web/services/<页>.py` 对应 mixin，渲染进 `web/formatters.py` 的 `format_*`，处理器进 `web/handlers/<页>.py` 的 `build_<页>_handlers`（`app.build_handlers` 自动汇总），接线进 `ui/*.py`。handlers 与 `format_*` 有单测；`ui/*` 没有，改完必须 `python src/web/app.py` 手动验证事件链（尤其 outputs 元组长度）。
 - 每标签页状态用 `gr.State`；不要用模块级变量存"当前会话"。
 - 长任务走 `_bridge` 流式 + 取消；进度事件 phase 与 CLI 对齐。
 

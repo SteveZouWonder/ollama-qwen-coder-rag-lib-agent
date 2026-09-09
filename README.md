@@ -369,7 +369,10 @@ ollama-qwen-coder-rag-lib/
 ├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
 ├── conversation_context.py # 连续对话上下文（会话记忆、token 预算、滚动压缩、追问改写）
-├── query_interface.py     # 统一 CLI 入口
+├── query_interface.py     # 统一 CLI 入口（主循环 / 渲染 / 引擎耦合命令）
+├── cli/                   # CLI 入口层子包：parser.py 命令路由 · help_text.py 帮助与教程 · handlers/ 命令处理器（COMMAND_HANDLERS）
+├── cli_handlers.py        # 兼容重导出（实现已迁至 cli/handlers/）
+├── web/                   # Web 入口层：services/ 业务门面（唯一接引擎）· formatters.py 纯格式化 · handlers/ 页面处理器 · app.py 汇总与装配 · ui/ Gradio 接线
 ├── knowledge_to_skills.py # 知识库到Skill智能转化引擎
 ├── knowledge_snapshot.py  # 知识库快照系统
 ├── content_security.py    # 内容安全扫描器（防止提示词攻击）
