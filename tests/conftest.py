@@ -165,6 +165,27 @@ def isolate_app_state_dir(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="function")
+def isolate_bm25_store(tmp_path_factory, monkeypatch):
+    """全局fixture：把 RAGEngine 默认的索引根目录（``rag_engine.INDEX_DIR``）重定向到临时目录。
+
+    F10 P2-1 起入库 / 删除会把 BM25 store 写到 ``<index_dir>/bm25/store.json.gz``；大量测试用
+    Mock Chroma 构造 ``RAGEngine()``（不传 ``persist_dir``），不隔离会把伪造片段写进真实
+    ``index_storage/bm25/``。Chroma 路径（``VECTOR_DB_PATH``）由各测试自行 Mock，这里不动。
+    """
+    try:
+        import rag_engine  # noqa: F401 - 确保模块已加载，测试中途首次 import 也能拿到重定向后的值
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    tmp_dir = tmp_path_factory.mktemp("index_dir")
+    for name in ("rag_engine", "src.rag_engine"):
+        mod = sys.modules.get(name)
+        if mod is not None and hasattr(mod, "INDEX_DIR"):
+            monkeypatch.setattr(mod, "INDEX_DIR", tmp_dir)
+    yield
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_file_metadata(tmp_path_factory):
     """全局fixture：将文件元数据全局单例隔离到临时目录。
 

@@ -86,6 +86,11 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 # 会把 max_tokens 预算全部花在 reasoning 上而 content 为空）。默认 none；Ollama /v1 与 OpenAI 均识别。
 # 后端返回 400 不认识该字段时 llm_client 会自动去掉重试并记住。设为空串则不发送任何字段。
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "none").strip().lower()
+# OLLAMA_MAX_CONCURRENCY：进程内同时发往对话后端的 LLM 请求上限（F10 P2-1-d）。多 Agent 并行时
+# 各子 Agent 独立请求同一 Ollama，单 GPU 上只会排队并让每个请求都变慢直至超时；用信号量把并发
+# 压到 2，其余请求在本地排队（进度显示"排队中"，排队时间不计入子任务超时）。LLM_PROVIDER=openai
+# 接 vLLM 等支持批处理的后端时建议调大；0 或负数表示不限制。
+OLLAMA_MAX_CONCURRENCY = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "2") or 0)
 
 
 def resolve_num_ctx(model: str) -> int:
@@ -187,9 +192,13 @@ KB_RELEVANCE_THRESHOLD = float(os.getenv("KB_RELEVANCE_THRESHOLD", "0.45"))
 RERANKER = os.getenv("RERANKER", "llm").strip().lower() or "llm"
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 # RAG_HYBRID：dense（向量）+ BM25 关键词 hybrid 召回（RRF 融合），默认开启；
-# 文档块数 >20000 时自动关闭；rank_bm25 未安装时静默回退 dense。
+# rank_bm25 未安装时回退 dense。
+# RAG_HYBRID_MAX_CHUNKS：文档块数超过该值时关闭 hybrid（仅向量检索），并在 /stats、Web 知识库页与
+# query 结果 meta.hybrid_disabled_reason 中给出原因（F10 P2-1-b）。BM25 语料（词频 + 来源元数据 +
+# 索引）常驻内存，实测每万块约 100–150MB（取决于词汇量），默认 50000（上限时约 0.5–0.75GB）；
+# 8GB 机器建议 20000，内存宽裕可继续调大。
 RAG_HYBRID = os.getenv("RAG_HYBRID", "true").strip().lower() in ("1", "true", "yes", "on")
-RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "20000"))
+RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "50000"))
 
 # ==================== 抗过度顺从（F9 P2）====================
 # RAG_SELF_CHECK：知识库命中并综合完成后，再用同一模型逐句核对"回答中的事实句是否被资料支持"
@@ -384,6 +393,9 @@ class Config:
     LLM_BASE_URL: str = LLM_BASE_URL
     LLM_API_KEY: str = LLM_API_KEY
     LLM_REASONING_EFFORT: str = LLM_REASONING_EFFORT
+    OLLAMA_MAX_CONCURRENCY: int = OLLAMA_MAX_CONCURRENCY
+    RAG_HYBRID: bool = RAG_HYBRID
+    RAG_HYBRID_MAX_CHUNKS: int = RAG_HYBRID_MAX_CHUNKS
     HISTORY_FILE: str = HISTORY_FILE
     MAX_HISTORY: int = MAX_HISTORY
     MAX_ITERATIONS: int = MAX_ITERATIONS

@@ -316,7 +316,17 @@ def format_stats(stats: Dict[str, Any]) -> str:
         f"- 分块重叠: {stats.get('chunk_overlap', '?')}\n"
         f"- 代码分块: {stats.get('code_chunking', '?')}\n"
         f"- 检索数量 TOP_K: {stats.get('top_k', '?')}"
+        + (f"\n- 混合检索: {stats['hybrid']}" if stats.get("hybrid") else "")
+        + (f"\n\n> ⚠️ {_hybrid_disabled_text(stats)}" if stats.get("hybrid_disabled_reason") else "")
     )
+
+
+def _hybrid_disabled_text(stats: Dict[str, Any]) -> str:
+    """混合检索被关闭时的提示（F10 P2-1-b）：引擎给出原因与调法，这里只在原因未自述时补前缀。"""
+    reason = str(stats.get("hybrid_disabled_reason") or "")
+    if "混合检索已关闭" in reason:
+        return reason
+    return f"混合检索已关闭：{reason}（可设置 RAG_HYBRID=false 明确关闭，或安装 rank_bm25）"
 
 
 def format_model_status(info: Dict[str, Any]) -> str:
@@ -652,6 +662,7 @@ def format_env_info(info: Dict[str, Any]) -> str:
     rows += [
         ("Ollama 地址" + ("（嵌入模型）" if provider != "ollama" else ""), f"`{info.get('ollama_url', '')}`"),
         ("LLM 模型", f"`{info.get('llm_model', '')}`"),
+        ("LLM 并发上限（OLLAMA_MAX_CONCURRENCY）", _fmt_concurrency(info.get("max_concurrency"))),
         ("Embedding 模型", f"`{info.get('embed_model', '')}`"),
         ("num_ctx", info.get("num_ctx", "")),
         ("思考模式", "开" if info.get("think") else "关"),
@@ -676,6 +687,19 @@ def format_env_info(info: Dict[str, Any]) -> str:
     return format_kv_table(rows)
 
 
+def _fmt_concurrency(value: Any) -> str:
+    """并发上限展示（F10 P2-1-d）：None → 未知；0 → 不限制；其余 → ``N（多 Agent 并行时其余请求排队）``。"""
+    if value is None or value == "":
+        return "—"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if n <= 0:
+        return "不限制"
+    return f"{n}（多 Agent 并行时其余请求本地排队，排队时间不计入子任务超时）"
+
+
 def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) -> str:
     """把知识库统计渲染为指标卡片（HTML，供 ``gr.HTML`` 展示）。"""
     if "error" in stats:
@@ -693,7 +717,11 @@ def format_stats_cards(stats: Dict[str, Any], file_count: Optional[int] = None) 
     code_label = f" / 代码 {stats.get('code_chunk_max_chars', '')}".rstrip() if code.startswith("enabled") else ""
     cards.append(card("分块 / 重叠", f"{stats.get('chunk_size', '?')} / {stats.get('chunk_overlap', '?')}{code_label}", small=True))
     cards.append(card("TOP_K", stats.get("top_k", "?")))
-    return f'<div class="cb-cards">{"".join(cards)}</div>'
+    html = f'<div class="cb-cards">{"".join(cards)}</div>'
+    # F10 P2-1-b：块数超限等原因导致混合检索关闭时，卡片下方给出可见提示（此前静默降级）
+    if stats.get("hybrid_disabled_reason"):
+        html += f'<div class="cb-empty cb-empty-sm">⚠️ {_hybrid_disabled_text(stats)}</div>'
+    return html
 
 
 def _html_escape(text: Any) -> str:

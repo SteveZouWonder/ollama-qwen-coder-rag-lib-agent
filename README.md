@@ -526,7 +526,9 @@ python query_interface.py --data ./data
 
 **检索与推理链路（F8 P2）**：
 - **hybrid 召回**：向量检索 + BM25 关键词检索用 RRF 融合，型号 / 术语等精确词也能召回
-  （`RAG_HYBRID`，默认开；文档块数 >20000 自动关闭；`rank_bm25` 未安装自动回退纯向量）。
+  （`RAG_HYBRID`，默认开；`rank_bm25` 未安装自动回退纯向量）。BM25 语料持久化在 `index_storage/bm25/`
+  并随入库 / 删除增量维护，入库后首次查询不再全量重建（1 万块库 1.4s → 15ms）；文档块数超过
+  `RAG_HYBRID_MAX_CHUNKS`（默认 50000）时关闭混合检索，并在 `/stats`、Web 知识库页与查询结果中给出原因与调法。
 - **复合问题分解**：一次模型调用同时判断"是否拆子问题 / 是否联网 / 搜索词"；"A 与 B 的价格差多少"
   会拆为 ≤3 个子问题分别检索、去重合并后再综合，简单问题不增加调用。
 - **逐片段 rerank**：对通过阈值的片段逐条判定"是否真能回答问题"并给出一句理由，剔除话题不搭的
@@ -1079,6 +1081,7 @@ LLM_PROVIDER = "ollama"             # 对话后端协议：ollama（默认）| o
 LLM_BASE_URL = OLLAMA_BASE_URL      # 对话后端地址（openai 模式下带不带 /v1 均可）
 LLM_API_KEY = ""                    # openai 模式的 Bearer 令牌，本地服务留空
 LLM_REASONING_EFFORT = "none"       # openai 模式 + 思考关闭时随请求发送的 reasoning_effort（空串则不发送）
+OLLAMA_MAX_CONCURRENCY = 2          # 进程内同时在途的 LLM 请求上限（多 Agent 并行时其余排队；0 不限制）
 EMBED_MODEL = "nomic-embed-text"     # 嵌入模型（始终由 Ollama 提供）
 
 # RAG 配置
@@ -1114,6 +1117,9 @@ export LLM_PROVIDER=openai
 export LLM_BASE_URL=http://localhost:1234
 export LLM_API_KEY=                          # 本地服务通常不需要
 export LLM_REASONING_EFFORT=none             # 思考关闭时发送的 reasoning_effort；后端不认识会自动去掉重试；设空不发送
+# LLM 请求并发上限（F10 P2-1）：多 Agent 并行时子 Agent 各自请求同一 Ollama，单 GPU 上只会互相拖慢直至超时；
+# 默认 2，其余请求在本地排队（进度显示"排队中"，排队时间不计入子任务超时）。接 vLLM 等支持批处理的后端可调大；0 不限制
+export OLLAMA_MAX_CONCURRENCY=2
 export CHUNK_SIZE=512
 export CODE_AGENT_AUTO_CONFIRM=true
 # 入口智能路由：自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（默认 true；CLI 可 /auto on|off）
@@ -1134,11 +1140,14 @@ export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads
 # 实际允许读取 = 上面的写允许目录 ∪ READ_ALLOWED_DIRS ∪ 已入库文件所在目录
 export READ_ALLOWED_DIRS=~/Documents
 # RAG 推理：逐片段 rerank 方式 llm（默认，一次模型调用）| cross-encoder（需 pip install sentence-transformers，
-# 未安装自动回退 llm）；cross-encoder 模型名；hybrid（向量 + BM25）召回开关与自动关闭的块数上限
+# 未安装自动回退 llm）；cross-encoder 模型名；hybrid（向量 + BM25）召回开关
 export RERANKER=llm
 export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 export RAG_HYBRID=true
-export RAG_HYBRID_MAX_CHUNKS=20000
+# 混合检索的块数上限（默认 50000）：超过即只用向量检索，/stats 与 Web 知识库页会显示原因。BM25 语料（词频 + 来源元数据 +
+# 索引）常驻内存，实测每万块约 100–150MB（取决于词汇量）：默认上限约需 0.5–0.75GB，8GB 机器建议 20000；
+# 持久化文件 index_storage/bm25/store.json.gz 每万块约 1–9MB，损坏或分词版本升级时自动全量重建
+export RAG_HYBRID_MAX_CHUNKS=50000
 # 抗过度顺从：知识库命中后用同一模型逐句自校验"是否被资料支持"（每问多一次调用，默认关；结果以 ⚠️ 警示列出，不改正文）
 export RAG_SELF_CHECK=false
 # 代码感知分块：开关（缺 tree-sitter-language-pack 时自动回退）/ 单片段字符上限 / 碎片合并阈值

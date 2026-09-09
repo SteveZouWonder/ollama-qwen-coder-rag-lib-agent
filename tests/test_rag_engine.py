@@ -1189,7 +1189,8 @@ class TestHybridQuery:
         engine.query_with_sources("售价")
         engine.query_with_sources("售价")
         assert coll.get.call_count == 1  # 第二次复用缓存
-        # 入库后失效 → 重建
+        # 入库后"已就位"缓存失效；MagicMock 文档切分失败 → 回退路径拿不到 chunk id → store 标记 stale
+        # → 下次查询全量重建一次（F10 P2-1：能拿到节点的正常路径为增量 upsert，见 test_bm25_store_integration）
         engine.index = MagicMock()
         engine.security_scanner = None
         engine.metadata_manager = None
@@ -1222,17 +1223,22 @@ class TestHybridQuery:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_too_many_chunks_disables_hybrid_with_hint(self, mock_chroma, mock_embed, mock_llm):
         pytest.importorskip("rank_bm25")
-        engine, coll = _mk_engine(mock_chroma, count=20001)
+        import rag_engine as rag_module
+        limit = rag_module.RAG_HYBRID_MAX_CHUNKS  # F10 P2-1-b：默认上限由 20000 提到 50000，这里跟随常量
+        engine, coll = _mk_engine(mock_chroma, count=limit + 1)
         engine.hybrid_enabled = True
         engine.retriever = MagicMock()
         engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         events = []
         result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
         assert result["hybrid"] is False
-        assert any(e["phase"] == "hybrid_off" and "20000" in e["message"] for e in events)
+        assert any(e["phase"] == "hybrid_off" and str(limit) in e["message"] for e in events)
         coll.get.assert_not_called()
-        assert "20001" in (engine._bm25_disabled_reason or "")
-        # 已记录关闭原因 → 后续不再重复检查
+        assert str(limit + 1) in (engine._bm25_disabled_reason or "")
+        # F10 P2-1-b：关闭原因随结果 meta 返回，并给出可调的环境变量
+        assert result["meta"]["hybrid_requested"] is True
+        assert "RAG_HYBRID_MAX_CHUNKS" in result["meta"]["hybrid_disabled_reason"]
+        # 已记录关闭原因 → 后续不再重复检查（bm25_store 惰性属性在超限前不会被创建，count 只查一次）
         engine.query_with_sources("q")
         assert coll.count.call_count == 1
 

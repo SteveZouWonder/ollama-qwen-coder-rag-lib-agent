@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 已完成 2026-09-09；其余三项待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 已完成 2026-09-09；P2-2 / P3-1 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
 · 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 八个独立任务逐项落地
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
@@ -12,7 +12,7 @@
 | P1-1 | 真流式输出（Ollama NDJSON → Web token 事件 / CLI rich Live）· `LLM_STREAM` 开关 · 可中断 | 高 | 中 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-3 | RAG 评测集（38 例 + 18 文档小语料）· `src/rag_eval.py` 指标 · `scripts/eval_rag.py` 报表与 Δ · 两份 hybrid 基线 | 中 | 中 | — | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P1-2 | `src/llm_client.py` 后端抽象（Ollama / OpenAI 兼容）· 五处直连替换 · 模型列表 / 健康检查 | 中 | 中高 | P1-1 | **已完成** | 2026-09-09 | 见下方实现记录 |
-| P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | 待实现 | | |
+| P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | 待实现 | | |
 | P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | 待实现 | | |
 
@@ -96,6 +96,20 @@ P3-1 Tesseract + README
 | P1-2-c 模型列表 / 健康 | `src/bootstrap.py`、`src/model_switcher.py`、`src/query_interface.py`、`src/cli_handlers.py`、`src/web/services.py`、`src/web/app.py`、`src/desktop_app.py` | `bootstrap.ollama_running / list_installed_models` 经 `OllamaClient(OLLAMA_BASE_URL)`（去掉 urllib 回退，requests 是硬依赖）；`ensure_ollama_ready` 在 openai 模式走新增 `_ensure_openai_backend_ready`：只探测后端 `health`（不可达 → 通知并返回 False），不引导安装 Ollama / 不拉对话模型，Ollama 未运行或缺 `EMBED_MODEL` 时只提示「知识库嵌入仍需 Ollama」。`model_switcher.list_installed_models` 按 provider 分流，新增 `models_notice()`；`switch_model` 在 openai 且后端无列表时放行任意名字并注明「未校验」、不卸载旧模型；`current_model_info` 多返回 `provider / base_url`，openai 模式不查 `/api/ps`。**CLI**：启动横幅 `Ollama: url` → openai 模式 `后端: openai @ url`（新 `backend_banner_text()`）；`/model` 显示后端与「num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama」，不再显示 Ollama 专有的驻留状态；`/model list` 打印回退提示（黄色）并把标题改为「可用模型」；`/config` 新增 `LLM 后端 / 后端地址`，openai 模式再加 `API Key / Ollama 地址（嵌入模型）`。**Web**：`WebService.env_info()` 新增 `llm_provider / llm_base_url / llm_api_key_set / backend_healthy`（经 `describe_backend(check_health=True)`），`format_env_info` 顶部三行「LLM 后端 / 后端地址 / 后端状态 ✅❌」+ openai 模式的 API Key 行；`WebService.models_notice()` + `on_model_status` 把回退提示拼进模型状态行；`format_model_status` / `format_model_chip` 在 openai 模式显示 `后端 openai @ url`，不显示驻留 / ctx / 思考。**托盘**：`OllamaWarmer.check_service → health`，`StatusMonitor.check_status → list_models`（键 `ollama_service` 不变，另加 `provider`）。 |
 | P1-2-d 文档 | `README.md`、`CHANGELOG.md`、`docs/development/ai-assistant/ARCHITECTURE.md`、`MODULE_GUIDES.md` | README 新章节「接入 OpenAI 兼容后端」（LM Studio / vLLM / 内网网关 / 用 Ollama `/v1` 验证的示例、生效范围、五条注意事项表）+ 配置块与 export 示例四个新变量 + 项目结构树加 `llm_client.py`；CHANGELOG `[Unreleased]` 新增「OpenAI 兼容后端」；ARCHITECTURE 基础层加 `llm_client` 与「LLM 调用只经 llm_client」段、§2.6 流式路径更新、扩展点表加「新增 LLM 后端协议」；MODULE_GUIDES 新增 `llm_client.py` 条目并更新 `config` / `react_engine` / `llm_helper` / `rag_engine` / `commit_generator` / `desktop_app` / `bootstrap` / `model_switcher` 条目。 |
 
+### P2-1 BM25 持久化增量 + 锁补齐 + Ollama 并发限流（2026-09-09）
+
+| 子项 | 实现位置 | 做了什么 |
+|---|---|---|
+| P2-1-a BM25 store | **新增** `src/bm25_store.py` | `BM25Store(persist_dir)`：文件 `store.json.gz`（`{schema_version, tokenizer_version, docs: {chunk_id: {tf, len, metadata}}}`，gzip 级别 1——默认级别 9 在 1 万块上要 2.8s、级别 1 只需 0.19s，体积只大 ~50%）。**内存只存每片段的词频字典**（token 经 `sys.intern` 跨片段共享）与词数，不存 token 列表；`_df` 随 `upsert / remove` 增量维护。`build()` 不重新分词、不复制词频：用这些字典直接装配 `BM25Okapi`（`__new__` + 设 `doc_freqs / doc_len / avgdl / corpus_size`，`_calc_idf(df)`），分数与 `BM25Okapi(token_lists)` 逐位一致（有测试逐位比对），装配失败回退标准构造。`load()`：缺文件 / `schema_version` 或 `tokenizer_version` 不匹配 / 损坏（非 gzip、非 JSON、结构非法）都返回 False 并清空内存，损坏打 warning、`load_error` 记原因；`save()` 临时文件 + `os.replace` 原子写，失败清理临时文件并抛出；`save_if_dirty`、`remove_where(pred(doc_id, meta))`、`replace_all`、`clear`、`delete_file`、`mark_stale`（调用方拿不到 chunk id 时标记，下次全量）、`is_usable`、`search(query, top_k) -> [(doc_id, meta, score)]`、`describe`。全部公开方法持 `RLock`。`tokenize` 从 `RAGEngine._bm25_tokenize` 迁入（逐字符相同），`TOKENIZER_VERSION = 1`，模块说明与函数 docstring 都写明"改分词必须递增"。 |
+| P2-1-a 引擎接入 | `src/rag_engine.py` | `bm25_store` 属性惰性创建 `BM25Store(index_dir / "bm25")` 并 `load()`；文件缺失 / 损坏 / 版本不匹配且向量库非空 → `mark_stale`（首查全量重建一次 = 旧库迁移），向量库为空则视为全新库直接增量。`build_index` / `add_documents` 末尾由 `invalidate_bm25()` 改为 `_bm25_after_ingest(nodes)`：按节点 `node_id`（= Chroma id）`upsert`（正文取 `get_content(metadata_mode=NONE)`，与 Chroma `documents` 一致；元数据即 `_make_source` 的来源项）并 `save_if_dirty`；切分失败走 `index.insert(doc)` / `from_documents` 的回退路径拿不到节点 → `mark_stale`。`remove_file` → `_bm25_after_remove(path)`（`remove_where(meta.path == file_path)` + 落盘）；`clear_index` → `_bm25_after_clear()`（清空 + 删文件）。`_ensure_bm25`：store 可用且 `len(store) == collection.count()` → 直接 `build()`；否则 `_bm25_full_rebuild`（**唯一**仍会 `collection.get(include=["documents","metadatas"])` 的地方；用 Chroma 返回的 `ids`，缺 id 时 `#i`）并落盘。片段数不一致的兜底覆盖"外部工具直接写 Chroma"与"上次进程落盘失败"两种情形。`self._bm25` 保留为"已就位"标记（`{"store": …}`，现有测试断言 `_bm25 is None` 的语义不变），`invalidate_bm25()` 只清标记。所有 store 操作失败都只 warning + `mark_stale`，不影响入库 / 删除本身。 |
+| P2-1-b 上限可观测 | `src/rag_engine.py`、`src/config.py`、`src/query_interface.py`、`src/web/app.py` | `RAG_HYBRID_MAX_CHUNKS` 默认 20000 → **50000**，`Config` 新增 `RAG_HYBRID` / `RAG_HYBRID_MAX_CHUNKS` 映射。引擎新增 `hybrid_limit_reason(count)`（统一文案："文档块数 N 超过上限 M，混合检索已关闭（仅向量检索）；可调大 RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）"）与 `hybrid_status(count)`；`query_with_sources` 结果新增 `meta: {hybrid_requested, hybrid_disabled_reason}`（请求了 hybrid 却未生效时为原因，否则 None；`hybrid_off` 进度事件也带 `reason`）；`get_stats()` 新增 `hybrid`（"开（向量 + BM25 关键词，上限 N 块）" / "已关闭：…" / "关（RAG_HYBRID=false，仅向量检索）"）、`hybrid_max_chunks`、`hybrid_disabled_reason` 三键（"向量库为空"不算故障、不上报）。**CLI** `print_knowledge_stats`（`/stats`）：表格跳过值为 None 的键、`hybrid_disabled_reason` 不进表格而在表格下方以黄色 `⚠️` 单独一行提示。**Web** `format_stats_cards`（知识库页卡片）在卡片下方追加 `cb-empty` 提示条（卡片数不变，现有 4 / 5 张卡片的断言不动）；`format_stats`（Markdown）加"混合检索"一行与 `> ⚠️` 引用块；非超限原因（如 `rank_bm25 未安装`）由 `_hybrid_disabled_text` 补"混合检索已关闭："前缀。 |
+| P2-1-c 锁 | `src/agent_registry.py`、`src/collaboration/task_scheduler.py` | `self.lock = None` → `threading.RLock()`。注册中心：`register / unregister / get_agent / find_agents_by_capability / find_agents_by_type / get_all_agents / get_agent_count / get_all_capabilities / get_statistics / clear / __contains__ / __len__` 全部在锁内，`find_agents_by_state / find_available_agents / shutdown_all / __iter__` 在锁内取快照后再调用 Agent 方法（不在锁内调用外部对象，避免与 Agent 自身的锁形成环）。调度器：四种 `schedule_*` 登记 `scheduled_tasks`、`mark_task_running / completed / failed`（改为 `pop(…, None)`）、`get_task_status / get_statistics / reset` 全部在锁内；日志调用移到锁外。 |
+| P2-1-d 并发限流 | `src/llm_client.py`、`src/config.py` | 新增 `OLLAMA_MAX_CONCURRENCY`（默认 2，`≤0` 不限制）与 `Config` 映射。`llm_client` 新增 **`FairSemaphore`**（Condition + 票据队列的 FIFO 信号量，见差异 #2）、`llm_slot()` 上下文管理器（进程级单例，limit 变化自动重建；获取不到时先通知当前线程的 `QueueWaitTracker` 再阻塞）、`QueueWaitTracker`（`on_queue_start / on_queue_end / total()` 含进行中的等待 / `waiting` / `queue_count`，`on_change(waiting, waited_total)` 回调异常吞掉）、`set_queue_listener(tracker)`（线程局部）、`max_concurrency()` / `set_max_concurrency(n|None)`、`slot_stats() -> {limit, in_flight, queued}`；`describe_backend()` 多返回 `max_concurrency`。`OllamaClient.chat` 与 `OpenAICompatClient._send` 的 `requests.post` + 流式读取全程包在 `with llm_slot():` 内（模型在生成期间一直被占用，槽位必须覆盖到流结束）。 |
+| P2-1-d 子任务超时 | `src/agents/base_agent.py` | `execute_task_with_timeout`：工作线程启动时 `set_queue_listener(tracker)`（`finally` 清除）；主线程改为 `_join_excluding_queue`：每 0.25s 重算 `剩余 = timeout + tracker.total() − 已用`，排队期间 `total()` 实时增长 → 预算不减；超时 / 成功结果的 `metadata["queued_seconds"]` 记录排队秒数（未排队不写）。进度：首次排队发 `{"stage":"agent_step","phase":"queued","message":"[agent] ⏳ 排队等待模型空闲（并发上限 N）…"}`（非 transient → CLI 追加一行、Web 进入步骤列表），同一任务后续排队与"模型已就位，继续执行（已排队 x.xs）"都是 transient（只刷新当前状态，不刷屏）。`llm_client` 不可导入时 `tracker=None`，退化为原来的单次 `join`。`master_agent` 未改：其 `agent_progress` 转发已覆盖新事件。 |
+| P2-1 两端展示 | `src/cli_handlers.py`、`src/web/services.py`、`src/web/app.py` | CLI `/config` 新增「LLM 并发上限」行（`2（多 Agent 并行时其余请求排队，可调 OLLAMA_MAX_CONCURRENCY）` / `不限制`）；Web `env_info()` 新增 `max_concurrency`，`format_env_info` 新增「LLM 并发上限（OLLAMA_MAX_CONCURRENCY）」行（新增 `_fmt_concurrency`）。 |
+| P2-1 测试隔离 | `tests/conftest.py` | 新增 autouse `isolate_bm25_store`：把 `rag_engine.INDEX_DIR`（与 `src.rag_engine`）重定向到临时目录——大量测试用 Mock Chroma 构造 `RAGEngine()`，入库路径现在会写 `<index_dir>/bm25/store.json.gz`，不隔离会写进真实 `index_storage/`。fixture 内先 `import rag_engine`，保证测试中途首次导入也拿到重定向值。 |
+| P2-1 文档 | `README.md`、`CHANGELOG.md`、`docs/development/ai-assistant/MODULE_GUIDES.md` | README hybrid 特性段 + 配置块 / export 示例新增 `OLLAMA_MAX_CONCURRENCY`、`RAG_HYBRID_MAX_CHUNKS` 改 50000 并注明内存实测与持久化文件；CHANGELOG `[Unreleased]` 改进三条（BM25 增量持久化 / 混合检索关闭可见 / 多 Agent 请求排队）+ 修复一条（并发锁）；MODULE_GUIDES 新增 `bm25_store.py` 条目，更新 `rag_engine` / `llm_client` / `base_agent` / `agent_registry` 条目。 |
+
 ### P0-2 依赖钉版本 + 归档发版 + CI 矩阵（2026-09-09）
 
 | 子项 | 实现位置 | 做了什么 |
@@ -107,6 +121,63 @@ P3-1 Tesseract + README
 | P0-2-c 归档 | `CHANGELOG.md`、`docs/features/ROADMAP.md` | `python scripts/bump_changelog.py bump --version 0.1.0 --date 2026-09-09` 把 `[Unreleased]` 的 **112 条**一级要点归档为 `## [v0.1.0] - 2026-09-09`（F8 / F9 为破坏性体验升级，按 minor 递增）；新 `[Unreleased]` 只写 P0-2 自身的「发布流程」4 条。ROADMAP「当前版本」由 v0.0.13 改为 v0.1.0。**未打 tag、未推送**，命令交由用户执行。 |
 
 ## 验证结果
+
+### P2-1（2026-09-09）
+
+| 项 | 结果 |
+|---|---|
+| 全量测试 | `./venv/bin/python -m pytest -q -n 4` → **3528 passed, 36 skipped**，覆盖率 **92.05%**（门禁 80%）；`bm25_store.py` 98%、`task_scheduler.py` 100%、`agent_registry.py` 97%、`base_agent.py` 94% |
+| 新增测试 | **+65 个**：`tests/test_bm25_store.py` 25（分词与 `RAGEngine._bm25_tokenize` 委托一致；upsert / 覆盖 / remove / `remove_where` / `remove_many` / `replace_all` / `clear` / dirty 与 `is_usable`；build 惰性与变更失效；`search` 返回 id / meta / 分数与标识符子词命中；**装配索引与 `BM25Okapi(token_lists)` 分数逐位一致（含覆盖 / 删除 / 落盘重读）**、装配失败回退、`sys.intern` 共享与 `_df` 增删；save → load 无需重建、文件格式、缺文件、tokenizer / schema 版本不匹配、6 种损坏文件 warning + 回退、save 失败清理临时文件、`delete_file` / `describe`）；`tests/test_rag_engine_bm25_store.py` 16（假 Chroma 集合 + `tmp_path` persist_dir：**增量 upsert 后检索 == 另一引擎全量重建**、追加第二批仍增量且 `get` 零调用、**remove_file 后 == 全量重建**、回退入库路径 stale → 仅重建一次、片段数不一致触发重建；**save → 新实例 load 无需重建**、tokenizer 版本改变触发重建并按当前版本重写、损坏文件 warning + 重建覆盖、**旧库无 `bm25/` 首查后生成 store 且用 Chroma id**、`clear_index` 删文件、store 写失败不影响入库；超限 `meta.hybrid_disabled_reason` / `hybrid_off` 事件 / `get_stats` / `hybrid_status`、可用与未请求时为 None、空库不上报但缺依赖上报、默认 50000 与 `Config` 映射；Web `format_stats` / `format_stats_cards` 提示与卡片数不变、CLI `print_knowledge_stats` 隐藏 None 与 `⚠️` 行）；`tests/multi_agent/test_concurrency_p2_1.py` 24（RLock 可重入；**16 线程并发注册 16 个 Agent 计数 / 三张索引完整且并发读不抛**、16 线程抢注同 id 只一个成功、16 线程注销 + clear、迭代快照；调度器 **16 线程 schedule → running → completed 统计 `{0,0,16,16}`**、贪心 / 失败 / sequential / competitive 路径；`FairSemaphore` FIFO 顺序 / 非阻塞 / 过度释放 / 等待中断出队；信号量读 config、`set_max_concurrency`、`slot_stats`、`describe_backend`；**limit=1 三请求峰值 1 且串行 ≥0.55s**、limit=2 峰值 2、0 不限制、异常释放槽位、OpenAI 与 Ollama client 共用信号量、`QueueWaitTracker` 实时 `total()` / 事件 / 回调异常吞掉；**信号量 1 时 3 个并行子 Agent（各超时 0.5s、每请求 0.3s）全部成功无 timeout、峰值 1、总耗时 ≥0.85s、排队事件首条非 transient、`queued_seconds` ≥2 个子任务 >0**；真正慢的请求仍超时且不记排队；单 Agent 被占槽 0.4s 后仍在 0.6s 超时内成功；同任务第二次排队为 transient；无 tracker 时退化为普通 join） |
+| 现有测试断言 | 改了 **1 条参数**（`test_too_many_chunks_disables_hybrid_with_hint` 的 20001 / "20000" 改为跟随常量，见差异 #10），其余未动 |
+| flake8 语法门禁 | `flake8 --select=E9,F63,F7,F82 src tests scripts` → rc=0 |
+| 测试隔离 | 全量 `-n 4` 前后 `ls index_storage/` 均为 `chroma_db llama_index ocr_cache`，无 `bm25/`（首轮实现时曾泄漏一份伪造 store，已加 `isolate_bm25_store` fixture 并删除） |
+| 手测：BM25 就位耗时（真实 Chroma 持久化集合 + 随机向量，1000 字 / 块，中位数 ×3） | 见下表 |
+| 评测回归 | `scripts/eval_rag.py --hybrid on`（qwen3.5:4b，38 例，880s）→ `docs/development/rag-eval/reports/hybrid-on-p21-20260909.{md,json}`；与 P1-3 基线 `hybrid-on-20260909` 对比：**38 例检索结果（命中文件序列 / Recall@k / MRR）逐例完全一致**，通过 32/38 → 32/38（通过集合相同）、Recall@10 0.98 → 0.98、MRR 0.68 → 0.68、引用命中 0.62 → 0.65、关键词命中 0.78 → 0.80、负样本拒答 1.00 → 1.00、元查询 0.75 → 0.75、平均延迟 24.9s → 23.3s（引用 / 关键词 / 延迟的差异来自模型生成的随机性，检索层零变化）。**注**：脚本按 `{tag}-{日期}` 命名，同日重跑会覆盖基线文件，本次已把基线从 git 恢复、新结果另存 `hybrid-on-p21-*`，记为待办 |
+| CLI `/stats` / `/config` | 终端输出见下 |
+| Web 知识库页 | `format_stats_cards` / `format_stats` 实际渲染见下（无头环境，与 P0-1 同样以 formatter 真实输出替代截图） |
+
+BM25 就位耗时与内存（脚本：临时目录建真实 Chroma 集合，`persist_dir` 隔离；"旧路径"= 此前 `_ensure_bm25` 的全量拉取 + 组装来源 + 分词 + `BM25Okapi`）：
+
+| 场景 | 1000 块 | 10000 块 |
+|---|---|---|
+| 旧路径：入库后首次查询（每次入库都要付） | 139 ms（get 8 + tokenize 77 + okapi 42） | **1448 ms**（get 78 + tokenize 802 + okapi 456） |
+| 新路径：入库后首次查询（仅 `build()`，不读 Chroma、不分词） | **2 ms** | **14 ms** |
+| 新路径：增量入库 10 块的 BM25 维护成本（upsert + 落盘 gz） | 35 ms | 345 ms |
+| 新路径：冷启动首次查询（load gz + build） | 68 ms | 697 ms |
+| 新路径：旧库迁移首查（全量 + 落盘，仅一次） | 185 ms | 2067 ms |
+| store 文件（gzip 级别 1） | 0.9 MB | 9.3 MB |
+| 常驻内存：store（词频 + 来源元数据）+ `BM25Okapi` | 8.9 + 0.7 MB | 86 + 6.5 MB（旧实现 `BM25Okapi` + entries ≈ 72 MB） |
+
+真实文档（本仓库 `docs/**/*.md` + `src/**/*.py` 切 1000 字，2499 块，词汇量 6.5 万）：常驻 36.6 MB → **每万块约 147 MB**；合成语料 93 MB / 万块。README / config / 关闭提示统一写"每万块约 100–150MB"。
+
+CLI `/stats`（60000 块 > 上限 50000；`rich` 表格 + 表格下方黄色提示行）：
+
+```
+⚠️ 文档块数 60000 超过上限 50000，混合检索已关闭（仅向量检索）；可调大 RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）
+                                                📊 知识库统计
+╭──────────────────────┬─────────────────────────────────────────────────────────────────────────────────────╮
+│ 项目                 │ 值                                                                                  │
+├──────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+│ total_documents      │ 60000                                                                               │
+│ …                    │ …                                                                                   │
+│ top_k                │ 10                                                                                  │
+│ self_check           │ False                                                                               │
+│ hybrid               │ 已关闭：文档块数 60000 超过上限 50000，混合检索已关闭（仅向量检索）；可调大         │
+│                      │ RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）                      │
+│ hybrid_max_chunks    │ 50000                                                                               │
+╰──────────────────────┴─────────────────────────────────────────────────────────────────────────────────────╯
+⚠️ 文档块数 60000 超过上限 50000，混合检索已关闭（仅向量检索）；可调大 RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）
+```
+
+（可用时 `hybrid` 行为 `开（向量 + BM25 关键词，上限 50000 块）`，无提示行；第一行 `⚠️` 是查询时 `_ensure_bm25` 的既有 `print`。）`query_with_sources()["meta"]` = `{'hybrid_requested': True, 'hybrid_disabled_reason': '文档块数 60000 超过上限 50000，…'}`。`/config` 新增行：`LLM 并发上限: 2（多 Agent 并行时其余请求排队，可调 OLLAMA_MAX_CONCURRENCY）`。
+
+Web 知识库页 `format_stats_cards(stats, file_count=12)`（60000 块）——五张卡片不变，下方追加提示条：
+
+```html
+<div class="cb-cards">…五张 cb-card…</div><div class="cb-empty cb-empty-sm">⚠️ 文档块数 60000 超过上限 50000，混合检索已关闭（仅向量检索）；可调大 RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）</div>
+```
+
+`format_stats`（Markdown 版）末尾：`- 混合检索: 已关闭：文档块数 60000 超过上限 50000，…` + `> ⚠️ 文档块数 60000 超过上限 50000，…`；系统页运行环境新增 `LLM 并发上限（OLLAMA_MAX_CONCURRENCY） | 2（多 Agent 并行时其余请求本地排队，排队时间不计入子任务超时）`。
 
 ### P1-3（2026-09-09）
 
@@ -348,6 +419,23 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 > 浏览器截图未提交：本次在无头环境实现，用 service → formatter 的真实渲染输出替代（系统页即 `gr.Markdown(format_env_info(...))`，无额外交互逻辑）。
 
 ## 与需求的差异
+
+### P2-1
+
+| # | 需求 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | store 文件 `docs: {doc_id: {tokens, metadata}}` | `docs: {doc_id: {tf, len, metadata}}`（词频字典 + 词数），内存同样只存词频，`build()` 直接装配 `BM25Okapi` 而不重建 | 首版按需求存 token 列表实测：1000 块常驻 **37MB**（中文单字 + 二字组的 token 列表全是独立 str 对象），换算 1 万块 370MB、默认上限 5 万块 1.8GB，不可接受。改为词频字典 + `sys.intern` 后 1 万块 93MB（合成语料）/ 147MB（真实文档，词汇量 6.5 万），其中 `rank_bm25` 自身索引就占 72MB——旧实现也有这部分。分数与标准构造逐位一致（`test_scores_identical_to_standard_bm25okapi`）。 |
+| 2 | 「`threading.Semaphore(OLLAMA_MAX_CONCURRENCY)`」 | 自实现 FIFO 的 `FairSemaphore` | `threading.Semaphore` 不公平：刚释放的线程立刻再请求常抢在早已排队的线程之前。多轮 ReAct 的子 Agent 每轮都发请求，会把另一个子 Agent 饿死——而 P2-1-d 又规定排队时间不计入超时，饿死就等于**永不超时**（写测试时用一个死循环请求的"霸占者"线程复现：被排队的任务卡住不返回）。FIFO 后霸占者只能排到队尾，被测任务最多等一轮。 |
+| 3 | 「`_ensure_bm25`：store 存在且版本匹配 → 直接 `build()`」 | 另加 `len(store) == collection.count()` 一致性检查，不一致则全量重建 | `count()` 本来就要查（上限判断），比较是零成本；它兜住了外部工具直接写 Chroma、上一进程 `save()` 失败、以及 `index.insert(doc)` 回退路径等所有"增量拿不到 id"的情形，避免 store 与向量库悄悄漂移。 |
+| 4 | 「默认上限提升到 50000，README 注明内存估算（约 每万块 30–50MB）」 | 默认 50000 照做；估算按实测写 **每万块约 100–150MB**（合成 1000 字块 93MB、仓库真实文档 147MB），README / config 注释 / 关闭提示三处一致，并建议 8GB 机器设 20000 | 30–50MB 是立项估算，与实测差 3 倍；写小了会让用户在 8GB 机器上把上限调到 5 万后 OOM。 |
+| 5 | 「CLI `/status`」 | 落在既有 **`/stats`**（知识库统计），`hybrid_disabled_reason` 在表格下方黄色 `⚠️` 单独一行；另 `/config` 加「LLM 并发上限」 | CLI 没有 `/status` 命令（与 P1-2 差异 #3 同一处笔误），`/stats` 正是"知识库统计"的入口，且 `print_knowledge_stats` 逐键打印 `get_stats()`，新键自动出现。 |
+| 6 | 「Web 知识库页统计区显示…」 | 卡片下方追加一条 `cb-empty` 提示，不加新卡片；同时 Markdown 版 `format_stats` 加"混合检索"一行 | 现有测试断言卡片数恰为 4 / 5；提示只在关闭时出现，正常状态不占位（"失败可见、成功安静"）。 |
+| 7 | 「`master_agent` 子任务超时计时在获得信号量后开始」 | 实现在 `BaseAgent.execute_task_with_timeout`（`master_agent` 一行未改） | 超时本来就只在 `execute_task_with_timeout` 的 `join` 里实现（§0.6 未记录这一事实），`master_agent` 只是调用它；且子任务一次 ReAct 会发多次请求、每次都可能排队，只有在任务粒度累计等待时间才正确。 |
+| 8 | 未提及 | gzip 压缩级别 1；`save()` 每次入库 / 删除后立即落盘 | 级别 9 在 1 万块上 2.8s（每次入库都要付），级别 1 只 0.19s、体积 7.4MB → 11.4MB；立即落盘换来"进程被杀也不丢增量"，代价已可接受。 |
+| 9 | 未提及 | `tests/conftest.py` 新增 autouse `isolate_bm25_store`（重定向 `rag_engine.INDEX_DIR`） | 实现后首轮全量测试把 Mock Chroma 的伪造片段写进了真实 `index_storage/bm25/store.json.gz`（已删除）；AGENTS.md 要求测试不得触碰 `index_storage/`。 |
+| 10 | 「现有测试全部不改断言」 | 改了 `tests/test_rag_engine.py` 的 1 条参数 + 1 条注释：`test_too_many_chunks_disables_hybrid_with_hint` 的 `count=20001` / `"20000" in message` 改为跟随 `RAG_HYBRID_MAX_CHUNKS` 常量（并追加 `meta` 断言）；`test_bm25_index_lazy_and_invalidated` 只改注释说明 MagicMock 文档走的是回退 → stale → 全量路径 | 前者写死的 20000 与"默认上限提到 50000"互斥；其余 3400+ 条断言未动。 |
+
+已知限制：LlamaIndex 的 `Settings.llm`（RAG 综合 / 规划 / 自校验）与 `OllamaEmbedding` 请求**不经 `llm_client`，不受并发限流**——多 Agent 中 RAG Agent 的检索问答与其它子 Agent 的 ReAct 请求仍可能同时打到 Ollama；`OLLAMA_MAX_CONCURRENCY` 目前约束的是 ReAct / `complete_text`（rerank、路由、分解、整合、摘要、提交信息）这条主路径。BM25 store 与 Chroma 之间没有事务：入库写 Chroma 成功、store 落盘失败时靠下次 `count()` 不一致兜底重建。
 
 ### P1-3
 

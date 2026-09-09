@@ -847,17 +847,22 @@ def print_knowledge_stats():
         console.print("⚠️  知识库未初始化", style="yellow")
         return
     stats = rag_engine.get_stats()
+    # F10 P2-1-b：hybrid_disabled_reason 单独作为黄色提示行输出，表格里不重复；值为 None 的键不显示
+    hybrid_reason = stats.get("hybrid_disabled_reason")
+    rows = [(k, v) for k, v in stats.items() if v is not None and k != "hybrid_disabled_reason"]
     if HAS_RICH:
         table = Table(title="📊 知识库统计", box=box.ROUNDED)
         table.add_column("项目", style="cyan")
         table.add_column("值", style="white")
-        for k, v in stats.items():
+        for k, v in rows:
             table.add_row(k, str(v))
         console.print(table)
     else:
         print("=== 知识库统计 ===")
-        for k, v in stats.items():
+        for k, v in rows:
             print(f"  {k}: {v}")
+    if hybrid_reason:
+        console.print(f"⚠️ {hybrid_reason}", style="yellow")
 
 # ==================== readline 历史 ====================
 

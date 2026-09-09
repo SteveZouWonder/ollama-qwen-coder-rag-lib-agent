@@ -18,12 +18,17 @@
 
 配置来自 ``config.LLM_PROVIDER`` / ``LLM_BASE_URL`` / ``LLM_API_KEY``；工厂按这三项缓存单例，
 ``config.set_llm_model`` 只改模型名，不影响 client（模型名在每次调用时读取 / 由调用方传入）。
+
+并发限流（F10 P2-1-d）：两种 client 的 ``chat`` 共用一个进程级 FIFO 信号量 ``FairSemaphore(OLLAMA_MAX_CONCURRENCY)``
+（:class:`llm_slot`），排队时间可经线程局部的 :class:`QueueWaitTracker` 观测（子 Agent 超时据此剔除排队时间）。
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
@@ -112,6 +117,216 @@ def _current_model() -> str:
         return str(getattr(_cfg, "LLM_MODEL", "") or "")
     except Exception:  # noqa: BLE001
         return ""
+
+
+# ---------------------------------------------------------------------------
+# 并发限流（F10 P2-1-d）
+# ---------------------------------------------------------------------------
+#
+# 进程级信号量：同一时刻最多 ``OLLAMA_MAX_CONCURRENCY``（默认 2）个 ``chat`` 请求在途（含流式
+# 读取全程）。多 Agent 并行时子 Agent 各自请求同一 Ollama，单 GPU 上只会排队并让每个请求都
+# 变慢直至超时；在本地排队后，每个请求拿到的都是"独占"的模型。两种 client 共用同一信号量。
+#
+# 排队时间可被观测：调用线程可用 :func:`set_queue_listener` 注册一个 :class:`QueueWaitTracker`
+# （线程局部），``llm_slot`` 在开始 / 结束等待时通知它；``BaseAgent.execute_task_with_timeout``
+# 据此把等待时间从子任务超时中剔除并上报"排队中"。
+
+class QueueWaitTracker:
+    """累计某个线程在信号量上等待的时间；``on_change(waiting: bool, waited_total: float)`` 可选回调。"""
+
+    def __init__(self, on_change: Optional[Callable[[bool, float], None]] = None):
+        self._lock = threading.Lock()
+        self.waited = 0.0          # 已结束的等待累计（秒）
+        self._since: Optional[float] = None
+        self.queue_count = 0       # 排过几次队
+        self.on_change = on_change
+
+    def on_queue_start(self) -> None:
+        with self._lock:
+            self._since = time.monotonic()
+            self.queue_count += 1
+            total = self.waited
+        self._notify(True, total)
+
+    def on_queue_end(self) -> None:
+        with self._lock:
+            if self._since is not None:
+                self.waited += time.monotonic() - self._since
+                self._since = None
+            total = self.waited
+        self._notify(False, total)
+
+    def total(self) -> float:
+        """含正在进行中的等待（供超时计算实时读取）。"""
+        with self._lock:
+            extra = (time.monotonic() - self._since) if self._since is not None else 0.0
+            return self.waited + extra
+
+    @property
+    def waiting(self) -> bool:
+        with self._lock:
+            return self._since is not None
+
+    def _notify(self, waiting: bool, total: float) -> None:
+        cb = self.on_change
+        if cb is None:
+            return
+        try:
+            cb(waiting, total)
+        except Exception:  # noqa: BLE001 - 观测回调失败不影响请求
+            pass
+
+
+class FairSemaphore:
+    """FIFO 信号量：等待者按到达顺序获得槽位。
+
+    ``threading.Semaphore`` 不保证公平——刚释放槽位的线程若立刻再请求，常常抢在早已排队的
+    线程之前（多轮 ReAct 的子 Agent 会把另一个子 Agent 饿死；而排队时间不计入超时，饿死就
+    意味着永不超时）。这里用 Condition + 票据队列保证先到先得。
+    """
+
+    def __init__(self, value: int):
+        if value < 1:
+            raise ValueError("FairSemaphore value must be >= 1")
+        self._cond = threading.Condition(threading.Lock())
+        self._value = int(value)
+        self._initial = int(value)
+        self._waiters: "collections.deque[object]" = collections.deque()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        with self._cond:
+            if self._value > 0 and not self._waiters:
+                self._value -= 1
+                return True
+            if not blocking:
+                return False
+            ticket = object()
+            self._waiters.append(ticket)
+            try:
+                while not (self._value > 0 and self._waiters[0] is ticket):
+                    self._cond.wait()
+                self._waiters.popleft()
+                self._value -= 1
+                self._cond.notify_all()
+                return True
+            except BaseException:
+                try:
+                    self._waiters.remove(ticket)
+                except ValueError:
+                    pass
+                self._cond.notify_all()
+                raise
+
+    def release(self) -> None:
+        with self._cond:
+            if self._value >= self._initial:
+                raise ValueError("FairSemaphore released too many times")
+            self._value += 1
+            self._cond.notify_all()
+
+    __enter__ = acquire
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+_slot_state = threading.local()
+_slot_guard = threading.Lock()
+_slot_sem: Optional[FairSemaphore] = None
+_slot_limit: Optional[int] = None
+_slot_override: Optional[int] = None
+_slot_in_flight = 0
+_slot_queued = 0
+
+
+def max_concurrency() -> int:
+    """当前并发上限：``set_max_concurrency`` 的覆盖值优先，否则 ``config.OLLAMA_MAX_CONCURRENCY``；≤0 表示不限制。"""
+    if _slot_override is not None:
+        return int(_slot_override)
+    try:
+        from config import Config
+        return int(getattr(Config, "OLLAMA_MAX_CONCURRENCY", 2) or 0)
+    except Exception:  # noqa: BLE001
+        return 2
+
+
+def set_max_concurrency(limit: Optional[int]) -> None:
+    """运行时覆盖并发上限（None 恢复读 config）。只在没有在途请求时生效最安全；测试用。"""
+    global _slot_override, _slot_sem, _slot_limit
+    with _slot_guard:
+        _slot_override = None if limit is None else int(limit)
+        _slot_sem = None
+        _slot_limit = None
+
+
+def _semaphore() -> Optional[FairSemaphore]:
+    global _slot_sem, _slot_limit
+    limit = max_concurrency()
+    with _slot_guard:
+        if limit <= 0:
+            _slot_sem, _slot_limit = None, limit
+            return None
+        if _slot_sem is None or _slot_limit != limit:
+            _slot_sem = FairSemaphore(limit)
+            _slot_limit = limit
+        return _slot_sem
+
+
+def set_queue_listener(tracker: Optional[QueueWaitTracker]) -> None:
+    """为**当前线程**注册排队观测器（None 取消）。"""
+    _slot_state.tracker = tracker
+
+
+def queue_listener() -> Optional[QueueWaitTracker]:
+    return getattr(_slot_state, "tracker", None)
+
+
+def slot_stats() -> Dict[str, int]:
+    """``{"limit", "in_flight", "queued"}``（limit 0 表示不限制）。"""
+    with _slot_guard:
+        return {"limit": max(0, max_concurrency()), "in_flight": _slot_in_flight, "queued": _slot_queued}
+
+
+class llm_slot:  # noqa: N801 - 作为上下文管理器使用
+    """占用一个 LLM 并发槽位；上限 ≤0 时为空操作。
+
+    获取不到时阻塞排队，并通知当前线程的 :class:`QueueWaitTracker`（若有）。
+    """
+
+    def __init__(self):
+        self._sem: Optional[FairSemaphore] = None
+
+    def __enter__(self):
+        global _slot_in_flight, _slot_queued
+        sem = _semaphore()
+        self._sem = sem
+        if sem is None:
+            return self
+        if not sem.acquire(blocking=False):
+            tracker = queue_listener()
+            with _slot_guard:
+                _slot_queued += 1
+            if tracker is not None:
+                tracker.on_queue_start()
+            try:
+                sem.acquire()
+            finally:
+                with _slot_guard:
+                    _slot_queued -= 1
+                if tracker is not None:
+                    tracker.on_queue_end()
+        with _slot_guard:
+            _slot_in_flight += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        global _slot_in_flight
+        if self._sem is None:
+            return False
+        with _slot_guard:
+            _slot_in_flight -= 1
+        self._sem.release()
+        return False
 
 
 def abort_response(resp) -> None:
@@ -309,16 +524,18 @@ class OllamaClient:
         }
         t = timeout if timeout is not None else (self._timeout if self._timeout is not None else _default_timeout())
         url = self._url("/api/chat")
-        if streaming:
-            resp = requests.post(url, json=payload, timeout=t, stream=True)
+        # F10 P2-1-d：并发槽位覆盖整个请求（含流式读取）——模型在生成期间一直被占用
+        with llm_slot():
+            if streaming:
+                resp = requests.post(url, json=payload, timeout=t, stream=True)
+                _check_status(resp, provider=self.provider)
+                if on_response is not None:
+                    on_response(resp)
+                return consume_ndjson_stream(resp, on_token, should_stop)
+            # 非流式：不带 stream= 关键字，与 P1-2 之前的直连请求形态完全一致
+            resp = requests.post(url, json=payload, timeout=t)
             _check_status(resp, provider=self.provider)
-            if on_response is not None:
-                on_response(resp)
-            return consume_ndjson_stream(resp, on_token, should_stop)
-        # 非流式：不带 stream= 关键字，与 P1-2 之前的直连请求形态完全一致
-        resp = requests.post(url, json=payload, timeout=t)
-        _check_status(resp, provider=self.provider)
-        data = _parse_json(resp)
+            data = _parse_json(resp)
         text = (data.get("message") or {}).get("content") or ""
         text = text if isinstance(text, str) else str(text)
         if on_token is not None:
@@ -446,15 +663,16 @@ class OpenAICompatClient:
               on_token: Optional[TokenCallback], should_stop: Optional[StopCheck],
               on_response: Optional[ResponseHook], timeout: float) -> str:
         url = self._url("/chat/completions")
-        if streaming:
-            resp = requests.post(url, json=payload, headers=self._headers(), timeout=timeout, stream=True)
+        with llm_slot():  # F10 P2-1-d：与 OllamaClient 共用同一进程级信号量
+            if streaming:
+                resp = requests.post(url, json=payload, headers=self._headers(), timeout=timeout, stream=True)
+                _check_status(resp, provider=self.provider)
+                if on_response is not None:
+                    on_response(resp)
+                return consume_sse_stream(resp, on_token, should_stop)
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=timeout)
             _check_status(resp, provider=self.provider)
-            if on_response is not None:
-                on_response(resp)
-            return consume_sse_stream(resp, on_token, should_stop)
-        resp = requests.post(url, json=payload, headers=self._headers(), timeout=timeout)
-        _check_status(resp, provider=self.provider)
-        data = _parse_json(resp)
+            data = _parse_json(resp)
         choices = data.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
             raise LLMError("响应缺少 choices，后端可能不兼容 OpenAI 协议")
@@ -615,6 +833,8 @@ def describe_backend(check_health: bool = False) -> Dict[str, Any]:
         "base_url": base_url,
         "api_key_set": bool(api_key),
         "embed_via_ollama": True,
+        # F10 P2-1-d：进程内 LLM 请求并发上限（0 = 不限制）
+        "max_concurrency": max(0, max_concurrency()),
     }
     try:
         import config as _cfg

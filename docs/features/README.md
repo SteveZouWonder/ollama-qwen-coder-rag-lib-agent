@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身（立项 2026-09-08） | 进行中：**P0-1 / P0-2 / P1-1 / P1-2 / P1-3 已完成**（2026-09-09），其余三项待实现，按 [PROMPT.md](f10-hardening/PROMPT.md) 分发 | [f10-hardening/](f10-hardening/) |
+| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身（立项 2026-09-08） | 进行中：**P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 已完成**（2026-09-09），P2-2 / P3-1 待实现，按 [PROMPT.md](f10-hardening/PROMPT.md) 分发 | [f10-hardening/](f10-hardening/) |
 
 ## 已实现
 
@@ -58,4 +58,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-09（F10 P1-3 RAG 评测集与基准脚本完成：`scripts/eval_rag.py` + 38 例样本 + 两份 hybrid 基线报告）
+**最后更新**: 2026-09-09（F10 P2-1 完成：`bm25_store` 持久化增量、混合检索关闭可见、注册中心 / 调度器 RLock、`OLLAMA_MAX_CONCURRENCY` 并发限流与子任务排队不计超时）

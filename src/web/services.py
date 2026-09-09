@@ -2202,6 +2202,8 @@ class WebService:
             info["llm_base_url"] = backend.get("base_url", info.get("llm_base_url", ""))
             info["llm_api_key_set"] = bool(backend.get("api_key_set", info.get("llm_api_key_set", False)))
             info["backend_healthy"] = backend.get("healthy")
+            # F10 P2-1-d：进程内 LLM 请求并发上限（OLLAMA_MAX_CONCURRENCY，0 = 不限制）
+            info["max_concurrency"] = backend.get("max_concurrency")
         except BaseException:  # noqa: BLE001
             info["backend_healthy"] = None
         return info

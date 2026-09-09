@@ -3,6 +3,7 @@
 """
 from typing import List, Dict, Any, Optional
 import logging
+import threading
 from agents.agent_types import AgentTask, AgentResult, AgentState
 from agents import BaseAgent
 
@@ -19,7 +20,8 @@ class TaskScheduler:
         """
         self.max_parallel_tasks = max_parallel_tasks
         self.task_queue = []
-        self.lock = None  # 简化实现，实际可以使用threading.Lock
+        # F10 P2-1-c：并行执行时 mark_task_running / completed 来自多个线程，保护三张任务表
+        self.lock = threading.RLock()
         self.logger = logging.getLogger("TaskScheduler")
         self.scheduled_tasks: Dict[str, AgentTask] = {}
         self.running_tasks: Dict[str, AgentTask] = {}
@@ -52,7 +54,8 @@ class TaskScheduler:
             if best_agent:
                 task_assignments[task.task_id] = best_agent
                 task.assigned_agent = best_agent.agent_id
-                self.scheduled_tasks[task.task_id] = task
+                with self.lock:
+                    self.scheduled_tasks[task.task_id] = task
                 self.logger.debug(
                     f"Task {task.task_id} assigned to agent {best_agent.agent_id}"
                 )
@@ -124,7 +127,8 @@ class TaskScheduler:
                 if agent.can_handle(task) and agent.get_state() == AgentState.IDLE:
                     task_assignments[task.task_id] = agent
                     task.assigned_agent = agent.agent_id
-                    self.scheduled_tasks[task.task_id] = task
+                    with self.lock:
+                        self.scheduled_tasks[task.task_id] = task
                     break
             
             if task.task_id not in task_assignments:
@@ -159,7 +163,8 @@ class TaskScheduler:
             if best_agent:
                 schedule_steps.append({task.task_id: best_agent})
                 task.assigned_agent = best_agent.agent_id
-                self.scheduled_tasks[task.task_id] = task
+                with self.lock:
+                    self.scheduled_tasks[task.task_id] = task
             else:
                 self.logger.warning(f"No agent available for task {task.task_id}")
         
@@ -185,7 +190,8 @@ class TaskScheduler:
                 assigned_agents.append(agent)
                 task.assigned_agent = agent.agent_id  # 会被覆盖，但记录最后一个
         
-        self.scheduled_tasks[task.task_id] = task
+        with self.lock:
+            self.scheduled_tasks[task.task_id] = task
         return assigned_agents
     
     def _build_dependency_graph(self, tasks: List[AgentTask]) -> Dict[str, List[str]]:
@@ -226,58 +232,57 @@ class TaskScheduler:
     
     def mark_task_running(self, task_id: str):
         """标记任务为运行中"""
-        if task_id in self.scheduled_tasks:
+        with self.lock:
+            if task_id not in self.scheduled_tasks:
+                return
             task = self.scheduled_tasks[task_id]
             self.running_tasks[task_id] = task
             task.status = task.status.__class__.RUNNING
             del self.scheduled_tasks[task_id]  # 从scheduled_tasks中移除
-            self.logger.debug(f"Task {task_id} marked as running")
+        self.logger.debug(f"Task {task_id} marked as running")
     
     def mark_task_completed(self, task_id: str, result: AgentResult):
         """标记任务为完成"""
-        if task_id in self.running_tasks:
-            del self.running_tasks[task_id]
-        
-        if task_id in self.scheduled_tasks:
-            del self.scheduled_tasks[task_id]
-        
-        self.completed_tasks[task_id] = result
+        with self.lock:
+            self.running_tasks.pop(task_id, None)
+            self.scheduled_tasks.pop(task_id, None)
+            self.completed_tasks[task_id] = result
         self.logger.info(f"Task {task_id} completed with success={result.success}")
     
     def mark_task_failed(self, task_id: str, error: str):
         """标记任务为失败"""
-        if task_id in self.running_tasks:
-            del self.running_tasks[task_id]
-        
-        if task_id in self.scheduled_tasks:
-            del self.scheduled_tasks[task_id]
-        
+        with self.lock:
+            self.running_tasks.pop(task_id, None)
+            self.scheduled_tasks.pop(task_id, None)
         self.logger.error(f"Task {task_id} failed: {error}")
     
     def get_task_status(self, task_id: str) -> str:
         """获取任务状态"""
-        if task_id in self.completed_tasks:
-            return "completed"
-        elif task_id in self.running_tasks:
-            return "running"
-        elif task_id in self.scheduled_tasks:
-            return "scheduled"
-        else:
-            return "unknown"
+        with self.lock:
+            if task_id in self.completed_tasks:
+                return "completed"
+            elif task_id in self.running_tasks:
+                return "running"
+            elif task_id in self.scheduled_tasks:
+                return "scheduled"
+            else:
+                return "unknown"
     
     def get_statistics(self) -> Dict[str, Any]:
         """获取调度统计信息"""
-        return {
-            "scheduled": len(self.scheduled_tasks),
-            "running": len(self.running_tasks),
-            "completed": len(self.completed_tasks),
-            "total": len(self.scheduled_tasks) + len(self.running_tasks) + len(self.completed_tasks)
-        }
+        with self.lock:
+            return {
+                "scheduled": len(self.scheduled_tasks),
+                "running": len(self.running_tasks),
+                "completed": len(self.completed_tasks),
+                "total": len(self.scheduled_tasks) + len(self.running_tasks) + len(self.completed_tasks)
+            }
     
     def reset(self):
         """重置调度器"""
-        self.task_queue.clear()
-        self.scheduled_tasks.clear()
-        self.running_tasks.clear()
-        self.completed_tasks.clear()
+        with self.lock:
+            self.task_queue.clear()
+            self.scheduled_tasks.clear()
+            self.running_tasks.clear()
+            self.completed_tasks.clear()
         self.logger.debug("Task scheduler reset")

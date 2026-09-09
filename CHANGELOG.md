@@ -44,6 +44,9 @@
 
 ### 修复
 
+- **多 Agent 并发锁补齐（F10 P2-1）**：`AgentRegistry` 与 `TaskScheduler` 的 `lock = None` 占位改为真正的
+  `threading.RLock`，注册 / 注销 / 查询与任务登记 / 状态流转全部在锁内进行；并行执行子任务时不再有"字典在迭代中
+  被修改"或计数丢失的风险（16 线程并发注册 / 调度测试）。
 - **命令推荐器偏好文件被测试改写**：`CommandRecommender(config)` 传入的配置此前没有传到 `LearningEngine`（内部总是用
   `get_config()` 全局单例），导致注入的 `preference_file` / `learning_enabled=False` 形同虚设——在本机跑一次测试套件就会把
   用户的 `data/recommender_preferences.json` 改成「不显示解释、最多 10 条」，并让 `test_format_recommendations` 在并行
@@ -52,6 +55,17 @@
 
 ### 改进
 
+- **BM25 增量持久化（F10 P2-1）**：混合检索的 BM25 语料改为按片段 id 持久化到 `index_storage/bm25/store.json.gz`
+  （新模块 `bm25_store`），入库 / 删除只做增量 `upsert` / `remove`，索引在首次查询或有变更时用已存的词频直接装配——
+  不再每次入库后全量拉取向量库重新分词。1 万块库入库后首次查询 1.45s → 15ms，冷启动 1.45s → 0.7s；旧库首次查询
+  自动迁移生成 store，文件损坏或分词版本升级时自动全量重建（`TOKENIZER_VERSION`）。
+- **混合检索关闭可见（F10 P2-1）**：文档块数超过 `RAG_HYBRID_MAX_CHUNKS` 时不再静默降级：CLI `/stats` 与 Web
+  知识库页显示「混合检索已关闭：文档块数 N 超过上限 M，可调大 RAG_HYBRID_MAX_CHUNKS」，`query_with_sources` 结果带
+  `meta.hybrid_disabled_reason`；默认上限由 20000 提到 50000（README 注明内存估算）。
+- **多 Agent 请求排队（F10 P2-1）**：新增 `OLLAMA_MAX_CONCURRENCY`（默认 2），进程内同时发往对话后端的 LLM 请求
+  经先到先得的信号量限流；并行子 Agent 不再一起打爆单卡 Ollama 互相拖慢，超出的请求在本地排队，进度显示
+  「⏳ 排队等待模型空闲」，排队时间不计入子任务超时（`metadata.queued_seconds` 可查）。CLI `/config` 与 Web 系统页
+  显示当前并发上限。
 - **回答可中断（F10 P1-1）**：CLI `Ctrl+C` 与 Web「停止」现在会关闭与模型的 HTTP 连接（先 `shutdown` socket
   再 `close`），读线程立刻退出、模型端随之停止生成，不再等整段生成完才返回。CLI 打印「已中断：…已关闭与模型的连接」；
   Web 保留中断前已流出的部分回答并注明「⏹️ 已停止」。

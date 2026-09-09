@@ -374,6 +374,13 @@ def config_rows() -> list[tuple[str, str]]:
     if provider != "ollama":
         rows.append(("API Key", "已设置" if backend.get("api_key_set") else "未设置（本地服务通常无需）"))
         rows.append(("Ollama 地址（嵌入模型）", str(Config.OLLAMA_HOST)))
+    # F10 P2-1-d：进程内 LLM 请求并发上限
+    limit = backend.get("max_concurrency", getattr(Config, "OLLAMA_MAX_CONCURRENCY", 2))
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 0
+    rows.append(("LLM 并发上限", "不限制" if limit <= 0 else f"{limit}（多 Agent 并行时其余请求排队，可调 OLLAMA_MAX_CONCURRENCY）"))
     return rows + [
         ("自动确认", auto),
         ("自动路由", "开" if getattr(Config, "AUTO_ROUTE", False) else "关"),
