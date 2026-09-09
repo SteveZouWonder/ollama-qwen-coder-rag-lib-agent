@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 已完成 2026-09-09；P3-1 / P3-2 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 / P3-1 已完成 2026-09-09；仅 P3-2 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
 · 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 九个独立任务逐项落地（P3-2 为 P2-2 实施后追加的遗留项）
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
@@ -14,7 +14,7 @@
 | P1-2 | `src/llm_client.py` 后端抽象（Ollama / OpenAI 兼容）· 五处直连替换 · 模型列表 / 健康检查 | 中 | 中高 | P1-1 | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | **已完成** | 2026-09-09 | 见下方实现记录 |
-| P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | 待实现 | | |
+| P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | ✅ **已完成** | 2026-09-09 | 见下方实现记录 |
 | P3-2 | `query_interface.py` 二次拆分：`cli/state.py` 收口模块级状态 · `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py` · 223 处测试打桩目标迁移（纯重构，P2-2 遗留） | 低（间接） | 中 | P2-2 | 待实现 | | |
 
 ## 文档导读
@@ -53,6 +53,16 @@ P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 ```
 
 ## 实现记录
+
+### P3-1 Tesseract 跨平台探测 + README 瘦身（2026-09-09）
+
+| 子项 | 实现位置 | 做了什么 |
+|---|---|---|
+| P3-1-a 探测 | `src/config.py` | `TESSERACT_PATH` 默认由写死的 `/opt/homebrew/bin/tesseract` 改为 **空**（= 自动探测）。新增 `tesseract_candidates(platform)`（macOS `/opt/homebrew/bin` `/usr/local/bin`；Linux `/usr/bin` `/usr/local/bin`；Windows `%ProgramFiles%` / `%ProgramFiles(x86)%` / `%LOCALAPPDATA%\Programs` 下 `Tesseract-OCR\tesseract.exe`，未知平台按 POSIX）、内部 `_locate_tesseract(env_path, platform) -> (path, source)`、`resolve_tesseract_path(env_path=None, platform=None)`（`TESSERACT_PATH` 运行时环境变量优先于导入时常量、已设且存在 → `shutil.which("tesseract")` → 候选 → `None`；`env_path` / `platform` 形参供测试注入）、`describe_tesseract()`（`{path, source ∈ env/path/candidate, installed, hint}`：未找到时 `hint = TESSERACT_MISSING_HINT`，`TESSERACT_PATH` 指向不存在的文件时前置「TESSERACT_PATH=… 指向的文件不存在」，指向不存在却在别处找到时 `installed=True` 且 hint 说明「已改用 …」——不静默"修正"用户配置）。常量 `TESSERACT_INSTALL_DOC = "docs/tutorials/02-installation.md#ocr"`、`TESSERACT_MISSING_HINT`、`TESSERACT_SOURCE_LABELS`，`Config` 补两项映射。 |
+| P3-1-a 加载器 / 引擎 | `src/document_loader.py`、`src/ocr_processor/tesseract_ocr.py` | `_init_ocr` 在 `OCR_ENGINE == "tesseract"` 时先 `describe_tesseract()`：未找到 → 新增 `_disable_ocr(reason)`（记 `ocr_unavailable_reason`、关 OCR、打印「⚠️ 未检测到 Tesseract，安装方法见 …，OCR 功能已禁用」）并 `return`，**不再把写死路径交给 pytesseract 报 `TesseractNotFoundError`**；找到 → 把探测到的路径传给 `TesseractOCREngine`（有 hint 先打印）。`ImportError` / 其它初始化异常同样经 `_disable_ocr` 记原因。新增 `ocr_skip_reason()`：图片跳过时的文案由「OCR 引擎未初始化」改为原因本身（含安装文档）；`_process_pdf_ocr` 在有 `ocr_unavailable_reason` 时打印「…已跳过 x.pdf 中图片的 OCR」而不是静默只取文本层。`TesseractOCREngine` 初始化失败的 `RuntimeError` 文案附 `TESSERACT_MISSING_HINT`（`config` 不可导入时回退通用提示）。 |
+| P3-1-a 两端展示 | `src/cli/handlers/system.py`、`src/cli/help_text.py`、`src/web/services/system.py`、`src/web/formatters.py`、`src/agent_tools.py` | **CLI** `/config` 新增「Tesseract（OCR）」行（`tesseract_row_text()`：`路径（TESSERACT_PATH 指定 / PATH 中找到 / 常见安装目录探测到）` / `未安装 —— 未检测到 Tesseract，安装方法见 …`；OCR 关闭或引擎非 tesseract 时附「当前 OCR_ENGINE=… / OCR_ENABLED=false」；探测异常显示「探测失败: …」），`/help` 与 `TUTORIAL_TEXT` 的 `/config` 描述同步。**Web** `env_info()` 新增 `tesseract_path / tesseract_source / tesseract_hint / ocr_enabled / ocr_engine`，`format_env_info` 在「Agent 最大步数 / 超时」后、「版本」前新增同名行（`_fmt_tesseract`：`✅ \`路径\`（来源）` / `❌ 未安装 —— …`），`info` 中无探测键时不出现该行（现有测试零改动）。**共享工具** `check_knowledge_status` 在 OCR 引擎为 tesseract 时列出 `Tesseract: 路径` 或 `⚠️ Tesseract: 未检测到…`。 |
+| P3-1-a 脚本与引导 | `scripts/check_prereqs.sh`、`scripts/check_prereqs.ps1`、`src/bootstrap.py` | 两个脚本按与 `config` 相同的顺序探测（`TESSERACT_PATH` → `command -v` / `Get-Command` → 平台候选），打印路径与来源，不在 PATH 时提示可 `export TESSERACT_PATH=…`，未找到时给安装文档 + 三平台安装命令（`.ps1` 此前未把 tesseract 缺失计入 `ocrModuleFailures`，现已计入）。`bootstrap` 新增 `check_tesseract(notify=None, once=True)`：`OCR_ENABLED` 且 `OCR_ENGINE == "tesseract"` 且未找到时经 `notify` + 打印提示「未检测到 Tesseract（OCR 可选）: …OCR 为可选功能，不影响其它功能；安装后重启即自动启用」，**同一台机器只提示一次**（持久标记 `<app_state_dir>/tesseract_hint_shown`，标记不可写时退化为进程内一次；`once=False` 每次都提示）；`ensure_ollama_ready` 拆为 `_ensure_llm_ready` + `finally: check_tesseract(notify)`，LLM 后端检测失败 / openai 模式同样会跑。合并并移除 F5 残留小项「Tesseract 引导提示」。 |
+| P3-1-b README 瘦身 | `README.md`（1448 → **323 行**）、`docs/tutorials/01/02/04/05/06/07`、**新增** `docs/tutorials/08-configuration.md` `09-development.md` `docs/tutorials/README.md`、`TUTORIAL.md` | 用脚本按行号整段搬移（每段前有锚点断言防错位；迁入处留一行「本节自 README 迁入（F10 P3-1）」）。README 保留：定位 + 演示 GIF、下载安装包（macOS 须知改为链接）、快速开始（前置检查 / 环境准备 / 安装依赖 / CLI / Web / 桌面五段，各段末链接到详解）、统一命令速查（`/config` 行补 Tesseract）、**新增环境变量表**（35 个常用变量：默认值 + 一句说明，替代原 50 行 `export` 注释块）、模型选择要点（推荐表 + 三种切换方式）、文档资源表。迁出：融合架构 / 使用场景 / 扩展方向 / 技术栈 → 01；三份依赖清单表 + 升级流程 → 02 步骤5，02 步骤5.5 加 `<a id="ocr">` 锚点并新增「Tesseract 路径自动探测」三平台表（探测目录 / 安装命令 / `TESSERACT_PATH` / 查看方式）；Web 界面详解 → 04 §10、三模式使用指南 → 04 §11、高级用法（多 Agent python 示例 / 命令执行安全 / 内容安全 / 混合使用 / 增量更新 / 多格式索引）→ 04 §12、快照 / Skills / 内容安全 → 04 §13；macOS 用户须知 → 05；常见问题速查 → 06；性能优化建议 → 07 §11；`config.py` 注释块 / 接入 OpenAI 兼容后端 / 模型选择补充（过度顺从评测、与 IDE 共存、关注中）/ OCR 配置 / 智能命令推荐 → **08**；项目结构 / Python 路径 / 核心模块 API / 测试 + RAG 检索基准 → **09**。`docs/tutorials/README.md` 索引表标出每篇 ★ 迁入章节；`TUTORIAL.md` 加 08 / 09 与更新记录；07 尾部导航接到 08。迁移时把相对链接改为相对新文件（`../development/…`、`../../README.md#…`），并修正 4 处过期事实（`TOP_K` 5 → 10、覆盖率 95% → 80%、`OCR_ENGINE` paddle → tesseract、`TESSERACT_PATH` 写死 → 自动探测）。 |
 
 ### P0-1 命令安全分级修正 + 读路径边界（2026-09-09）
 
@@ -148,6 +158,43 @@ P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 | P0-2-c 归档 | `CHANGELOG.md`、`docs/features/ROADMAP.md` | `python scripts/bump_changelog.py bump --version 0.1.0 --date 2026-09-09` 把 `[Unreleased]` 的 **112 条**一级要点归档为 `## [v0.1.0] - 2026-09-09`（F8 / F9 为破坏性体验升级，按 minor 递增）；新 `[Unreleased]` 只写 P0-2 自身的「发布流程」4 条。ROADMAP「当前版本」由 v0.0.13 改为 v0.1.0。**未打 tag、未推送**，命令交由用户执行。 |
 
 ## 验证结果
+
+### P3-1（2026-09-09）
+
+| 项 | 结果 |
+|---|---|
+| 全量测试 | `./venv/bin/python -m pytest tests -q -n 4` → **3591 passed, 36 skipped**，覆盖率 **92.25%**（门禁 80%） |
+| 新增测试 | **+63 个**（新文件 `tests/test_tesseract_detection.py`，全部打桩 `shutil.which` / `os.path.exists` / `sys.platform`，不依赖本机是否装 Tesseract）：候选表 6（三平台 / Windows 环境变量根 / 缺 `LOCALAPPDATA` / 默认取 `sys.platform` / 未知平台）；探测顺序 7（env 存在优先、`~` 展开、env 不存在落到 which、模块常量兜底、显式参数覆盖、which 优先于候选、which 只查 `tesseract`）；按平台 8（macOS Homebrew / `/usr/local`、Linux `/usr/bin`、Linux 不探测 Homebrew 路径、Windows ProgramFiles / LOCALAPPDATA、三平台未找到参数化、无写死默认守卫）；`describe_tesseract` 7（三种来源、未找到 hint、env 指向不存在文件 ×2、标签表完整）；`DocumentLoader` 8（缺失关 OCR + 文档链接 + 不出现底层路径报错、图片跳过转述原因、PDF 跳过转述 / 无原因静默、找到时路径传入引擎、有 hint 继续、其它初始化失败记原因、`ocr_skip_reason` 三级回退）；`TesseractOCREngine` 文案 1；CLI 6（已装 / 未装 + 文档 / 其它引擎或关闭附注 / 别处找到 hint / 探测失败 / `handle_config` 打印）；`check_knowledge_status` 1；Web 6（`env_info` 键与探测失败、格式化已装 / 未装 / 附注与兜底 / 无键不出行）；`bootstrap` 11（已装静默、缺失提示一次 + 写标记 + 二次不提示、持久标记跨进程抑制、`once=False`、标记不可写退化、`runtime_paths` 不可用、OCR 关闭或其它引擎不探测、探测异常吞掉、`notify` 异常吞掉、`ensure_ollama_ready` 后端失败仍检查且顺序在后、成功路径检查） |
+| 现有测试断言 | **一条未改** |
+| flake8 语法门禁 | `flake8 --select=E9,F63,F7,F82 src tests` → rc=0；`bash -n scripts/check_prereqs.sh` 通过 |
+| 测试隔离 | 全量前后 `ls index_storage/` 均为 `bm25 chroma_db llama_index ocr_cache`；`tesseract_hint_shown` 标记落在 conftest 隔离的临时 app_state 目录 |
+| `wc -l README.md` | 1448 → **323**（≤400 ✓） |
+| 链接校验 | 脚本（GitHub slug 规则 + `<a id>`，跳过 http / 仓库相对 URL）检查 README + TUTORIAL + `docs/tutorials/*.md` 共 12 个文件 **124 条相对链接（含 #锚点）全部通过**；迁移首轮发现并修正 9 条（迁入后失效的 `#模型选择指南`、`docs/…` 相对路径 ×5、当时尚未创建的索引 ×3） |
+| 文字总量 | README + `docs/tutorials/0*.md`：**89,645 → 93,470 字符（+4.3%，<5% ✓）**；再计入按需求新建的 `docs/tutorials/README.md` 索引（1,763 字符）为 95,233（+6.2%）。增量来自：环境变量表（约 3.5k，替代 `export` 块）、02 的 Tesseract 探测表（约 1.2k）、README 各段入口链接与 08 / 09 文件头；减量来自：`export` 注释块（内容已全部进入表格）、README 中与 02 / 06 重复的前置检查 / 依赖冲突 / 遥测 / OCR 安装块、空的「混合使用」标题 |
+| 只移动不删除 | 脚本比对旧 README 每一行（>12 字符）是否原样出现在新 README 或任一教程：86 行未原样出现，逐条归类为 ① `export` 块 48 行 → 环境变量表；② 标题 / 链接因相对路径或锚点重命名改写 21 行；③ 与 02 / 06 完全重复而去重 11 行；④ 过期事实修正 4 行（`TOP_K`、95%、`OCR_ENGINE=paddle`、写死 `TESSERACT_PATH`）；⑤ 旧文档资源列表改为表格 2 行。无正文丢失 |
+| 手测（本机 macOS，Tesseract 在 `/opt/homebrew/bin`） | 见下 |
+
+CLI `/config`（同一进程内依次模拟四种情形）：
+
+```
+Tesseract（OCR）: /opt/homebrew/bin/tesseract（PATH 中找到）
+Tesseract（OCR）: /opt/homebrew/bin/tesseract（PATH 中找到）；TESSERACT_PATH=/nope/tess 指向的文件不存在，已改用 /opt/homebrew/bin/tesseract
+Tesseract（OCR）: /opt/homebrew/bin/tesseract（常见安装目录探测到）          ← 模拟 PATH 中没有（GUI 启动的典型情形）
+Tesseract（OCR）: 未安装 —— 未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr；已安装但不在 PATH 时可设置 TESSERACT_PATH 指向可执行文件
+```
+
+Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` 实际输出行）：
+
+```
+| Tesseract（OCR） | ✅ `/opt/homebrew/bin/tesseract`（常见安装目录探测到） |
+```
+
+`DocumentLoader(enable_ocr=True)` 在 Tesseract 缺失（打桩）时的输出：
+
+```
+⚠️  未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr；已安装但不在 PATH 时可设置 TESSERACT_PATH 指向可执行文件，OCR 功能已禁用
+⚠️  未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr；…，跳过图片文件: scan.png
+```
 
 ### P2-2（2026-09-09）
 
@@ -471,6 +518,18 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 > 浏览器截图未提交：本次在无头环境实现，用 service → formatter 的真实渲染输出替代（系统页即 `gr.Markdown(format_env_info(...))`，无额外交互逻辑）。
 
 ## 与需求的差异
+
+### P3-1
+
+| # | 需求 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | 「CLI `/status` … 显示探测结果」 | 落在既有 **`/config`**（运行配置）新增一行，并顺带进 `check_knowledge_status` 工具输出 | CLI 没有 `/status` 命令（与 P1-2 / P2-1 差异表同一处笔误）；`/config` 正是 Web「系统 → 运行环境」的 CLI 对应物，P0-1 / P1-2 / P2-1 的同类信息都放在这里。 |
+| 2 | 「`bootstrap.py` 启动时缺失仅提示一次」 | 「一次」实现为**同一台机器一次**（持久标记 `tesseract_hint_shown`），而非每次启动一次 | `ensure_ollama_ready` 本就每次启动只跑一次，若只做进程内去重等于每次启动都弹；OCR 是可选功能，托盘用户每次开机被提醒一次会很烦。装好后自动生效；未装且想再看，`/config` 与系统页常驻显示。 |
+| 3 | 「`TESSERACT_PATH` 已设且存在 → 用之；否则 `shutil.which`…」 | 增加一种情形：`TESSERACT_PATH` 指向不存在的文件、但 PATH / 候选里找到了 → 用找到的，同时在 hint 里写明「已改用 …」；两处都没有时 hint 前置「TESSERACT_PATH=… 指向的文件不存在」 | 需求的顺序会静默忽略用户写错的配置（用户以为用的是自己装的那份、实际是另一份，语言包 / 版本可能不同）；按 §5「失败可见」把这一事实说出来。 |
+| 4 | 「迁移前后文字总量差 <5%」 | README + 01–09 为 +4.3%；连同**需求要求新建的** `docs/tutorials/README.md` 索引为 +6.2% | 索引文件本身就是 P3-1-b 的交付物之一（约 1.8k 字符）；已把 README「文档资源」与索引之间重复的映射列合并到索引，README 侧只留一行入口。若要严格 <5% 含索引，需删掉迁入处的 13 行「本节自 README 迁入」标注（约 0.3k）并精简 02 的 Tesseract 表，本次保留了可追溯性。 |
+| 5 | 「只移动不删除」 | 去掉了 README 中与 `docs/tutorials/02` / `06` **完全重复**的 4 个块（前置条件检查说明、依赖冲突、ChromaDB 遥测、OCR 安装命令）和一个空标题「混合使用：Agent + 知识库」；`export` 注释块改写为环境变量表 | 需求允许「仅去重与链接」；被去重的块在目标教程里已有同样（或更完整）的内容，README 原位留了链接。 |
+| 6 | 未提及 | `.ps1` 把 tesseract 缺失计入 `ocrModuleFailures`（此前 `.sh` 计入而 `.ps1` 未计入）；两个脚本都新增「不在 PATH 但在常见目录找到」的提示 | 两个脚本对同一情形给出不同结论属缺陷；顺手对齐。 |
+| 7 | 未提及 | 迁移时修正 4 处 README 过期事实（`TOP_K` 默认 5 → 10、覆盖率门禁 95% → 80%、`OCR_ENGINE` 示例 paddle → tesseract、`TESSERACT_PATH` 示例写死路径 → 空 = 自动探测） | AGENTS.md 要求文档与代码不一致时以代码为准并顺手修正。 |
 
 ### P2-2
 

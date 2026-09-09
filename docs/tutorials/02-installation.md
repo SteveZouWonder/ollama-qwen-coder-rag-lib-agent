@@ -62,8 +62,22 @@ pip install --upgrade pip
 
 **标准方法：**
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt          # 只运行产品
+pip install -r requirements-dev.txt      # 开发者：运行时 + 测试/静态检查（一条命令装全）
 ```
+
+依赖版本**已全部钉死**（`==`），任何机器上装出的环境一致。三份依赖清单各司其职：
+
+| 文件 | 内容 | 谁需要 |
+|---|---|---|
+| `requirements.txt` | 运行时依赖（RAG / Agent / Web / 桌面托盘） | 所有人 |
+| `requirements-dev.txt` | 测试与静态检查：pytest、pytest-cov、pytest-xdist、flake8、pylint、bandit、pip-audit（内含 `-r requirements.txt`） | 要跑测试 / 提 PR 的开发者 |
+| `requirements-build.txt` | PyInstaller 打包用的精简运行时依赖 | 发布流程（`release.yml`） |
+
+装完可用 `bash scripts/verify_deps.sh` 逐包校验导入（运行时与开发依赖分两段输出）。
+
+> 升级依赖：改 `requirements.txt` 后同步 `requirements-build.txt`（打包）与 `requirements-dev.txt`（开发），
+> 再跑 `bash scripts/verify_deps.sh` 与 `pip-audit -r requirements.txt`。
 
 **如果遇到依赖冲突：**
 ```bash
@@ -71,17 +85,18 @@ pip install -r requirements.txt
 pip install -r requirements.txt --no-cache-dir
 ```
 
-### 步骤5.5：安装OCR功能依赖（可选）
+<a id="ocr"></a>
+### 步骤5.5：OCR 功能依赖与 Tesseract（可选）
 
-如果需要使用 OCR 图像识别功能，请安装以下依赖：
+如果需要使用 OCR 图像识别功能（扫描版 PDF、PNG / JPG 图片入库），请安装以下依赖：
 
 ```bash
 # 运行安装脚本时会提示是否安装 OCR 依赖
 ./scripts/install_deps.sh      # Linux/macOS
 .\scripts\install_deps.ps1     # Windows PowerShell
 
-# 或手动安装 OCR 核心依赖（使用兼容版本）
-pip install paddlepaddle==3.0.0 paddleocr==3.0.0 pytesseract==0.3.13 opencv-python==4.9.0.80
+# 或手动安装 OCR 核心依赖（与 scripts/install_deps.sh 同版本；PaddleOCR 与 Python 3.13 不兼容，默认引擎为 Tesseract）
+pip install pytesseract==0.3.13 opencv-python==4.13.0.92
 
 # 安装 Tesseract（系统级）
 # macOS
@@ -95,6 +110,22 @@ sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 ```
 
 > **注意**: OCR 功能是可选的，如果不安装这些依赖，系统会自动禁用 OCR 相关功能，不影响其他功能的使用。
+
+**Tesseract 路径自动探测（F10 P3-1）**：程序按 `TESSERACT_PATH` 环境变量 → `PATH`（`shutil.which`）→ 各平台常见安装目录
+的顺序查找可执行文件，三个平台都无需手动配置：
+
+| 平台 | 自动探测的目录 | 安装命令 |
+|---|---|---|
+| macOS | `/opt/homebrew/bin`、`/usr/local/bin` | `brew install tesseract tesseract-lang` |
+| Linux | `/usr/bin`、`/usr/local/bin` | `sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra` |
+| Windows | `%ProgramFiles%\Tesseract-OCR\tesseract.exe`、`%ProgramFiles(x86)%\…`、`%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe` | [UB-Mannheim 安装器](https://github.com/UB-Mannheim/tesseract/wiki)（勾选 Chinese 语言包） |
+
+- 装在别处或想固定版本：`export TESSERACT_PATH=/path/to/tesseract`（Windows：`$env:TESSERACT_PATH="C:\...\tesseract.exe"`）。
+  指向的文件不存在时会提示并继续自动探测，不会静默改用别的路径而不告知。
+- 未找到时**不会报路径错误**，而是提示「未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr」并关闭 OCR，
+  图片 / 扫描件入库时跳过并转述同一原因；桌面 / CLI / Web 启动时只提示一次（之后不再打扰）。
+- 查看探测结果：CLI `/config` 的「Tesseract（OCR）」行、Web「系统 → 运行环境」、`./scripts/check_prereqs.sh`（或 `.ps1`）。
+- 语言包：`TESSERACT_LANG` 默认 `chi_sim+eng`；缺语言包时初始化会失败并显示 Tesseract 的原始错误。
 
 ### 步骤6：验证安装（一键前置条件检查）
 
