@@ -56,7 +56,7 @@ TUTORIAL_TEXT = """
   /agent     进入 Agent 任务模式
   /multi     多 Agent 协作模式
   /tools     查看所有可用工具
-  /config    显示运行配置（含允许读 / 写目录）
+  /config    显示运行配置（含允许读 / 写目录、Tesseract 探测）
   /add       添加文档到知识库
   /stats     知识库统计
   /sources   显示上次回答的来源
@@ -140,7 +140,7 @@ def print_help(console=None, has_rich: bool = False) -> None:
   /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务；最终答案流式输出，Ctrl+C 中断）
   /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
-  /config            显示运行配置（模型 / 自动确认 / 允许读写目录 / 数据与索引目录）
+  /config            显示运行配置（模型 / 自动确认 / 允许读写目录 / 数据与索引目录 / Tesseract）
   /add <path>        添加文档到知识库（PDF/MD/TXT/代码等；代码按函数/类切分，来源带 符号·行号）
   /stats             显示知识库统计
   /sources           显示上次知识库回答的来源

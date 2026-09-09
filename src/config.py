@@ -351,9 +351,104 @@ PADDLE_USE_GPU = os.getenv("PADDLE_USE_GPU", "false").lower() == "true"
 PADDLE_LANG = os.getenv("PADDLE_LANG", "ch")  # ch | en | jk
 PADDLE_USE_ANGLE_CLS = os.getenv("PADDLE_USE_ANGLE_CLS", "true").lower() == "true"
 
-# Tesseract 特定配置
-TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/opt/homebrew/bin/tesseract")  # macOS Homebrew 路径
+# Tesseract 特定配置（F10 P3-1）
+# TESSERACT_PATH 为空时自动探测：PATH（shutil.which）→ 各平台常见安装目录；见 resolve_tesseract_path()。
+# 此前默认写死 /opt/homebrew/bin/tesseract，Linux / Windows 用户会得到"路径不存在"而不是"未安装"。
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", "")
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "chi_sim+eng")
+TESSERACT_INSTALL_DOC = "docs/tutorials/02-installation.md#ocr"
+TESSERACT_MISSING_HINT = (
+    f"未检测到 Tesseract，安装方法见 {TESSERACT_INSTALL_DOC}；"
+    "已安装但不在 PATH 时可设置 TESSERACT_PATH 指向可执行文件"
+)
+
+
+def tesseract_candidates(platform: str = None) -> list:
+    """按平台返回 Tesseract 可执行文件的常见安装路径（不检查是否存在）。
+
+    ``platform`` 默认取 ``sys.platform``（``darwin`` / ``linux`` / ``win32``），便于单测覆盖三平台。
+    GUI 启动（Finder / 开始菜单）时 PATH 极简，``shutil.which`` 经常找不到 Homebrew / 安装器放的目录，
+    因此需要这份候选表兜底。
+    """
+    plat = (platform or _sys.platform).lower()
+    if plat.startswith("darwin"):
+        return ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]
+    if plat.startswith("win"):
+        exe = os.path.join("Tesseract-OCR", "tesseract.exe")
+        roots = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ]
+        local = os.environ.get("LOCALAPPDATA")
+        cands = [os.path.join(r, exe) for r in roots if r]
+        if local:
+            cands.append(os.path.join(local, "Programs", exe))
+        return cands
+    # linux / 其它 POSIX
+    return ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]
+
+
+def _tesseract_env_path(env_path: str = None) -> str:
+    """``TESSERACT_PATH``：显式参数 → 运行时环境变量 → 模块常量（导入时快照）。"""
+    if env_path is None:
+        env_path = os.environ.get("TESSERACT_PATH") or TESSERACT_PATH
+    return (env_path or "").strip()
+
+
+def _locate_tesseract(env_path: str, platform: str = None) -> tuple:
+    """返回 ``(path, source)``；``source`` ∈ ``env`` / ``path`` / ``candidate``，未找到为 ``(None, None)``。"""
+    import shutil
+
+    if env_path:
+        expanded = os.path.expanduser(env_path)
+        if os.path.exists(expanded):
+            return expanded, "env"
+        # 用户显式指定却不存在：继续探测但不静默"修正"用户配置——describe_tesseract() 会把
+        # "TESSERACT_PATH 指向的文件不存在" 写进提示，避免语言包 / 版本与预期不一致却无人察觉。
+    found = shutil.which("tesseract")
+    if found:
+        return found, "path"
+    for cand in tesseract_candidates(platform):
+        if os.path.exists(cand):
+            return cand, "candidate"
+    return None, None
+
+
+def resolve_tesseract_path(env_path: str = None, platform: str = None) -> "str | None":
+    """探测 Tesseract 可执行文件：``TESSERACT_PATH``（已设且存在）→ ``shutil.which`` → 平台候选 → ``None``。
+
+    ``env_path`` 默认取运行时环境变量 ``TESSERACT_PATH``（其次模块常量），显式传入便于测试。
+    返回 ``None`` 表示未安装 / 未找到，调用方应给出 :data:`TESSERACT_MISSING_HINT` 而不是路径错误。
+    """
+    return _locate_tesseract(_tesseract_env_path(env_path), platform)[0]
+
+
+def describe_tesseract(env_path: str = None, platform: str = None) -> dict:
+    """探测结果的可展示形态（CLI ``/config`` 与 Web「系统 → 运行环境」共用）。
+
+    返回 ``{"path", "source", "installed", "hint"}``：
+    ``source`` ∈ ``env``（TESSERACT_PATH）/ ``path``（PATH）/ ``candidate``（平台常见目录）/ ``None``；
+    ``hint`` 未找到时为 :data:`TESSERACT_MISSING_HINT`（``TESSERACT_PATH`` 指向不存在的文件时前置说明），找到时为 ``None``。
+    """
+    env_path = _tesseract_env_path(env_path)
+    path, source = _locate_tesseract(env_path, platform)
+    if path is None:
+        hint = TESSERACT_MISSING_HINT
+        if env_path:
+            hint = f"TESSERACT_PATH={env_path} 指向的文件不存在；{TESSERACT_MISSING_HINT}"
+        return {"path": None, "source": None, "installed": False, "hint": hint}
+    if env_path and source != "env":
+        # 指定的路径不存在、但在别处找到了：用上找到的，同时把这一事实说出来
+        return {"path": path, "source": source, "installed": True,
+                "hint": f"TESSERACT_PATH={env_path} 指向的文件不存在，已改用 {path}"}
+    return {"path": path, "source": source, "installed": True, "hint": None}
+
+
+TESSERACT_SOURCE_LABELS = {
+    "env": "TESSERACT_PATH 指定",
+    "path": "PATH 中找到",
+    "candidate": "常见安装目录探测到",
+}
 
 # 图像预处理配置
 OCR_PREPROCESS = os.getenv("OCR_PREPROCESS", "true").lower() == "true"
@@ -423,6 +518,8 @@ class Config:
     PADDLE_USE_ANGLE_CLS: bool = PADDLE_USE_ANGLE_CLS
     TESSERACT_PATH: str = TESSERACT_PATH
     TESSERACT_LANG: str = TESSERACT_LANG
+    TESSERACT_INSTALL_DOC: str = TESSERACT_INSTALL_DOC
+    TESSERACT_MISSING_HINT: str = TESSERACT_MISSING_HINT
     OCR_PREPROCESS: bool = OCR_PREPROCESS
     OCR_DENOISE: bool = OCR_DENOISE
     OCR_BINARIZE: bool = OCR_BINARIZE

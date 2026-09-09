@@ -76,6 +76,7 @@ def config_rows() -> list[tuple[str, str]]:
     except (TypeError, ValueError):
         limit = 0
     rows.append(("LLM 并发上限", "不限制" if limit <= 0 else f"{limit}（多 Agent 并行时其余请求排队，可调 OLLAMA_MAX_CONCURRENCY）"))
+    rows.append(("Tesseract（OCR）", tesseract_row_text()))
     return rows + [
         ("自动确认", auto),
         ("自动路由", "开" if getattr(Config, "AUTO_ROUTE", False) else "关"),
@@ -86,6 +87,29 @@ def config_rows() -> list[tuple[str, str]]:
         ("索引目录", str(getattr(cfg, "INDEX_DIR", "") or "")),
         ("Agent 最大步数 / 超时", f"{Config.MAX_ITERATIONS} / {Config.TIMEOUT}s"),
     ]
+
+
+def tesseract_row_text() -> str:
+    """``/config`` 的 Tesseract 行（F10 P3-1）：``路径（来源）`` / ``未安装 —— 安装方法见 …``。
+
+    OCR 未启用或引擎不是 tesseract 时也照常显示探测结果（用户切换引擎前先知道有没有）。
+    """
+    try:
+        import config as cfg
+
+        probe = cfg.describe_tesseract()
+        labels = getattr(cfg, "TESSERACT_SOURCE_LABELS", {})
+        engine = getattr(cfg, "OCR_ENGINE", "tesseract")
+        enabled = bool(getattr(cfg, "OCR_ENABLED", True))
+    except Exception as exc:  # noqa: BLE001
+        return f"探测失败: {exc}"
+    suffix = "" if (enabled and engine == "tesseract") else f"；当前 OCR_ENGINE={engine}" + ("" if enabled else "、OCR_ENABLED=false")
+    if not probe.get("installed"):
+        return f"未安装 —— {probe.get('hint') or '安装方法见 docs/tutorials/02-installation.md#ocr'}{suffix}"
+    text = f"{probe['path']}（{labels.get(probe.get('source'), probe.get('source') or '已找到')}）"
+    if probe.get("hint"):
+        text += f"；{probe['hint']}"
+    return text + suffix
 
 
 def handle_config(ctx, parsed):

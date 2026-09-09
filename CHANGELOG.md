@@ -55,6 +55,16 @@
 
 ### 改进
 
+- **Tesseract 自动探测与缺失提示（F10 P3-1）**：OCR 的 Tesseract 路径不再写死 macOS Homebrew 目录。新增
+  `config.resolve_tesseract_path()`：`TESSERACT_PATH`（已设且存在）→ `PATH` → 各平台常见安装目录（macOS
+  `/opt/homebrew/bin` `/usr/local/bin`、Linux `/usr/bin` `/usr/local/bin`、Windows `%ProgramFiles%` /
+  `%LOCALAPPDATA%\Programs` 下的 `Tesseract-OCR\tesseract.exe`），Linux / Windows 用户装好即用。找不到时不再报
+  底层路径错误，而是提示「未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr」并关闭 OCR，
+  图片 / 扫描件入库时跳过并转述同一原因；`TESSERACT_PATH` 指向不存在的文件时明确说明并继续探测。
+  CLI `/config` 新增「Tesseract（OCR）」行、Web「系统 → 运行环境」新增同名行（路径 + 来源 / ❌ 未安装 + 安装文档），
+  知识库状态工具同步显示；`scripts/check_prereqs.sh` / `.ps1` 按同一顺序探测。启动引导（`bootstrap`）在
+  `OCR_ENGINE=tesseract` 且缺失时提示一次（持久标记，之后不再打扰），合并 F5 残留小项「Tesseract 引导提示」。
+
 - **入口层拆包（F10 P2-2，内部结构，行为零变化）**：Web 与 CLI 的五个大文件（2000–2800 行）按功能面拆成包：
   `web/services/`（`base` + `chat / knowledge / tools / db / graph / system` 六个 mixin 组合为 `WebService`）、
   `web/formatters.py`（全部 `format_*` 纯函数）+ `web/handlers/`（五个页面的 `build_*_handlers`）+ `web/app.py`
@@ -78,6 +88,16 @@
   再 `close`），读线程立刻退出、模型端随之停止生成，不再等整段生成完才返回。CLI 打印「已中断：…已关闭与模型的连接」；
   Web 保留中断前已流出的部分回答并注明「⏹️ 已停止」。
 
+### 文档
+
+- **README 瘦身（F10 P3-1）**：`README.md` 1448 → 323 行，只保留定位与演示、下载安装、快速开始（桌面 / CLI / Web
+  三入口）、命令速查表、环境变量表（新增，35 个常用变量一表速查）、模型选择要点、文档索引；其余章节**整段迁入**
+  `docs/tutorials/`（只移动不删除，README 原位留链接）：架构图 / 使用场景 / 技术栈 / 扩展方向 → 01，依赖清单分工 与
+  OCR / Tesseract 安装（新增三平台自动探测表）→ 02，Web 界面详解 / 三模式使用指南 / 高级用法 / 快照·Skills·内容安全 → 04，
+  macOS 首次打开须知 → 05，常见问题速查 → 06，性能优化建议 → 07；新建 **08 配置参考**（`config.py` 注释、接入 OpenAI
+  兼容后端、模型选择补充、OCR 配置、命令推荐）与 **09 开发者指南**（项目结构、Python 路径、核心模块 API、测试与
+  RAG 检索基准），新建 `docs/tutorials/README.md` 教程索引；迁移时顺带修正 4 处过期事实（`TOP_K` 默认 10、覆盖率门禁
+  80%、默认 OCR 引擎 tesseract、`TESSERACT_PATH` 默认自动探测）。
 ### 发布流程
 
 - **依赖钉版本（F10 P0-2）**：`requirements.txt` 的全部直接依赖改为 `==` 精确版本（可选依赖的安装命令注释里

@@ -168,4 +168,17 @@ class SystemMixin:
             info["max_concurrency"] = backend.get("max_concurrency")
         except BaseException:  # noqa: BLE001
             info["backend_healthy"] = None
+        # Tesseract 探测（F10 P3-1）：与 CLI /config 同源（config.describe_tesseract）
+        try:
+            import config as _cfg
+            probe = _cfg.describe_tesseract()
+            info["tesseract_path"] = probe.get("path")
+            info["tesseract_source"] = probe.get("source")
+            info["tesseract_hint"] = probe.get("hint")
+            info["ocr_enabled"] = bool(getattr(_cfg, "OCR_ENABLED", True))
+            info["ocr_engine"] = getattr(_cfg, "OCR_ENGINE", "tesseract")
+        except BaseException as exc:  # noqa: BLE001
+            info["tesseract_path"] = None
+            info["tesseract_source"] = None
+            info["tesseract_hint"] = f"探测失败: {exc}"
         return info

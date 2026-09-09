@@ -409,12 +409,44 @@ function Test-OCRDependencies {
     }
     
     # 检查Tesseract系统级依赖
-    if (Get-Command tesseract -ErrorAction SilentlyContinue) {
-        $tesseractVersion = tesseract --version 2>&1 | Select-Object -First 1
-        Print-Result 0 "tesseract 已安装: $tesseractVersion"
+    # 与 src/config.py::resolve_tesseract_path 同一顺序：TESSERACT_PATH → PATH → 常见安装目录
+    $tesseractBin = $null
+    $tesseractSource = ""
+    if ($env:TESSERACT_PATH) {
+        if (Test-Path $env:TESSERACT_PATH -PathType Leaf) {
+            $tesseractBin = $env:TESSERACT_PATH; $tesseractSource = "TESSERACT_PATH"
+        } else {
+            Print-Result 2 "TESSERACT_PATH=$($env:TESSERACT_PATH) 指向的文件不存在，改为自动探测"
+        }
+    }
+    if (-not $tesseractBin) {
+        $cmd = Get-Command tesseract -ErrorAction SilentlyContinue
+        if ($cmd) { $tesseractBin = $cmd.Source; $tesseractSource = "PATH" }
+    }
+    if (-not $tesseractBin) {
+        $candidates = @()
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if ($root) { $candidates += (Join-Path $root "Tesseract-OCR\tesseract.exe") }
+        }
+        if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Tesseract-OCR\tesseract.exe") }
+        foreach ($cand in $candidates) {
+            if (Test-Path $cand -PathType Leaf) {
+                $tesseractBin = $cand; $tesseractSource = "常见安装目录"; break
+            }
+        }
+    }
+    if ($tesseractBin) {
+        $tesseractVersion = & $tesseractBin --version 2>&1 | Select-Object -First 1
+        Print-Result 0 "tesseract 已安装: $tesseractVersion ($tesseractBin，来自 $tesseractSource)"
+        if ($tesseractSource -eq "常见安装目录") {
+            Write-Host "  提示: tesseract 不在 PATH 中，程序会自动探测到该路径；也可设置 `$env:TESSERACT_PATH=`"$tesseractBin`""
+        }
     } else {
         Print-Result 2 "tesseract 未安装 (OCR功能可选)"
-        Write-Host "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki"
+        Write-Host "  安装方法见 docs/tutorials/02-installation.md#ocr"
+        Write-Host "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki （勾选 Chinese 语言包）"
+        Write-Host "  已安装但不在 PATH: `$env:TESSERACT_PATH=`"C:\Program Files\Tesseract-OCR\tesseract.exe`""
+        $ocrModuleFailures++
     }
     
     # 总结OCR依赖状态

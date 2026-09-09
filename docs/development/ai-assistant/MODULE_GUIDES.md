@@ -11,6 +11,7 @@
 - 两个阈值不要混：`SIMILARITY_CUTOFF`(0.3) 是底层召回保护，`KB_RELEVANCE_THRESHOLD`(0.45) 是编排层"命中"判定。
 - `READONLY_COMMANDS` / `DANGEROUS_PATTERNS` **无人引用**；命令安全规则在 `agent_tools.CommandSafetyChecker`。
 - LLM 后端（F10 P1-2）：`LLM_PROVIDER`（`ollama` | `openai`，其他值回退 ollama 并 warning）、`LLM_BASE_URL`（默认取 `OLLAMA_BASE_URL`）、`LLM_API_KEY`、`LLM_REASONING_EFFORT`（默认 `none`）；均有 `Config.*` 映射。`OLLAMA_BASE_URL` 仍是嵌入模型与 Ollama 专有操作（卸载 / `/api/ps`）的地址。
+- Tesseract 探测（F10 P3-1）：`TESSERACT_PATH` 默认 **空**（不再写死 Homebrew 路径）。`tesseract_candidates(platform)` 三平台候选表；`resolve_tesseract_path(env_path=None, platform=None)`：`TESSERACT_PATH`（运行时 `os.environ` 优先于导入时常量，已设且存在）→ `shutil.which("tesseract")` → 候选 → `None`；`describe_tesseract()` 返回 `{path, source(env|path|candidate), installed, hint}`，是 CLI `/config`（`cli.handlers.system.tesseract_row_text`）、Web `env_info` / `formatters._fmt_tesseract`、`agent_tools.check_knowledge_status`、`bootstrap.check_tesseract` 的**唯一**数据源。缺失文案 `TESSERACT_MISSING_HINT` 指向 `docs/tutorials/02-installation.md#ocr`（改文档锚点要同步）。测试打桩 `shutil.which` / `os.path.exists` / `sys.platform`（`tests/test_tesseract_detection.py`）。
 
 ### `llm_client.py`（F10 P1-2）
 - **项目内唯一允许出现 `"/api/chat"` / `/api/generate` 字面量的文件**（`tests/test_llm_client.py::TestNoDirectEndpointsOutsideLLMClient` 守卫）。
@@ -97,7 +98,7 @@
 - API：`load()`（缺文件 / 版本不匹配 / 损坏都返回 False 并清空，损坏打 warning、`load_error` 记原因）、`save()`（临时文件 + `os.replace` 原子写）、`save_if_dirty()`、`upsert / upsert_many / remove / remove_many / remove_where(pred(doc_id, meta)) / replace_all / clear`、`mark_stale()`（调用方拿不到 chunk id 时标记，下次全量）、`is_usable()`、`search(query, top_k) -> [(doc_id, meta, score)]`、`describe()`。
 - **改 `tokenize` 的任何逻辑必须递增 `TOKENIZER_VERSION`**（旧 store 的词频与新查询分词不一致；版本不匹配时引擎自动全量重建并重写）。`rag_engine.RAGEngine._bm25_tokenize` 与 `rag_pipeline` 的实体子词匹配都依赖同一分词。
 - 测试：`tests/test_bm25_store.py`（单元）、`tests/test_rag_engine_bm25_store.py`（与 `RAGEngine` 集成，假 Chroma 集合 + `tmp_path` persist_dir）；`tests/conftest.py::isolate_bm25_store` 把 `rag_engine.INDEX_DIR` 重定向到临时目录，避免 Mock Chroma 的测试写真实 `index_storage/bm25/`。
-- `document_loader.py`：多格式加载（PDF / MD / TXT / 代码 / 图片 OCR），入库前 `content_security` 扫描与 `file_validator` 校验；代码文件走 `code_chunker`（tree-sitter 按函数 / 类切分，F8 P4）。
+- `document_loader.py`：多格式加载（PDF / MD / TXT / 代码 / 图片 OCR），入库前 `content_security` 扫描与 `file_validator` 校验；代码文件走 `code_chunker`（tree-sitter 按函数 / 类切分，F8 P4）。 OCR 初始化（F10 P3-1）：`OCR_ENGINE=tesseract` 时先 `config.describe_tesseract()` 探测，未找到 → `_disable_ocr(hint)` 记录 `ocr_unavailable_reason`（图片 / PDF 跳过时经 `ocr_skip_reason()` 原样转述，含安装文档链接），找到 → 把探测到的路径传给 `TesseractOCREngine`。
 - `file_metadata.py`：入库文件元数据（分类 / 大小 / hash / `chunk_strategy` / `symbol_count`），持久化到 `app_state_dir("file_metadata")`；`from_dict` 忽略未知键以兼容旧文件。全局单例 `_global_metadata_manager`（测试隔离）。
 - `knowledge_snapshot.py`：快照创建 / 恢复 / 清理，目录 `app_state_dir("knowledge/snapshots")`。
 - `knowledge_to_skills.py`：把知识库转为 opencode / Claude skills（输出到 `~/.config/opencode/skills` 等，与 `prompts/skills` 无关）。
@@ -118,7 +119,7 @@
 - `git_analyzer.py`（`subprocess git`，非 gitpython）：历史 / 状态 / 作者统计，`get_overview(max_commits)` 供 Web 仪表盘与 CLI `/git-analyze` 表格共用；`get_commit_preview()`（暂存文件 / `diff --cached --stat` / 增删行数）与 `commit(message)`（仅提交暂存区，返回 `ok / hash7 / subject / error`）供 Web 一步提交（F9 P3）。`commit_generator.py`：AI 生成提交信息（经 `llm_client` chat 消息格式，`think=False` + `num_predict=256` + 60s 超时，HTTP 非 200 / 超时 / 空响应回退规则生成；`ollama_base_url` 参数仅为兼容保留）。
 
 ### `ocr_processor/`
-- `base.py` 抽象 → `tesseract_ocr.py`（默认）/ `paddle_ocr.py`；`preprocessor.py`（去噪 / 二值化 / 纠偏）、`image_extractor.py`（PDF 内嵌图）、`cache.py`（按内容 hash 缓存）。依赖不在 requirements 中，缺失时 `document_loader` 降级为跳过图片。
+- `base.py` 抽象 → `tesseract_ocr.py`（默认）/ `paddle_ocr.py`；`preprocessor.py`（去噪 / 二值化 / 纠偏）、`image_extractor.py`（PDF 内嵌图）、`cache.py`（按内容 hash 缓存）。依赖不在 requirements 中，缺失时 `document_loader` 降级为跳过图片。 `TesseractOCREngine` 初始化失败的 `RuntimeError` 文案附 `config.TESSERACT_MISSING_HINT`。
 
 ### `command_recommender/`（F4，仅 CLI）
 - `engine.py` 混合推荐（规则 + 工作流 + 学习），`workflow.py` / `state.py` / `history.py` / `learning.py` / `context.py` / `display.py`；偏好存 `data/recommender_preferences.json`。桌面 / Web 不集成。
@@ -148,6 +149,7 @@
 
 ### `bootstrap.py` / `model_switcher.py`
 - `bootstrap`：`ollama_running` / `list_installed_models` 经 `llm_client.OllamaClient(OLLAMA_BASE_URL)`；`ensure_ollama_ready` 在 `LLM_PROVIDER=openai` 时走 `_ensure_openai_backend_ready`（只探测后端 health、提示嵌入模型是否就绪，不安装、不拉取）。
+- `bootstrap.check_tesseract(notify, once=True)`（F10 P3-1）：`OCR_ENGINE=tesseract` 且 `config.describe_tesseract()` 未找到时提示一次（持久标记 `<app_state_dir>/tesseract_hint_shown` + 进程内标记；`once=False` 每次都提示），`ensure_ollama_ready` 在 `finally` 中调用——LLM 后端检测失败也会跑。测试用 `runtime_paths.set_app_state_root(tmp)` 隔离标记。
 - `model_switcher`：`list_installed_models` 按 provider 分流（ollama → bootstrap；openai → `available_models`），`models_notice()` 给两端展示回退提示；`switch_model` 在 openai 且后端无列表时放行任意名字并在消息里注明「未校验」；`unload_model` / `list_loaded_models`（`/api/ps`）为 Ollama 专有，openai 模式不调用；`current_model_info` 多返回 `provider` / `base_url`。
 
 ## 改动前的最小检查

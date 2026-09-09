@@ -868,6 +868,14 @@ def check_knowledge_status() -> str:
             if OCR_ENABLED:
                 status_info.append(f"   - OCR 引擎: {OCR_ENGINE}")
                 status_info.append("   - 支持格式: PNG, JPG, JPEG, 扫描版 PDF")
+                if OCR_ENGINE == "tesseract":
+                    # F10 P3-1：Tesseract 探测结果（路径 / 未安装 + 安装文档）
+                    from config import describe_tesseract
+                    probe = describe_tesseract()
+                    if probe.get("installed"):
+                        status_info.append(f"   - Tesseract: {probe['path']}")
+                    else:
+                        status_info.append(f"   - ⚠️ Tesseract: {probe.get('hint') or '未安装'}")
         except ImportError:
             status_info.append("⚠️ OCR 配置不可用")
         

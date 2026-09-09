@@ -40,9 +40,12 @@ class TesseractOCREngine(BaseOCREngine):
                 "pytesseract 未安装，请运行: pip install pytesseract"
             )
         except Exception as e:
-            raise RuntimeError(
-                f"Tesseract 不可用，请确保已安装 Tesseract: {e}"
-            )
+            # F10 P3-1：pytesseract 找不到可执行文件时给"未安装 + 安装文档"提示，而非只有路径错误
+            try:
+                from config import TESSERACT_MISSING_HINT as _hint
+            except Exception:  # noqa: BLE001 - 独立使用 ocr_processor 时 config 可能不在 path 上
+                _hint = "请确认已安装 Tesseract 并在 PATH 中，或设置 TESSERACT_PATH"
+            raise RuntimeError(f"Tesseract 不可用（{e}）。{_hint}")
         
         # 初始化预处理器
         self._preprocessor = None

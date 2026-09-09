@@ -10,6 +10,9 @@
 ``LLM_PROVIDER=openai`` 时（F10 P1-2）跳过以上引导，只探测兼容后端是否可达，并提示
 "知识库嵌入仍需 Ollama"（嵌入模型始终由 Ollama 提供）。
 
+4. 最后探测 Tesseract（F10 P3-1，:func:`check_tesseract`）：``OCR_ENGINE=tesseract`` 且未找到
+   可执行文件时提示安装文档位置，**同一台机器只提示一次**（持久标记），不自动安装。
+
 所有"下载/安装第三方软件或模型"的动作都需要用户**明确确认**，
 不会静默执行，避免安全与权限问题。
 
@@ -295,6 +298,67 @@ def pull_models(models: List[str], interactive: bool = True) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tesseract（OCR，可选）—— F10 P3-1，合并 F5 残留小项"Tesseract 引导提示"
+# ---------------------------------------------------------------------------
+TESSERACT_HINT_MARKER = "tesseract_hint_shown"
+_tesseract_hint_shown_in_process = False
+
+
+def _tesseract_marker_path():
+    """已提示过的持久标记（``<App 状态目录>/tesseract_hint_shown``）；解析失败返回 None。"""
+    try:
+        from runtime_paths import app_state_dir
+
+        return app_state_dir(TESSERACT_HINT_MARKER)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def check_tesseract(notify=None, once: bool = True) -> Optional[str]:
+    """OCR 引擎为 tesseract 且未探测到可执行文件时提示一次（不自动安装）。
+
+    返回提示文本（缺失时）或 ``None``（已安装 / OCR 关闭 / 引擎不是 tesseract / 已提示过）。
+    ``once=True`` 时同一台机器只提示一次（持久标记；标记不可写时退化为进程内一次），
+    之后由 CLI ``/config`` 与 Web「系统 → 运行环境」常驻显示探测结果——OCR 是可选功能，不该每次启动都弹。
+    """
+    global _tesseract_hint_shown_in_process
+    try:
+        import config as cfg
+
+        if not getattr(cfg, "OCR_ENABLED", True) or getattr(cfg, "OCR_ENGINE", "tesseract") != "tesseract":
+            return None
+        probe = cfg.describe_tesseract()
+    except Exception:  # noqa: BLE001
+        return None
+    if probe.get("installed"):
+        return None
+    hint = probe.get("hint") or "未检测到 Tesseract"
+
+    if once:
+        if _tesseract_hint_shown_in_process:
+            return None
+        marker = _tesseract_marker_path()
+        if marker is not None and marker.exists():
+            return None
+        _tesseract_hint_shown_in_process = True
+        if marker is not None:
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("shown", encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+
+    message = f"{hint}。OCR 为可选功能，不影响其它功能；安装后重启即自动启用。"
+    if callable(notify):
+        try:
+            notify("未检测到 Tesseract（OCR 可选）", message)
+        except Exception:  # noqa: BLE001
+            pass
+    print(f"[Cerebro] 未检测到 Tesseract（OCR 可选）: {message}")
+    return hint
+
+
+# ---------------------------------------------------------------------------
 # 总入口
 # ---------------------------------------------------------------------------
 def ensure_ollama_ready(
@@ -312,7 +376,16 @@ def ensure_ollama_ready(
         notify: 可选回调 ``notify(title, message)``，用于在 GUI 下弹通知。
 
     返回 True 表示环境就绪；False 表示仍有缺失（不会抛异常阻断启动）。
+    无论 LLM 后端检测结果如何，最后都会做一次 Tesseract 探测（:func:`check_tesseract`，缺失仅提示一次）。
     """
+    try:
+        return _ensure_llm_ready(interactive, required_models, auto_pull_models, notify)
+    finally:
+        check_tesseract(notify)
+
+
+def _ensure_llm_ready(interactive, required_models, auto_pull_models, notify) -> bool:
+    """:func:`ensure_ollama_ready` 的 LLM 后端部分（Ollama 安装 / 服务 / 模型，或 openai 后端探测）。"""
     required_models = required_models or DEFAULT_REQUIRED_MODELS
 
     def _notify(title: str, message: str) -> None:

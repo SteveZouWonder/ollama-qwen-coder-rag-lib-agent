@@ -688,9 +688,39 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("知识库相关性阈值", info.get("kb_relevance_threshold", "")),
         ("自校验（RAG_SELF_CHECK）", "开启" if info.get("self_check") else "关闭"),
         ("Agent 最大步数 / 超时", f"{info.get('max_iterations', '')} / {info.get('timeout', '')}s"),
-        ("版本", info.get("app_version", "")),
     ]
+    if "tesseract_path" in info or "tesseract_hint" in info:
+        rows.append(("Tesseract（OCR）", _fmt_tesseract(info)))
+    rows.append(("版本", info.get("app_version", "")))
     return format_kv_table(rows)
+
+
+_TESSERACT_SOURCE_TEXT = {
+    "env": "TESSERACT_PATH 指定",
+    "path": "PATH 中找到",
+    "candidate": "常见安装目录探测到",
+}
+
+
+def _fmt_tesseract(info: Dict[str, Any]) -> str:
+    """Tesseract 探测结果（F10 P3-1）：``✅ `路径`（来源）`` / ``❌ 未安装 —— 安装方法见 …``。
+
+    与 CLI ``/config`` 的 ``tesseract_row_text`` 同一语义；OCR 关闭或引擎非 tesseract 时附注当前设置。
+    """
+    path = info.get("tesseract_path")
+    hint = info.get("tesseract_hint")
+    engine = info.get("ocr_engine", "tesseract")
+    enabled = info.get("ocr_enabled", True)
+    suffix = ""
+    if not (enabled and engine == "tesseract"):
+        suffix = f"；当前 `OCR_ENGINE={engine}`" + ("" if enabled else "、`OCR_ENABLED=false`")
+    if not path:
+        return f"❌ 未安装 —— {hint or '安装方法见 docs/tutorials/02-installation.md#ocr'}{suffix}"
+    source = _TESSERACT_SOURCE_TEXT.get(info.get("tesseract_source"), "已找到")
+    text = f"✅ `{path}`（{source}）"
+    if hint:
+        text += f"；{hint}"
+    return text + suffix
 
 
 def _fmt_concurrency(value: Any) -> str:
