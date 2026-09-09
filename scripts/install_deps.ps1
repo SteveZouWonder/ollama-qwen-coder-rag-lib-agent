@@ -42,13 +42,17 @@ Write-Host "步骤 2/4: 从requirements.txt安装依赖" -ForegroundColor Blue
 Write-Host "安装依赖（版本号来自requirements.txt）..."
 
 # 先安装数据处理依赖（使用预编译版本，避免构建错误）
+# 版本从 requirements.txt 读取，避免这里装到与钉版本不一致的 numpy/pandas
 Write-Host "步骤 2.1: 安装数据处理依赖..."
-$depsResult = python -m pip install numpy pandas --prefer-binary
+$dataPackages = @(Select-String -Path "requirements.txt" -Pattern '^(numpy|pandas)==\S+' |
+    ForEach-Object { $_.Matches[0].Value })
+if (-not $dataPackages) { $dataPackages = @("numpy", "pandas") }
+$depsResult = python -m pip install @dataPackages --prefer-binary
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✓ 数据处理依赖安装成功" -ForegroundColor Green
 } else {
     Write-Host "⚠ 数据处理依赖安装失败，尝试备用方案..." -ForegroundColor Yellow
-    python -m pip install numpy pandas
+    python -m pip install @dataPackages
 }
 
 # 执行安装并捕获错误
@@ -92,22 +96,48 @@ if ($installOcr -eq "y") {
     $numpyCheck = python -c "import pandas" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "安装数据处理依赖..."
-        python -m pip install numpy pandas --prefer-binary
+        python -m pip install @dataPackages --prefer-binary
     }
-    
-    # 安装 OCR 核心依赖（Python 3.13 兼容）
-    $ocrResult = python -m pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0
+
+    # 安装 OCR 核心依赖（Python 3.13 兼容；版本与 requirements.txt 的可选依赖注释一致）
+    # 注意：包名必须全部用 == 钉版本，PowerShell 中 `>` 会被当成重定向符
+    $ocrResult = python -m pip install pytesseract==0.3.13 opencv-python==4.13.0.92
     if ($LASTEXITCODE -eq 0) {
         Write-Host "✓ OCR 依赖安装完成（Tesseract OCR）" -ForegroundColor Green
     } else {
         Write-Host "✗ OCR 依赖安装失败" -ForegroundColor Red
         Write-Host "跳过 OCR 依赖安装，可以稍后手动安装" -ForegroundColor Yellow
-        Write-Host "手动安装命令: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0"
+        Write-Host "手动安装命令: pip install pytesseract==0.3.13 opencv-python==4.13.0.92"
     }
 } else {
     Write-Host "⚠ 跳过 OCR 依赖安装" -ForegroundColor Yellow
-    Write-Host "  提示: 如需使用 OCR 功能，可以运行: pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python==4.9.0.80"
+    Write-Host "  提示: 如需使用 OCR 功能，可以运行: pip install pytesseract==0.3.13 opencv-python==4.13.0.92"
     Write-Host "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
+}
+
+# 方法2.6：安装开发/测试依赖（可选，requirements-dev.txt）
+Write-Host ""
+Write-Host "是否安装开发/测试依赖（requirements-dev.txt）？" -ForegroundColor Blue
+Write-Host "包含 pytest / pytest-cov / pytest-xdist / flake8 / pylint / bandit / pip-audit"
+Write-Host "仅在需要跑测试或静态检查时安装；只运行产品可以跳过"
+$installDev = Read-Host "是否安装开发/测试依赖? (y/n)"
+
+if ($installDev -eq "y") {
+    Write-Host "步骤 2.6/4: 安装开发/测试依赖" -ForegroundColor Blue
+    if (Test-Path "requirements-dev.txt") {
+        python -m pip install -r requirements-dev.txt --prefer-binary
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "✓ 开发/测试依赖安装成功" -ForegroundColor Green
+        } else {
+            Write-Host "✗ 开发/测试依赖安装失败" -ForegroundColor Red
+            Write-Host "可稍后手动安装: pip install -r requirements-dev.txt" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "⚠ requirements-dev.txt 不存在，跳过" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "⚠ 跳过开发/测试依赖" -ForegroundColor Yellow
+    Write-Host "  提示: 需要跑测试时执行 pip install -r requirements-dev.txt"
 }
 
 # 方法3：验证安装
@@ -169,18 +199,18 @@ try {
 }
 
 Write-Host ""
-Write-Host "验证测试工具（可选）..."
-$testDeps = @("pytest", "pytest_cov")
+Write-Host "验证开发/测试工具（可选，来自 requirements-dev.txt）..."
+$testDeps = @("pytest", "pytest_cov", "xdist")
 foreach ($dep in $testDeps) {
     try {
         python -c "import $dep" 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "✓ $dep" -ForegroundColor Green
         } else {
-            Write-Host "⚠ $dep 未安装（测试工具可选）" -ForegroundColor Yellow
+            Write-Host "⚠ $dep 未安装（pip install -r requirements-dev.txt）" -ForegroundColor Yellow
         }
     } catch {
-        Write-Host "⚠ $dep 未安装（测试工具可选）" -ForegroundColor Yellow
+        Write-Host "⚠ $dep 未安装（pip install -r requirements-dev.txt）" -ForegroundColor Yellow
     }
 }
 
@@ -204,4 +234,6 @@ Write-Host "1. 使用 --no-cache-dir: pip install -r requirements.txt --no-cache
 Write-Host "2. 使用 --prefer-binary: pip install -r requirements.txt --prefer-binary"
 Write-Host "3. 创建新的虚拟环境重新开始"
 Write-Host ""
-Write-Host "注意: 版本号在 requirements.txt 中统一管理，如需升级请修改该文件"
+Write-Host "注意: 依赖版本已全部钉死（==），运行时依赖在 requirements.txt、"
+Write-Host "      开发/测试依赖在 requirements-dev.txt、打包依赖在 requirements-build.txt；"
+Write-Host "      升级时三份文件同步修改。"

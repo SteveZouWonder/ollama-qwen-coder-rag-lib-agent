@@ -9,6 +9,26 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 发布流程
+
+- **依赖钉版本（F10 P0-2）**：`requirements.txt` 的全部直接依赖改为 `==` 精确版本（可选依赖的安装命令注释里
+  也写明版本），`requirements-build.txt`（打包）逐项对齐。新用户 `pip install -r requirements.txt` 不会再拉到
+  不兼容的 llama-index / gradio 新版而启动失败。钉版本时顺带把 setuptools、GitPython、pillow 升到已有修复的
+  版本，`pip-audit` 剩余 5 条均为无修复版且已在 CI ignore 列表中说明理由。
+- **新增 `requirements-dev.txt`（F10 P0-2）**：pytest / pytest-cov / pytest-xdist / flake8 / pylint / bandit /
+  pip-audit 从运行时依赖中移出，通过 `-r requirements.txt` 引用；只运行产品的用户不再被迫安装测试工具链，
+  开发者一条 `pip install -r requirements-dev.txt` 装全。`scripts/install_deps.sh` / `.ps1` 增加「是否安装
+  开发测试依赖」一步，`scripts/verify_deps.sh` 分「运行时」「开发/测试」两段校验，`Makefile` 新增
+  `install` / `install-dev` / `test` 目标，README 安装章节给出三份依赖清单的分工表。
+- **CI 三平台矩阵与 PR 触发（F10 P0-2）**：`ci.yml` 增加 `pull_request` 触发，测试作业矩阵扩到
+  ubuntu / macOS / Windows（Python 3.13），覆盖率统计与 Codecov 上传仅在 ubuntu 执行，其余平台跑
+  `--no-cov` 纯回归；flake8 的语法错误 / 未定义名（E9,F63,F7,F82）改为**阻断**，风格检查仍只告警；
+  pip 缓存目录按平台解析、缓存 key 覆盖全部 `requirements*.txt`。PR 现在能在合并前发现跨平台问题。
+- **归档 v0.1.0（F10 P0-2）**：F8（Agent 模式优化）、F9（Web 工具页改版）、F10 P0-1（命令安全与读边界）
+  等 112 条变更从 `[Unreleased]` 归档为 `v0.1.0`，为两个月的成果提供可下载的 Release。
+
+## [v0.1.0] - 2026-09-09
+
 ### 修复
 
 - **命令安全分级误报（F10 P0-1）**：`execute_command` 的风险关键字由子串匹配改为 **token 级**——命令先按

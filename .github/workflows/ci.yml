@@ -4,113 +4,147 @@ on:
   push:
     branches:
       - master
+  pull_request:
+    branches:
+      - master
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
-    
+    runs-on: ${{ matrix.os }}
+
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.13']
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
+
+    # pip 缓存目录随平台不同（Linux ~/.cache/pip、macOS ~/Library/Caches/pip、
+    # Windows %LOCALAPPDATA%\pip\Cache），先用 pip 自己解析再缓存。
+    - name: Resolve pip cache dir
+      id: pip-cache
+      shell: bash
+      run: echo "dir=$(python -m pip cache dir)" >> "$GITHUB_OUTPUT"
+
     - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        path: ${{ steps.pip-cache.outputs.dir }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
-    
+
     - name: Install dependencies
+      shell: bash
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pylint bandit pip-audit pytest pytest-cov
-        pip install -r requirements.txt
-    
+        # 运行时依赖 + 开发/测试依赖（版本均已钉死，requirements-dev.txt 内含 -r requirements.txt）
+        pip install -r requirements-dev.txt
+
     - name: Code syntax check with Python compiler
+      shell: bash
       run: |
         git ls-files '*.py' | xargs -r python -m py_compile
         echo "✅ Python syntax check passed"
-    
-    - name: Lint with flake8
+
+    - name: Lint with flake8 (blocking - syntax errors and undefined names)
+      shell: bash
       run: |
-        # Stop the build if there are Python syntax errors or undefined names
+        # 语法错误 / 未定义名：阻断构建
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,.venv,build,dist
-        # Exit-zero treats all errors as warnings
+
+    - name: Lint with flake8 (advisory - style)
+      shell: bash
+      run: |
+        # 其余风格问题仅告警，不阻断
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=venv,.venv,build,dist
       continue-on-error: true
-    
+
     - name: Lint with pylint
+      shell: bash
       run: |
         git ls-files '*.py' | xargs -r pylint --exit-zero --output-format=text
       continue-on-error: true
-    
+
     - name: Security check with bandit
+      shell: bash
       run: |
         bandit -r . -f json -o bandit-report.json --exclude ./venv,./.venv,./tests || true
         bandit -r . -lll -i --exclude ./venv,./.venv,./tests
       continue-on-error: false
-    
+
     - name: Check for critical/high security vulnerabilities with pip-audit
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
       run: |
         pip-audit --requirement requirements.txt --format json --output pip-audit-report.json || true
         pip-audit --requirement requirements.txt || echo "⚠️ Some security vulnerabilities found, please review"
       continue-on-error: true
-    
-    - name: Run tests with pytest
+
+    - name: Run tests with pytest (with coverage)
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
       run: |
         pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing --cov-report=html
-    
+
+    - name: Run tests with pytest (no coverage)
+      if: matrix.os != 'ubuntu-latest'
+      shell: bash
+      run: |
+        pytest tests/ -q --no-cov
+
     - name: Check test coverage
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
       run: |
         coverage report --fail-under=80
-    
+
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4
-      if: success()
+      if: success() && matrix.os == 'ubuntu-latest'
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
-    
+
     - name: Upload security reports
       uses: actions/upload-artifact@v4
-      if: always()
+      if: always() && matrix.os == 'ubuntu-latest'
       with:
         name: security-reports
         path: |
           bandit-report.json
           pip-audit-report.json
-    
+
     - name: Upload coverage reports
       uses: actions/upload-artifact@v4
-      if: always()
+      if: always() && matrix.os == 'ubuntu-latest'
       with:
         name: coverage-reports
         path: |
           coverage.xml
           htmlcov/
-    
+
     - name: Summary of results
       if: always()
+      shell: bash
       run: |
-        echo "## 🎯 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎯 CI/CD Pipeline Summary (${{ matrix.os }} / Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### ✅ Completed Steps" >> $GITHUB_STEP_SUMMARY
         echo "- Python syntax check" >> $GITHUB_STEP_SUMMARY
-        echo "- Code linting (flake8, pylint)" >> $GITHUB_STEP_SUMMARY
-        echo "- Security scanning (bandit, safety)" >> $GITHUB_STEP_SUMMARY
-        echo "- Test execution with coverage" >> $GITHUB_STEP_SUMMARY
+        echo "- Code linting (flake8 blocking E9/F63/F7/F82, pylint advisory)" >> $GITHUB_STEP_SUMMARY
+        echo "- Security scanning (bandit, pip-audit)" >> $GITHUB_STEP_SUMMARY
+        echo "- Test execution (coverage uploaded from ubuntu-latest only)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📊 Artifacts" >> $GITHUB_STEP_SUMMARY
         echo "- Security reports uploaded" >> $GITHUB_STEP_SUMMARY
@@ -118,16 +152,16 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
-    
+
     - name: Install pip-audit
       run: |
         python -m pip install --upgrade pip

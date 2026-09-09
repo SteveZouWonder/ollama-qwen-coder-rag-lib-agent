@@ -201,16 +201,27 @@ ollama pull nomic-embed-text:latest
 
 ### 2. 安装依赖
 
+依赖版本**已全部钉死**（`==`），任何机器上装出的环境一致。三份依赖清单各司其职：
+
+| 文件 | 内容 | 谁需要 |
+|---|---|---|
+| `requirements.txt` | 运行时依赖（RAG / Agent / Web / 桌面托盘） | 所有人 |
+| `requirements-dev.txt` | 测试与静态检查：pytest、pytest-cov、pytest-xdist、flake8、pylint、bandit、pip-audit（内含 `-r requirements.txt`） | 要跑测试 / 提 PR 的开发者 |
+| `requirements-build.txt` | PyInstaller 打包用的精简运行时依赖 | 发布流程（`release.yml`） |
+
 **推荐方法：使用专用安装脚本（避免依赖冲突）**
 ```bash
-./scripts/install_deps.sh      # Linux/macOS
+./scripts/install_deps.sh      # Linux/macOS（会询问是否一并安装 OCR / 开发测试依赖）
 .\scripts\install_deps.ps1     # Windows PowerShell
 ```
 
 **标准方法：**
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt          # 只运行产品
+pip install -r requirements-dev.txt      # 开发者：运行时 + 测试/静态检查（一条命令装全）
 ```
+
+装完可用 `bash scripts/verify_deps.sh` 逐包校验导入（运行时与开发依赖分两段输出）。
 
 **如果遇到依赖冲突（如 "resolution-too-deep" 错误）：**
 ```bash
@@ -219,6 +230,9 @@ pip install -r requirements.txt --no-cache-dir
 
 # 或查看详细文档：[依赖冲突故障排除](docs/tutorials/06-troubleshooting.md#依赖冲突问题-resolution-too-deep)
 ```
+
+> 升级依赖：改 `requirements.txt` 后同步 `requirements-build.txt`（打包）与 `requirements-dev.txt`（开发），
+> 再跑 `bash scripts/verify_deps.sh` 与 `pip-audit -r requirements.txt`。
 
 **如果遇到ChromaDB遥测错误：**
 ```bash
@@ -381,7 +395,9 @@ ollama-qwen-coder-rag-lib/
 ├── agent_config.py        # Agent配置管理
 ├── examples/               # 示例代码
 │   └── example.py         # 快速示例
-├── requirements.txt       # 依赖
+├── requirements.txt       # 运行时依赖（全部钉版本）
+├── requirements-dev.txt   # 开发/测试依赖（pytest、flake8、bandit、pip-audit…）
+├── requirements-build.txt # 打包依赖（PyInstaller 发布用）
 ├── data/                  # 文档存放目录
 ├── index_storage/         # 索引持久化存储
 │   ├── chroma_db/         # ChromaDB 向量数据库

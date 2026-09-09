@@ -56,21 +56,22 @@ check_module() {
     fi
 }
 
-# 从 requirements.txt 提取包名并验证
-if [ -f "requirements.txt" ]; then
+# 从依赖文件提取包名并逐个验证（跳过注释、空行与 -r 引用行）
+verify_requirements_file() {
+    local req_file=$1
     while IFS= read -r line; do
-        # 跳过注释和空行
-        if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "$line" ]]; then
+        # 跳过注释、空行与 `-r other.txt` 引用行
+        if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*- ]]; then
             continue
         fi
-        
-        # 提取包名（去除版本要求和注释）
+
+        # 提取包名（去除版本要求和注释；依赖已全部钉版本，主要走 == 分支）
         package_name=$(echo "$line" | sed 's/>=.*//' | sed 's/<.*//' | sed 's/==.*//' | sed 's/~=.*//' | awk '{print $1}')
-        
+
         if [ -n "$package_name" ]; then
             # 转换包名为导入名（例如：python-dotenv -> dotenv）
             import_name=$(echo "$package_name" | sed 's/-/_/g')
-            
+
             # 特殊处理一些包名映射
             case "$package_name" in
                 "python-dotenv") import_name="dotenv" ;;
@@ -78,6 +79,7 @@ if [ -f "requirements.txt" ]; then
                 "duckduckgo-search") import_name="duckduckgo_search" ;;
                 "pytest-cov") import_name="pytest_cov" ;;
                 "pytest-xdist") import_name="xdist" ;;
+                "pip-audit") import_name="pip_audit" ;;
                 "beautifulsoup4") import_name="bs4" ;;
                 "pillow") import_name="PIL" ;;
                 "opencv-python") continue ;; # 跳过opencv-python，导入名复杂
@@ -85,11 +87,15 @@ if [ -f "requirements.txt" ]; then
                 "llama-index-"*) continue ;; # 跳过llama-index插件包，无法直接导入
                 "setuptools"|"wheel") import_name="$package_name" ;; # 保持原名
             esac
-            
+
             # 尝试导入
             check_module "$import_name" "$package_name"
         fi
-    done < requirements.txt
+    done < "$req_file"
+}
+
+if [ -f "requirements.txt" ]; then
+    verify_requirements_file requirements.txt
 else
     echo -e "${YELLOW}⚠ requirements.txt 文件不存在，跳过动态验证${NC}"
     # 回退到硬编码的核心包验证
@@ -111,17 +117,21 @@ else
     echo -e "${YELLOW}⚠ 网络搜索管理器不可用（可能需要安装 duckduckgo-search）${NC}"
 fi
 
-# 测试工具检查
+# 开发/测试工具检查（requirements-dev.txt，仅开发者需要）
 echo ""
-echo "=== 测试工具检查 ==="
-check_module "pytest" "pytest"
-check_module "pytest_cov" "pytest-cov"
-check_module "xdist" "pytest-xdist"
+echo "=== 开发/测试工具检查（requirements-dev.txt，运行产品不需要）==="
+if [ -f "requirements-dev.txt" ]; then
+    verify_requirements_file requirements-dev.txt
+else
+    echo -e "${YELLOW}⚠ requirements-dev.txt 不存在${NC}"
+fi
 
 echo ""
 echo "=== 如果有模块未安装，运行以下命令 ==="
 if [[ "$VIRTUAL_ENV" != "" ]]; then
-    echo "  在虚拟环境中运行: ./scripts/install_deps.sh"
+    echo "  运行时依赖: ./scripts/install_deps.sh"
+    echo "  开发/测试依赖: pip install -r requirements-dev.txt"
 else
     echo "  或创建虚拟环境: python3 -m venv venv && source venv/bin/activate && ./scripts/install_deps.sh"
+    echo "  开发/测试依赖: pip install -r requirements-dev.txt"
 fi

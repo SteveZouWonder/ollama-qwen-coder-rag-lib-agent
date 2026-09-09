@@ -4,7 +4,7 @@
 > [F5 跨平台桌面应用打包与发布](f5-desktop-packaging/)，
 > 这里改为按当前状态维护的精简路线图。原逐周任务清单见 Git 历史。
 
-**当前版本**: v0.0.13（2026-07-20 发布；`[Unreleased]` 见 [CHANGELOG.md](../../CHANGELOG.md)）
+**当前版本**: v0.1.0（2026-09-09 归档，含 F8 / F9 / F10 P0-1 共 112 条变更；`[Unreleased]` 见 [CHANGELOG.md](../../CHANGELOG.md)）
 **默认模型**: `qwen3.5:4b` + `nomic-embed-text`（单一模型架构，按模型规模自动推导 `num_ctx`）
 
 ---

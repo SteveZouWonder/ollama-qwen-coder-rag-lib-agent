@@ -110,12 +110,17 @@ echo -e "${BLUE}步骤 2/4: 从requirements.txt安装依赖${NC}"
 echo "安装依赖（版本号来自requirements.txt）..."
 
 # 先安装数据处理依赖（使用预编译版本，避免构建错误）
+# 版本从 requirements.txt 读取，避免这里装到与钉版本不一致的 numpy/pandas
 echo "步骤 2.1: 安装数据处理依赖..."
-if $PIP_CMD install numpy pandas --prefer-binary; then
+DATA_PACKAGES=$(grep -E '^(numpy|pandas)==' requirements.txt | sed 's/#.*//' | tr -d ' ')
+if [ -z "$DATA_PACKAGES" ]; then
+    DATA_PACKAGES="numpy pandas"
+fi
+if $PIP_CMD install $DATA_PACKAGES --prefer-binary; then
     echo -e "${GREEN}✓ 数据处理依赖安装成功${NC}"
 else
     echo -e "${YELLOW}⚠ 数据处理依赖安装失败，尝试备用方案...${NC}"
-    $PIP_CMD install numpy pandas
+    $PIP_CMD install $DATA_PACKAGES
 fi
 
 # 执行安装并捕获错误码
@@ -157,12 +162,14 @@ if [ "$install_ocr" = "y" ]; then
     # 先安装数据处理依赖（如果有）
     if ! $PYTHON_CMD -c "import pandas" 2>/dev/null; then
         echo "安装数据处理依赖..."
-        $PIP_CMD install numpy pandas --prefer-binary
+        $PIP_CMD install $DATA_PACKAGES --prefer-binary
     fi
     
     # 安装 OCR 核心依赖（Python 3.13 兼容）
-    # 从 requirements.txt 读取 OCR 相关依赖（跳过注释行和行内注释）
-    OCR_PACKAGES=$(grep -E "^[^#]*pytesseract|^[^#]*pymupdf|^[^#]*opencv-python" requirements.txt 2>/dev/null | grep -v "^#" | sed 's/#.*//' | tr -d ' ' || echo "")
+    # OCR 依赖在 requirements.txt 中以注释形式给出安装命令（可选依赖，版本已钉死），
+    # 这里从那行注释里解析出钉版本的包名，保证与 requirements.txt 单一来源一致。
+    OCR_PACKAGES=$(grep -oE "pytesseract==[0-9.]+ +opencv-python==[0-9.]+" requirements.txt 2>/dev/null | head -1 || echo "")
+    # pymupdf 已是核心依赖，无需在此重复安装
     if [ -n "$OCR_PACKAGES" ]; then
         if $PIP_CMD install $OCR_PACKAGES; then
             echo -e "${GREEN}✓ OCR 依赖安装完成（从 requirements.txt）${NC}"
@@ -179,6 +186,30 @@ else
     echo -e "${YELLOW}⚠ 跳过 OCR 依赖安装${NC}"
     echo "  提示: 如需使用 OCR 功能，可以在 requirements.txt 中添加相关依赖后重新运行安装脚本"
     echo "  注意: 当前使用 Python 3.13，PaddleOCR 有兼容性问题，建议使用 Tesseract OCR"
+fi
+
+# 方法2.6：安装开发/测试依赖（可选，requirements-dev.txt）
+echo ""
+echo -e "${BLUE}是否安装开发/测试依赖（requirements-dev.txt）？${NC}"
+echo "包含 pytest / pytest-cov / pytest-xdist / flake8 / pylint / bandit / pip-audit"
+echo "仅在需要跑测试或静态检查时安装；只运行产品可以跳过"
+read -p "是否安装开发/测试依赖? (y/n): " install_dev
+
+if [ "$install_dev" = "y" ]; then
+    echo -e "${BLUE}步骤 2.6/4: 安装开发/测试依赖${NC}"
+    if [ -f "requirements-dev.txt" ]; then
+        if $PIP_CMD install -r requirements-dev.txt --prefer-binary; then
+            echo -e "${GREEN}✓ 开发/测试依赖安装成功${NC}"
+        else
+            echo -e "${RED}✗ 开发/测试依赖安装失败${NC}"
+            echo -e "${YELLOW}可稍后手动安装: pip install -r requirements-dev.txt${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ requirements-dev.txt 不存在，跳过${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ 跳过开发/测试依赖${NC}"
+    echo "  提示: 需要跑测试时执行 pip install -r requirements-dev.txt"
 fi
 
 # 方法3：验证安装
@@ -264,9 +295,10 @@ if $PYTHON_CMD -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>/dev/null | grep -q
 fi
 
 echo ""
-echo "验证测试工具（可选）..."
-$PYTHON_CMD -c "import pytest" 2>/dev/null && echo -e "${GREEN}✓ pytest${NC}" || echo -e "${YELLOW}⚠ pytest未安装（测试工具可选）${NC}"
-$PYTHON_CMD -c "import pytest_cov" 2>/dev/null && echo -e "${GREEN}✓ pytest-cov${NC}" || echo -e "${YELLOW}⚠ pytest-cov未安装（测试工具可选）${NC}"
+echo "验证开发/测试工具（可选，来自 requirements-dev.txt）..."
+$PYTHON_CMD -c "import pytest" 2>/dev/null && echo -e "${GREEN}✓ pytest${NC}" || echo -e "${YELLOW}⚠ pytest未安装（pip install -r requirements-dev.txt）${NC}"
+$PYTHON_CMD -c "import pytest_cov" 2>/dev/null && echo -e "${GREEN}✓ pytest-cov${NC}" || echo -e "${YELLOW}⚠ pytest-cov未安装（pip install -r requirements-dev.txt）${NC}"
+$PYTHON_CMD -c "import xdist" 2>/dev/null && echo -e "${GREEN}✓ pytest-xdist${NC}" || echo -e "${YELLOW}⚠ pytest-xdist未安装（pip install -r requirements-dev.txt）${NC}"
 
 echo ""
 echo -e "${BLUE}=== 安装完成 ===${NC}"
@@ -294,4 +326,6 @@ echo "   python3.13 -m venv venv"
 echo "   source venv/bin/activate"
 echo "   pip install -r requirements.txt"
 echo ""
-echo "注意: 版本号在 requirements.txt 中统一管理，如需升级请修改该文件"
+echo "注意: 依赖版本已全部钉死（==），运行时依赖在 requirements.txt、"
+echo "      开发/测试依赖在 requirements-dev.txt、打包依赖在 requirements-build.txt；"
+echo "      升级时三份文件同步修改，并运行 bash scripts/verify_deps.sh 验证。"
