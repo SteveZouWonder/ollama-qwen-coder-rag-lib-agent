@@ -182,6 +182,18 @@ class TestUserPreference(unittest.TestCase):
         # 应该不再隐藏
         self.assertFalse(pref.is_hidden("/ask"))
 
+    def test_hide_recommendation_expiry_ignores_days_bug(self):
+        """隔天同一时段不应"再次隐藏"：此前用 timedelta.seconds（不含天数），24h10m 前的隐藏会被判为仍隐藏。"""
+        from datetime import timedelta
+
+        pref = UserPreference()
+        pref.hide_recommendation("/ask")
+        pref.hidden_recommendations["/ask"] = datetime.now() - timedelta(days=1, minutes=10)
+        self.assertFalse(pref.is_hidden("/ask"))
+        # 59 分钟前仍隐藏
+        pref.hidden_recommendations["/ask"] = datetime.now() - timedelta(minutes=59)
+        self.assertTrue(pref.is_hidden("/ask"))
+
 
 class TestCommandHistory(unittest.TestCase):
     """测试CommandHistory类"""

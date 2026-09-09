@@ -32,6 +32,14 @@
   - 单 Agent 只流式 `Final Answer:` 之后的文本，`Thought / Action` 的中间协议不会闪现在气泡里。
   - 新环境变量 `LLM_STREAM`（默认 `true`）：设为 `false` 时全部回到整段一次性输出，请求体与旧版完全一致。
 
+### 修复
+
+- **命令推荐器偏好文件被测试改写**：`CommandRecommender(config)` 传入的配置此前没有传到 `LearningEngine`（内部总是用
+  `get_config()` 全局单例），导致注入的 `preference_file` / `learning_enabled=False` 形同虚设——在本机跑一次测试套件就会把
+  用户的 `data/recommender_preferences.json` 改成「不显示解释、最多 10 条」，并让 `test_format_recommendations` 在并行
+  测试下随机失败。现在配置真正下传，`learning_enabled=False` 时隐藏 / 显示偏好只改内存不落盘；测试侧 conftest 把推荐器
+  全局配置隔离到临时目录。顺带修正隐藏推荐的过期判断（`timedelta.seconds` 不含天数，隔天同一时段会"再次隐藏"）。
+
 ### 改进
 
 - **回答可中断（F10 P1-1）**：CLI `Ctrl+C` 与 Web「停止」现在会关闭与模型的 HTTP 连接（先 `shutdown` socket

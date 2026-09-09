@@ -218,6 +218,62 @@ class TestCommandRecommender(unittest.TestCase):
         self.recommender.hide_recommendation("/ask")
         
         self.assertTrue(self.recommender.learning_engine.is_hidden("/ask"))
+
+    # ---- 回归：注入配置必须真正生效，测试不得触碰用户真实偏好文件 ----
+
+    def test_learning_engine_uses_injected_config(self):
+        """CommandRecommender(config) 的配置要传到 LearningEngine（此前被 get_config() 单例覆盖）。"""
+        self.assertIs(self.recommender.learning_engine.config, self.recommender.config)
+        self.assertEqual(
+            self.recommender.learning_engine.config.preference_file,
+            os.path.join(self.temp_dir, "test_pref.json"),
+        )
+
+    def test_hide_does_not_write_when_learning_disabled(self):
+        """learning_enabled=False：隐藏 / 显示偏好只改内存，不落盘（也不会写 data/recommender_preferences.json）。"""
+        real_pref = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "data", "recommender_preferences.json",
+        )
+        before = os.path.getmtime(real_pref) if os.path.exists(real_pref) else None
+
+        self.recommender.hide_recommendation("/ask")
+        self.recommender.update_display_preferences(show_explanations=False, max_recommendations=10)
+        self.recommender.reset_preferences()
+
+        self.assertFalse(os.path.exists(os.path.join(self.temp_dir, "test_pref.json")))
+        after = os.path.getmtime(real_pref) if os.path.exists(real_pref) else None
+        self.assertEqual(before, after, "测试改写了用户真实的 data/recommender_preferences.json")
+
+    def test_hide_writes_injected_file_when_learning_enabled(self):
+        """learning_enabled=True：落盘到注入的 preference_file，且新实例能读回隐藏状态。"""
+        config = RecommendationConfig(
+            preference_file=os.path.join(self.temp_dir, "enabled_pref.json"),
+            enabled=True, learning_enabled=True,
+        )
+        rec = CommandRecommender(config)
+        rec.hide_recommendation("/ask")
+        self.assertTrue(os.path.exists(config.preference_file))
+
+        rec2 = CommandRecommender(config)
+        self.assertTrue(rec2.learning_engine.is_hidden("/ask"))
+        # 被隐藏的推荐会从格式化结果中过滤掉——这正是 xdist 下 test_format_recommendations 随机失败的机制
+        from src.command_recommender.types import Recommendation, RecommendationStrength
+        only_ask = [Recommendation(command="/ask", description="d", strength=RecommendationStrength.STRONG, score=0.7)]
+        self.assertEqual(rec2.format_recommendations(only_ask, use_rich=False), "")
+
+    def test_format_recommendations_unaffected_by_global_preferences(self):
+        """全局 get_config() 的偏好文件里即使隐藏了 /ask，注入了独立配置的实例也不受影响。"""
+        from src.command_recommender.config import get_config
+        from src.command_recommender.types import Recommendation, RecommendationStrength, UserPreference
+
+        pref = UserPreference()
+        pref.hide_recommendation("/ask")
+        get_config().save_preference(pref)  # conftest 已把全局单例指向临时文件
+
+        rec = CommandRecommender(self.recommender.config)
+        only_ask = [Recommendation(command="/ask", description="d", strength=RecommendationStrength.STRONG, score=0.7)]
+        self.assertGreater(len(rec.format_recommendations(only_ask, use_rich=False)), 0)
     
     def test_update_display_preferences(self):
         """测试更新显示偏好"""

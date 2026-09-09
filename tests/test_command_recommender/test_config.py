@@ -127,18 +127,20 @@ class TestConfigFunctions(unittest.TestCase):
         self.assertIsNot(config1, config2)
     
     def test_environment_override_default_config(self):
-        """测试环境变量覆盖默认配置"""
-        os.environ["RECOMMENDER_ENABLED"] = "false"
-        
-        try:
-            reset_config()
-            config = get_config()
-            
-            self.assertFalse(config.enabled)
-        finally:
-            if "RECOMMENDER_ENABLED" in os.environ:
-                del os.environ["RECOMMENDER_ENABLED"]
-            reset_config()
+        """测试环境变量覆盖默认配置
+
+        不再直接 reset 全局单例 + 改 os.environ（xdist 并行时会漂到同一 worker 的其它测试）：
+        用 ``unittest.mock.patch.dict`` 限定环境变量作用域，并只调用 ``default_config()`` 构造新实例。
+        """
+        from unittest.mock import patch
+        from src.command_recommender.config import default_config
+
+        with patch.dict(os.environ, {"RECOMMENDER_ENABLED": "false"}):
+            config = default_config()
+
+        self.assertFalse(config.enabled)
+        # 全局单例不受影响
+        self.assertTrue(get_config().enabled)
 
 
 if __name__ == '__main__':

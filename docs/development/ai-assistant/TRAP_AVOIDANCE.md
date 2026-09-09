@@ -79,7 +79,9 @@
 | 陷阱 | 说明 |
 |---|---|
 | 真连 Ollama | `rag_rerank._llm_complete`、`intent_router._llm_complete`、子 Agent 的 `requests.post` 会直连本机；conftest 已拦截，新增直连点要补。 |
-| 污染真实数据 | `file_metadata` / `knowledge_graph` 单例默认写 `.cerebro/`；conftest 已隔离，新增持久化点要补。 |
+| 污染真实数据 | `file_metadata` / `knowledge_graph` 单例默认写 `.cerebro/`，`command_recommender.config.get_config()` 默认写 `data/recommender_preferences.json`；conftest 已隔离（`isolate_*` fixture），新增持久化点要补。 |
+| 模块内 `get_config()` 单例绕过依赖注入 | 构造函数接受 `config` 却在内部子对象里再调 `get_config()`（`LearningEngine` 曾如此），注入的临时路径形同虚设：测试写用户真实文件，且经共享文件跨 worker 耦合——`test_format_recommendations` 在 xdist 下随机失败就是这样来的。子对象要显式接收父对象的 `config`；`learning_enabled=False` 之类的"只读"开关要真正拦住落盘。 |
+| xdist 顺序依赖 | 顺序单跑通过、`-n 4` 偶发失败 ⇒ 先找跨测试共享的**文件 / 环境变量 / 模块级单例**，再看 `reset_*()` + `os.environ[...] =` 这类改全局状态的测试（用 `monkeypatch` / `patch.dict` 限定作用域）。 |
 | 收集错误被忽略 | 改导出名后某测试文件 ImportError，全套仍"通过"。看 `--collect-only` 的 error 计数。 |
 | token 上限测试 | 改 `SYSTEM_PROMPT_TEMPLATE` 后 builtin ≤1500 token 失败；测试里需 `CODE_AGENT_SKILLS=off` 隔离 Skills 层。 |
 

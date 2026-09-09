@@ -114,6 +114,7 @@ P3-1 Tesseract + README
 | 手测 CLI `/agent` | `--agent "读取 README.md 的前 5 行并原样列出"`：Step 1 `get_current_dir` → Step 2 `read_file` → Final Answer 渲染 README 首部，ReAct 协议经 OpenAI 兼容后端解析正常 |
 | 手测 CLI `/config` `/model` `/model list` | 输出见下 |
 | 手测 Web | `LLM_PROVIDER=openai … a.launch(server_port=7862)` + Playwright：对话页 RAG 检索流式（帧 1 @1.1s、帧 2 @26.4s、帧 3 @27.5s 气泡增长，状态行「✍️ 生成回答中… · 已用时 27 秒」），最终「✅ 完成 · 用时 32 秒 · 实际模式: RAG 检索 · 🔍 引用 3 处已核验」；系统页「模型」tab 状态行 `模型: qwen3.5:4b · 后端 openai @ http://localhost:11434 · num_ctx / 思考模式由后端决定`，「运行环境」tab 顶部 `LLM 后端 openai（OpenAI 兼容；num_ctx / 思考模式由后端决定）/ 后端地址 / 后端状态 ✅ 可达 / API Key 未设置（本地服务通常无需）/ Ollama 地址（嵌入模型）`。截图见下 |
+| 全量并行偶发失败 | 首轮 `-n 4` 中 `tests/test_command_recommender/test_engine.py::test_format_recommendations` 失败一次、重跑通过。**已定位为既有缺陷并修复**（同分支后续提交）：`LearningEngine` 忽略注入配置、总是用 `get_config()` 全局单例，测试 `hide_recommendation("/ask")` 直接写用户真实的 `data/recommender_preferences.json`，另一 worker 的 `test_format_recommendations` 读到 `/ask` 已隐藏 → 输出为空。写入 `/ask` 隐藏记录后单跑可 100% 复现。修复后全量 `-n 4` 连跑 3 次 3395 passed，真实文件 mtime 不变。 |
 | 首次手测暴露的缺陷 | 未加 `reasoning_effort` 时：`OpenAICompatClient.chat(..., num_predict=60)` 返回空串（60 token 全部是 `reasoning`）；CLI `/ask` 的 RAG 规划调用 `Request timed out.`（120s）后整条问答 >400s 未完成。加映射后全部恢复（见实现记录「思考模式映射」） |
 
 Web 截图（`LLM_PROVIDER=openai`）：

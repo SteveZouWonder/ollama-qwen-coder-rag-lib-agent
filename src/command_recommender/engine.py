@@ -32,7 +32,8 @@ class CommandRecommender:
         self.state_analyzer = StateAnalyzer()
         self.history_analyzer = HistoryAnalyzer(max_history=self.config.history_max_size)
         self.context_manager = ContextManager()
-        self.learning_engine = LearningEngine()
+        # 把同一份配置传给学习引擎：偏好文件路径 / learning_enabled 才对注入方生效
+        self.learning_engine = LearningEngine(self.config)
         self.display_formatter = DisplayFormatter(self.learning_engine.preference)
         
         # 系统状态

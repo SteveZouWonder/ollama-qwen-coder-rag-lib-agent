@@ -189,6 +189,39 @@ def isolate_file_metadata(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="function")
+def isolate_recommender_preferences(tmp_path_factory):
+    """全局fixture：把命令推荐器的全局配置单例指向临时偏好文件。
+
+    ``command_recommender.config.get_config()`` 的默认 ``preference_file`` 是项目根目录
+    ``data/recommender_preferences.json``（用户真实数据）。此前 ``LearningEngine`` 忽略注入配置、
+    总是用该单例，测试里 ``hide_recommendation`` / ``update_display_preferences`` 会直接改写用户文件，
+    并让 ``test_format_recommendations`` 在 xdist 并行下随机失败（另一 worker 刚隐藏了 ``/ask``）。
+    产品侧已修（``LearningEngine(config)``），这里再做一层防御：任何 ``get_config()`` 调用（含
+    ``query_interface`` 无参构造 ``CommandRecommender()``）都拿到临时文件，测试后恢复并 ``reset_config``。
+    ``command_recommender`` 与 ``src.command_recommender`` 是两份模块对象（两条 sys.path），都要隔离。
+    """
+    mods = []
+    for name in ("command_recommender.config", "src.command_recommender.config"):
+        try:
+            mods.append(importlib.import_module(name))
+        except Exception:  # noqa: BLE001
+            continue
+    if not mods:
+        yield
+        return
+
+    tmp_dir = tmp_path_factory.mktemp("recommender_prefs")
+    saved = [(m, getattr(m, "_global_config", None)) for m in mods]
+    for m in mods:
+        m._global_config = m.RecommendationConfig(preference_file=str(tmp_dir / "preferences.json"))
+    try:
+        yield
+    finally:
+        for m, old in saved:
+            m._global_config = old
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_knowledge_graph(tmp_path_factory):
     """全局fixture：将知识图谱全局单例隔离到临时目录。
 

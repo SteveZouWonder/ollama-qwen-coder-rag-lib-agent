@@ -121,9 +121,9 @@ class UserPreference:
         if command not in self.hidden_recommendations:
             return False
         
-        # 1小时后自动取消隐藏
+        # 1小时后自动取消隐藏（用 total_seconds：timedelta.seconds 不含天数，隔天同一时段会"再次隐藏"）
         hide_time = self.hidden_recommendations[command]
-        return (datetime.now() - hide_time).seconds < 3600
+        return (datetime.now() - hide_time).total_seconds() < 3600
 
 
 @dataclass
