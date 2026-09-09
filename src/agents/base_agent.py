@@ -9,6 +9,11 @@ import time
 import logging
 from .agent_types import AgentTask, AgentResult, AgentMessage, AgentType, AgentState
 
+try:  # 共享层的自动确认闸门（agent_tools 不可用时退化为本地默认值）
+    from agent_tools import AUTO_CONFIRM_RISK_LEVELS as _SHARED_AUTO_CONFIRM_RISK_LEVELS
+except ImportError:  # pragma: no cover - 仅在裁剪部署缺少 agent_tools 时触发
+    _SHARED_AUTO_CONFIRM_RISK_LEVELS = ("low", "medium")
+
 
 class BaseAgent(ABC):
     """Agent基类，定义所有Agent的通用接口和行为"""
@@ -294,8 +299,9 @@ class ReActDelegateAgent(BaseAgent):
         tools = self.config.get("allowed_tools")
         return set(tools) if tools else set(self.ALLOWED_TOOLS)
 
-    # execute_command 允许自动放行的风险等级（更高等级一律拒绝）
-    AUTO_CONFIRM_RISK_LEVELS = ("low", "medium")
+    # execute_command 允许自动放行的风险等级（更高等级一律拒绝）。
+    # 与共享层 agent_tools.AUTO_CONFIRM_RISK_LEVELS 同一口径，避免两处漂移。
+    AUTO_CONFIRM_RISK_LEVELS = _SHARED_AUTO_CONFIRM_RISK_LEVELS
 
     def _auto_confirm(self, evt: Dict[str, Any]) -> bool:
         """子 Agent 无交互界面，确认策略必须是确定性的：

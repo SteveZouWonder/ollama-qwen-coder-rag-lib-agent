@@ -174,7 +174,8 @@ except ImportError:
 from config import Config, DATA_DIR, INDEX_DIR, LLM_MODEL, OLLAMA_BASE_URL
 from rag_engine import RAGEngine, build_knowledge_base
 from react_engine import ReActEngine
-from agent_tools import registry, CommandSafetyChecker, set_rag_engine
+from agent_tools import (registry, CommandSafetyChecker, set_rag_engine,
+                         auto_confirm_allows, HIGH_RISK_CONFIRM_HINT)
 from document_loader import load_documents
 import rag_pipeline
 
@@ -306,7 +307,8 @@ TUTORIAL_TEXT = """
 2. 🤖 ReAct Agent
    基于 Ollama + ReAct 架构的代码助手。
    自动读写文件、执行命令、搜索代码、多步推理。
-   带安全护栏：危险命令自动拦截，修改命令需确认。
+   带安全护栏：危险命令自动拦截，修改命令需确认；读写文件限于允许目录
+   （工作目录 + WRITE_ALLOWED_DIRS / READ_ALLOWED_DIRS + 已入库文档所在目录，/config 可查）。
 
 快速上手示例：
 
@@ -340,6 +342,7 @@ TUTORIAL_TEXT = """
   /agent     进入 Agent 任务模式
   /multi     多 Agent 协作模式
   /tools     查看所有可用工具
+  /config    显示运行配置（含允许读 / 写目录）
   /add       添加文档到知识库
   /stats     知识库统计
   /sources   显示上次回答的来源
@@ -620,6 +623,7 @@ def print_help():
   /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
   /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
   /tools             查看所有可用工具及安全等级
+  /config            显示运行配置（模型 / 自动确认 / 允许读写目录 / 数据与索引目录）
   /add <path>        添加文档到知识库（PDF/MD/TXT/代码等；代码按函数/类切分，来源带 符号·行号）
   /stats             显示知识库统计
   /sources           显示上次知识库回答的来源
@@ -628,7 +632,7 @@ def print_help():
   /summary           显示本次 Agent 执行步骤摘要
   /file <path>       快速读取文件（不经过模型）
   /write <path>      交互式写入文件模式
-  /exec <cmd>        快速执行命令（走安全确认流程）
+  /exec <cmd>        快速执行命令（走安全确认流程；high 风险即使开了自动确认也仍需确认）
   /pwd               显示当前工作目录
   /cd <path>         切换当前工作目录
   /model             显示当前模型信息（含是否已加载、驻留大小）
@@ -896,6 +900,8 @@ def parse_command(user_input: str) -> ParsedCommand:
         return ParsedCommand("tutorial", user_input)
     if user_input == "/tools":
         return ParsedCommand("tools", user_input)
+    if user_input == "/config":
+        return ParsedCommand("config", user_input)
     if user_input == "/stats":
         return ParsedCommand("stats", user_input)
     if user_input == "/sources":
@@ -1065,7 +1071,7 @@ def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
     cmd_type = parsed.cmd_type
 
     # 纯命令，不走任何引擎
-    if cmd_type in ("help", "tutorial", "tools", "stats", "sources",
+    if cmd_type in ("help", "tutorial", "tools", "config", "stats", "sources",
                      "clear", "history", "summary", "reset", "context", "compact",
                      "pwd", "cd", "model", "think", "auto", "quit", "empty", "unknown_cmd",
                      "generate_skills", "snapshot_list", "snapshot_create",
@@ -1492,7 +1498,11 @@ def handle_exec(ctx, parsed):
     if safety["is_dangerous"]:
         console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
         return False
-    if safety["needs_confirm"] and not Config.AUTO_CONFIRM:
+    # AUTO_CONFIRM 只放行 low / medium；high 仍需人工确认（F10 P0-1-c）
+    if safety["needs_confirm"] and not (Config.AUTO_CONFIRM and auto_confirm_allows(safety)):
+        if Config.AUTO_CONFIRM:
+            console.print(f"[yellow]{HIGH_RISK_CONFIRM_HINT}"
+                          f"（自动确认只放行 low / medium）[/yellow]")
         try:
             ans = console.input("确认执行? (y/n): ").strip().lower()
         except (EOFError, KeyboardInterrupt):

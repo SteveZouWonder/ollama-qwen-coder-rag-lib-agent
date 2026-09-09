@@ -597,11 +597,18 @@ Agent 会自动：
 
 **命令安全分级**（`execute_command`）：`ls/cat/git status` 等只读命令 → low 免确认；
 `pip/npm/brew/apt install`、`git push/commit/reset/checkout/rebase/merge`、`python x.py`、
-`node x.js`、`make`、`docker run/exec` → **medium 需确认**；`rm`、`drop`、`curl … | sh|bash` →
-**high 需确认**；`rm -rf /`、`mkfs`、`sudo rm` 等 → critical 直接拦截。
-`write_file` / `add_to_knowledge_base` 只允许操作**当前工作目录**或 `WRITE_ALLOWED_DIRS`
-（冒号分隔）内的路径，其余返回 `[错误] 路径超出允许范围`——要让 Agent 入库项目外的 PDF/图片，
-先 `export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads`。
+`node x.js`、`make`、`docker run/exec`、`mv/cp/chmod/chown` → **medium 需确认**；
+`rm`、`drop`、`curl … | sh|bash` → **high 需确认**；`rm -rf /`、`mkfs`、`sudo rm` 等 → critical 直接拦截。
+关键字按**子命令首 token** 匹配，`pip show models`、`ls performance/`、`git log --format=%H`
+不会再因含 `del` / `rm` / `format` 子串被误判为高风险；`ls | xargs rm` 仍判 high。
+`CODE_AGENT_AUTO_CONFIRM=true`（或 `--yes`）只免除 low / medium，**high / critical 一律仍需人工确认**。
+
+**路径边界**：`write_file` / `add_to_knowledge_base` 只允许操作**当前工作目录**或
+`WRITE_ALLOWED_DIRS`（冒号分隔）内的路径；`read_file` / `list_directory` / `search_files`（含 CLI
+`/file`）只允许读**写允许目录 + `READ_ALLOWED_DIRS` + 已入库文档所在目录**，越界返回
+`[错误] 路径超出允许范围`。要让 Agent 入库项目外的 PDF/图片先
+`export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads`；只需读取则用
+`export READ_ALLOWED_DIRS=~/Documents`。当前允许范围可用 CLI `/config` 或 Web「系统 → 运行环境」查看。
 
 `query_knowledge_base` 与 RAG 模式走同一条管道（相关性阈值 + 模型判定），返回「答案 + 相关性
 结论 + top-3 片段原文（含文件名）」；知识库无相关内容时明确返回 `[知识库无相关内容]`，Agent 会
@@ -682,9 +689,10 @@ ResultIntegrator：LLM 综合为面向用户的回答 + 统计 + 合并来源（
 | `/knowledge-summary` | RAG | 查看知识库文档摘要 |
 | `/file <路径>` | Agent | 快速读取文件 |
 | `/write <路径>` | Agent | 交互式写入文件 |
-| `/exec <命令>` | Agent | 执行命令（安全确认） |
+| `/exec <命令>` | Agent | 执行命令（安全确认；high 风险即使开了自动确认也仍需确认） |
 | `/search <关键字>` | Agent | 搜索代码文件 |
 | `/tools` | - | 查看所有工具 |
+| `/config` | - | 🆕 显示运行配置（模型 / 自动确认 / **允许读目录 · 允许写目录** / 数据与索引目录） |
 | `/history` | Agent | 对话历史 |
 | `/summary` | Agent | 执行步骤摘要 |
 | `/clear` | - | 清屏 |
@@ -920,11 +928,19 @@ orchestrator = AgentOrchestrator(config)
 |----------|------|------|
 | **critical** | 自动拦截 | `rm -rf /`, `dd if=/dev/zero`, `sudo rm` |
 | **high** | 询问确认 | `rm file`, `del file`, `curl … \| sh`, `wget … \| bash` |
-| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `pip/npm/brew/apt install`, `git push/commit/reset/checkout/rebase/merge`, `python x.py`, `node x.js`, `make`, `docker run/exec` |
-| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest`, `python -m pytest` |
+| **medium** | 询问确认 | `mv`, `cp`, `chmod`, `chown`, `tee`, `dd`, `sed -i`, `pip/npm/brew/apt install`, `git push/commit/reset/checkout/rebase/merge`, `python x.py`, `node x.js`, `make`, `docker run/exec` |
+| **low** | 自动执行 | `ls`, `cat`, `git status`, `pytest`, `python -m pytest`, `pip show`, `git log --format=%H` |
 
-使用 `--yes` 参数可跳过所有确认（仅自动化脚本使用）。`write_file` / `add_to_knowledge_base`
-另受路径边界约束：只能操作当前工作目录或 `WRITE_ALLOWED_DIRS` 内的文件。
+分级按**子命令首 token**（剥掉 `sudo` / `env VAR=` / `xargs` 等前缀）匹配，不做子串匹配，
+所以 `pip show models`、`ls performance/`、`python rm_all.py` 不会被误判；`ls | xargs rm`、
+`sqlite3 a.db "DROP TABLE t"` 仍判 high。
+
+`--yes` / `CODE_AGENT_AUTO_CONFIRM=true` 只跳过 **low / medium** 的确认；high 仍需人工确认
+（无交互场景返回 `[提示] 高风险命令需人工确认`），critical 始终拦截。
+
+路径边界：`write_file` / `add_to_knowledge_base` 只能操作当前工作目录或 `WRITE_ALLOWED_DIRS`
+内的文件；`read_file` / `list_directory` / `search_files` 只能读「写允许目录 + `READ_ALLOWED_DIRS`
++ 已入库文档所在目录」。用 `/config`（CLI）或「系统 → 运行环境」（Web）查看当前允许范围。
 
 ### 内容安全防护 ⚡
 
@@ -1058,6 +1074,9 @@ export MAX_FORMAT_RETRIES=2
 export OBSERVATION_MAX_CHARS=3000
 # write_file / add_to_knowledge_base 允许操作的额外目录（冒号分隔；当前工作目录始终允许）
 export WRITE_ALLOWED_DIRS=~/Documents:~/Downloads
+# read_file / list_directory / search_files 允许读取的额外目录（冒号分隔）；
+# 实际允许读取 = 上面的写允许目录 ∪ READ_ALLOWED_DIRS ∪ 已入库文件所在目录
+export READ_ALLOWED_DIRS=~/Documents
 # RAG 推理：逐片段 rerank 方式 llm（默认，一次模型调用）| cross-encoder（需 pip install sentence-transformers，
 # 未安装自动回退 llm）；cross-encoder 模型名；hybrid（向量 + BM25）召回开关与自动关闭的块数上限
 export RERANKER=llm

@@ -28,7 +28,7 @@
 
 | 优先级 | 内容 | 文档 |
 |---|---|---|
-| 高 | F10 P0：命令安全分级修正（token 级匹配、读路径边界、`AUTO_CONFIRM` 不放行 high）；依赖钉版本 + `requirements-dev.txt`、CI PR 触发与三平台矩阵、CHANGELOG 归档发版 v0.1.0 | [F10](f10-hardening/) |
+| 高 | F10 P0：~~命令安全分级修正（token 级匹配、读路径边界、`AUTO_CONFIRM` 不放行 high）~~ **P0-1 已完成 2026-09-09**；依赖钉版本 + `requirements-dev.txt`、CI PR 触发与三平台矩阵、CHANGELOG 归档发版 v0.1.0（P0-2 待做） | [F10](f10-hardening/) |
 | 中高 | F10 P1：真流式输出（Web token 事件 / CLI rich Live、可中断）；LLM 后端抽象层（Ollama / OpenAI 兼容，接入 vLLM / LM Studio）；RAG 评测集与基准脚本 | [F10](f10-hardening/) |
 | 中 | F10 P2：BM25 持久化增量 + 混合检索关闭可见 + 并发锁与 Ollama 限流；入口层拆分（`web/services/`、`web/handlers/`、`cli/`，纯重构） | [F10](f10-hardening/) |
 | 低 | F10 P3：Tesseract 跨平台探测与缺失提示（合并原残留小项）、README 瘦身 | [F10](f10-hardening/) |
@@ -51,4 +51,4 @@
 
 ---
 
-**最后更新**: 2026-09-08（F10 立项）
+**最后更新**: 2026-09-09（F10 P0-1 完成）

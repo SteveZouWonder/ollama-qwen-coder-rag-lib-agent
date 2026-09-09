@@ -11,8 +11,18 @@ from agent_tools import (
 )
 
 
+@pytest.fixture
+def allow_read_temp_dir(temp_dir, monkeypatch):
+    """F10 P0-1-b 后读操作有路径边界：临时目录不在 cwd 内，需经 READ_ALLOWED_DIRS 放行。"""
+    monkeypatch.setenv("READ_ALLOWED_DIRS", str(temp_dir))
+
+
 class TestReadFile:
     """测试 read_file"""
+
+    @pytest.fixture(autouse=True)
+    def _allow_temp_dir(self, allow_read_temp_dir):
+        pass
 
     def test_read_existing_file(self, temp_dir):
         path = temp_dir / "test.txt"
@@ -124,6 +134,10 @@ class TestWriteFile:
 class TestListDirectory:
     """测试 list_directory"""
 
+    @pytest.fixture(autouse=True)
+    def _allow_temp_dir(self, allow_read_temp_dir):
+        pass
+
     def test_list_existing_dir(self, temp_dir):
         (temp_dir / "file1.txt").write_text("a")
         (temp_dir / "file2.py").write_text("b")
@@ -168,6 +182,10 @@ class TestListDirectory:
 
 class TestSearchFiles:
     """测试 search_files"""
+
+    @pytest.fixture(autouse=True)
+    def _allow_temp_dir(self, allow_read_temp_dir):
+        pass
 
     def test_search_finds_match(self, temp_dir):
         (temp_dir / "a.py").write_text("def hello():\n    pass\n", encoding="utf-8")

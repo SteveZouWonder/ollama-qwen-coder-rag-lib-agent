@@ -1114,6 +1114,22 @@ class TestNewFormatters:
         assert "| 自校验（RAG_SELF_CHECK） | 关闭 |" in out
         assert "| 自校验（RAG_SELF_CHECK） | 开启 |" in app.format_env_info({"self_check": True})
 
+    def test_format_env_info_allowed_dirs(self):
+        """F10 P0-1-d：系统页显示允许读 / 写目录；为空时提示对应环境变量。"""
+        out = app.format_env_info({"read_allowed_dirs": ["/w", "/docs"], "write_allowed_dirs": ["/w"]})
+        assert "| 允许读目录 | `/w` · `/docs` |" in out
+        assert "| 允许写目录 | `/w` |" in out
+        empty = app.format_env_info({"cwd": "/w"})
+        assert "READ_ALLOWED_DIRS" in empty and "WRITE_ALLOWED_DIRS" in empty
+        # 目录很多时折叠（已入库文档目录会累积）
+        many = app.format_env_info({"read_allowed_dirs": [f"/d{i}" for i in range(9)]})
+        assert "…（共 9 个）" in many and "`/d8`" not in many
+
+    def test_format_env_info_auto_confirm_scope(self):
+        """F10 P0-1-c：自动确认开启时说明只放行 low / medium。"""
+        assert "开（只放行 low / medium）" in app.format_env_info({"auto_confirm_env": True})
+        assert "| 自动确认（环境变量） | 关 |" in app.format_env_info({"auto_confirm_env": False})
+
     def test_format_stats_cards(self):
         assert "获取统计失败" in app.format_stats_cards({"error": "x"})
         out = app.format_stats_cards({"total_documents": 5, "embed_model": "e", "chunk_size": 1, "chunk_overlap": 0, "top_k": 3}, file_count=2)

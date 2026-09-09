@@ -3,10 +3,11 @@
 Agent 工具链实现 - 带安全确认 + RAG 知识库集成
 """
 import os
+import shlex
 import subprocess
 import json
 import re
-from typing import Dict, Any, Callable, List
+from typing import Any, Callable, Dict, List, Optional
 
 # ========== RAG 引擎引用（由外部注入）==========
 _rag_engine = None
@@ -96,10 +97,16 @@ class CommandSafetyChecker:
 
     风险分级（由高到低）：
     - ``critical``：匹配 ``DANGEROUS_PATTERNS``，直接拦截不执行；
-    - ``high``：匹配 ``HIGH_PATTERNS``（如 ``curl … | sh`` 远程脚本直执行）或含删除类关键字，需确认；
+    - ``high``：匹配 ``HIGH_PATTERNS``（如 ``curl … | sh`` 远程脚本直执行）或**子命令首 token**
+      属于破坏性命令（``HIGH_COMMANDS``），需确认；
     - ``medium``：匹配 ``MEDIUM_PATTERNS``（安装依赖、git 写操作、运行脚本、make、docker run/exec）
-      或含修改类关键字，需确认；
-    - ``low``：只读命令或其余命令，免确认。
+      或**子命令首 token**属于修改类命令（``MEDIUM_COMMANDS``），需确认；
+    - ``low``：只读命令（全部子命令都只读）或其余命令，免确认。
+
+    关键字匹配为 **token 级**（F10 P0-1-a）：命令先按 ``|`` / ``&&`` / ``||`` / ``;``
+    切成子命令，各取首 token（剥掉 ``sudo`` / ``env VAR=`` / ``xargs`` 等透明前缀、
+    取 basename）后再比对关键字集合。因此 ``pip show models``、``ls performance/``、
+    ``git log --format=%H`` 不会再因含 ``del`` / ``rm`` / ``format`` 子串被误判。
     """
 
     DANGEROUS_PATTERNS = [
@@ -138,6 +145,155 @@ class CommandSafetyChecker:
         r"^tree\b", r"^file\b", r"^stat\b",
     ]
 
+    # ---------- token 级关键字集合（F10 P0-1-a）----------
+
+    # 子命令分隔符：其后的 token 视为新子命令的首 token
+    SUBCOMMAND_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "|&"})
+
+    # 透明前缀：本身不是"要执行的命令"，剥掉后继续看下一个 token
+    TRANSPARENT_PREFIXES = frozenset({
+        "sudo", "doas", "env", "xargs", "nohup", "time", "command", "builtin", "exec", "nice", "ionice",
+    })
+
+    # 透明前缀的带值选项：其后一个 token 是选项值而非命令名（如 ``sudo -u root rm x``）
+    PREFIX_FLAGS_WITH_VALUE = frozenset({
+        "-u", "-g", "-p", "-n", "-P", "-I", "-i", "-d", "-a", "-r", "-s", "-C", "-L", "-D",
+        "--user", "--group", "--prompt", "--max-procs", "--max-args", "--replace", "--delimiter",
+    })
+
+    # 首 token 命中即 high：破坏性删除 / 格式化
+    HIGH_COMMANDS = frozenset({
+        "rm", "rmdir", "del", "erase", "rd", "drop", "truncate", "format", "mkfs", "shred",
+    })
+
+    # 首 token 命中即 medium：会修改文件 / 权限但不具破坏性
+    MEDIUM_COMMANDS = frozenset({"mv", "cp", "chmod", "chown", "tee", "dd"})
+
+    # 需要特定参数才算 medium 的命令：命令名 → 必须出现的参数
+    MEDIUM_COMMANDS_WITH_FLAG = {"sed": "-i"}
+
+    # SQL 客户端：其后的 token 里出现 SQL 写关键字才计入（避免把 "insert" 当命令名）
+    SQL_CLIENTS = frozenset({"sqlite3", "sqlite", "psql", "mysql", "mariadb", "mongosh", "duckdb"})
+    SQL_HIGH_KEYWORDS = frozenset({"drop", "truncate"})
+    SQL_MEDIUM_KEYWORDS = frozenset({"insert", "update", "delete", "alter", "replace"})
+
+    # 把下一个 token 当作嵌套命令 / SQL 载荷的参数
+    INLINE_SCRIPT_FLAGS = frozenset({"-c", "-e", "--command", "--execute"})
+
+    _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+    @classmethod
+    def _tokenize(cls, command: str) -> List[str]:
+        """分词。``shlex``（保留引号语义、把 ``|`` / ``&&`` 切成独立 token）失败时回退空白切分。"""
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            return list(lexer)
+        except ValueError:
+            return [t for t in re.split(r"\s+", command.strip()) if t]
+
+    @classmethod
+    def _split_subcommands(cls, tokens: List[str]) -> List[List[str]]:
+        """按管道 / 逻辑连接符把 token 列表切成子命令。"""
+        groups: List[List[str]] = [[]]
+        for tok in tokens:
+            if tok in cls.SUBCOMMAND_SEPARATORS:
+                groups.append([])
+            else:
+                groups[-1].append(tok)
+        return [g for g in groups if g]
+
+    @classmethod
+    def _head(cls, tokens: List[str]) -> str:
+        """取子命令真正的命令名：剥掉透明前缀与 ``VAR=value`` 赋值，再取 basename、转小写。"""
+        skip_next = False
+        for tok in tokens:
+            if skip_next:  # 上一个是带值选项，本 token 是它的值
+                skip_next = False
+                continue
+            base = os.path.basename(tok).lower()
+            if base in cls.TRANSPARENT_PREFIXES:
+                continue
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
+                continue
+            if tok.startswith("-"):  # 透明前缀自己的选项（如 sudo -u root）
+                skip_next = tok.lower() in cls.PREFIX_FLAGS_WITH_VALUE
+                continue
+            return base
+        return ""
+
+    @classmethod
+    def _sql_risk(cls, head: str, rest: List[str]) -> Optional[str]:
+        """SQL 写操作风险：仅在 SQL 客户端或带 ``-c`` / ``-e`` 载荷的命令中判定。"""
+        has_inline = any(t.lower() in cls.INLINE_SCRIPT_FLAGS for t in rest)
+        if head not in cls.SQL_CLIENTS and not has_inline:
+            return None
+        words = {w.lower() for tok in rest for w in re.findall(r"[A-Za-z_]+", tok)}
+        if words & cls.SQL_HIGH_KEYWORDS:
+            return "high"
+        if words & cls.SQL_MEDIUM_KEYWORDS:
+            return "medium"
+        return None
+
+    @classmethod
+    def _subcommand_risk(cls, tokens: List[str], depth: int = 0) -> Optional[str]:
+        """单个子命令的关键字风险（``None`` 表示关键字集合未命中）。"""
+        head = cls._head(tokens)
+        if not head:
+            return None
+        rest = [t for t in tokens if os.path.basename(t).lower() != head]
+        risks: List[str] = []
+
+        if head in cls.HIGH_COMMANDS:
+            risks.append("high")
+        if head in cls.MEDIUM_COMMANDS:
+            risks.append("medium")
+        flag = cls.MEDIUM_COMMANDS_WITH_FLAG.get(head)
+        if flag and flag in rest:
+            risks.append("medium")
+
+        sql = cls._sql_risk(head, rest)
+        if sql:
+            risks.append(sql)
+
+        # ``bash -c '<cmd>'`` / ``sh -c`` 等：载荷本身也按首 token 判级（限一层，防递归爆炸）
+        if depth < 2:
+            for idx, tok in enumerate(rest):
+                if tok.lower() in cls.INLINE_SCRIPT_FLAGS and idx + 1 < len(rest):
+                    for sub in cls._split_subcommands(cls._tokenize(rest[idx + 1])):
+                        nested = cls._subcommand_risk(sub, depth + 1)
+                        if nested:
+                            risks.append(nested)
+        if not risks:
+            return None
+        return max(risks, key=lambda r: cls._RISK_ORDER[r])
+
+    @classmethod
+    def keyword_risk(cls, command: str) -> Optional[str]:
+        """整条命令的 token 级关键字风险：取各子命令的最高风险，未命中返回 ``None``。"""
+        risks = [
+            r for sub in cls._split_subcommands(cls._tokenize(command or ""))
+            if (r := cls._subcommand_risk(sub)) is not None
+        ]
+        if not risks:
+            return None
+        return max(risks, key=lambda r: cls._RISK_ORDER[r])
+
+    @classmethod
+    def is_readonly_command(cls, command: str) -> bool:
+        """是否只读：**全部**子命令都匹配 ``READONLY_PATTERNS``。
+
+        整条匹配（旧行为）会让 ``ls | xargs rm`` 因 ``^ls`` 被放行，故改为逐子命令判定。
+        """
+        subs = cls._split_subcommands(cls._tokenize(command or ""))
+        if not subs:
+            return False
+        for sub in subs:
+            text = " ".join(sub)
+            if not any(re.search(p, text, re.IGNORECASE) for p in cls.READONLY_PATTERNS):
+                return False
+        return True
+
     @classmethod
     def analyze(cls, command: str) -> Dict[str, Any]:
         result = {
@@ -154,10 +310,8 @@ class CommandSafetyChecker:
                 result["is_dangerous"] = True
                 result["danger_reasons"].append("匹配危险模式: " + pattern)
 
-        for pattern in cls.READONLY_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                result["is_readonly"] = True
-                break
+        result["is_readonly"] = cls.is_readonly_command(command)
+        keyword = cls.keyword_risk(command)
 
         if result["is_dangerous"]:
             result["risk_level"] = "critical"
@@ -168,13 +322,13 @@ class CommandSafetyChecker:
         elif any(re.search(p, command, re.IGNORECASE) for p in cls.HIGH_PATTERNS):
             result["risk_level"] = "high"
             result["needs_confirm"] = True
-        elif any(kw in command.lower() for kw in ["rm", "del", "drop", "truncate", "format"]):
+        elif keyword == "high":
             result["risk_level"] = "high"
             result["needs_confirm"] = True
         elif any(re.search(p, command, re.IGNORECASE) for p in cls.MEDIUM_PATTERNS):
             result["risk_level"] = "medium"
             result["needs_confirm"] = True
-        elif any(kw in command.lower() for kw in ["write", "insert", "update", "delete", "chmod", "chown", "mv", "cp"]):
+        elif keyword == "medium":
             result["risk_level"] = "medium"
             result["needs_confirm"] = True
         else:
@@ -184,39 +338,127 @@ class CommandSafetyChecker:
         return result
 
 
-# ========== 写路径边界 ==========
+# ========== 自动确认闸门（AUTO_CONFIRM 只放行 low / medium）==========
+
+# ``CODE_AGENT_AUTO_CONFIRM`` 能免除人工确认的风险等级；high / critical 一律需人工确认。
+# 与 ``agents.base_agent.ReActDelegateAgent.AUTO_CONFIRM_RISK_LEVELS`` 保持同一口径。
+AUTO_CONFIRM_RISK_LEVELS = ("low", "medium")
+HIGH_RISK_CONFIRM_HINT = "[提示] 高风险命令需人工确认"
+
+
+def auto_confirm_allows(safety: Optional[Dict[str, Any]] = None) -> bool:
+    """``AUTO_CONFIRM`` 开启时，该命令是否可以免人工确认。
+
+    Args:
+        safety: ``CommandSafetyChecker.analyze`` 的结果。为 ``None`` / 空字典时表示
+            调用方没有命令风险信息（如 ``write_file`` 等非命令类工具），沿用
+            registry 的 ``safe`` 标记，返回 ``True``。
+
+    Returns:
+        ``risk_level`` 属于 :data:`AUTO_CONFIRM_RISK_LEVELS` 且未被判定为危险时为 ``True``。
+    """
+    if not safety:
+        return True
+    if safety.get("is_dangerous"):
+        return False
+    return safety.get("risk_level", "unknown") in AUTO_CONFIRM_RISK_LEVELS
+
+
+# ========== 读 / 写路径边界 ==========
 
 WRITE_ALLOWED_DIRS_ENV = "WRITE_ALLOWED_DIRS"
+READ_ALLOWED_DIRS_ENV = "READ_ALLOWED_DIRS"
 PATH_OUT_OF_SCOPE_ERROR = "[错误] 路径超出允许范围"
+# 错误提示里最多列出几个允许目录（更多的折叠为"等 N 个"，避免刷屏）
+_SCOPE_HINT_MAX_DIRS = 5
+
+
+def _normalize_dirs(dirs) -> List[str]:
+    """展开 ``~``、解析符号链接与 ``..``，按原顺序去重。"""
+    seen: List[str] = []
+    for d in dirs:
+        if not d or not str(d).strip():
+            continue
+        real = os.path.realpath(os.path.expanduser(str(d).strip()))
+        if real not in seen:
+            seen.append(real)
+    return seen
 
 
 def write_allowed_dirs() -> List[str]:
     """允许写入/入库的目录：当前工作目录 + ``WRITE_ALLOWED_DIRS``（冒号分隔）。"""
     dirs = [os.getcwd()]
-    extra = os.getenv(WRITE_ALLOWED_DIRS_ENV, "")
-    dirs.extend(d.strip() for d in extra.split(":") if d.strip())
-    return [os.path.realpath(os.path.expanduser(d)) for d in dirs]
+    dirs.extend(os.getenv(WRITE_ALLOWED_DIRS_ENV, "").split(":"))
+    return _normalize_dirs(dirs)
 
 
-def is_path_allowed(path: str) -> bool:
-    """路径（解析符号链接与 ``..`` 后）是否位于允许目录内。"""
+def _indexed_document_dirs() -> List[str]:
+    """已入库文件所在的目录（去重）。
+
+    知识库文档常在工作区之外（``~/Documents/论文.pdf``），既然用户已显式入库，
+    Agent 就应能读回原文；元数据不可用时忽略该来源。
+    """
+    try:
+        from file_metadata import get_global_metadata_manager
+
+        manager = get_global_metadata_manager()
+        return [os.path.dirname(os.path.abspath(fm.file_path))
+                for fm in manager.list_files() if getattr(fm, "file_path", "")]
+    except Exception:  # noqa: BLE001 - 元数据缺失/损坏不应影响读操作可用性
+        return []
+
+
+def read_allowed_dirs() -> List[str]:
+    """允许读取的目录：写允许目录 ∪ ``READ_ALLOWED_DIRS`` ∪ 已入库文件所在目录。"""
+    dirs = list(write_allowed_dirs())
+    dirs.extend(os.getenv(READ_ALLOWED_DIRS_ENV, "").split(":"))
+    dirs.extend(_indexed_document_dirs())
+    return _normalize_dirs(dirs)
+
+
+def _within(path: str, bases: List[str]) -> bool:
     if not path or not str(path).strip():
         return False
     real = os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
-    for base in write_allowed_dirs():
+    for base in bases:
         if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
             return True
     return False
+
+
+def is_path_allowed(path: str) -> bool:
+    """路径（解析符号链接与 ``..`` 后）是否位于允许**写入**的目录内。"""
+    return _within(path, write_allowed_dirs())
+
+
+def is_read_allowed(path: str) -> bool:
+    """路径（解析符号链接与 ``..`` 后）是否位于允许**读取**的目录内。"""
+    return _within(path, read_allowed_dirs())
+
+
+def _format_dirs(dirs: List[str]) -> str:
+    shown = dirs[:_SCOPE_HINT_MAX_DIRS]
+    text = "、".join(shown)
+    if len(dirs) > len(shown):
+        text += f" 等 {len(dirs)} 个目录"
+    return text
 
 
 def path_scope_error(path: str) -> str:
     return (f"{PATH_OUT_OF_SCOPE_ERROR}: {path}（仅允许 {os.getcwd()} "
             f"或环境变量 {WRITE_ALLOWED_DIRS_ENV} 指定的目录）")
 
+
+def read_scope_error(path: str) -> str:
+    return (f"{PATH_OUT_OF_SCOPE_ERROR}: {path}（允许读取 {_format_dirs(read_allowed_dirs())}；"
+            f"可设置环境变量 {READ_ALLOWED_DIRS_ENV} 放行）")
+
 # ========== 具体工具实现 ==========
 
 def read_file(path: str, offset: int = 0, limit: int = 100) -> str:
     path = os.path.expanduser(str(path or ""))
+    if not is_read_allowed(path):
+        return read_scope_error(path)
     if not os.path.exists(path):
         return "[错误] 文件不存在: " + path
     try:
@@ -277,6 +519,8 @@ def execute_command(command: str, timeout: int = 30) -> str:
 
 def list_directory(path: str = ".") -> str:
     path = os.path.expanduser(str(path or "."))
+    if not is_read_allowed(path):
+        return read_scope_error(path)
     if not os.path.exists(path):
         return "[错误] 目录不存在: " + path
     try:
@@ -397,6 +641,8 @@ SEARCH_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", "venv", ".v
 
 def search_files(query: str, path: str = ".", max_results: int = 10) -> str:
     path = os.path.expanduser(str(path or "."))
+    if not is_read_allowed(path):
+        return read_scope_error(path)
     results = []
     exts = SEARCH_FILE_EXTS
     skip_dirs = SEARCH_SKIP_DIRS
@@ -778,17 +1024,17 @@ def web_cache_clear() -> str:
 
 # ========== 初始化注册表 ==========
 registry = ToolRegistry()
-registry.register("read_file", read_file, "读取文件内容，支持指定行范围",
+registry.register("read_file", read_file, "读取文件内容，支持指定行范围（仅限允许目录）",
                   {"path": "文件路径(必填)", "offset": "起始行号，默认0", "limit": "最大行数，默认100"}, safe=True)
 registry.register("write_file", write_file, "写入或追加内容到文件",
                   {"path": "文件路径(必填)", "content": "文件内容(必填)", "append": "是否追加，默认false"}, safe=False)
 registry.register("execute_command", execute_command, "执行shell命令（如python test.py, ls, git status等）",
                   {"command": "命令字符串(必填)", "timeout": "超时秒数，默认30"}, safe=False)
-registry.register("list_directory", list_directory, "列出目录内容",
+registry.register("list_directory", list_directory, "列出目录内容（仅限允许目录）",
                   {"path": "目录路径，默认当前目录"}, safe=True)
 registry.register("analyze_project_structure", analyze_project_structure, "分析项目结构，识别技术栈和关键文件",
                   {"project_path": "项目路径，默认当前目录"}, safe=True)
-registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件",
+registry.register("search_files", search_files, "在项目中搜索包含关键字的代码文件（仅限允许目录）",
                   {"query": "搜索关键字(必填)", "path": "搜索目录，默认当前目录", "max_results": "最大结果数，默认10"}, safe=True)
 registry.register("get_current_dir", get_current_dir, "获取当前工作目录路径", {}, safe=True)
 

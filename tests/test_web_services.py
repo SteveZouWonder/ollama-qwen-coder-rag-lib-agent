@@ -1863,6 +1863,18 @@ class TestShellAndFiles:
         info = make_service().env_info()
         assert "ollama_url" in info and "cwd" in info and "app_version" in info
 
+    def test_env_info_exposes_allowed_dirs(self, tmp_path, monkeypatch):
+        """F10 P0-1-d：service 暴露读 / 写允许目录，供系统页展示。"""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("WRITE_ALLOWED_DIRS", raising=False)
+        extra = tmp_path / "ro"
+        extra.mkdir()
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(extra))
+        info = make_service().env_info()
+        assert str(tmp_path.resolve()) in info["write_allowed_dirs"]
+        assert str(extra.resolve()) in info["read_allowed_dirs"]
+        assert set(info["write_allowed_dirs"]) <= set(info["read_allowed_dirs"])
+
 
 class _FakeFM:
     def __init__(self, path, size=100, h=None, ptype="permanent"):

@@ -588,6 +588,23 @@ def format_file_info(info: Dict[str, Any]) -> str:
     return format_kv_table(rows)
 
 
+_DIR_LIST_MAX_SHOWN = 6
+
+
+def _fmt_dir_list(dirs: Optional[List[str]], env_name: str) -> str:
+    """把允许目录列表渲染成一格：``` `d1` · `d2` ``` ；为空时提示可用的环境变量。
+
+    已入库文档目录会随知识库增长，超过 ``_DIR_LIST_MAX_SHOWN`` 个时折叠为"共 N 个"。
+    """
+    items = [str(d) for d in (dirs or []) if str(d).strip()]
+    if not items:
+        return f"—（可设置 `{env_name}` 放行）"
+    text = " · ".join(f"`{d}`" for d in items[:_DIR_LIST_MAX_SHOWN])
+    if len(items) > _DIR_LIST_MAX_SHOWN:
+        text += f" …（共 {len(items)} 个）"
+    return text
+
+
 def format_env_info(info: Dict[str, Any]) -> str:
     """运行环境概览（对齐 CLI 横幅 + ``/model`` 附加字段）。"""
     if not info:
@@ -600,8 +617,11 @@ def format_env_info(info: Dict[str, Any]) -> str:
         ("Embedding 模型", f"`{info.get('embed_model', '')}`"),
         ("num_ctx", info.get("num_ctx", "")),
         ("思考模式", "开" if info.get("think") else "关"),
-        ("自动确认（环境变量）", "开" if info.get("auto_confirm_env") else "关"),
+        ("自动确认（环境变量）",
+         "开（只放行 low / medium）" if info.get("auto_confirm_env") else "关"),
         ("工作目录", f"`{info.get('cwd', '')}`"),
+        ("允许读目录", _fmt_dir_list(info.get("read_allowed_dirs"), "READ_ALLOWED_DIRS")),
+        ("允许写目录", _fmt_dir_list(info.get("write_allowed_dirs"), "WRITE_ALLOWED_DIRS")),
         ("数据目录", f"`{info.get('data_dir', '')}`"),
         ("索引目录", f"`{info.get('index_dir', '')}`"),
         ("向量库路径", f"`{info.get('vector_db_path', '')}`"),

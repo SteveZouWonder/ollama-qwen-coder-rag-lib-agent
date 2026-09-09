@@ -2117,6 +2117,14 @@ class WebService:
             info["app_version"] = os.environ.get("APP_VERSION", "") or "dev"
         except BaseException:  # noqa: BLE001
             pass
+        # 路径边界（F10 P0-1-d）：读 / 写允许目录对用户可见，越界报错时才不至于困惑
+        try:
+            from agent_tools import read_allowed_dirs, write_allowed_dirs
+            info["write_allowed_dirs"] = list(write_allowed_dirs())
+            info["read_allowed_dirs"] = list(read_allowed_dirs())
+        except BaseException:  # noqa: BLE001
+            info["write_allowed_dirs"] = []
+            info["read_allowed_dirs"] = []
         return info
 
     # ---------- 文件管理 ----------

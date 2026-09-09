@@ -9,6 +9,27 @@
 
 > 下一版本的未发布变更请记录在此区段。发布时将其移动到对应的版本号下。
 
+### 修复
+
+- **命令安全分级误报（F10 P0-1）**：`execute_command` 的风险关键字由子串匹配改为 **token 级**——命令先按
+  `|` / `&&` / `||` / `;` 切成子命令，剥掉 `sudo` / `env VAR=` / `xargs` 等前缀后只比对命令名。
+  `pip show models`、`ls performance/`、`git log --format=%H`、`cat information.txt`、`python rm_all.py`
+  不再因含 `del` / `rm` / `format` 子串被判高风险弹确认；`rm -rf build`、`ls | xargs rm`、
+  `sqlite3 a.db "DROP TABLE t"` 仍判 high。只读判定也改为「全部子命令都只读」，`ls | xargs rm` 不再被 `ls` 放行。
+- **读操作路径边界（F10 P0-1）**：`read_file` / `list_directory` / `search_files`（含 CLI `/file`）新增路径边界，
+  只能读取「当前工作目录 + `WRITE_ALLOWED_DIRS` + 新环境变量 `READ_ALLOWED_DIRS` + 已入库文档所在目录」，
+  越界返回 `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）`。
+  此前 Agent 可读取工作区外任意文件（如 `~/.ssh/id_rsa`）。
+- **`CODE_AGENT_AUTO_CONFIRM` / `--yes` 可绕过高风险命令（F10 P0-1）**：自动确认现在只放行 low / medium，
+  high 仍需人工确认；无交互场景拒绝执行并返回 `[提示] 高风险命令需人工确认`（critical 维持直接拦截）。
+  判定收敛到共享层 `agent_tools.auto_confirm_allows()`，由 ReAct 引擎、CLI `/exec`、CLI 确认提示与子 Agent 共用。
+
+### 改进
+
+- **允许目录可见（F10 P0-1）**：新增 CLI `/config` 命令，一行 `key: value` 显示模型 / 自动确认（标注只放行
+  low / medium）/ **允许读目录 · 允许写目录** / 数据与索引目录 / Agent 步数与超时；Web「系统 → 运行环境」
+  同步新增「允许读目录 / 允许写目录」两行，未配置时提示可用 `READ_ALLOWED_DIRS` / `WRITE_ALLOWED_DIRS` 放行。
+
 ### 新增
 
 - **Web「工具」页重构 P3 · 体验打磨（F9，完结）**：

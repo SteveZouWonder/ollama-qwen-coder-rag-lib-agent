@@ -36,6 +36,9 @@ class TestParseCommandNoArg:
     def test_tools(self):
         assert parse_command("/tools").cmd_type == "tools"
 
+    def test_config(self):
+        assert parse_command("/config").cmd_type == "config"
+
     def test_stats(self):
         assert parse_command("/stats").cmd_type == "stats"
 
@@ -185,7 +188,7 @@ class TestClassifyMode:
     """测试模式分类"""
 
     def test_cmd_types(self):
-        for cmd_type in ["help", "tutorial", "tools", "stats", "sources",
+        for cmd_type in ["help", "tutorial", "tools", "config", "stats", "sources",
                          "clear", "history", "summary", "reset",
                          "pwd", "cd", "model", "quit", "empty", "unknown_cmd"]:
             assert classify_mode(True, ParsedCommand(cmd_type, "")) == "cmd"

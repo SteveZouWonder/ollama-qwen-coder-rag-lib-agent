@@ -218,6 +218,8 @@ MAX_HISTORY = int(os.getenv("MAX_HISTORY", "100"))  # 已弃用：历史按 toke
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
 TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
+# AUTO_CONFIRM：开启后 low / medium 风险的命令与工具免人工确认；
+# high / critical 仍需确认（agent_tools.auto_confirm_allows 统一判定）。
 AUTO_CONFIRM = os.getenv("CODE_AGENT_AUTO_CONFIRM", "false").lower() == "true"
 
 # 入口智能路由（F8 P3）：自然语言输入先由 intent_router 判定走 RAG 还是 Agent；
@@ -228,6 +230,11 @@ AUTO_ROUTE = os.getenv("AUTO_ROUTE", "true").lower() == "true"
 # 始终隐含当前工作目录；解析后不在这些目录内的路径返回 "[错误] 路径超出允许范围"。
 # agent_tools 在调用时实时读取该环境变量，这里仅作为配置项文档与 Config 映射。
 WRITE_ALLOWED_DIRS = os.getenv("WRITE_ALLOWED_DIRS", "")
+
+# Agent 的 read_file / list_directory / search_files 允许读取的额外目录（冒号分隔）。
+# 允许读取范围 = 允许写入目录 ∪ READ_ALLOWED_DIRS ∪ 已入库文件所在目录；越界返回
+# "[错误] 路径超出允许范围: …（允许读取 …）"。同样由 agent_tools 实时读取。
+READ_ALLOWED_DIRS = os.getenv("READ_ALLOWED_DIRS", "")
 
 # ==================== 文件上传配置 ====================
 # 文件大小限制（字节）
@@ -355,6 +362,7 @@ class Config:
     AUTO_CONFIRM: bool = AUTO_CONFIRM
     AUTO_ROUTE: bool = AUTO_ROUTE
     WRITE_ALLOWED_DIRS: str = WRITE_ALLOWED_DIRS
+    READ_ALLOWED_DIRS: str = READ_ALLOWED_DIRS
     CODE_AWARE_CHUNKING: bool = CODE_AWARE_CHUNKING
     CODE_CHUNK_MAX_CHARS: int = CODE_CHUNK_MAX_CHARS
     CODE_CHUNK_MIN_CHARS: int = CODE_CHUNK_MIN_CHARS

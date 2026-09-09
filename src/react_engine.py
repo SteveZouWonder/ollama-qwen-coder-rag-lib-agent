@@ -13,7 +13,7 @@ import os
 from typing import List, Dict, Callable, Optional, Tuple
 
 from config import Config
-from agent_tools import registry, CommandSafetyChecker
+from agent_tools import registry, CommandSafetyChecker, auto_confirm_allows, HIGH_RISK_CONFIRM_HINT
 from conversation_context import estimate_tokens, estimate_messages_tokens
 
 logger = logging.getLogger(__name__)
@@ -585,7 +585,8 @@ class ReActEngine:
                     self._emit(step, "blocked", f"Step {step}: 危险命令已拦截 [{cmd}]")
                     continue
 
-                elif safety["needs_confirm"] and not Config.AUTO_CONFIRM:
+                # AUTO_CONFIRM 只放行 low / medium；high 仍需人工确认（F10 P0-1-c）
+                elif safety["needs_confirm"] and not (Config.AUTO_CONFIRM and auto_confirm_allows(safety)):
                     step_record["confirmed"] = False
                     self.step_log.append(step_record)
 
@@ -601,7 +602,11 @@ class ReActEngine:
                         confirmed = False
 
                     if not confirmed:
-                        obs = f"[用户拒绝] 命令未执行: {cmd}"
+                        if Config.AUTO_CONFIRM:
+                            obs = (f"{HIGH_RISK_CONFIRM_HINT}: {cmd}"
+                                   f"（风险等级 {safety['risk_level']}，自动确认只放行 low / medium）")
+                        else:
+                            obs = f"[用户拒绝] 命令未执行: {cmd}"
                         step_record["observation"] = obs
                         step_record["confirmed"] = False
                         self._push_observation(step, tool_name, response, obs,
@@ -613,7 +618,13 @@ class ReActEngine:
 
             self._emit(step, "executing", f"Step {step}: 执行 {tool_name}...")
 
-            observation = registry.execute(tool_name, tool_input, auto_confirm=Config.AUTO_CONFIRM)
+            # 同一闸门：非命令类工具没有 safety 信息（auto_confirm_allows 返回 True），
+            # execute_command 的 high / critical 不因 AUTO_CONFIRM 而免确认。
+            observation = registry.execute(
+                tool_name, tool_input,
+                auto_confirm=(Config.AUTO_CONFIRM and auto_confirm_allows(step_record.get("safety")))
+                or step_record.get("confirmed") is True,
+            )
 
             if observation.startswith("[CONFIRM_REQUIRED]"):
                 step_record["confirmed"] = False
