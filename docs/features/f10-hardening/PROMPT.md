@@ -5,7 +5,7 @@
 > 提示词只引用章节号，Agent 应先读 REQ 对应章节，**不要重复调研 §0 已核实的事实**。
 > 实现记录与差异写入同目录 `README.md`（不写入 REQ）。
 >
-> 八段提示词各自独立、可单独使用；「规则」已内联在每段中，无需另贴。
+> 九段提示词各自独立、可单独使用；「规则」已内联在每段中，无需另贴。
 > 分支：每个任务开始时 Agent 会询问分支名，建议 `feat/f10-p0-1-safety` 这类 `feat/f10-{编号}-{主题}` 命名。
 
 ---
@@ -205,10 +205,38 @@ CHANGELOG.md [Unreleased]（改进：Tesseract 自动探测与缺失提示；文
 
 ---
 
+## P3-2 · `query_interface.py` 二次拆分（中，P2-2 遗留；依赖 P2-2 已合入）
+
+```
+# 任务：F10 P3-2 —— query_interface.py 二次拆分（纯重构 + 测试打桩迁移，行为零变化）
+
+先读 docs/features/f10-hardening/REQUIREMENTS.md：§0.10 代码事实直接采信（剩余分段行号、223 处打桩的目标分布、CLIContext 装配点）；§4 P3-2 是本次需求与验收。同目录 README.md 的「P2-2 差异 #2」记录了为什么 P2-2 停在 1799 行。
+
+## 范围
+按 a → b → c 顺序，每步单独提交并全量测试：
+P3-2-a 新建 src/cli/state.py 收口模块级状态（rag_engine / react_engine / last_*_sources / command_recommender / HAS_RICH 等探测 / _progress_state / console），query_interface 保留只读别名；conftest.reset_module_state 改指 cli.state；把 console / HAS_RICH / rag_engine / react_engine / _progress_state 五类打桩目标改为 cli.state.*（本步不搬函数）
+→ P3-2-b 外迁 cli/render.py（渲染）、cli/callbacks.py（回调）、cli/rag_adapter.py（RAG 编排适配，顺手删 _synthesize_prompt 的 F811 别名行）、cli/recommend.py（命令推荐辅助）；函数内经 state.xxx 运行时取值；query_interface 重导出；对应测试打桩目标迁移，test_query_interface_render.py 可 git mv 为 test_cli_render.py
+→ P3-2-c 外迁 cli/engine_commands.py（全部 handle_* / _run_ask / _ENGINE_HANDLERS / _build_cli_context / dispatch_command，签名不改）；query_interface 只留自保护 / 日志 / readline / 横幅 / main；打桩目标迁移
+→ P3-2-d TEST_DESIGN / ARCHITECTURE §1.1 / MODULE_GUIDES / CODE_STANDARDS §6 / TESTING_GUIDELINES / AGENTS 同步。
+
+## 规则
+- 先询问是否新建分支及分支名；禁止提交 master；完成后询问是否建 PR，不得自动建。
+- 纯移动 + 状态收口：禁止改业务逻辑 / 文案 / 输出格式 / 函数签名；发现问题写入输出的「待办」。仅允许的两处清理：删 _synthesize_prompt 重定义别名（F811）、删随段搬走后确认无用的导入行。
+- 现有测试不改任何断言；只允许改导入路径、patch / monkeypatch / inspect.getsource 的目标模块、测试文件重命名。搬到哪个模块就打那个模块；新模块内一律 `from cli import state` 后 `state.console` 运行时取值，不要 `from cli.state import console`。
+- 每次提交后 ./venv/bin/python -m pytest -q -n 4 通过、覆盖 ≥80%、收集数与 P2-2 后一致（3528 / 36）。
+- 完成后 wc -l src/query_interface.py ≤800、src/cli/*.py ≤700；grep 统计 tests/ 对 query_interface 的打桩 ≤10；flake8 --select=E9,F63,F7,F82,F811 无输出；CLI /help /stats /config /model /ask /agent 输出与 P2-2 提交 01f3a20 的 worktree 逐行对照一致。
+
+## 完成后
+CHANGELOG.md [Unreleased] 改进一条（内部结构，可并入 P2-2 那条）；上述开发者文档目录职责表同步；同目录 README.md（状态 + 拆分前后行数表 + 打桩迁移统计 + 提交列表 + 差异 + 待办）；docs/features/README.md 状态。中文 commit。
+输出：拆分前后文件行数表、打桩迁移数（按目标 / 按文件）、提交列表、覆盖率、CLI 对照结果、发现的待办问题。
+```
+
+---
+
 ## 设计说明（为什么这样写）
 - 需求（REQ）与实现记录（README）分文件：REQ 只增不改；实现差异集中在 README。
 - 代码事实全部在 REQ §0 并带行号，提示词只引用章节，避免 Agent 在 2000+ 行文件中重新 grep——这是最主要的 token 节省点。
-- 八段按任务而非按 P 级分发：P0-1 / P0-2、P1-1 / P1-2 / P1-3 之间改动面互不重叠，可由不同会话并行推进；P1-2 显式声明依赖 P1-1 产物，P2-1 声明复用 P1-2 / P1-3 产物，P2-2 放最后避免与前序冲突。
+- 九段按任务而非按 P 级分发：P0-1 / P0-2、P1-1 / P1-2 / P1-3 之间改动面互不重叠，可由不同会话并行推进；P1-2 显式声明依赖 P1-1 产物，P2-1 声明复用 P1-2 / P1-3 产物，P2-2 放 P2 最后避免与前序冲突；P3-2 是 P2-2 实施后追加的遗留项（主文件未达 ≤800 的原因见 REQ §0.10），依赖 P2-2 已合入。
 - 每段的「范围」用箭头写实施顺序，「规则」只列与 AGENTS.md / 现有工程约束相关的最小集合，「完成后」列全需同步的文档，避免漏更。
 - Web 与 CLI 同为一等入口：每个任务的两端落地写在 REQ 需求正文，验证项要求同时贴终端输出与截图。
-- 行为零变化类任务（P2-2）与行为变更类任务分开写规则："不改断言"与"先写复现测试"不混用。
+- 行为零变化类任务（P2-2 / P3-2）与行为变更类任务分开写规则："不改断言"与"先写复现测试"不混用；P3-2 比 P2-2 多放开一项许可——改测试的打桩目标模块（P2-2 只许改导入路径，这正是它止步的原因）。

@@ -2,8 +2,8 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 已完成 2026-09-09；P3-1 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
-· 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 八个独立任务逐项落地
+**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 已完成 2026-09-09；P3-1 / P3-2 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+· 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 九个独立任务逐项落地（P3-2 为 P2-2 实施后追加的遗留项）
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
 |---|---|---|---|---|---|---|---|
@@ -15,6 +15,7 @@
 | P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | 待实现 | | |
+| P3-2 | `query_interface.py` 二次拆分：`cli/state.py` 收口模块级状态 · `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py` · 223 处测试打桩目标迁移（纯重构，P2-2 遗留） | 低（间接） | 中 | P2-2 | 待实现 | | |
 
 ## 文档导读
 
@@ -22,7 +23,7 @@
 |---|---|---|
 | [REQUIREMENTS.md](REQUIREMENTS.md) | 需求分项与验收标准；§0 为立项时核实的代码事实（带 `文件:行号`，按问题分 8 小节）；§5 两端规范；§6 实施顺序 | 了解"要做什么、为什么" |
 | 本文件 | 实现记录（每项做了什么、落在哪个模块）、与需求的差异、验证结果、性能前后对比 | 了解"实际做成了什么" |
-| [PROMPT.md](PROMPT.md) | 交给 Agent 的启动提示词，按八个任务分段、各自可独立粘贴 | 分批派发实现任务 |
+| [PROMPT.md](PROMPT.md) | 交给 Agent 的启动提示词，按九个任务分段、各自可独立粘贴 | 分批派发实现任务 |
 
 用户可感知的变更同步记录在 [CHANGELOG.md](../../../CHANGELOG.md) `[Unreleased]` 与主 [README](../../../README.md) 对应段落。
 
@@ -48,7 +49,7 @@
 P0-1 安全分级 → P0-2 钉版本 + 发版 + CI
 P1-1 真流式 → P1-3 RAG 评测（先建基线）→ P1-2 后端抽象
 P2-1 BM25 + 锁 + 限流 → P2-2 入口层拆分
-P3-1 Tesseract + README
+P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 ```
 
 ## 实现记录
@@ -84,7 +85,7 @@ P3-1 Tesseract + README
 | `src/web/services.py` → `src/web/services/` | 2693 | `__init__` 76 · `base` 435 · `chat` 617 · `knowledge` 542 · `tools` 666 · `db` 195 · `graph` 127 · `system` 171（合计 2829） | 单文件 ≤800 ✓ |
 | `src/web/formatters.py`（新） | — | 1462 | 需求未设上限（纯函数集合） |
 | `src/web/handlers/`（新） | — | `chat` 566 · `knowledge` 315 · `tools` 354 · `graph` 90 · `system` 98 · `__init__` 19（合计 1442） | 单文件 ≤800 ✓ |
-| `src/query_interface.py` | 2274 | **1799** | ≤800 ✗（见差异 #2） |
+| `src/query_interface.py` | 2274 | **1799** | ≤800 ✗（见差异 #2；剩余拆分立项为 P3-2） |
 | `src/cli_handlers.py` → `src/cli/handlers/` | 2183 | shim 38；`__init__` 176 · `base` 176 · `agent` 129 · `system` 99 · `knowledge` 421 · `files` 218 · `session` 300 · `tools` 428 · `git` 160 · `db` 243（合计 2350） | 单文件 ≤600 ✓ |
 | `src/cli/parser.py` / `src/cli/help_text.py`（新） | — | 252 / 251 | — |
 | `src/desktop_app.py` | 1471 | 1471（本期不拆） | — |
@@ -157,7 +158,7 @@ P3-1 Tesseract + README
 | 公开名兼容 | 脚本比对拆分前 `web.app` 的全部顶层名 → 拆分后 `hasattr(web.app, n)` 仅缺 `Any / List / Tuple / time`（typing / 标准库导入，非公开名）；`web.services` 重导出含全部 `_default_*` 与两个下划线函数（`tests/test_web_services.py::TestDefaultFactories` 直接访问）；`cli_handlers` 重导出 81 个名字（含 24 个下划线名） |
 | `build_handlers` 返回结构 | 拆分脚本断言：新 dict 的键集合 == 旧 return 字面量的键集合（101 个 handler 键 + `headers` 的 16 个表头键） |
 | flake8 语法门禁 | `flake8 --select=E9,F63,F7,F82 src tests` → rc=0；新包 F401 / F811 / F821 为 0（`query_interface.py` 剩余 9 条 F401/F811 全部是拆分前既有的，未动） |
-| 行数上限 | `web/app.py` 244 ≤300 ✓；`web/services/*` 最大 666、`web/handlers/*` 最大 566 ≤800 ✓；`cli/handlers/*` 最大 428 ≤600 ✓；`query_interface.py` 1799 **>800**（差异 #2） |
+| 行数上限 | `web/app.py` 244 ≤300 ✓；`web/services/*` 最大 666、`web/handlers/*` 最大 566 ≤800 ✓；`cli/handlers/*` 最大 428 ≤600 ✓；`query_interface.py` 1799 **>800**（差异 #2，立项 P3-2） |
 | `build_app()` | `cd src && python -c "import web.app as a; a.build_app()"` → `Blocks` 构造成功（真实 Gradio 装配，五页 `ui/*` 经 `handlers[...]` 取到全部键） |
 | 浏览器冒烟 | `a.launch(server_port=7863)` + Playwright 无头 Chromium：依次点击 对话 / 知识库 / 知识图谱 / 工具 / 系统 五页，每页 `body` 有内容、截图正常；**console error 0**（warning 5 条为 Gradio 自身的 `generator` 提示，与拆分前相同）；系统页含「模型」「运行环境」。截图 `assets/p22-web-*.png` |
 | CLI | `printf '/help\n/stats\n/config\n/ask …\n/quit' \| python query_interface.py --no-history`：`/help` 面板完整（`/multi <task>`、`/config`、`/git-commit-gen` 均在）、`/stats` 表格（hybrid 行）、`/config` 12 行、`/ask` 真实 Ollama 走完 规划 → 检索 → rerank → 流式综合 → 回答面板 + `📚 基于知识库 5 个片段 · 🔎 引用 8/8 有效`；与拆分前提交 `ef7b845` 的 worktree 对照 `/help` 输出行数一致 |
@@ -476,7 +477,7 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 | # | 需求 | 实际 | 原因 |
 |---|---|---|---|
 | 1 | services 拆为 `base / chat / knowledge / tools / graph / system` 六个文件 | 另拆出 **`db.py`**（`DatabaseMixin`，195 行） | 数据库段（SQLite 连接 / 查询 / 写 / NL→SQL）本就是原文件里独立的 `# --` 分段，塞进 `tools.py` 会让它到 860 行、超单文件 800 上限；`web/handlers/` 与 `cli/handlers/` 也都有独立的 db 处理器组，三层对齐。 |
-| 2 | `query_interface.py` ≤800 行 | **1799 行**（2274 → 1799，只抽了需求点名的 `parser` 与 `help_text` 两段） | 剩余 1800 行里：解释器自保护 110、日志 / 控制台 90、回调（`on_step_callback` 等）170、渲染（`print_rag_sources` / `print_knowledge_stats` …）260、共享 RAG 编排适配 150、**引擎耦合命令 `handle_ask/_run_ask/handle_agent/handle_natural/handle_model/handle_exec…` 590**、`main` 230。这些都直接读写模块级 `rag_engine / react_engine / console / HAS_RICH`，而 `tests/test_cli_handlers_{context,model}.py`、`test_query_interface_{render,exec_safety}.py`、`test_streaming_p1_1.py` 等有 **170+ 处** `patch("query_interface.console")` / `patch.object(qi, "rag_engine", …)` 依赖它们留在 `query_interface` 命名空间。把它们搬走要么改这些测试的打桩目标（需求禁止改测试，只允许改导入路径——但这类是打桩目标不是导入），要么在新模块里做"全局状态代理"，两者都不再是"纯移动"。故本次只做无副作用的两段，把剩余拆分列为待办（建议下一步：`cli/render.py` 抽渲染函数 ~260 行 + `cli/engine_commands.py` 抽 `_ENGINE_HANDLERS` 段 ~590 行，并同步改打桩目标，作为单独任务评审）。 |
+| 2 | `query_interface.py` ≤800 行 | **1799 行**（2274 → 1799，只抽了需求点名的 `parser` 与 `help_text` 两段） | 剩余 1800 行里：解释器自保护 110、日志 / 控制台 90、回调（`on_step_callback` 等）170、渲染（`print_rag_sources` / `print_knowledge_stats` …）260、共享 RAG 编排适配 150、**引擎耦合命令 `handle_ask/_run_ask/handle_agent/handle_natural/handle_model/handle_exec…` 590**、`main` 230。这些都直接读写模块级 `rag_engine / react_engine / console / HAS_RICH`，而 `tests/test_cli_handlers_{context,model}.py`、`test_query_interface_{render,exec_safety}.py`、`test_streaming_p1_1.py` 等有 **170+ 处** `patch("query_interface.console")` / `patch.object(qi, "rag_engine", …)` 依赖它们留在 `query_interface` 命名空间。把它们搬走要么改这些测试的打桩目标（需求禁止改测试，只允许改导入路径——但这类是打桩目标不是导入），要么在新模块里做"全局状态代理"，两者都不再是"纯移动"。故本次只做无副作用的两段，剩余拆分已整理为 **[REQUIREMENTS.md §4 P3-2](REQUIREMENTS.md#p3-2-query_interfacepy-二次拆分p2-2-遗留纯重构--打桩迁移)**（代码事实见 §0.10：剩余分段行号与 223 处打桩分布；三步：`cli/state.py` 收口状态 → `render / callbacks / rag_adapter / recommend` 外迁 → `engine_commands` 外迁，允许改打桩目标模块）。 |
 | 3 | `cli/help_text.py` 提供 `print_help` | `print_help(console=None, has_rich=False)` 带参；`/help` 文案作为**函数体内局部变量**保留而非模块常量 | 原函数零参、直接读模块全局 `console / HAS_RICH`；搬到无状态模块必须显式传入，`query_interface.print_help()` 保留零参签名做包装。文案不提成常量是因为 `tests/test_cli_handlers_multi.py` 与 `test_streaming_p1_1.py` 用 `inspect.getsource(print_help)` 断言文案含 `/multi <task>` / `流式`——提成常量会让这两条断言失效（需求禁止改断言），只把取源目标改为 `cli.help_text.print_help`。 |
 | 4 | 「现有测试不改任何断言（只允许改导入路径…）」 | 断言未改；改了 13 处 `patch` / `monkeypatch.setattr` / `inspect.getsource` 的**目标模块** | 拆包后 handler 闭包从各自实现模块的全局取名（`web.handlers.graph.build_graph_figure`、`cli.handlers.git._git_overview` …），patch 旧模块 `web.app` / `cli_handlers` 上的同名引用不再影响实现。这是 Python 模块拆分的固有代价，已在 CODE_STANDARDS §1 与 MODULE_GUIDES 写明"patch 目标必须是实现模块"。 |
 | 5 | `app.py` 重导出旧公开名 | 重导出 `formatters` 的**全部** 102 个顶层名（含 `_fmt_result` / `_noop` / `_starts_new_round` / `_hover_docs` / `_node_size` 等下划线名） | `tests/test_web_app.py` 直接 `from web.app import _starts_new_round, _noop`，`test_web_kb_management.py` 用 `web_app._hover_docs / _node_size / GRAPH_TYPE_COLORS`；只导公开名会漏掉这些。 |

@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身（立项 2026-09-08） | 进行中：**P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 已完成**（2026-09-09），P3-1 待实现，按 [PROMPT.md](f10-hardening/PROMPT.md) 分发 | [f10-hardening/](f10-hardening/) |
+| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身 / `query_interface.py` 二次拆分（立项 2026-09-08；P3-2 于 2026-09-09 追加） | 进行中：**P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 已完成**（2026-09-09），P3-1 / P3-2 待实现，按 [PROMPT.md](f10-hardening/PROMPT.md) 分发 | [f10-hardening/](f10-hardening/) |
 
 ## 已实现
 
