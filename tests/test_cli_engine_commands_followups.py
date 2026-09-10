@@ -7,6 +7,7 @@
 import logging
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,12 +36,14 @@ class TestDetectInlineFile:
     def test_home_tilde_detected_as_written(self, tmp_path, monkeypatch):
         """``~/`` 按展开后的真实文件判存在，但返回问题里的原文（供 ``_ingest_inline_file`` 从问题中剔除）。"""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         (tmp_path / "notes.md").write_text("x")
         assert ec._detect_inline_file("看一下 ~/notes.md") == "~/notes.md"
         assert ec._detect_inline_file("看一下 ~/missing.md") is None
 
     def test_ingest_expands_tilde_for_loader(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         (tmp_path / "notes.md").write_text("x")
         loaded = {}
         fake_docs = [MagicMock(text="abc")]
@@ -48,7 +51,7 @@ class TestDetectInlineFile:
         monkeypatch.setattr("cli.state.rag_engine", MagicMock())
         with patch("cli.state.console"), patch("builtins.print"):
             q = ec._ingest_inline_file("~/notes.md", "看一下 ~/notes.md")
-        assert loaded["p"] == str(tmp_path / "notes.md")
+        assert Path(loaded["p"]) == tmp_path / "notes.md"
         assert "~/" not in q and "notes.md" in q
 
     def test_windows_drive_path(self, monkeypatch):

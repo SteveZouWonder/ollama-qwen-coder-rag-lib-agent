@@ -242,7 +242,7 @@ python launcher.py               # 系统托盘应用；--cli / --web 分别进�
 | `CODE_AWARE_CHUNKING` / `CODE_CHUNK_MAX_CHARS` / `CODE_CHUNK_MIN_CHARS` | `true` / `1500` / `120` | 代码按函数 / 类切分（缺 `tree-sitter-language-pack` 自动回退） |
 | `AUTO_ROUTE` | `true` | 自然语言输入 / Web「自动」模式先判定走 RAG 还是 Agent（CLI `/auto on\|off`） |
 | `CODE_AGENT_AUTO_CONFIRM` | `false` | 自动确认（等价 `--yes`）；**只放行 low / medium**，high 仍需确认，critical 始终拦截 |
-| `WRITE_ALLOWED_DIRS` | 空 | `write_file` / 入库允许的额外目录（冒号分隔；当前工作目录始终允许） |
+| `WRITE_ALLOWED_DIRS` | 空 | `write_file` / 入库允许的额外目录（系统路径分隔符：macOS / Linux 冒号、Windows 分号；当前工作目录始终允许） |
 | `READ_ALLOWED_DIRS` | 空 | 读文件 / 目录工具允许的额外目录；实际允许读取 = 写允许目录 ∪ 本项 ∪ 已入库文档所在目录；`/config` 可查 |
 | `MAX_ITERATIONS` / `TIMEOUT` | `50` / `300` | Agent 最大步数 / 模型超时（秒） |
 | `MAX_FORMAT_RETRIES` / `OBSERVATION_MAX_CHARS` | `2` / `3000` | 单 Agent 格式错误重试次数 / 单条 Observation 最大字符数 |

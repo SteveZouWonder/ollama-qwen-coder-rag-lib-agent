@@ -4,8 +4,10 @@
 服务层是 Web 界面唯一与核心引擎交互的层。通过依赖注入把各引擎替换为
 MagicMock/桩对象，在不启动真实 Ollama/ChromaDB 的前提下覆盖全部分支。
 """
+import os
 import subprocess
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -2662,7 +2664,8 @@ class TestWorkspaceBrowse:
         assert out["path"] == str(tree) and out["parent"] == str(tree.parent) and "error" not in out
         assert [(e["kind"], e["name"]) for e in out["entries"]] == [("dir", "docs"), ("dir", "src"), ("file", "README.md")]
         readme = out["entries"][-1]
-        assert readme["size"] == len("hello world\nsecond needle line\n") and len(readme["mtime"]) == 16
+        # 用 stat 而非 len(文本)：Windows 文本模式写入把 \n 转成 \r\n，磁盘字节数与字符数不等
+        assert readme["size"] == (tree / "README.md").stat().st_size and len(readme["mtime"]) == 16
         assert out["entries"][0]["size"] == 0
         with_hidden = svc.list_dir(str(tree), show_hidden=True)
         assert {e["name"] for e in with_hidden["entries"]} == {".git", "docs", "src", ".hidden", "README.md"}
@@ -2674,8 +2677,9 @@ class TestWorkspaceBrowse:
         assert out["entries"] == [] and "路径不存在" in out["error"]
         out = svc.list_dir(str(tree / "README.md"))
         assert "不是目录" in out["error"]
-        root = svc.list_dir("/")
-        assert root["path"] == "/" and root["parent"] == "/"
+        fs_root = os.path.abspath(os.sep)  # POSIX 为 /，Windows 为当前盘根（如 D:\\）
+        root = svc.list_dir(fs_root)
+        assert root["path"] == fs_root and root["parent"] == fs_root
         assert "路径超出允许范围" in root["error"] and root["entries"] == []  # F10 P0-1：根目录越界
         assert svc.list_dir("")["path"] == __import__("os").getcwd()
 
@@ -2710,9 +2714,10 @@ class TestWorkspaceBrowse:
     def test_search_in_dir(self, tree):
         svc = make_service()
         hits = svc.search_in_dir("needle", str(tree))
-        assert [(h["file"].rsplit("/", 1)[-1], h["line"]) for h in hits] == [("README.md", 2), ("main.py", 1), ("main.py", 2)]
+        assert [(Path(h["file"]).name, h["line"]) for h in hits] == [("README.md", 2), ("main.py", 1), ("main.py", 2)]
         assert hits[0]["text"] == "second needle line"
-        assert [h["rel"] for h in hits] == ["README.md", "src/main.py", "src/main.py"]
+        # rel 为 OS 原生相对路径（Windows 反斜杠），比较时统一成 POSIX 形式
+        assert [Path(h["rel"]).as_posix() for h in hits] == ["README.md", "src/main.py", "src/main.py"]
         assert all(h["file"].startswith(str(tree)) for h in hits)
         assert svc.search_in_dir("needle", str(tree), max_results=2) == hits[:2]
         assert svc.search_in_dir("", str(tree)) == [] and svc.search_in_dir("x", str(tree / "no")) == []

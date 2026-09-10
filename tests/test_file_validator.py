@@ -288,6 +288,7 @@ class TestFileValidator(unittest.TestCase):
         self.assertEqual(custom_validator.allowed_types, ["txt"])
         self.assertEqual(custom_validator.enable_deduplication, False)
 
+    @unittest.skipIf(os.name == "nt", "Windows 无 POSIX 权限位，chmod 000 不生效")
     def test_validate_file_unreadable(self):
         """测试文件不可读验证"""
         # 创建一个没有读取权限的文件

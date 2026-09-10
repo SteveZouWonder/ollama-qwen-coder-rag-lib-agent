@@ -204,7 +204,7 @@ class TestDescribe:
         _write_skill(layers["builtin"], "core", "C", "description: d\nroles: [code, test]")
         info = pa.describe()
         assert info["dirs"] == [str(layers["builtin"]), str(layers["user"]), str(layers["extra"])]
-        assert info["project_rules"].endswith("user/prompts/system/PROJECT_RULES.md")
+        assert Path(info["project_rules"]) == layers["user"] / "system" / "PROJECT_RULES.md"
         assert info["skills_enabled"] is True and info["skill_max_chars"] == 4000
         (s,) = info["skills"]
         assert s["name"] == "core" and s["roles"] == ["code", "test"] and s["chars"] == 1

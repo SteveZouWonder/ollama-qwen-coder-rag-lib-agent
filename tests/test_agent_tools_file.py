@@ -159,9 +159,10 @@ class TestListDirectory:
         result = list_directory(str(temp_dir / "no"))
         assert "[错误] 目录不存在" in result
 
-    def test_list_current_dir_default(self, temp_dir, monkeypatch):
-        monkeypatch.chdir(temp_dir)
-        (temp_dir / "here.txt").write_text("x")
+    def test_list_current_dir_default(self, tmp_path, monkeypatch):
+        # 用 tmp_path 而非 temp_dir：temp_dir 在 monkeypatch 之前 teardown，此时 cwd 仍在目录内，Windows 上 rmtree 会失败
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "here.txt").write_text("x")
         result = list_directory()
         assert "here.txt" in result
 
@@ -263,6 +264,7 @@ class TestTildePaths:
     @pytest.fixture
     def home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows 的 expanduser 只读 USERPROFILE
         (tmp_path / "proj").mkdir()
         (tmp_path / "proj" / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
         monkeypatch.chdir(tmp_path)

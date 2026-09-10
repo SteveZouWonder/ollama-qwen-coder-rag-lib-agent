@@ -10,6 +10,7 @@ import shutil
 import logging
 import requests
 import time
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import sys
@@ -23,6 +24,28 @@ from desktop_app import (
     DEFAULT_CONFIG, CONFIG_FILE, LOG_FILE, STATUS_FILE
 )
 import signal
+
+import pytest
+
+
+def _close_root_file_handlers(prefix=None):
+    """关闭并移除根 logger 上的 FileHandler（可按路径前缀筛选）。
+
+    LogManager.setup_logging 把 FileHandler 挂在根 logger 上；Windows 上文件被打开时
+    所在目录删不掉（WinError 32），tearDown / 后续测试 rmtree 会失败，必须先关句柄。
+    """
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler) and (prefix is None or str(h.baseFilename).startswith(prefix)):
+            root.removeHandler(h)
+            h.close()
+
+
+@pytest.fixture(autouse=True)
+def _release_log_files():
+    """每个测试结束后释放根 logger 持有的日志文件（如默认 logs/app.log），避免跨测试文件锁。"""
+    yield
+    _close_root_file_handlers()
 
 class TestAppConfig(unittest.TestCase):
     """AppConfig 类的单元测试"""
@@ -143,8 +166,9 @@ class TestLogManager(unittest.TestCase):
         self.test_log_file = Path(self.test_dir) / "test.log"
         
     def tearDown(self):
-        """清理测试环境"""
-        shutil.rmtree(self.test_dir)
+        """清理测试环境（先关闭指向临时目录的 FileHandler，Windows 上文件被占用时目录删不掉）"""
+        _close_root_file_handlers(self.test_dir)
+        shutil.rmtree(self.test_dir, ignore_errors=True)
         
     def test_setup_logging(self):
         """测试设置日志系统"""
@@ -597,7 +621,8 @@ class TestIntegration(unittest.TestCase):
         self.test_status_file = Path(self.test_dir) / "test_status.log"
         
     def tearDown(self):
-        """清理测试环境"""
+        """清理测试环境（先关闭 setup_logging 打开的 test.log，Windows 上否则删不掉目录）"""
+        _close_root_file_handlers(self.test_dir)
         shutil.rmtree(self.test_dir)
         
     def test_full_config_workflow(self):
@@ -1444,14 +1469,18 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
     """TrayApp 通知反馈的单元测试"""
     
     def setUp(self):
-        """设置测试环境"""
+        """设置测试环境（状态文件重定向到临时目录：此前 show_status 用例读写并 rmtree 真实项目 logs/，
+        Windows 上 logs/app.log 被根 logger 占用时直接 PermissionError）"""
         self.test_dir = tempfile.mkdtemp()
         self.test_config_file = Path(self.test_dir) / "test_config.json"
         self.logger = Mock()
         self.config = AppConfig(self.test_config_file)
+        self._status_patch = patch("desktop_app.STATUS_FILE", Path(self.test_dir) / "status.log")
+        self._status_patch.start()
         
     def tearDown(self):
         """清理测试环境"""
+        self._status_patch.stop()
         shutil.rmtree(self.test_dir)
         
     @unittest.skip("弹窗相关测试已禁用")
@@ -1549,14 +1578,8 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         mock_notify.assert_called()
         mock_popup.assert_called_once()
         
-        # 清理
+        # 清理（目录由 tearDown 统一删除）
         tray_app.status_file.unlink()
-        if tray_app.status_file.parent.exists() and tray_app.status_file.parent.is_dir():
-            try:
-                tray_app.status_file.parent.rmdir()
-            except OSError:
-                # 目录可能不为空，使用shutil清理
-                shutil.rmtree(tray_app.status_file.parent)
         
     @patch('desktop_app.Image')
     @patch('desktop_app.ImageDraw')
@@ -1604,14 +1627,8 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         mock_notify.assert_called()
         mock_popup.assert_called_once()
         
-        # 清理
+        # 清理（目录由 tearDown 统一删除）
         tray_app.status_file.unlink()
-        if tray_app.status_file.parent.exists() and tray_app.status_file.parent.is_dir():
-            try:
-                tray_app.status_file.parent.rmdir()
-            except OSError:
-                # 目录可能不为空，使用shutil清理
-                shutil.rmtree(tray_app.status_file.parent)
         
     def test_tray_app_has_status_file_attribute(self):
         """测试TrayApp有status_file属性"""
@@ -2374,6 +2391,71 @@ class TestWebInterface(unittest.TestCase):
         self.tray.quit_app()
         proc.terminate.assert_called_once()
         self.assertIsNone(self.tray.web_process)
+
+
+class TestShowPopupWindows(unittest.TestCase):
+    """Windows 弹窗不得阻塞调用线程（CI windows-latest 曾在 test_quit_app 卡死：MessageBoxW 等待点击）。"""
+
+    def setUp(self):
+        self.tray = TrayApp(Mock(), Mock())
+
+    def _wait(self, pred, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def test_show_popup_windows_runs_in_background_thread(self):
+        import desktop_app
+        calls = []
+        with patch('platform.system', return_value='Windows'), \
+             patch.object(desktop_app, '_windows_message_box',
+                          side_effect=lambda *a: calls.append((a, threading.current_thread().name))):
+            t0 = time.monotonic()
+            self.tray.show_popup("标题", "消息", duration=1500)
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)  # 调用方立即返回
+        self.assertTrue(self._wait(lambda: calls))
+        (args, thread_name), = calls
+        self.assertEqual(args, ("标题", "消息", 1500))
+        self.assertEqual(thread_name, "popup")
+
+    def test_quit_app_returns_promptly_on_windows(self):
+        import desktop_app
+        self.tray.icon = Mock()
+        with patch('platform.system', return_value='Windows'), \
+             patch.object(desktop_app, '_windows_message_box', side_effect=lambda *a: time.sleep(0.3)):
+            t0 = time.monotonic()
+            self.tray.quit_app()
+            self.assertLess(time.monotonic() - t0, 0.25)
+        self.assertFalse(self.tray.running)
+        self.tray.icon.stop.assert_called_once()
+
+    def test_windows_message_box_prefers_timeout_variant(self):
+        import desktop_app
+        user32 = Mock()
+        fake_ctypes = Mock()
+        fake_ctypes.windll.user32 = user32
+        with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+            desktop_app._windows_message_box("T", "M", 1500)
+        user32.MessageBoxTimeoutW.assert_called_once_with(None, "M", "T", 0x10000, 0, 1500)
+        user32.MessageBoxW.assert_not_called()
+
+    def test_windows_message_box_falls_back_to_blocking(self):
+        import desktop_app
+        user32 = Mock(spec=["MessageBoxW"])
+        fake_ctypes = Mock()
+        fake_ctypes.windll.user32 = user32
+        with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+            desktop_app._windows_message_box("T", "M", 1500)
+        user32.MessageBoxW.assert_called_once_with(None, "M", "T", 0x10000)
+
+    def test_show_popup_single_implementation(self):
+        """三处一字不差的 show_popup 副本已合并到 BaseApp，子类不再各自复制。"""
+        self.assertIs(TrayApp.show_popup, BaseApp.show_popup)
+        self.assertIs(DesktopApp.show_popup, BaseApp.show_popup)
 
 
 if __name__ == '__main__':

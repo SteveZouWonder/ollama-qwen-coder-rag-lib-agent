@@ -80,7 +80,7 @@ class GitAnalyzer:
                 ['git'] + command,
                 cwd=self.repo_path,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,  # 避免 shortlog 等命令在非 tty 下读 stdin 阻塞
             )
@@ -354,7 +354,7 @@ class GitAnalyzer:
         """运行 Git 命令并返回 ``{returncode, stdout, stderr}``（写操作需要看到 stderr）。"""
         try:
             result = subprocess.run(
-                ['git'] + command, cwd=self.repo_path, capture_output=True, text=True,
+                ['git'] + command, cwd=self.repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, stdin=subprocess.DEVNULL,
             )
             return {"returncode": result.returncode, "stdout": (result.stdout or "").strip(),

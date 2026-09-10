@@ -335,7 +335,7 @@ class LargeClass:
         checker = QualityChecker()
         report = checker.check_file("/nonexistent/file.py")
         
-        assert report.file_path == "/nonexistent/file.py"
+        assert os.path.normpath(report.file_path) == os.path.normpath("/nonexistent/file.py")
         assert len(report.issues) == 0
     
     def test_check_project(self, tmp_path):

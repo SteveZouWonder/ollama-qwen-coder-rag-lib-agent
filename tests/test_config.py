@@ -90,7 +90,7 @@ class TestConfigDefaults:
 
     def test_history_file_default(self, clean_env):
         from config import HISTORY_FILE
-        assert HISTORY_FILE == os.path.expanduser("~/.code_agent_history.json")
+        assert Path(HISTORY_FILE) == Path(os.path.expanduser("~/.code_agent_history.json"))
 
     def test_max_history_default(self, clean_env):
         from config import MAX_HISTORY
@@ -122,7 +122,7 @@ class TestConfigDefaults:
 
     def test_first_run_marker(self, clean_env):
         from config import FIRST_RUN_MARKER
-        assert FIRST_RUN_MARKER == os.path.expanduser("~/.code_agent_first_run")
+        assert Path(FIRST_RUN_MARKER) == Path(os.path.expanduser("~/.code_agent_first_run"))
 
 
 class TestConfigEnvOverride:

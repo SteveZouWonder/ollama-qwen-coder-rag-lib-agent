@@ -2,6 +2,7 @@
 OCR 结果缓存系统
 """
 import pickle
+import re
 import hashlib
 import shutil
 from pathlib import Path
@@ -34,6 +35,10 @@ class OCRCache:
         Returns:
             缓存文件路径
         """
+        # 正常的 image_hash 是十六进制；若含 Windows 文件名非法字符（``<>:"/\\|?*``）或路径分隔符，
+        # 直接拼文件名会在 Windows 上写失败（静默丢缓存），退化为该字符串的 sha256
+        if re.search(r'[<>:"/\\\\|?*\x00-\x1f]', image_hash):
+            image_hash = hashlib.sha256(image_hash.encode("utf-8")).hexdigest()
         # 使用哈希值的前两位作为子目录，避免单个目录文件过多
         subdir = self.cache_dir / image_hash[:2]
         subdir.mkdir(exist_ok=True)

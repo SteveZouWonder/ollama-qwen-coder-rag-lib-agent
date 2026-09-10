@@ -3,6 +3,7 @@
 
 显示运行配置，重点是「允许读目录 / 允许写目录」两行——读写越界报错时用户据此自查。
 """
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -63,7 +64,7 @@ class TestConfigRows:
             d = scoped / f"d{i}"
             d.mkdir()
             dirs.append(str(d))
-        monkeypatch.setenv("READ_ALLOWED_DIRS", ":".join(dirs))
+        monkeypatch.setenv("READ_ALLOWED_DIRS", os.pathsep.join(dirs))
         assert "…（共 10 个）" in dict(h.config_rows())["允许读目录"]
 
 
