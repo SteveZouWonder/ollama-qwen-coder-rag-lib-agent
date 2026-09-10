@@ -63,6 +63,35 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text:latest")
 # （本机实测约 40 秒）。默认关闭以换取响应速度；需要复杂推理时可设 LLM_THINK=true。
 LLM_THINK = os.getenv("LLM_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
 
+# 是否以流式（Ollama NDJSON）接收模型输出，让 CLI / Web 逐字显示最终答案并可随时中断
+# （F10 P1-1）。默认开启；设为 false 时所有 on_token 回调退化为"完整文本一次性回调"，
+# 请求体与此前非流式行为完全一致。
+LLM_STREAM = os.getenv("LLM_STREAM", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# ==================== LLM 后端（F10 P1-2）====================
+# LLM_PROVIDER：对话模型走哪种后端协议。
+#   ollama（默认）：Ollama 原生 /api/chat（NDJSON 流、think / num_ctx 等 options 原样透传）；
+#   openai：任意 OpenAI 兼容服务（vLLM / LM Studio / llama.cpp server / 内网网关，含 Ollama 自带的 /v1），
+#           走 POST {LLM_BASE_URL}/v1/chat/completions，SSE 流式；options 映射 temperature、
+#           num_predict→max_tokens，num_ctx 由后端决定（忽略），think 忽略。
+# 未识别的取值回退 ollama 并打 warning。嵌入模型（EMBED_MODEL）始终走 Ollama（OLLAMA_BASE_URL）。
+LLM_PROVIDERS = ("ollama", "openai")
+LLM_PROVIDER = (os.getenv("LLM_PROVIDER", "ollama").strip().lower() or "ollama")
+# LLM_BASE_URL：对话后端地址；未设置时取 OLLAMA_BASE_URL（openai 模式下即 Ollama 自带的兼容端点）。
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip() or OLLAMA_BASE_URL
+# LLM_API_KEY：openai 模式的 Bearer 令牌；本地服务通常不需要，留空即可。
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+# LLM_REASONING_EFFORT：openai 模式下、思考模式关闭（LLM_THINK=false）时随请求发送的标准字段
+# reasoning_effort（OpenAI 协议没有 Ollama 的 think 字段；思考型模型在兼容端点上默认开启思考，
+# 会把 max_tokens 预算全部花在 reasoning 上而 content 为空）。默认 none；Ollama /v1 与 OpenAI 均识别。
+# 后端返回 400 不认识该字段时 llm_client 会自动去掉重试并记住。设为空串则不发送任何字段。
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "none").strip().lower()
+# OLLAMA_MAX_CONCURRENCY：进程内同时发往对话后端的 LLM 请求上限（F10 P2-1-d）。多 Agent 并行时
+# 各子 Agent 独立请求同一 Ollama，单 GPU 上只会排队并让每个请求都变慢直至超时；用信号量把并发
+# 压到 2，其余请求在本地排队（进度显示"排队中"，排队时间不计入子任务超时）。LLM_PROVIDER=openai
+# 接 vLLM 等支持批处理的后端时建议调大；0 或负数表示不限制。
+OLLAMA_MAX_CONCURRENCY = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "2") or 0)
+
 
 def resolve_num_ctx(model: str) -> int:
     """按模型规格自动推导安全且够用的上下文窗口（num_ctx），用户零配置。
@@ -163,9 +192,13 @@ KB_RELEVANCE_THRESHOLD = float(os.getenv("KB_RELEVANCE_THRESHOLD", "0.45"))
 RERANKER = os.getenv("RERANKER", "llm").strip().lower() or "llm"
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 # RAG_HYBRID：dense（向量）+ BM25 关键词 hybrid 召回（RRF 融合），默认开启；
-# 文档块数 >20000 时自动关闭；rank_bm25 未安装时静默回退 dense。
+# rank_bm25 未安装时回退 dense。
+# RAG_HYBRID_MAX_CHUNKS：文档块数超过该值时关闭 hybrid（仅向量检索），并在 /stats、Web 知识库页与
+# query 结果 meta.hybrid_disabled_reason 中给出原因（F10 P2-1-b）。BM25 语料（词频 + 来源元数据 +
+# 索引）常驻内存，实测每万块约 100–150MB（取决于词汇量），默认 50000（上限时约 0.5–0.75GB）；
+# 8GB 机器建议 20000，内存宽裕可继续调大。
 RAG_HYBRID = os.getenv("RAG_HYBRID", "true").strip().lower() in ("1", "true", "yes", "on")
-RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "20000"))
+RAG_HYBRID_MAX_CHUNKS = int(os.getenv("RAG_HYBRID_MAX_CHUNKS", "50000"))
 
 # ==================== 抗过度顺从（F9 P2）====================
 # RAG_SELF_CHECK：知识库命中并综合完成后，再用同一模型逐句核对"回答中的事实句是否被资料支持"
@@ -218,6 +251,8 @@ MAX_HISTORY = int(os.getenv("MAX_HISTORY", "100"))  # 已弃用：历史按 toke
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
 TIMEOUT = int(os.getenv("TIMEOUT", "300"))
 
+# AUTO_CONFIRM：开启后 low / medium 风险的命令与工具免人工确认；
+# high / critical 仍需确认（agent_tools.auto_confirm_allows 统一判定）。
 AUTO_CONFIRM = os.getenv("CODE_AGENT_AUTO_CONFIRM", "false").lower() == "true"
 
 # 入口智能路由（F8 P3）：自然语言输入先由 intent_router 判定走 RAG 还是 Agent；
@@ -228,6 +263,11 @@ AUTO_ROUTE = os.getenv("AUTO_ROUTE", "true").lower() == "true"
 # 始终隐含当前工作目录；解析后不在这些目录内的路径返回 "[错误] 路径超出允许范围"。
 # agent_tools 在调用时实时读取该环境变量，这里仅作为配置项文档与 Config 映射。
 WRITE_ALLOWED_DIRS = os.getenv("WRITE_ALLOWED_DIRS", "")
+
+# Agent 的 read_file / list_directory / search_files 允许读取的额外目录（冒号分隔）。
+# 允许读取范围 = 允许写入目录 ∪ READ_ALLOWED_DIRS ∪ 已入库文件所在目录；越界返回
+# "[错误] 路径超出允许范围: …（允许读取 …）"。同样由 agent_tools 实时读取。
+READ_ALLOWED_DIRS = os.getenv("READ_ALLOWED_DIRS", "")
 
 # ==================== 文件上传配置 ====================
 # 文件大小限制（字节）
@@ -311,9 +351,104 @@ PADDLE_USE_GPU = os.getenv("PADDLE_USE_GPU", "false").lower() == "true"
 PADDLE_LANG = os.getenv("PADDLE_LANG", "ch")  # ch | en | jk
 PADDLE_USE_ANGLE_CLS = os.getenv("PADDLE_USE_ANGLE_CLS", "true").lower() == "true"
 
-# Tesseract 特定配置
-TESSERACT_PATH = os.getenv("TESSERACT_PATH", "/opt/homebrew/bin/tesseract")  # macOS Homebrew 路径
+# Tesseract 特定配置（F10 P3-1）
+# TESSERACT_PATH 为空时自动探测：PATH（shutil.which）→ 各平台常见安装目录；见 resolve_tesseract_path()。
+# 此前默认写死 /opt/homebrew/bin/tesseract，Linux / Windows 用户会得到"路径不存在"而不是"未安装"。
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", "")
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "chi_sim+eng")
+TESSERACT_INSTALL_DOC = "docs/tutorials/02-installation.md#ocr"
+TESSERACT_MISSING_HINT = (
+    f"未检测到 Tesseract，安装方法见 {TESSERACT_INSTALL_DOC}；"
+    "已安装但不在 PATH 时可设置 TESSERACT_PATH 指向可执行文件"
+)
+
+
+def tesseract_candidates(platform: str = None) -> list:
+    """按平台返回 Tesseract 可执行文件的常见安装路径（不检查是否存在）。
+
+    ``platform`` 默认取 ``sys.platform``（``darwin`` / ``linux`` / ``win32``），便于单测覆盖三平台。
+    GUI 启动（Finder / 开始菜单）时 PATH 极简，``shutil.which`` 经常找不到 Homebrew / 安装器放的目录，
+    因此需要这份候选表兜底。
+    """
+    plat = (platform or _sys.platform).lower()
+    if plat.startswith("darwin"):
+        return ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]
+    if plat.startswith("win"):
+        exe = os.path.join("Tesseract-OCR", "tesseract.exe")
+        roots = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ]
+        local = os.environ.get("LOCALAPPDATA")
+        cands = [os.path.join(r, exe) for r in roots if r]
+        if local:
+            cands.append(os.path.join(local, "Programs", exe))
+        return cands
+    # linux / 其它 POSIX
+    return ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]
+
+
+def _tesseract_env_path(env_path: str = None) -> str:
+    """``TESSERACT_PATH``：显式参数 → 运行时环境变量 → 模块常量（导入时快照）。"""
+    if env_path is None:
+        env_path = os.environ.get("TESSERACT_PATH") or TESSERACT_PATH
+    return (env_path or "").strip()
+
+
+def _locate_tesseract(env_path: str, platform: str = None) -> tuple:
+    """返回 ``(path, source)``；``source`` ∈ ``env`` / ``path`` / ``candidate``，未找到为 ``(None, None)``。"""
+    import shutil
+
+    if env_path:
+        expanded = os.path.expanduser(env_path)
+        if os.path.exists(expanded):
+            return expanded, "env"
+        # 用户显式指定却不存在：继续探测但不静默"修正"用户配置——describe_tesseract() 会把
+        # "TESSERACT_PATH 指向的文件不存在" 写进提示，避免语言包 / 版本与预期不一致却无人察觉。
+    found = shutil.which("tesseract")
+    if found:
+        return found, "path"
+    for cand in tesseract_candidates(platform):
+        if os.path.exists(cand):
+            return cand, "candidate"
+    return None, None
+
+
+def resolve_tesseract_path(env_path: str = None, platform: str = None) -> "str | None":
+    """探测 Tesseract 可执行文件：``TESSERACT_PATH``（已设且存在）→ ``shutil.which`` → 平台候选 → ``None``。
+
+    ``env_path`` 默认取运行时环境变量 ``TESSERACT_PATH``（其次模块常量），显式传入便于测试。
+    返回 ``None`` 表示未安装 / 未找到，调用方应给出 :data:`TESSERACT_MISSING_HINT` 而不是路径错误。
+    """
+    return _locate_tesseract(_tesseract_env_path(env_path), platform)[0]
+
+
+def describe_tesseract(env_path: str = None, platform: str = None) -> dict:
+    """探测结果的可展示形态（CLI ``/config`` 与 Web「系统 → 运行环境」共用）。
+
+    返回 ``{"path", "source", "installed", "hint"}``：
+    ``source`` ∈ ``env``（TESSERACT_PATH）/ ``path``（PATH）/ ``candidate``（平台常见目录）/ ``None``；
+    ``hint`` 未找到时为 :data:`TESSERACT_MISSING_HINT`（``TESSERACT_PATH`` 指向不存在的文件时前置说明），找到时为 ``None``。
+    """
+    env_path = _tesseract_env_path(env_path)
+    path, source = _locate_tesseract(env_path, platform)
+    if path is None:
+        hint = TESSERACT_MISSING_HINT
+        if env_path:
+            hint = f"TESSERACT_PATH={env_path} 指向的文件不存在；{TESSERACT_MISSING_HINT}"
+        return {"path": None, "source": None, "installed": False, "hint": hint}
+    if env_path and source != "env":
+        # 指定的路径不存在、但在别处找到了：用上找到的，同时把这一事实说出来
+        return {"path": path, "source": source, "installed": True,
+                "hint": f"TESSERACT_PATH={env_path} 指向的文件不存在，已改用 {path}"}
+    return {"path": path, "source": source, "installed": True, "hint": None}
+
+
+TESSERACT_SOURCE_LABELS = {
+    "env": "TESSERACT_PATH 指定",
+    "path": "PATH 中找到",
+    "candidate": "常见安装目录探测到",
+}
 
 # 图像预处理配置
 OCR_PREPROCESS = os.getenv("OCR_PREPROCESS", "true").lower() == "true"
@@ -348,6 +483,14 @@ class Config:
     OLLAMA_HOST: str = OLLAMA_BASE_URL
     MODEL: str = LLM_MODEL
     LLM_MODEL: str = LLM_MODEL
+    LLM_STREAM: bool = LLM_STREAM
+    LLM_PROVIDER: str = LLM_PROVIDER
+    LLM_BASE_URL: str = LLM_BASE_URL
+    LLM_API_KEY: str = LLM_API_KEY
+    LLM_REASONING_EFFORT: str = LLM_REASONING_EFFORT
+    OLLAMA_MAX_CONCURRENCY: int = OLLAMA_MAX_CONCURRENCY
+    RAG_HYBRID: bool = RAG_HYBRID
+    RAG_HYBRID_MAX_CHUNKS: int = RAG_HYBRID_MAX_CHUNKS
     HISTORY_FILE: str = HISTORY_FILE
     MAX_HISTORY: int = MAX_HISTORY
     MAX_ITERATIONS: int = MAX_ITERATIONS
@@ -355,6 +498,7 @@ class Config:
     AUTO_CONFIRM: bool = AUTO_CONFIRM
     AUTO_ROUTE: bool = AUTO_ROUTE
     WRITE_ALLOWED_DIRS: str = WRITE_ALLOWED_DIRS
+    READ_ALLOWED_DIRS: str = READ_ALLOWED_DIRS
     CODE_AWARE_CHUNKING: bool = CODE_AWARE_CHUNKING
     CODE_CHUNK_MAX_CHARS: int = CODE_CHUNK_MAX_CHARS
     CODE_CHUNK_MIN_CHARS: int = CODE_CHUNK_MIN_CHARS
@@ -374,6 +518,8 @@ class Config:
     PADDLE_USE_ANGLE_CLS: bool = PADDLE_USE_ANGLE_CLS
     TESSERACT_PATH: str = TESSERACT_PATH
     TESSERACT_LANG: str = TESSERACT_LANG
+    TESSERACT_INSTALL_DOC: str = TESSERACT_INSTALL_DOC
+    TESSERACT_MISSING_HINT: str = TESSERACT_MISSING_HINT
     OCR_PREPROCESS: bool = OCR_PREPROCESS
     OCR_DENOISE: bool = OCR_DENOISE
     OCR_BINARIZE: bool = OCR_BINARIZE

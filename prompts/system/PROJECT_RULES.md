@@ -34,6 +34,22 @@ discipline lives in the Skills layer; the ReAct protocol lives in the built-in t
 - ast_search(pattern, path?, search_by?) · code_quality_check(path?, check_type?)
 - database_query(sql) · database_execute(sql) · knowledge_graph_query(query?, query_type?)
 
+## Path boundaries
+- read_file / list_directory / search_files only work inside the allowed directories: the
+  current working directory, the paths in `WRITE_ALLOWED_DIRS` / `READ_ALLOWED_DIRS`, and the
+  directories of already-ingested knowledge-base files. write_file / add_to_knowledge_base are
+  limited to the working directory plus `WRITE_ALLOWED_DIRS`.
+- A `[错误] 路径超出允许范围` result is a configuration limit, not a missing file: do not retry
+  with variations of the path. Tell the user which path was refused and that they can allow it
+  with `READ_ALLOWED_DIRS` (read) or `WRITE_ALLOWED_DIRS` (write); `/config` shows the current
+  ranges.
+
+## Command safety
+- execute_command is graded per sub-command: read-only → runs immediately; installs, git writes,
+  running scripts, `mv` / `cp` / `chmod` → needs confirmation; `rm` / `drop` / `curl … | sh` →
+  high risk, always needs a human confirmation even when auto-confirm is on; `rm -rf /` and
+  friends are blocked outright. Prefer the least destructive command that answers the question.
+
 ## Project-analysis tasks
 - Start with list_directory on the root, then read the key files (README, manifests,
   entry points), then analyze_project_structure. Never read a directory path as a file.

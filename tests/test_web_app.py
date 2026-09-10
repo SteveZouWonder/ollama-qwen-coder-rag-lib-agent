@@ -195,6 +195,8 @@ def make_service_mock():
     # 默认会话不是"携带摘要"新建的：无承接背景；标签页未绑定会话时钉到 "sid0"
     svc.carried_summary.return_value = ""
     svc.ensure_session.return_value = "sid0"
+    # 读边界：默认视为在允许范围内（None）；越界用例显式改 return_value
+    svc.path_read_error.return_value = None
     return svc
 
 
@@ -1113,6 +1115,22 @@ class TestNewFormatters:
         # F9 P2-1：自校验开关一行
         assert "| 自校验（RAG_SELF_CHECK） | 关闭 |" in out
         assert "| 自校验（RAG_SELF_CHECK） | 开启 |" in app.format_env_info({"self_check": True})
+
+    def test_format_env_info_allowed_dirs(self):
+        """F10 P0-1-d：系统页显示允许读 / 写目录；为空时提示对应环境变量。"""
+        out = app.format_env_info({"read_allowed_dirs": ["/w", "/docs"], "write_allowed_dirs": ["/w"]})
+        assert "| 允许读目录 | `/w` · `/docs` |" in out
+        assert "| 允许写目录 | `/w` |" in out
+        empty = app.format_env_info({"cwd": "/w"})
+        assert "READ_ALLOWED_DIRS" in empty and "WRITE_ALLOWED_DIRS" in empty
+        # 目录很多时折叠（已入库文档目录会累积）
+        many = app.format_env_info({"read_allowed_dirs": [f"/d{i}" for i in range(9)]})
+        assert "…（共 9 个）" in many and "`/d8`" not in many
+
+    def test_format_env_info_auto_confirm_scope(self):
+        """F10 P0-1-c：自动确认开启时说明只放行 low / medium。"""
+        assert "开（只放行 low / medium）" in app.format_env_info({"auto_confirm_env": True})
+        assert "| 自动确认（环境变量） | 关 |" in app.format_env_info({"auto_confirm_env": False})
 
     def test_format_stats_cards(self):
         assert "获取统计失败" in app.format_stats_cards({"error": "x"})
@@ -2308,6 +2326,23 @@ class TestWorkspaceHandlers:
         svc.search_in_dir.assert_called_with("q", ".")
         svc.search_in_dir.return_value = [{"file": "a", "line": i, "text": "q"} for i in range(50)]
         assert "仅显示前 50 条" in h["on_dir_search"]("q", "/p")[0]
+
+    def test_dir_search_out_of_scope_is_visible(self):
+        """F10 P0-1：搜索目录越界时明确报错，而不是伪装成"未找到"。"""
+        svc = make_service_mock()
+        svc.path_read_error.return_value = "路径超出允许范围: /etc（允许读取 /w；可设置环境变量 READ_ALLOWED_DIRS 放行）"
+        h = build_handlers(svc)
+        status, rows = h["on_dir_search"]("q", "/etc")
+        assert status.startswith("❌") and "READ_ALLOWED_DIRS" in status and rows == []
+        svc.search_in_dir.assert_not_called()
+
+    def test_file_edit_load_out_of_scope(self):
+        """越界文件不提示"保存将创建新文件"（写边界 ⊆ 读边界，保存同样会被拒）。"""
+        svc = make_service_mock()
+        h = build_handlers(svc)
+        svc.file_preview.return_value = {"error": "路径超出允许范围: /etc/x（允许读取 /w；可设置环境变量 READ_ALLOWED_DIRS 放行）"}
+        content, hint = h["on_file_edit_load"]("/etc/x")
+        assert content == "" and "路径超出允许范围" in hint and "创建新文件" not in hint
 
     def test_shell_generate_handler(self):
         svc = make_service_mock()

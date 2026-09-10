@@ -191,13 +191,13 @@ def topic_drift(question: str, recent_messages: List[Dict[str, Any]]) -> bool:
 
 
 def _default_complete(prompt: str) -> str:
-    """用全局唯一模型做一次补全：直连 Ollama /api/chat 并强制 ``think=False``。
+    """用全局唯一模型做一次补全：经 ``llm_client`` 后端抽象（F10 P1-2）并强制 ``think=False``。
 
     压缩/改写是纯工具性调用，不需要思维链；显式关闭思考模式避免 4B 模型为
     一句摘要生成上千 token。失败抛出异常，由调用方决定回退。
     """
-    import requests
     from config import Config
+    from llm_client import get_llm_client
 
     try:
         import config as _cfg
@@ -206,19 +206,14 @@ def _default_complete(prompt: str) -> str:
     except Exception:  # noqa: BLE001
         model, num_ctx = Config.LLM_MODEL, 8192
 
-    resp = requests.post(
-        Config.OLLAMA_HOST + "/api/chat",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0.2, "num_ctx": num_ctx, "num_predict": 512},
-        },
+    text = get_llm_client().chat(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        think=False,
+        options={"temperature": 0.2, "num_ctx": num_ctx, "num_predict": 512},
         timeout=Config.TIMEOUT,
     )
-    resp.raise_for_status()
-    return str(resp.json().get("message", {}).get("content", "")).strip()
+    return str(text).strip()
 
 
 def resolve_num_ctx() -> int:

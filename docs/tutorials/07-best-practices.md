@@ -449,4 +449,16 @@ tar -czf logs_backup_$(date +%Y%m%d).tar.gz logs/
 
 ---
 
-**上一篇**: [故障排除](06-troubleshooting.md) | **返回目录**: [TUTORIAL.md](../../TUTORIAL.md)
+## 11. 性能优化建议（速查）
+
+> 本节自 README 迁入（F10 P3-1）。
+
+1. **Embedding 模型**：`nomic-embed-text` 速度快、效果好
+2. **分块大小**：论文 1024，代码 512，笔记 768
+3. **模型选择**：默认 `qwen3.5:4b` 兼顾速度与能力；内存宽裕时切 `qwen3.5:9b`，详见 [README《模型选择要点》](../../README.md#模型选择要点)
+4. **硬件要求**：4B 模型约 3.7GB 驻留（16K 上下文），9B 约 6GB；16GB 机器与 IDE 并行请用 4B
+5. **思考模式**：默认关闭（`LLM_THINK=false`），同一问题 31s → 2.8s；仅复杂推理时开启
+
+---
+
+**上一篇**: [故障排除](06-troubleshooting.md) | **下一篇**: [配置参考](08-configuration.md) | **返回目录**: [TUTORIAL.md](../../TUTORIAL.md)

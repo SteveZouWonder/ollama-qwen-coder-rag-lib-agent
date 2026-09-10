@@ -1,0 +1,21 @@
+# 开发 / 测试 / 静态检查依赖（Python 3.13）
+#
+# 运行时依赖见 requirements.txt，本文件通过 -r 引用，安装一条命令即可：
+#   pip install -r requirements-dev.txt
+#
+# 版本全部钉死，与 .github/workflows/ci.yml 的安装步骤保持一致。
+
+-r requirements.txt
+
+# 测试
+pytest==9.0.3
+pytest-cov==7.1.0
+pytest-xdist==3.8.0       # 并行执行：python -m pytest tests -q -n 4
+
+# 静态检查
+flake8==7.3.0             # CI 中 E9,F63,F7,F82 阻断，其余仅告警
+pylint==4.0.5             # CI 中 --exit-zero，仅告警
+
+# 安全扫描
+bandit==1.9.4             # CI 中 -lll -i 阻断
+pip-audit==2.10.1         # 依赖漏洞扫描（CVE ignore 列表见 ci.yml）

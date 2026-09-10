@@ -36,9 +36,11 @@ tests/
 | `setup_settings_mock` | patch `rag_engine.Settings` | 避免 LlamaIndex 全局 Settings 类型检查 |
 | `block_rerank_llm` | `rag_rerank._llm_complete` 抛 ConnectionError | rerank 会直连 Ollama |
 | `block_intent_llm` | `intent_router._llm_complete` 抛 ConnectionError | 路由模糊时会直连 Ollama |
+| `isolate_app_state_dir` | `runtime_paths.set_app_state_root(tmp)` | 快照 / 元数据 / 图谱的默认根 `.cerebro/` 整体重定向 |
 | `isolate_file_metadata` | `file_metadata._global_metadata_manager` → tmp | 否则写真实 `.cerebro/file_metadata/metadata.json` |
+| `isolate_recommender_preferences` | `command_recommender.config._global_config` → tmp 偏好文件 | 否则改写用户 `data/recommender_preferences.json` |
 | `isolate_knowledge_graph` | `set_default_persist_path(tmp)` + 重建 `_graph_builder` / `_graph_query` | 否则写真实 `.cerebro/knowledge/graph.json` |
-| `reset_module_state` | 重置 `query_interface._progress_state / rag_engine`、`agent_tools._rag_engine` | 模块级全局跨测试泄漏 |
+| `reset_module_state` | 重置 `cli.state._progress_state / rag_engine`（F10 P3-2 前在 `query_interface`）、`agent_tools._rag_engine` | 模块级全局跨测试泄漏 |
 
 `tests/multi_agent/conftest.py` 的 `block_ollama` 拦截 `requests.post`（子 Agent 委托真实 ReActEngine）。
 
@@ -48,6 +50,9 @@ tests/
 
 - 文件系统：只用 `tmp_path`；不读写 `index_storage/`、`.cerebro/`、`~/.code_agent_sessions/`、`data/`、`prompts/`（读 `prompts/` 可以，写用 `AGENT_PROMPTS_DIR` 指到 tmp）。
 - 网络 / 模型：不调用真实 Ollama；用注入或 monkeypatch。
+- **检索质量回归不靠单测**：改 `rag_engine` / `rag_rerank` / `rag_pipeline` / `code_chunker` 或检索阈值后，本地跑
+  `scripts/eval_rag.py --hybrid on|off` 出报告并提交（指标含义、样本格式、何时必须跑见 `docs/development/TEST_DESIGN.md` §7）；
+  需要临时索引的测试用 `RAGEngine(persist_dir=str(tmp_path))`，不要 patch `INDEX_DIR`。
 - 环境变量：`monkeypatch.setenv / delenv`；`config.py` 的常量在 import 时已固化，需要改配置时 monkeypatch 使用点（如 `qi.Config.AUTO_ROUTE`）而不是 env。
 - 时间：`health()` 等依赖 `datetime.now()` 的逻辑，直接改 `session.updated_at`。
 - 单例：见 `CODE_STANDARDS.md` §6 表格，用 monkeypatch 替换而不是 `del`。
@@ -61,6 +66,7 @@ tests/
 | WebService | `WebService(rag_factory=, react_factory=, orchestrator_factory=, session_manager_factory=, model_switcher_factory=)`；`build_handlers(MagicMock())` 单测 handler |
 | 会话 | `SessionManager(str(tmp_path / "sessions"))`；CLI 单例 `monkeypatch.setattr(cc, "_context_singleton", ctx)` + `monkeypatch.setattr(cc, "get_conversation_context", lambda: ctx)` |
 | RAG 管道 | `monkeypatch.setattr(rag_pipeline, "llm_direct_answer", ...)`、`simple_web_search`、`judge_kb_relevance`、`answer_question`；`mock_rag_engine` fixture |
+| RAG 评测 | 指标函数（`rag_eval`）直接喂 `[{"file", "ref"}]` 与答案字符串；脚本用 `importlib` 加载后 monkeypatch `rag_engine.RAGEngine` / `document_loader.load_documents` / `rag_pipeline.answer_question` |
 | 代码分块 | `monkeypatch.setattr(code_chunker, "_load_pack", ...)`（避免依赖 tree-sitter-language-pack） |
 | prompts | `monkeypatch.setenv("AGENT_PROMPTS_DIR", str(tmp))` 并写入 `system/PROJECT_RULES.md` / `skills/x/SKILL.md`；`CODE_AGENT_SKILLS=off` 关闭 Skills 层 |
 | 路径 | `monkeypatch.setattr("runtime_paths.user_data_dir", lambda: tmp_path)`（`app_state_dir` 迁移测试） |
@@ -68,7 +74,7 @@ tests/
 ## 6. 断言什么
 
 - 行为而非实现：断言返回 dict 字段、前缀标记（`[错误]` / `[知识库无相关内容]` / `⚠️ 未完成`）、事件 phase 序列、写入文件内容；不断言日志文案。
-- 结构化输出改动要同时断言三端消费者：CLI 打印（`patch("query_interface.console")` 后收集 `print.call_args_list`）、Web `format_*` 输出、Agent Observation。
+- 结构化输出改动要同时断言三端消费者：CLI 打印（`patch("cli.state.console")` 后收集 `print.call_args_list`；协作函数如 `record_command_execution` 打调用方模块 `cli.engine_commands.<name>`）、Web `format_*` 输出、Agent Observation。
 - CLI rich 表格：给 `CLIContext(console=rich.console.Console(record=True, width=120, color_system=None), has_rich=True)`，用 `console.export_text()` 断言表头 / 行数 / 空态提示（模式见 `tests/test_cli_handlers_rich_tables.py`）；`has_rich=False` 分支另测纯文本回退。需要真实 git 的用例在模块导入时留存 `subprocess.run/Popen` 并在 fixture 内 `monkeypatch` 还原（conftest 全局 Mock 了它们）。
 - Bug 修复先写**会失败**的复现测试，再改代码（会话隔离、单例钉死这类回归尤其如此）。
 - 边界：空输入、超长（截断标注）、可选依赖缺失、取消 / 超时、旧数据格式（`from_dict` 未知键）。

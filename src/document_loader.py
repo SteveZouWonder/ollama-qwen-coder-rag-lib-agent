@@ -13,7 +13,7 @@ from llama_index.readers.file import (
 
 from config import DATA_DIR, OCR_ENABLED, OCR_ENGINE, OCR_CACHE_DIR, OCR_PARALLEL_WORKERS
 from config import PADDLE_USE_GPU, PADDLE_LANG, PADDLE_USE_ANGLE_CLS
-from config import TESSERACT_PATH, TESSERACT_LANG
+from config import TESSERACT_LANG, TESSERACT_MISSING_HINT, describe_tesseract
 from config import OCR_PREPROCESS, OCR_DENOISE, OCR_BINARIZE, OCR_DESKEW, OCR_ENHANCE_CONTRAST
 from config import PDF_EXTRACT_IMAGES, PDF_MIN_IMAGE_SIZE
 from config import OCR_CACHE_ENABLED, OCR_QUALITY_THRESHOLD, OCR_MAX_IMAGE_SIZE
@@ -53,6 +53,8 @@ class DocumentLoader:
         self.enable_validation = enable_validation
         self.ocr_engine = None
         self.pdf_image_extractor = None
+        # OCR 不可用的原因（F10 P3-1）：Tesseract 缺失 / 依赖未装 / 初始化失败；跳过图片时原样告诉用户
+        self.ocr_unavailable_reason: Optional[str] = None
 
         # 文件验证器（延迟加载）
         self.file_validator = None
@@ -87,8 +89,16 @@ class DocumentLoader:
                 }
                 self.ocr_engine = PaddleOCREngine(ocr_config)
             elif OCR_ENGINE == "tesseract":
+                # F10 P3-1：先探测可执行文件（TESSERACT_PATH → PATH → 平台常见目录），
+                # 找不到时给"未安装 + 安装文档"提示，而不是把写死的路径交给 pytesseract 报路径错误
+                probe = describe_tesseract()
+                if not probe["installed"]:
+                    self._disable_ocr(probe["hint"] or TESSERACT_MISSING_HINT)
+                    return
+                if probe.get("hint"):
+                    print(f"⚠️  {probe['hint']}")
                 ocr_config = {
-                    'tesseract_path': TESSERACT_PATH,
+                    'tesseract_path': probe["path"],
                     'lang': TESSERACT_LANG,
                     'cache_dir': OCR_CACHE_DIR,
                     'parallel_workers': OCR_PARALLEL_WORKERS,
@@ -107,11 +117,16 @@ class DocumentLoader:
             print(f"✅ OCR 引擎初始化成功 ({OCR_ENGINE})")
 
         except ImportError as e:
-            print(f"⚠️  OCR 依赖未安装，OCR 功能已禁用: {e}")
-            self.enable_ocr = False
+            self._disable_ocr(f"OCR 依赖未安装: {e}")
         except Exception as e:
-            print(f"⚠️  OCR 初始化失败，OCR 功能已禁用: {e}")
-            self.enable_ocr = False
+            self._disable_ocr(f"OCR 初始化失败: {e}")
+
+    def _disable_ocr(self, reason: str) -> None:
+        """记录 OCR 不可用原因并关闭 OCR（图片入库时会把原因原样提示给用户）。"""
+        self.ocr_unavailable_reason = reason
+        self.ocr_engine = None
+        self.enable_ocr = False
+        print(f"⚠️  {reason}，OCR 功能已禁用")
 
     def _init_validator(self):
         """初始化文件验证器"""
@@ -198,6 +213,15 @@ class DocumentLoader:
         if enable_ocr is not None:
             return enable_ocr
         return self.enable_ocr
+
+    def ocr_skip_reason(self) -> str:
+        """跳过图片 / 扫描件时给用户的原因：优先说明"为什么不可用"（如 Tesseract 缺失 + 安装文档），
+        其次才是泛泛的"未启用 / 未初始化"。"""
+        if self.ocr_unavailable_reason:
+            return self.ocr_unavailable_reason
+        if self.ocr_engine is None:
+            return "OCR 引擎未初始化"
+        return "OCR 未启用"
     
     def _load_image_file(self, image_path: Path, enable_ocr: bool = None) -> List[Document]:
         """
@@ -211,11 +235,11 @@ class DocumentLoader:
             文档列表
         """
         if not self._should_enable_ocr(enable_ocr):
-            print(f"⚠️  OCR 未启用，跳过图片文件: {image_path.name}")
+            print(f"⚠️  {self.ocr_skip_reason()}，跳过图片文件: {image_path.name}")
             return []
 
         if self.ocr_engine is None:
-            print(f"⚠️  OCR 引擎未初始化，跳过图片文件: {image_path.name}")
+            print(f"⚠️  {self.ocr_skip_reason()}，跳过图片文件: {image_path.name}")
             return []
 
         # 检查图片大小限制
@@ -374,6 +398,9 @@ class DocumentLoader:
             OCR 识别的文档列表
         """
         if self.pdf_image_extractor is None or self.ocr_engine is None:
+            if self.ocr_unavailable_reason:
+                # 用户显式要求 OCR（enable_ocr=True）却因 Tesseract 缺失等原因做不了：说清楚，而不是静默只取文本层
+                print(f"⚠️  {self.ocr_unavailable_reason}，已跳过 {pdf_path.name} 中图片的 OCR")
             return []
         
         documents = []

@@ -25,7 +25,7 @@ from llama_index.core import (
     load_index_from_storage,
 )
 from llama_index.core.postprocessor import SimilarityPostprocessor
-from llama_index.core.schema import Document
+from llama_index.core.schema import Document, MetadataMode
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -55,6 +55,8 @@ from code_chunker import (
     strip_header as strip_chunk_header,
     summarize_nodes,
 )
+# F10 P2-1：BM25 稀疏索引的持久化增量存储（<index_dir>/bm25/store.json.gz）
+from bm25_store import BM25Store, TOKENIZER_VERSION as BM25_TOKENIZER_VERSION, tokenize as _bm25_tokenize_impl
 
 # 导入快照管理
 try:
@@ -84,7 +86,16 @@ except ImportError:
 class RAGEngine:
     """RAG 知识库引擎 - 支持独立查询和 Agent 工具调用"""
 
-    def __init__(self, enable_auto_snapshot: bool = True, enable_security: bool = True):
+    def __init__(
+        self,
+        enable_auto_snapshot: bool = True,
+        enable_security: bool = True,
+        persist_dir: Optional[str] = None,
+    ):
+        # F10 P1-3：``persist_dir`` 只改变本实例的存储位置（Chroma 库 / LlamaIndex 持久化 /
+        # 快照目录），供评测脚本在临时目录建索引而不触碰 ``index_storage/``；为 None 时
+        # 沿用 config 的 ``INDEX_DIR`` / ``VECTOR_DB_PATH``（行为与此前完全一致）。
+        self._persist_dir: Optional[Path] = Path(persist_dir) if persist_dir else None
         self.index: Optional[VectorStoreIndex] = None
         # F9 P0-1：引擎只做检索（retriever + 相似度过滤），答案一律由
         # rag_pipeline.synthesize_prompt 单次综合生成；``retriever is not None``
@@ -93,9 +104,12 @@ class RAGEngine:
         self.node_postprocessors: list = []
         # 最近一次入库时知识图谱是否成功派生构建（供 CLI 调整提示文案）
         self.last_graph_derived: bool = False
-        # hybrid 召回：惰性构建的 BM25 索引（入库/删除/清空后置 None 失效）
+        # hybrid 召回：``_bm25`` 是"BM25 索引已就位"的缓存标记（``{"store": BM25Store}``），
+        # 入库 / 删除 / 清空后置 None，下次查询由 ``_ensure_bm25`` 经持久化 store 惰性重建
+        # （F10 P2-1：增量 upsert / remove，不再全量拉取 Chroma）
         self._bm25 = None
         self._bm25_disabled_reason: Optional[str] = None
+        self._bm25_store: Optional[BM25Store] = None
         self.hybrid_enabled: bool = bool(RAG_HYBRID)
         # 统一切分器（build / load / add 三条路径共用；F8 P4 代码感知分块）
         self._node_parser = None
@@ -112,7 +126,7 @@ class RAGEngine:
         self.auto_snapshot_trigger = None
         if SNAPSHOT_AVAILABLE and enable_auto_snapshot:
             try:
-                self.snapshot_manager = KnowledgeSnapshotManager(index_dir=str(INDEX_DIR))
+                self.snapshot_manager = KnowledgeSnapshotManager(index_dir=str(self.index_dir))
                 self.auto_snapshot_trigger = AutoSnapshotTrigger(self.snapshot_manager)
                 print("✅ 自动快照已启用")
             except Exception as e:
@@ -151,6 +165,38 @@ class RAGEngine:
             # 首次初始化读 config；后续切换模型时保留当前开关状态
             think = getattr(self, "llm_think", LLM_THINK)
         self.llm_think = bool(think)
+        provider = self._llm_provider()
+        if provider == "openai":
+            # F10 P1-2：OpenAI 兼容后端（vLLM / LM Studio / 内网网关）。num_ctx 由后端决定，
+            # think 无对应字段；context_window 仍按模型名推导，用于历史 / 片段的 token 预算。
+            from llama_index.llms.openai_like import OpenAILike
+            from llm_client import describe_backend
+
+            backend = describe_backend()
+            base = str(backend.get("base_url", "")).rstrip("/")
+            if not base.endswith("/v1"):
+                base += "/v1"
+            # 思考模式关闭时随请求发送 reasoning_effort（与 OpenAICompatClient 同一开关 LLM_REASONING_EFFORT），
+            # 否则思考型模型会把输出预算全部用于 reasoning、综合回答为空
+            extra = {}
+            effort = self._reasoning_effort()
+            if not self.llm_think and effort:
+                extra["reasoning_effort"] = effort
+            print(f"🤖 加载 LLM 模型: {self.llm_model} (后端 openai @ {base}, context_window={self.llm_num_ctx}, "
+                  f"think={self.llm_think})")
+            Settings.llm = OpenAILike(
+                model=self.llm_model,
+                api_base=base,
+                api_key=self._openai_api_key() or "not-needed",
+                is_chat_model=True,
+                is_function_calling_model=False,
+                timeout=120.0,
+                temperature=0.1,
+                context_window=self.llm_num_ctx,
+                max_retries=1,
+                additional_kwargs=extra,
+            )
+            return
         print(f"🤖 加载 LLM 模型: {self.llm_model} (num_ctx={self.llm_num_ctx}, think={self.llm_think})")
         Settings.llm = Ollama(
             model=self.llm_model,
@@ -164,6 +210,30 @@ class RAGEngine:
             # 默认关闭思考模式：RAG 综合/相关性判定无需长思维链，显著缩短响应。
             thinking=self.llm_think,
         )
+
+    @staticmethod
+    def _llm_provider() -> str:
+        try:
+            from llm_client import provider_name
+            return provider_name()
+        except Exception:  # noqa: BLE001
+            return "ollama"
+
+    @staticmethod
+    def _reasoning_effort() -> str:
+        try:
+            from llm_client import reasoning_effort_setting
+            return reasoning_effort_setting()
+        except Exception:  # noqa: BLE001
+            return "none"
+
+    @staticmethod
+    def _openai_api_key() -> str:
+        try:
+            import config as _cfg
+            return str(getattr(_cfg, "LLM_API_KEY", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     @property
     def query_engine(self):
@@ -210,10 +280,22 @@ class RAGEngine:
             ollama_additional_kwargs={"mirostat": 0},
         )
 
+    @property
+    def index_dir(self) -> Path:
+        """本实例的索引根目录：构造时传入的 ``persist_dir``，否则 config ``INDEX_DIR``。"""
+        return self._persist_dir if self._persist_dir is not None else Path(INDEX_DIR)
+
+    @property
+    def vector_db_path(self) -> str:
+        """本实例的 Chroma 持久化路径：``persist_dir/chroma_db``，否则 config ``VECTOR_DB_PATH``。"""
+        if self._persist_dir is not None:
+            return str(self._persist_dir / "chroma_db")
+        return VECTOR_DB_PATH
+
     def _setup_chroma(self):
         """配置 ChromaDB 向量存储"""
-        print(f"💾 向量数据库: {VECTOR_DB_PATH}")
-        self.chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
+        print(f"💾 向量数据库: {self.vector_db_path}")
+        self.chroma_client = chromadb.PersistentClient(path=self.vector_db_path)
         self.chroma_collection = self.chroma_client.get_or_create_collection(
             name="rag_knowledge_base"
         )
@@ -314,7 +396,7 @@ class RAGEngine:
             self._persist_index()
 
         self._setup_query_engine()
-        self.invalidate_bm25()
+        self._bm25_after_ingest(nodes)
 
         # 登记文件元数据（供 /file-list 等命令读取），复用上面的切分统计。
         self._register_file_metadata(documents, file_paths, per_file=per_file)
@@ -327,8 +409,8 @@ class RAGEngine:
 
     def _persist_index(self):
         """持久化索引到磁盘"""
-        persist_dir = INDEX_DIR / "llama_index"
-        persist_dir.mkdir(exist_ok=True)
+        persist_dir = self.index_dir / "llama_index"
+        persist_dir.mkdir(parents=True, exist_ok=True)
         self.index.storage_context.persist(persist_dir=str(persist_dir))
         print(f"💾 索引已保存到: {persist_dir}")
 
@@ -466,7 +548,7 @@ class RAGEngine:
 
     def load_index(self) -> Optional[VectorStoreIndex]:
         """从磁盘加载索引"""
-        persist_dir = INDEX_DIR / "llama_index"
+        persist_dir = self.index_dir / "llama_index"
         if not persist_dir.exists():
             print("⚠️  未找到持久化索引，请先构建索引")
             return None
@@ -623,7 +705,7 @@ class RAGEngine:
                     pass
 
         self._persist_index()
-        self.invalidate_bm25()
+        self._bm25_after_ingest(nodes)
         print("✅ 文档添加完成！")
 
         # 登记文件元数据（供 /file-list 等命令读取），复用本次实际切分统计
@@ -668,31 +750,13 @@ class RAGEngine:
     # 片段去重/匹配用的内容前缀长度（与 sources 中 content[:500] 一致）
     _CONTENT_KEY_CHARS = 500
 
+    # 分词版本随 bm25_store.TOKENIZER_VERSION；store 文件版本不匹配时自动全量重建
+    BM25_TOKENIZER_VERSION = BM25_TOKENIZER_VERSION
+
     @staticmethod
     def _bm25_tokenize(text: str) -> List[str]:
-        """BM25 轻量分词：英文/数字按词（小写），中文按单字 + 相邻二字组。
-
-        标识符额外拆分：``snake_case`` / ``camelCase`` / ``PascalCase`` 在保留原词的同时
-        追加其子词（``_ensure_bm25`` → ``ensure``、``bm25``；``getUserName`` → ``get``、
-        ``user``、``name``），使代码问答中"问 ensure bm25 命中 _ensure_bm25"成为可能。
-        """
-        import re
-        if not text:
-            return []
-        words = re.findall(r"[a-zA-Z0-9_]+", text)
-        tokens: List[str] = []
-        for w in words:
-            tokens.append(w.lower())
-            parts = [p for p in w.split("_") if p]
-            sub: List[str] = []
-            for p in parts:
-                sub.extend(re.findall(r"[A-Z]+[0-9]*(?![a-z])|[A-Z]?[a-z]+[0-9]*|[0-9]+", p))
-            if len(sub) > 1 or (sub and sub[0] != w):
-                tokens.extend(s.lower() for s in sub if s.lower() != w.lower())
-        cjk = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
-        tokens.extend(cjk)
-        tokens.extend(a + b for a, b in zip(cjk, cjk[1:]))
-        return tokens
+        """BM25 轻量分词（实现见 ``bm25_store.tokenize``；改分词逻辑必须递增 ``TOKENIZER_VERSION``）。"""
+        return _bm25_tokenize_impl(text)
 
     @classmethod
     def _make_source(cls, text: str, meta: dict, score=None) -> dict:
@@ -727,51 +791,197 @@ class RAGEngine:
         return src
 
     def invalidate_bm25(self) -> None:
-        """入库/删除/清空后使 BM25 索引失效（下次查询按需重建）。"""
+        """使"BM25 已就位"缓存与关闭原因失效（下次查询重新判定并按需从 store 重建）。
+
+        F10 P2-1 起不再触发全量拉取：store 内容由入库 / 删除路径增量维护。
+        """
         self._bm25 = None
         self._bm25_disabled_reason = None
 
+    # ---- BM25 持久化 store（F10 P2-1）----
+
+    @property
+    def bm25_dir(self) -> Path:
+        """BM25 store 目录：``<index_dir>/bm25``（与 Chroma / LlamaIndex 持久化同级，不改其格式）。"""
+        return self.index_dir / "bm25"
+
+    def _collection_count(self) -> int:
+        """向量库片段数；无法统计返回 -1。"""
+        try:
+            return int(self.chroma_collection.count())
+        except Exception:  # noqa: BLE001
+            return -1
+
+    @property
+    def bm25_store(self) -> BM25Store:
+        """惰性创建并加载 store。文件缺失 / 损坏 / 版本不匹配时，若向量库已有内容则标记
+        ``stale``（首次查询全量重建一次并落盘 = 旧库迁移），否则视为全新空库直接增量。"""
+        if self._bm25_store is None:
+            store = BM25Store(self.bm25_dir)
+            store.load()
+            if not store.loaded and self._collection_count() > 0:
+                store.mark_stale()
+            self._bm25_store = store
+        return self._bm25_store
+
+    @staticmethod
+    def _node_plain_text(node) -> str:
+        """与 Chroma ``documents`` 一致的片段正文（不含 metadata 注入）。"""
+        try:
+            return str(node.get_content(metadata_mode=MetadataMode.NONE) or "")
+        except TypeError:
+            return str(node.get_content() or "")
+
+    def _bm25_entry(self, text: str, meta: dict) -> dict:
+        """store 中一个片段的 metadata：即 ``_make_source`` 的来源项（去掉 score）。"""
+        entry = self._make_source(text, meta)
+        entry.pop("score", None)
+        return entry
+
+    def _bm25_after_ingest(self, nodes) -> None:
+        """入库后增量更新 store：``nodes`` 为本次写入向量库的节点（id 与 Chroma 一致）；
+        为 None 表示走了拿不到节点的回退路径，标记 stale 让下次查询全量重建。"""
+        self._bm25 = None
+        self._bm25_disabled_reason = None
+        try:
+            store = self.bm25_store
+            if nodes is None:
+                store.mark_stale()
+                return
+            items = []
+            for node in nodes:
+                node_id = getattr(node, "node_id", None) or getattr(node, "id_", None)
+                if not node_id:
+                    store.mark_stale()
+                    break
+                text = self._node_plain_text(node)
+                items.append((str(node_id), text, self._bm25_entry(text, getattr(node, "metadata", None) or {})))
+            store.upsert_many(items)
+            self._bm25_save(store)
+        except Exception as e:  # noqa: BLE001 - BM25 维护失败不影响入库
+            logging.getLogger(__name__).warning("BM25 store 增量更新失败，下次查询将全量重建: %s", e)
+            if self._bm25_store is not None:
+                self._bm25_store.mark_stale()
+
+    def _bm25_after_remove(self, file_path: str) -> None:
+        """删除文件后从 store 移除该路径的全部片段。"""
+        self._bm25 = None
+        self._bm25_disabled_reason = None
+        try:
+            store = self.bm25_store
+            store.remove_where(lambda _id, meta: str(meta.get("path") or "") == file_path)
+            self._bm25_save(store)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning("BM25 store 删除失败，下次查询将全量重建: %s", e)
+            if self._bm25_store is not None:
+                self._bm25_store.mark_stale()
+
+    def _bm25_after_clear(self) -> None:
+        self._bm25 = None
+        self._bm25_disabled_reason = None
+        try:
+            store = self.bm25_store
+            store.clear()
+            store.delete_file()
+            store.dirty = False
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).debug("清理 BM25 store 失败: %s", e)
+
+    @staticmethod
+    def _bm25_save(store: BM25Store) -> None:
+        try:
+            store.save_if_dirty()
+        except Exception as e:  # noqa: BLE001 - 落盘失败只影响下次进程启动的重建成本
+            logging.getLogger(__name__).warning("BM25 store 写入失败（%s）: %s", store.path, e)
+
+    def _bm25_full_rebuild(self, store: BM25Store) -> int:
+        """从 Chroma 全量拉取重建 store 并落盘（旧库迁移 / 文件损坏 / 内容不一致时）。返回片段数。"""
+        data = self.chroma_collection.get(include=["documents", "metadatas"]) or {}
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        ids = data.get("ids") or []
+        if not isinstance(docs, list) or not docs:
+            store.clear()
+            return 0
+        items = []
+        for i, text in enumerate(docs):
+            text = str(text or "")
+            meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
+            doc_id = str(ids[i]) if i < len(ids) and ids[i] else f"#{i}"
+            items.append((doc_id, text, self._bm25_entry(text, meta)))
+        n = store.replace_all(items)
+        self._bm25_save(store)
+        return n
+
+    def hybrid_limit_reason(self, count: int) -> str:
+        """块数超限时的关闭说明（CLI ``/stats``、Web 知识库页、进度事件共用同一文案）。"""
+        return (
+            f"文档块数 {count} 超过上限 {RAG_HYBRID_MAX_CHUNKS}，混合检索已关闭（仅向量检索）；"
+            f"可调大 RAG_HYBRID_MAX_CHUNKS（BM25 语料常驻内存，每万块约 100–150MB）"
+        )
+
+    def hybrid_status(self, count: Optional[int] = None) -> dict:
+        """混合检索当前状态（不触发 BM25 构建）：
+
+        ``{"enabled", "chunks", "max_chunks", "disabled_reason", "ready"}``。
+        ``disabled_reason`` 非空表示用户开着 hybrid 但实际不可用（超限 / 依赖缺失 / 构建失败）。
+        """
+        if count is None:
+            count = self._collection_count()
+        reason: Optional[str] = None
+        if self.hybrid_enabled:
+            if count > RAG_HYBRID_MAX_CHUNKS:
+                reason = self.hybrid_limit_reason(count)
+            elif self._bm25_disabled_reason and self._bm25_disabled_reason != "向量库为空":
+                reason = self._bm25_disabled_reason
+        return {
+            "enabled": bool(self.hybrid_enabled),
+            "chunks": count,
+            "max_chunks": RAG_HYBRID_MAX_CHUNKS,
+            "disabled_reason": reason,
+            "ready": self._bm25 is not None,
+        }
+
     def _ensure_bm25(self, progress_callback=None) -> bool:
-        """惰性构建 BM25 索引。返回是否可用（依赖缺失/规模超限/读取失败均为 False）。"""
+        """惰性就位 BM25 索引。返回是否可用（依赖缺失 / 规模超限 / 读取失败均为 False）。
+
+        流程（F10 P2-1）：store 已加载且与向量库片段数一致 → 直接 ``build()``（不读 Chroma、
+        不分词）；store 缺失 / 损坏 / 分词版本不匹配 / 条数不一致 → 全量构建一次并 ``save()``。
+        """
         if self._bm25 is not None:
             return True
         if self._bm25_disabled_reason:
             return False
         try:
-            from rank_bm25 import BM25Okapi  # type: ignore
+            import rank_bm25  # type: ignore  # noqa: F401
         except ImportError:
             self._bm25_disabled_reason = "rank_bm25 未安装"
             return False  # 静默回退 dense
 
-        try:
-            count = int(self.chroma_collection.count())
-        except Exception:  # noqa: BLE001 - 无法统计时不做规模限制
-            count = -1
+        count = self._collection_count()
         if count > RAG_HYBRID_MAX_CHUNKS:
-            self._bm25_disabled_reason = f"文档块数 {count} 超过 {RAG_HYBRID_MAX_CHUNKS}"
-            msg = f"⚠️ 文档块数 {count} > {RAG_HYBRID_MAX_CHUNKS}，已自动关闭 hybrid 召回（仅向量检索）"
+            self._bm25_disabled_reason = self.hybrid_limit_reason(count)
+            msg = f"⚠️ {self._bm25_disabled_reason}"
             print(msg)
             if progress_callback:
-                progress_callback({"phase": "hybrid_off", "message": msg})
+                progress_callback({"phase": "hybrid_off", "message": msg, "reason": self._bm25_disabled_reason})
             return False
 
         try:
-            data = self.chroma_collection.get(include=["documents", "metadatas"]) or {}
-            docs = data.get("documents") or []
-            metas = data.get("metadatas") or []
-            if not isinstance(docs, list) or not docs:
+            store = self.bm25_store
+            usable = store.is_usable()
+            if usable and count >= 0 and len(store) != count:
+                logging.getLogger(__name__).info(
+                    "BM25 store 片段数 %d 与向量库 %d 不一致，全量重建", len(store), count)
+                usable = False
+            if not usable:
+                if self._bm25_full_rebuild(store) == 0:
+                    self._bm25_disabled_reason = "向量库为空"
+                    return False
+            if store.build() is None:
                 self._bm25_disabled_reason = "向量库为空"
                 return False
-            entries = []
-            corpus = []
-            for i, text in enumerate(docs):
-                text = str(text or "")
-                meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
-                entry = self._make_source(text, meta)
-                entry.pop("score", None)
-                entries.append(entry)
-                corpus.append(self._bm25_tokenize(text))
-            self._bm25 = {"index": BM25Okapi(corpus), "entries": entries}
+            self._bm25 = {"store": store}
             return True
         except Exception as e:  # noqa: BLE001 - 构建失败静默回退 dense
             self._bm25_disabled_reason = f"BM25 构建失败: {e}"
@@ -782,17 +992,13 @@ class RAGEngine:
         """BM25 检索前 top_k 条（分数 >0），返回 ``[{content, file, path, bm25_score}]``。"""
         if not self._bm25:
             return []
-        tokens = self._bm25_tokenize(question)
-        if not tokens:
+        store = self._bm25.get("store") if isinstance(self._bm25, dict) else None
+        if store is None:
             return []
-        scores = self._bm25["index"].get_scores(tokens)
-        ranked = sorted(range(len(scores)), key=lambda i: float(scores[i]), reverse=True)
         out = []
-        for i in ranked[:top_k]:
-            if float(scores[i]) <= 0:
-                break
-            item = dict(self._bm25["entries"][i])
-            item["bm25_score"] = float(scores[i])
+        for _doc_id, meta, score in store.search(question, top_k):
+            item = dict(meta)
+            item["bm25_score"] = float(score)
             out.append(item)
         return out
 
@@ -866,10 +1072,12 @@ class RAGEngine:
                 ``RAG_HYBRID``（默认开启）；``rank_bm25`` 未安装或块数超限时自动回退 dense。
 
         Returns:
-            ``{"answer": "", "sources": [...], "hybrid": bool}``；hybrid 生效时 sources
-            各项带 ``retriever``（dense/bm25/hybrid）与 ``rrf``。F9 P0-1 起本方法
-            **只检索不生成**（``answer`` 恒为空串，键保留以兼容），答案由
-            ``rag_pipeline`` 用忠实性 prompt 单次综合。
+            ``{"answer": "", "sources": [...], "hybrid": bool, "meta": {...}}``；hybrid 生效时
+            sources 各项带 ``retriever``（dense/bm25/hybrid）与 ``rrf``。
+            ``meta.hybrid_disabled_reason``（F10 P2-1-b）：请求了 hybrid 却未生效的原因
+            （块数超限 / 依赖缺失 / 构建失败），可用时为 None；``meta.hybrid_requested`` 为本次
+            是否请求 hybrid。F9 P0-1 起本方法**只检索不生成**（``answer`` 恒为空串，键保留
+            以兼容），答案由 ``rag_pipeline`` 用忠实性 prompt 单次综合。
         """
         if self.retriever is None:
             raise RuntimeError("索引未初始化")
@@ -922,10 +1130,17 @@ class RAGEngine:
             except Exception as e:  # noqa: BLE001
                 logging.getLogger(__name__).debug(f"hybrid 召回失败，回退 dense: {e}")
 
+        disabled_reason = None
+        if use_hybrid and not hybrid_applied and self._bm25_disabled_reason:
+            disabled_reason = self._bm25_disabled_reason
         return {
             "answer": "",
             "sources": sources,
             "hybrid": hybrid_applied,
+            "meta": {
+                "hybrid_requested": bool(use_hybrid),
+                "hybrid_disabled_reason": disabled_reason,
+            },
         }
 
     # ==================== Agent 工具接口 ====================
@@ -990,7 +1205,7 @@ class RAGEngine:
         count = self.chroma_collection.count()
         return {
             "total_documents": count,
-            "vector_db_path": VECTOR_DB_PATH,
+            "vector_db_path": self.vector_db_path,
             "llm_model": self.llm_model,
             "llm_num_ctx": self.llm_num_ctx,
             "llm_think": self.llm_think,
@@ -1002,6 +1217,26 @@ class RAGEngine:
             "top_k": TOP_K,
             # F9 P2-1：LLM 自校验开关（运行时读取 config，随环境变量生效）
             "self_check": self._self_check_enabled(),
+            # F10 P2-1-b：混合检索状态可见——超限关闭时给出原因与调法（CLI /stats 与 Web 知识库页共用）
+            **self._hybrid_stats(count),
+        }
+
+    def _hybrid_stats(self, count) -> dict:
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = -1
+        status = self.hybrid_status(count)
+        if not status["enabled"]:
+            text = "关（RAG_HYBRID=false，仅向量检索）"
+        elif status["disabled_reason"]:
+            text = f"已关闭：{status['disabled_reason']}"
+        else:
+            text = f"开（向量 + BM25 关键词，上限 {status['max_chunks']} 块）"
+        return {
+            "hybrid": text,
+            "hybrid_max_chunks": status["max_chunks"],
+            "hybrid_disabled_reason": status["disabled_reason"],
         }
 
     @staticmethod
@@ -1063,7 +1298,6 @@ class RAGEngine:
 
         # 1) 删除向量库 chunk（优先经索引删除，同时清理 docstore/index_struct）
         chunks_deleted = len(metas)
-        self.invalidate_bm25()
         ref_doc_ids = {
             str(m.get("document_id") or m.get("ref_doc_id") or m.get("doc_id") or "")
             for m in metas
@@ -1092,6 +1326,8 @@ class RAGEngine:
                     self._persist_index()
                 except Exception as e:  # noqa: BLE001
                     print(f"⚠️ 持久化索引失败: {e}")
+        # BM25 store 增量移除该文件的片段（F10 P2-1）
+        self._bm25_after_remove(file_path)
 
         # 2) 知识图谱：仅当库中无其他同名 basename 文件时移除该文档贡献
         graph_result: dict = {}
@@ -1182,7 +1418,7 @@ class RAGEngine:
         self.index = None
         self.retriever = None
         self.node_postprocessors = []
-        self.invalidate_bm25()
+        self._bm25_after_clear()
         print("✅ 索引已清空")
 
 

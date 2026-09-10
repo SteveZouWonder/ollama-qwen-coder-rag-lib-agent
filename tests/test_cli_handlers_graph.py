@@ -8,6 +8,7 @@ test_cli_handlers_graph.py — /graph-build 命令处理器测试
 from unittest.mock import MagicMock
 
 import cli_handlers as h
+import cli.handlers.git as h_git  # F10 P2-2：打桩目标为实现所在子模块
 from query_interface import ParsedCommand
 
 
@@ -217,7 +218,7 @@ class TestGitAnalyze:
             calls.append((repo_path, max_commits))
             return dict(overview)
 
-        monkeypatch.setattr(h, "_git_overview", fake)
+        monkeypatch.setattr(h_git, "_git_overview", fake)
         return calls
 
     def test_no_arg_defaults_to_history(self, monkeypatch):
@@ -259,7 +260,7 @@ class TestGitAnalyze:
         def boom(repo_path=".", max_commits=10):
             raise RuntimeError("git-boom")
 
-        monkeypatch.setattr(h, "_git_overview", boom)
+        monkeypatch.setattr(h_git, "_git_overview", boom)
         ctx = self._ctx()
         assert h.handle_git_analyze(ctx, self._pq("history")) is True
         assert ctx.record_command.call_args.args[2] == "failed"

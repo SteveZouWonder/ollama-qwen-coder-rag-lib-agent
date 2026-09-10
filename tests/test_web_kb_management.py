@@ -390,9 +390,10 @@ class TestGraphViewHandlers:
         svc.graph_view_data.return_value = {"nodes": [], "edges": [], "total_nodes": 0}
         svc.graph_summary.return_value = {}
         h = build_handlers(svc)
-        with patch.object(web_app, "build_graph_figure", side_effect=ImportError("no plotly")):
+        # F10 P2-2：on_graph_view 现位于 web.handlers.graph，打桩目标随导入路径迁移
+        with patch("web.handlers.graph.build_graph_figure", side_effect=ImportError("no plotly")):
             fig, stats, _ = h["on_graph_view"]()
             assert fig is None and "plotly" in stats
-        with patch.object(web_app, "build_graph_figure", side_effect=RuntimeError("bad")):
+        with patch("web.handlers.graph.build_graph_figure", side_effect=RuntimeError("bad")):
             fig, stats, _ = h["on_graph_view"]()
             assert fig is None and stats.startswith("❌ 渲染失败")

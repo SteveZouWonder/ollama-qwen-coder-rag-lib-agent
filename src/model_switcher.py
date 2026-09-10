@@ -42,14 +42,44 @@ def _base_url() -> str:
     return OLLAMA_BASE_URL.rstrip("/")
 
 
-def list_installed_models(timeout: float = 3.0) -> List[str]:
-    """已安装模型名列表（复用 bootstrap 实现；失败返回空列表）。"""
+def _provider() -> str:
     try:
+        from llm_client import provider_name
+
+        return provider_name()
+    except Exception:  # noqa: BLE001
+        return "ollama"
+
+
+def list_installed_models(timeout: float = 3.0) -> List[str]:
+    """可选模型名列表（失败返回空列表）。
+
+    ollama 模式复用 bootstrap 实现（``/api/tags``）；openai 模式经 ``llm_client.available_models``
+    （``/v1/models``，后端不提供时回退 ``[LLM_MODEL]``，提示文案见 :func:`models_notice`）。
+    """
+    try:
+        from llm_client import provider_name
+
+        if provider_name() != "ollama":
+            from llm_client import available_models
+
+            return list(available_models().names)
         from bootstrap import list_installed_models as _impl
 
         return _impl(timeout=timeout)
     except Exception:  # noqa: BLE001
         return []
+
+
+def models_notice() -> str:
+    """模型列表不可用时给用户的提示（空串表示列表正常）。F10 P1-2-c。"""
+    try:
+        from llm_client import available_models
+
+        result = available_models()
+        return result.notice if result.fallback else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def list_loaded_models(timeout: float = 3.0) -> List[Dict[str, Any]]:
@@ -80,19 +110,19 @@ def list_loaded_models(timeout: float = 3.0) -> List[Dict[str, Any]]:
 
 
 def unload_model(model: str, timeout: float = 10.0) -> bool:
-    """立即卸载指定模型（``keep_alive: 0``）。返回是否成功发出请求。"""
+    """立即卸载指定模型（Ollama ``keep_alive: 0``，经 ``OllamaClient.unload``）。返回是否成功发出请求。
+
+    openai 模式无对应操作，直接返回 False。
+    """
     model = (model or "").strip()
     if not model:
         return False
     try:
-        import requests
+        from llm_client import OllamaClient, provider_name
 
-        resp = requests.post(
-            f"{_base_url()}/api/generate",
-            json={"model": model, "keep_alive": 0},
-            timeout=timeout,
-        )
-        return resp.status_code == 200
+        if provider_name() != "ollama":
+            return False
+        return OllamaClient(_base_url()).unload(model, timeout=timeout)
     except Exception:  # noqa: BLE001
         return False
 
@@ -158,6 +188,10 @@ def switch_model(
     if not req:
         return SwitchResult(False, previous=previous, message="请指定模型名，例如 /model qwen3.5:9b")
 
+    # openai 模式且后端未提供模型列表（回退 [LLM_MODEL]）时无法校验，放行任意名字并在结果中提示
+    list_notice = models_notice() if require_installed else ""
+    if list_notice and _provider() != "ollama":
+        require_installed = False
     installed = list_installed_models() if require_installed else []
     if require_installed:
         if not installed:
@@ -222,6 +256,8 @@ def switch_model(
     msg = f"已切换到 {target}（num_ctx={num_ctx}）"
     if unloaded:
         msg += f"，已释放 {previous}"
+    if list_notice and _provider() != "ollama":
+        msg += f"；{list_notice}，未校验模型是否存在"
     if errors:
         msg += "；" + "；".join(errors)
     return SwitchResult(
@@ -338,9 +374,17 @@ def current_model_info() -> Dict[str, Any]:
     """当前模型概况：名称、num_ctx、思考模式、是否已加载及驻留大小。"""
     import config
 
-    loaded = {m["name"]: m for m in list_loaded_models()}
+    provider = _provider()
+    # /api/ps 是 Ollama 专有接口：openai 模式跳过（驻留信息由后端自行管理）
+    loaded = {m["name"]: m for m in list_loaded_models()} if provider == "ollama" else {}
     name = config.LLM_MODEL
     entry = loaded.get(name)
+    try:
+        from llm_client import describe_backend
+
+        backend = describe_backend()
+    except Exception:  # noqa: BLE001
+        backend = {"provider": provider, "base_url": _base_url()}
     return {
         "model": name,
         "num_ctx": config.LLM_NUM_CTX,
@@ -348,6 +392,8 @@ def current_model_info() -> Dict[str, Any]:
         "loaded": entry is not None,
         "size_bytes": entry["size"] if entry else 0,
         "loaded_models": list(loaded.keys()),
+        "provider": backend.get("provider", provider),
+        "base_url": backend.get("base_url", ""),
     }
 
 

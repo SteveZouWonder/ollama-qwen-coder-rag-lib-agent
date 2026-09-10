@@ -322,10 +322,12 @@ class TestOllamaWarmer(unittest.TestCase):
         
         result = self.warmer.warm_up(["qwen2.5-coder:7b"])
         
-        # 验证调用了 generate 端点（不是 embed）
+        # 验证调用了对话端点（不是 embed）。F10 P1-2：预热改经 llm_client.chat（/api/chat），
+        # 不再直连 /api/generate
         self.assertTrue(mock_post.called)
         call_args = mock_post.call_args
-        self.assertIn("/api/generate", call_args[0][0])
+        self.assertIn("/api/chat", call_args[0][0])
+        self.assertEqual(call_args.kwargs["json"]["options"], {"num_predict": 1})
         self.assertTrue(result["qwen2.5-coder:7b"]["success"])
     
     @patch('desktop_app.requests.post')

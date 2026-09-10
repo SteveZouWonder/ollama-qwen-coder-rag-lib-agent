@@ -26,6 +26,11 @@ analyze_project_structure = agent_tools_module.analyze_project_structure
 class TestAnalyzeProjectStructure:
     """测试 analyze_project_structure"""
 
+    @pytest.fixture(autouse=True)
+    def _allow_temp_dir(self, temp_dir, monkeypatch):
+        """F10 P0-1 后项目分析受读边界约束：临时目录不在 cwd 内，需经 READ_ALLOWED_DIRS 放行。"""
+        monkeypatch.setenv("READ_ALLOWED_DIRS", str(temp_dir))
+
     def test_analyze_existing_project(self, temp_dir):
         """测试分析现有项目"""
         # 创建一个模拟的项目结构
@@ -128,9 +133,9 @@ class TestAnalyzeProjectStructure:
         assert "根文件数: 0" in result
         assert "未知" in result  # 技术栈未知
 
-    def test_analyze_nonexistent_path(self):
-        """测试分析不存在的路径"""
-        result = analyze_project_structure("/nonexistent/path")
+    def test_analyze_nonexistent_path(self, temp_dir):
+        """测试分析不存在的路径（允许目录内；范围外的路径先报越界，见 test_agent_tools_safety）"""
+        result = analyze_project_structure(str(temp_dir / "nonexistent" / "path"))
         
         assert "[错误] 项目路径不存在" in result
 

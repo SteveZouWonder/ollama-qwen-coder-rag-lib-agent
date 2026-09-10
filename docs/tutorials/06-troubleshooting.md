@@ -371,4 +371,29 @@ cat logs/*.log | grep ERROR
 
 ---
 
+## 常见问题速查
+
+> 本节自 README 迁入（F10 P3-1）。
+
+**Q: Ollama 连接失败？**
+```bash
+ollama serve
+export OLLAMA_BASE_URL="http://localhost:11434"
+```
+
+**Q: 中文 PDF 乱码？**
+确保 PDF 是文本型而非扫描型。扫描版需先 OCR。
+
+**Q: Agent 不调用工具？**
+- 确认模型已正确加载
+- 尝试更明确的指令，如 "请使用 read_file 读取..."
+- 检查系统提示词中是否包含工具描述
+
+**Q: 知识库回答质量不佳？**
+- 检查文档是否成功加载
+- 调整 `CHUNK_OVERLAP` 增加上下文连贯性
+- 使用更具体的提问方式
+
+---
+
 **上一篇**: [桌面应用](05-desktop-app.md) | **下一篇**: [最佳实践](07-best-practices.md)

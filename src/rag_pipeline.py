@@ -56,6 +56,9 @@ ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 # 可选取消探针：返回 True 表示应尽快停止。
 StopCheck = Optional[Callable[[], bool]]
 
+# 可选最终答案增量回调（F10 P1-1）：综合回答阶段每收到一段模型输出即回调一次。
+TokenCallback = Optional[Callable[[str], None]]
+
 
 class PipelineCancelled(Exception):
     """用户请求停止，编排在阶段边界主动中止。"""
@@ -156,21 +159,83 @@ def _emit_thinking(response: Any) -> None:
     _emit(sink, "thinking", f"🧠 模型思考：{shown}", thinking=shown, truncated=len(thinking) > THINKING_MAX_CHARS)
 
 
-def _complete(prompt: str) -> str:
-    """用全局唯一模型执行一次补全（/think on 时顺带透出思维链）。"""
+def _stream_enabled() -> bool:
+    try:
+        from config import Config
+        return bool(getattr(Config, "LLM_STREAM", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _stream_complete(llm, prompt: str, on_token: TokenCallback, should_stop: StopCheck = None) -> str:
+    """经 LlamaIndex ``stream_chat`` 流式补全，逐增量回调 ``on_token``，返回累积文本（F10 P1-1）。
+
+    沿用 ``Settings.llm`` 的模型 / num_ctx / think 配置。``should_stop()`` 为真时停止读取
+    并关闭生成器（连接随之关闭）。LLM 不支持 ``stream_chat`` 时回退一次性补全 + 单次回调。
+    """
+    stream_chat = getattr(llm, "stream_chat", None)
+    if not callable(stream_chat):
+        response = llm.complete(prompt)
+        _emit_thinking(response)
+        text = str(response)
+        on_token(text)
+        return text
+
+    from llama_index.core.llms import ChatMessage, MessageRole
+
+    gen = stream_chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+    parts: List[str] = []
+    last = None
+    try:
+        for chunk in gen:
+            if should_stop is not None and should_stop():
+                break
+            last = chunk
+            delta = getattr(chunk, "delta", None) or ""
+            if delta:
+                parts.append(delta)
+                on_token(delta)
+    finally:
+        close = getattr(gen, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"close stream failed: {e}")
+    if last is not None:
+        _emit_thinking(last)
+    return "".join(parts)
+
+
+def _complete(prompt: str, on_token: TokenCallback = None, should_stop: StopCheck = None) -> str:
+    """用全局唯一模型执行一次补全（/think on 时顺带透出思维链）。
+
+    ``on_token`` 非空且 ``LLM_STREAM`` 开启时流式（F10 P1-1）；``LLM_STREAM=false`` 时
+    非流式并把完整文本一次性回调；无 ``on_token`` 时与此前完全一致。
+    """
     llm = _get_synthesis_llm()
     if llm is None:
         from llama_index.core import Settings
         llm = Settings.llm
+    if on_token is not None and _stream_enabled():
+        return _stream_complete(llm, prompt, on_token, should_stop)
     response = llm.complete(prompt)
     _emit_thinking(response)
-    return str(response)
+    text = str(response)
+    if on_token is not None:
+        on_token(text)
+    return text
 
 
-def llm_direct_answer(prompt: str) -> str:
-    """用 LLM 直接回答（不经过知识库检索）。失败时返回错误说明。"""
+def llm_direct_answer(prompt: str, on_token: TokenCallback = None, should_stop: StopCheck = None) -> str:
+    """用 LLM 直接回答（不经过知识库检索）。失败时返回错误说明。
+
+    ``on_token`` / ``should_stop`` 透传给 ``_complete``（无回调时调用形态与此前一致）。
+    """
     try:
-        return _complete(prompt)
+        if on_token is None:
+            return _complete(prompt)
+        return _complete(prompt, on_token=on_token, should_stop=should_stop)
     except Exception as e:  # noqa: BLE001
         return f"回答失败：{e}"
 
@@ -1342,6 +1407,7 @@ def generate_answer(
     subquestions: Optional[list] = None,
     web_sources: Optional[list] = None,
     entities: Optional[list] = None,
+    on_token: TokenCallback = None,
 ) -> dict:
     """根据知识库状态生成回答（知识库/网络分区标注、编号引用、综合总结）。
 
@@ -1364,6 +1430,9 @@ def generate_answer(
             编号；为空时按 ``web_search_result`` 解析。
         entities: 检索规划提取的问题实体（F9 P2-2）；知识库命中后若所有保留片段都不含任一
             实体，发 ``premise_unverified`` 事件 + ``premise`` notice，并在综合 prompt 注入前提核对行。
+        on_token: 最终综合回答的增量回调（F10 P1-1）：只有生成正文的那次 LLM 调用流式回调，
+            规划 / rerank / 自校验等工具性调用不回调。回调收到的是模型原始输出（未做
+            ``<think>`` 剥离与引用校验），最终 ``answer`` 以返回值为准。
 
     Returns:
         ``{"answer": str, "sources": [...], "web_sources": [...], "kind": "answer"|"fallback"}``。
@@ -1387,6 +1456,7 @@ def generate_answer(
             rag_progress_callback=rag_progress_callback, should_stop=should_stop,
             history_text=history_text, kb_only=kb_only, subquestions=subquestions,
             web_sources=web_sources, kb_initialized=kb_initialized, entities=entities,
+            on_token=on_token,
         )
     finally:
         _THINKING_SINK.reset(sink_token)
@@ -1423,8 +1493,14 @@ def _merge_multi_hop(results: list) -> dict:
 def _generate_answer_inner(
     rag_engine, question, original_question, web_search_result, *,
     show_progress, progress, rag_progress_callback, should_stop, history_text,
-    kb_only, subquestions, web_sources, kb_initialized, entities=None,
+    kb_only, subquestions, web_sources, kb_initialized, entities=None, on_token=None,
 ) -> dict:
+    def synthesize(prompt: str) -> str:
+        """最终综合调用：有 on_token 时流式，否则与此前完全相同的单参调用（便于测试打桩）。"""
+        if on_token is None:
+            return llm_direct_answer(prompt)
+        return llm_direct_answer(prompt, on_token=on_token, should_stop=should_stop)
+
     web_sources = [s for s in (web_sources if web_sources is not None else parse_web_sources(web_search_result)) if isinstance(s, dict)]
     assign_refs([], web_sources)
 
@@ -1442,7 +1518,7 @@ def _generate_answer_inner(
         prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context,
                                    history=history_text, no_evidence=no_evidence)
         _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
-        answer = llm_direct_answer(prompt)
+        answer = synthesize(prompt)
         if web_search_result:
             notices = [make_notice("kb_uninitialized", "知识库为空 · 回答基于网络搜索与模型知识，非你的知识库内容")]
         else:
@@ -1517,7 +1593,7 @@ def _generate_answer_inner(
             _emit(progress, "synthesizing", "✍️ 综合知识库与网络信息生成回答（带编号引用）...")
         else:
             _emit(progress, "synthesizing", "✍️ 基于知识库综合回答（带编号引用）...")
-        answer = llm_direct_answer(prompt)
+        answer = synthesize(prompt)
         out = _finalize_answer(answer, relevant_sources, web_sources, "answer", notices)
         # F9 P2-1：可选 LLM 自校验（默认关；一次额外调用；不改正文）
         if self_check_enabled():
@@ -1547,7 +1623,7 @@ def _generate_answer_inner(
     if web_search_result:
         prompt = synthesize_prompt(original_question, kb_context="", web_context=web_context, history=history_text)
         _emit(progress, "model_thinking", "✍️ 模型生成回答中...")
-        answer = llm_direct_answer(prompt)
+        answer = synthesize(prompt)
         notices = [make_notice("web_only", "知识库无相关内容 · 回答基于网络搜索，非你的知识库内容")]
         return _finalize_answer(answer, [], web_sources, "answer", notices)
 
@@ -1555,7 +1631,7 @@ def _generate_answer_inner(
     # 工具进一步查找（建议文案走 ``fallback`` notice，由各端的 retry 行渲染，不再拼进 answer）
     _emit(progress, "model_thinking", "💡 未获取到网络信息，直接使用模型自身知识回答")
     prompt = synthesize_prompt(original_question, kb_context="", web_context="", history=history_text, no_evidence=True)
-    answer = llm_direct_answer(prompt)
+    answer = synthesize(prompt)
     _emit(progress, "fallback", "🧭 知识库与网络均未找到相关内容，可用单 Agent 进一步查找",
           question=original_question)
     notices = [
@@ -1599,6 +1675,7 @@ def answer_question(
     should_stop: StopCheck = None,
     context=None,
     kb_only: bool = False,
+    on_token: TokenCallback = None,
 ) -> dict:
     """完整的知识库问答编排入口，CLI 与 Web 共享。
 
@@ -1621,6 +1698,8 @@ def answer_question(
         should_stop: 取消探针；用户请求停止时在阶段边界抛 ``PipelineCancelled``。
         context: 可选会话上下文，用于问题改写与历史注入。
         kb_only: 只取知识库结论，未命中时不做网络回退/模型兜底（见 ``generate_answer``）。
+        on_token: 最终综合回答的增量回调（F10 P1-1），透传给 ``generate_answer``；元查询
+            不产生回调。
 
     Returns:
         统一结构：
@@ -1682,6 +1761,7 @@ def answer_question(
             rag_engine, question, effective, rewritten, history_text, kb_initialized,
             enable_web_search=enable_web_search, show_progress=show_progress, progress=progress,
             rag_progress_callback=rag_progress_callback, should_stop=should_stop, kb_only=kb_only,
+            on_token=on_token,
         )
         out["challenge"] = challenge
         return out
@@ -1692,6 +1772,7 @@ def answer_question(
 def _answer_question_planned(
     rag_engine, question, effective, rewritten, history_text, kb_initialized, *,
     enable_web_search, show_progress, progress, rag_progress_callback, should_stop, kb_only,
+    on_token=None,
 ) -> dict:
     # 检索规划（一次 LLM）：复合问题分解 + 是否联网 + 搜索词。关闭联网/kb_only 时
     # 仍做分解（多跳检索）但不搜索；知识库未初始化时无需分解，仅在联网时规划。
@@ -1724,6 +1805,7 @@ def _answer_question_planned(
         subquestions=subquestions,
         web_sources=web_sources,
         entities=(plan or {}).get("entities") or [],
+        on_token=on_token,
     )
 
     kb_sources, web_sources = assign_refs(result.get("sources", []), result.get("web_sources", web_sources))

@@ -11,17 +11,38 @@ import json
 import re
 from typing import Any, Callable, Dict, Optional
 
+# F10 P1-2：流解析与中止工具迁入共享层 llm_client，此处保留同名导出
+# （react_engine / 测试仍从这里导入 consume_ndjson_stream / abort_response）
+from llm_client import abort_response, consume_ndjson_stream  # noqa: F401
+
 CompleteFn = Callable[[str], str]
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
+TokenCallback = Callable[[str], None]
+StopCheck = Callable[[], bool]
+
+
+def _stream_enabled() -> bool:
+    try:
+        from config import Config
+        return bool(getattr(Config, "LLM_STREAM", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def complete_text(prompt: str, num_predict: int = 512, timeout: Optional[int] = None,
-                  temperature: float = 0.2) -> str:
-    """用全局唯一模型做一次补全（``/api/chat``，``think=False``）。失败抛异常。"""
-    import requests
+                  temperature: float = 0.2, on_token: Optional[TokenCallback] = None,
+                  should_stop: Optional[StopCheck] = None) -> str:
+    """用全局唯一模型做一次补全（经 ``llm_client`` 后端抽象，``think=False``）。失败抛异常。
+
+    ``on_token`` 非空且 ``Config.LLM_STREAM`` 开启时流式读取并逐增量回调（F10 P1-1）；
+    ``LLM_STREAM=false`` 时非流式，完整文本一次性回调。无 ``on_token`` 时请求与此前完全一致。
+    """
     from config import Config
+    from llm_client import get_llm_client
 
     try:
         import config as _cfg
@@ -30,23 +51,23 @@ def complete_text(prompt: str, num_predict: int = 512, timeout: Optional[int] = 
     except Exception:  # noqa: BLE001
         model, num_ctx = Config.LLM_MODEL, 8192
 
-    resp = requests.post(
-        Config.OLLAMA_HOST + "/api/chat",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "think": False,
-            "options": {
-                "temperature": temperature,
-                "num_ctx": num_ctx,
-                "num_predict": int(num_predict),
-            },
+    streaming = on_token is not None and _stream_enabled()
+    # 非流式且有回调时：回调拿到的是 strip 后的完整文本（与返回值一致，沿用 P1-1 语义）
+    callback = on_token if (on_token is None or streaming) else (lambda t: on_token(str(t).strip()))
+    text = get_llm_client().chat(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        think=False,
+        options={
+            "temperature": temperature,
+            "num_ctx": num_ctx,
+            "num_predict": int(num_predict),
         },
+        on_token=callback,
+        should_stop=should_stop,
         timeout=timeout or Config.TIMEOUT,
     )
-    resp.raise_for_status()
-    return str(resp.json().get("message", {}).get("content", "")).strip()
+    return str(text).strip()
 
 
 def strip_think(text: str) -> str:

@@ -35,6 +35,12 @@ except ImportError:
         logs_dir,
     )
 
+# LLM 后端错误类型（F10 P1-2）：预热失败时按 HTTP 状态归类
+try:
+    from llm_client import LLMError
+except ImportError:
+    from src.llm_client import LLMError  # type: ignore
+
 # ==================== 依赖检查 ====================
 try:
     import pystray
@@ -180,21 +186,19 @@ class OllamaWarmer:
                         timeout=60
                     )
                 else:
-                    # 文本生成模型使用 generate 端点
-                    response = requests.post(
-                        f"{self.base_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": "hi",
-                            "stream": False,
-                            "options": {"num_predict": 1}
-                        },
-                        timeout=60
+                    # 对话模型：经 llm_client 后端抽象发一条最短 chat（F10 P1-2；
+                    # Ollama / OpenAI 兼容后端均可，HTTP 非 200 抛 LLMError）
+                    response = None
+                    self._client().chat(
+                        [{"role": "user", "content": "hi"}],
+                        model=model,
+                        options={"num_predict": 1},
+                        timeout=60,
                     )
                 
                 load_time = time.time() - start_time
                 
-                if response.status_code == 200:
+                if response is None or response.status_code == 200:
                     self.logger.info(f"✅ {model} 预热成功 ({load_time:.2f}s)")
                     results[model] = {"success": True, "time": load_time}
                 else:
@@ -204,17 +208,25 @@ class OllamaWarmer:
             except requests.exceptions.Timeout:
                 self.logger.error(f"❌ {model} 预热超时")
                 results[model] = {"success": False, "error": "timeout"}
+            except LLMError as e:
+                err = f"HTTP {e.status_code}" if e.status_code else str(e)
+                self.logger.warning(f"⚠️ {model} 预热失败 ({err})")
+                results[model] = {"success": False, "error": err}
             except Exception as e:
                 self.logger.error(f"❌ {model} 预热错误: {e}")
                 results[model] = {"success": False, "error": str(e)}
                 
         return results
         
+    def _client(self):
+        """本预热器对应的 LLM 后端 client（显式 base_url 与全局不同且为 ollama 时用专用实例）。"""
+        from llm_client import client_for_host
+        return client_for_host(self.base_url)
+
     def check_service(self) -> bool:
-        """检查 Ollama 服务是否可用"""
+        """检查 LLM 后端服务是否可用（经 ``LLMClient.health``）"""
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return response.status_code == 200
+            return bool(self._client().health())
         except Exception:
             return False
 
@@ -236,14 +248,15 @@ class StatusMonitor:
             "models_loaded": []
         }
         
-        # 检查 Ollama 服务
+        # 检查 LLM 后端（经 llm_client：ollama 走 /api/tags，openai 走 /v1/models）。
+        # 键名 ollama_service 保持不变（status.log 历史记录与托盘「系统状态」读取该键）。
         try:
-            response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
-            status["ollama_service"] = response.status_code == 200
-            
-            if status["ollama_service"]:
-                data = response.json()
-                status["models_loaded"] = [m["name"] for m in data.get("models", [])]
+            from llm_client import client_for_host, describe_backend
+
+            client = client_for_host(self.ollama_url)
+            status["provider"] = describe_backend().get("provider", "ollama")
+            status["models_loaded"] = [str(m) for m in client.list_models()]
+            status["ollama_service"] = True
                 
         except Exception as e:
             self.logger.error(f"状态检查失败: {e}")

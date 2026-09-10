@@ -322,4 +322,23 @@ python query_interface.py --agent "你的任务"
 
 ---
 
+## macOS 用户须知（首次打开）
+
+> 本节自 README 迁入（F10 P3-1）。
+
+本应用为**免费开源项目，未购买 Apple 开发者证书**，因此未做苹果公证。
+macOS 首次打开可能提示「无法验证开发者」或「已损坏」，属于正常现象。请按以下步骤打开：
+
+1. 将 `Cerebro.app` 拖入「应用程序」文件夹。
+2. 在「应用程序」中**右键点击 Cerebro → 选择「打开」**。
+3. 在弹窗中再次点击「打开」。之后即可正常双击启动。
+
+若提示「已损坏，无法打开」（Apple Silicon 常见），在「终端」执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Cerebro.app
+```
+
+---
+
 **上一篇**: [详细功能说明](04-features.md) | **下一篇**: [故障排除](06-troubleshooting.md)

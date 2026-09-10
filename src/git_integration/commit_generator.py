@@ -31,10 +31,13 @@ class CommitMessageGenerator:
 
     NUM_PREDICT = 256
     """AI 生成提交信息的最大 token 数（标题 + 简短正文）。"""
+    TIMEOUT = 60
+    """单次生成的超时秒数。"""
     
     def __init__(self, repo_path: str = ".", ollama_base_url: str = "http://localhost:11434",
                  model: Optional[str] = None):
         self.repo_path = repo_path
+        # 兼容旧签名保留；实际后端地址由 llm_client（LLM_PROVIDER / LLM_BASE_URL）决定
         self.ollama_base_url = ollama_base_url
         # 使用全局唯一 LLM（config.LLM_MODEL），保持与 Agent/RAG 同一模型，避免额外驻留。
         if model is None:
@@ -150,34 +153,27 @@ type: short description
 
 detailed description (if needed)"""
 
-            # 调用 Ollama API
-            import requests
-            
+            # 经 llm_client 后端抽象（F10 P1-2）：chat 消息格式，Ollama / OpenAI 兼容后端均可。
             # think=False + num_predict 限额：思考型模型（qwen3.5 等）不关思考会先输出数百 token 的
             # 推理，大 diff 下常超过 60s 超时而落到规则回退；提交信息本身很短，256 token 足够。
-            response = requests.post(
-                f"{self.ollama_base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "think": False,
-                    "options": {"num_predict": self.NUM_PREDICT},
-                },
-                timeout=60
+            from llm_client import get_llm_client
+
+            message = get_llm_client().chat(
+                [{"role": "user", "content": prompt}],
+                model=self.model,
+                think=False,
+                options={"num_predict": self.NUM_PREDICT},
+                timeout=self.TIMEOUT,
             )
-            
-            if response.status_code == 200:
-                result = response.json()
-                message = result.get('response', '').strip()
-                
-                # 解析响应
-                return self._parse_ai_response(message)
-            else:
-                self.logger.warning(f"AI 生成失败，使用简单方法")
+            message = str(message or "").strip()
+            if not message:
+                self.logger.warning("AI 返回空响应，使用简单方法")
                 return self._generate_simple_commit_message(changes)
-                
+            # 解析响应
+            return self._parse_ai_response(message)
+
         except Exception as e:
+            # HTTP 非 200 / 连接失败 / 超时都在此回退到规则生成
             self.logger.error(f"AI 生成提交信息失败: {e}")
             return self._generate_simple_commit_message(changes)
     

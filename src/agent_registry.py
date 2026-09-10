@@ -3,6 +3,7 @@ Agent注册中心 - 管理所有Agent实例的注册表
 """
 from typing import Dict, List, Optional
 import logging
+import threading
 from agents import BaseAgent
 from agents.agent_types import AgentType, AgentState
 
@@ -15,7 +16,8 @@ class AgentRegistry:
         self.agents: Dict[str, BaseAgent] = {}
         self.capabilities_index: Dict[str, List[str]] = {}
         self.type_index: Dict[AgentType, List[str]] = {}
-        self.lock = None  # 简化实现，实际可以使用threading.Lock
+        # F10 P2-1-c：多 Agent 并行注册 / 查询时保护三张索引表（RLock：方法间可重入）
+        self.lock = threading.RLock()
         self.logger = logging.getLogger("AgentRegistry")
     
     def register(self, agent: BaseAgent) -> bool:
@@ -28,24 +30,25 @@ class AgentRegistry:
         Returns:
             bool: 注册是否成功
         """
-        if agent.agent_id in self.agents:
-            self.logger.warning(f"Agent {agent.agent_id} already registered")
-            return False
-        
-        self.agents[agent.agent_id] = agent
-        
-        # 更新能力索引
-        for capability in agent.capabilities:
-            if capability not in self.capabilities_index:
-                self.capabilities_index[capability] = []
-            self.capabilities_index[capability].append(agent.agent_id)
-        
-        # 更新类型索引
-        agent_type = agent.agent_type
-        if agent_type not in self.type_index:
-            self.type_index[agent_type] = []
-        self.type_index[agent_type].append(agent.agent_id)
-        
+        with self.lock:
+            if agent.agent_id in self.agents:
+                self.logger.warning(f"Agent {agent.agent_id} already registered")
+                return False
+
+            self.agents[agent.agent_id] = agent
+
+            # 更新能力索引
+            for capability in agent.capabilities:
+                if capability not in self.capabilities_index:
+                    self.capabilities_index[capability] = []
+                self.capabilities_index[capability].append(agent.agent_id)
+
+            # 更新类型索引
+            agent_type = agent.agent_type
+            if agent_type not in self.type_index:
+                self.type_index[agent_type] = []
+            self.type_index[agent_type].append(agent.agent_id)
+
         self.logger.info(f"Agent {agent.agent_id} registered (type: {agent_type})")
         return True
     
@@ -59,29 +62,30 @@ class AgentRegistry:
         Returns:
             bool: 注销是否成功
         """
-        if agent_id not in self.agents:
-            self.logger.warning(f"Agent {agent_id} not found")
-            return False
-        
-        agent = self.agents[agent_id]
-        
-        # 更新能力索引
-        for capability in agent.capabilities:
-            if capability in self.capabilities_index:
-                if agent_id in self.capabilities_index[capability]:
-                    self.capabilities_index[capability].remove(agent_id)
-                if not self.capabilities_index[capability]:
-                    del self.capabilities_index[capability]
-        
-        # 更新类型索引
-        agent_type = agent.agent_type
-        if agent_type in self.type_index:
-            if agent_id in self.type_index[agent_type]:
-                self.type_index[agent_type].remove(agent_id)
-            if not self.type_index[agent_type]:
-                del self.type_index[agent_type]
-        
-        del self.agents[agent_id]
+        with self.lock:
+            if agent_id not in self.agents:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            agent = self.agents[agent_id]
+
+            # 更新能力索引
+            for capability in agent.capabilities:
+                if capability in self.capabilities_index:
+                    if agent_id in self.capabilities_index[capability]:
+                        self.capabilities_index[capability].remove(agent_id)
+                    if not self.capabilities_index[capability]:
+                        del self.capabilities_index[capability]
+
+            # 更新类型索引
+            agent_type = agent.agent_type
+            if agent_type in self.type_index:
+                if agent_id in self.type_index[agent_type]:
+                    self.type_index[agent_type].remove(agent_id)
+                if not self.type_index[agent_type]:
+                    del self.type_index[agent_type]
+
+            del self.agents[agent_id]
         self.logger.info(f"Agent {agent_id} unregistered")
         return True
     
@@ -95,7 +99,8 @@ class AgentRegistry:
         Returns:
             Optional[BaseAgent]: Agent实例，如果不存在返回None
         """
-        return self.agents.get(agent_id)
+        with self.lock:
+            return self.agents.get(agent_id)
     
     def find_agents_by_capability(self, capability: str) -> List[BaseAgent]:
         """
@@ -107,8 +112,9 @@ class AgentRegistry:
         Returns:
             List[BaseAgent]: 匹配的Agent列表
         """
-        agent_ids = self.capabilities_index.get(capability, [])
-        return [self.agents[aid] for aid in agent_ids if aid in self.agents]
+        with self.lock:
+            agent_ids = list(self.capabilities_index.get(capability, []))
+            return [self.agents[aid] for aid in agent_ids if aid in self.agents]
     
     def find_agents_by_type(self, agent_type: AgentType) -> List[BaseAgent]:
         """
@@ -120,8 +126,9 @@ class AgentRegistry:
         Returns:
             List[BaseAgent]: 匹配的Agent列表
         """
-        agent_ids = self.type_index.get(agent_type, [])
-        return [self.agents[aid] for aid in agent_ids if aid in self.agents]
+        with self.lock:
+            agent_ids = list(self.type_index.get(agent_type, []))
+            return [self.agents[aid] for aid in agent_ids if aid in self.agents]
     
     def find_agents_by_state(self, state: AgentState) -> List[BaseAgent]:
         """
@@ -133,7 +140,9 @@ class AgentRegistry:
         Returns:
             List[BaseAgent]: 匹配的Agent列表
         """
-        return [agent for agent in self.agents.values() if agent.get_state() == state]
+        with self.lock:
+            agents = list(self.agents.values())
+        return [agent for agent in agents if agent.get_state() == state]
     
     def find_available_agents(self, required_capabilities: List[str]) -> List[BaseAgent]:
         """
@@ -146,8 +155,10 @@ class AgentRegistry:
             List[BaseAgent]: 可用的Agent列表
         """
         available_agents = []
-        
-        for agent in self.agents.values():
+        with self.lock:
+            agents = list(self.agents.values())
+
+        for agent in agents:
             if agent.get_state() == AgentState.IDLE:
                 agent_caps = set(agent.capabilities)
                 required_caps = set(required_capabilities)
@@ -163,7 +174,8 @@ class AgentRegistry:
         Returns:
             List[BaseAgent]: 所有Agent列表
         """
-        return list(self.agents.values())
+        with self.lock:
+            return list(self.agents.values())
     
     def get_agent_count(self) -> int:
         """
@@ -172,7 +184,8 @@ class AgentRegistry:
         Returns:
             int: Agent数量
         """
-        return len(self.agents)
+        with self.lock:
+            return len(self.agents)
     
     def get_all_capabilities(self) -> List[str]:
         """
@@ -181,7 +194,8 @@ class AgentRegistry:
         Returns:
             List[str]: 能力列表
         """
-        return list(self.capabilities_index.keys())
+        with self.lock:
+            return list(self.capabilities_index.keys())
     
     def get_statistics(self) -> Dict:
         """
@@ -190,34 +204,37 @@ class AgentRegistry:
         Returns:
             Dict: 统计信息字典
         """
-        stats = {
-            "total_agents": len(self.agents),
-            "total_capabilities": len(self.capabilities_index),
-            "agents_by_type": {},
-            "agents_by_state": {},
-            "capabilities_index": {}
-        }
-        
-        # 按类型统计
-        for agent_type, agent_ids in self.type_index.items():
-            stats["agents_by_type"][agent_type.value] = len(agent_ids)
-        
-        # 按状态统计
-        state_counts = {}
-        for agent in self.agents.values():
-            state = agent.get_state().value
-            state_counts[state] = state_counts.get(state, 0) + 1
-        stats["agents_by_state"] = state_counts
-        
-        # 能力索引
-        for capability, agent_ids in self.capabilities_index.items():
-            stats["capabilities_index"][capability] = len(agent_ids)
-        
+        with self.lock:
+            stats = {
+                "total_agents": len(self.agents),
+                "total_capabilities": len(self.capabilities_index),
+                "agents_by_type": {},
+                "agents_by_state": {},
+                "capabilities_index": {}
+            }
+
+            # 按类型统计
+            for agent_type, agent_ids in self.type_index.items():
+                stats["agents_by_type"][agent_type.value] = len(agent_ids)
+
+            # 按状态统计
+            state_counts = {}
+            for agent in self.agents.values():
+                state = agent.get_state().value
+                state_counts[state] = state_counts.get(state, 0) + 1
+            stats["agents_by_state"] = state_counts
+
+            # 能力索引
+            for capability, agent_ids in self.capabilities_index.items():
+                stats["capabilities_index"][capability] = len(agent_ids)
+
         return stats
     
     def shutdown_all(self):
         """关闭所有Agent"""
-        for agent in self.agents.values():
+        with self.lock:
+            agents = list(self.agents.values())
+        for agent in agents:
             if hasattr(agent, 'shutdown'):
                 try:
                     agent.shutdown()
@@ -228,19 +245,23 @@ class AgentRegistry:
     
     def clear(self):
         """清空注册中心"""
-        self.agents.clear()
-        self.capabilities_index.clear()
-        self.type_index.clear()
+        with self.lock:
+            self.agents.clear()
+            self.capabilities_index.clear()
+            self.type_index.clear()
         self.logger.info("Registry cleared")
     
     def __contains__(self, agent_id: str) -> bool:
         """检查Agent是否已注册"""
-        return agent_id in self.agents
+        with self.lock:
+            return agent_id in self.agents
     
     def __len__(self) -> int:
         """获取Agent数量"""
-        return len(self.agents)
+        with self.lock:
+            return len(self.agents)
     
     def __iter__(self):
-        """迭代所有Agent"""
-        return iter(self.agents.values())
+        """迭代所有Agent（迭代快照，避免并发注册时 RuntimeError）"""
+        with self.lock:
+            return iter(list(self.agents.values()))

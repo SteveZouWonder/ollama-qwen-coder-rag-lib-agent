@@ -1,53 +1,57 @@
 # 打包专用运行时依赖（剔除测试/静态检查/OCR 等重依赖）
 # 由 .github/workflows/release.yml 使用。
+#
+# 版本与 requirements.txt 一一对应（全部 `==`）；升级时两份文件同步改。
 
-setuptools>=60.0.0
-wheel
+setuptools==84.0.0
+wheel==0.47.0
 
-numpy
-pandas
+numpy==2.4.6
+pandas==2.3.3
 
-llama-index
-llama-index-embeddings-ollama
-llama-index-llms-ollama
-llama-index-readers-file
-llama-index-vector-stores-chroma
+llama-index==0.14.22
+llama-index-embeddings-ollama==0.9.0
+llama-index-llms-ollama==0.10.1
+# OpenAI 兼容后端（LLM_PROVIDER=openai：vLLM / LM Studio / 内网网关；F10 P1-2）
+llama-index-llms-openai-like==0.8.0
+llama-index-readers-file==0.6.0
+llama-index-vector-stores-chroma==0.5.5
 
-chromadb
-posthog>=3.0.0,<4.0.0
+chromadb==1.5.9
+posthog==3.25.0
 
 # RAG hybrid 召回（BM25）
-rank_bm25>=0.2.2
+rank_bm25==0.2.2
 # 代码感知分块（打包版内置；源码安装为可选依赖）
-tree-sitter-language-pack>=1.16,<2
+tree-sitter-language-pack==1.16.2
 
-pypdf>=6.15.0,<7
-pymupdf>=1.25.0
+pypdf==6.18.0
+pymupdf==1.27.2.3
 
-requests
-urllib3
+requests==2.34.2
+urllib3==2.7.0
 
-ddgs>=5.3.0
-beautifulsoup4>=4.12.0
-trafilatura>=2.0.0
+ddgs==9.14.4
+beautifulsoup4==4.15.0
+trafilatura==2.1.0
 
-gitpython>=3.1.0
+gitpython==3.1.62
 
-networkx>=3.6.0
+networkx==3.6.1
 
-python-dotenv
-rich
-prompt-toolkit
+python-dotenv==1.2.2
+rich==15.0.0
+prompt-toolkit==3.0.52
 
-pystray
-pillow
+pystray==0.19.5
+pillow==12.3.0
 
 # Web UI（托盘「打开 Web UI」与 --web）
-gradio
+gradio==6.20.0
 # 知识图谱 3D/2D 可视化（自包含 plotly.js 随包分发）
-plotly
+plotly==7.0.0
 
 # 打包器
-pyinstaller>=6.0.0
+pyinstaller==6.21.0
 # Windows exe 版本信息嵌入所需（PyInstaller win32 versioninfo 依赖）
-pefile; sys_platform == "win32"
+pefile==2024.8.26; sys_platform == "win32"

@@ -14,18 +14,18 @@
 
 ## 2. 工具表（28 个）
 
-`*` = 必填；「确认」= `safe=False`，单 Agent 需用户确认（CLI y/n、Web 审批卡片、`--yes` / `CODE_AGENT_AUTO_CONFIRM=true` 放行），子 Agent 白名单内自动放行。
+`*` = 必填；「确认」= `safe=False`，单 Agent 需用户确认（CLI y/n、Web 审批卡片；`--yes` / `CODE_AGENT_AUTO_CONFIRM=true` 只放行 low / medium 风险，见 §3），子 Agent 白名单内自动放行。
 
 ### 文件与命令
 
 | 工具 | 参数 | 确认 | 说明 / 返回约定 |
 |---|---|---|---|
-| `read_file` | `path*`, `offset`(0), `limit`(100) | | 按行范围读；目录路径会报错，先 `list_directory` |
+| `read_file` | `path*`, `offset`(0), `limit`(100) | | 按行范围读；目录路径会报错，先 `list_directory`。路径须在读允许目录内（§5），否则 `[错误] 路径超出允许范围` |
 | `write_file` | `path*`, `content*`, `append`(false) | ✔ | 路径须在 cwd 或 `WRITE_ALLOWED_DIRS` 内，否则 `[错误] 路径超出允许范围`；成功 `[成功] 写入/追加 <abs> 共 N 字符`；自动建父目录 |
 | `execute_command` | `command*`, `timeout`(30) | ✔ | `shell=True`，cwd 为当前目录；输出 stdout + `[stderr]` + `[退出码]`，截 4000 字；超时 `[错误] 命令超时`。安全分级见 §3 |
-| `list_directory` | `path`(.) | | |
-| `analyze_project_structure` | `project_path`(.) | | 技术栈 / 关键文件识别 |
-| `search_files` | `query*`, `path`(.), `max_results`(10) | | 关键字搜索代码文件（参数名是 `query`，不是 `keyword`） |
+| `list_directory` | `path`(.) | | 路径须在读允许目录内（§5） |
+| `analyze_project_structure` | `project_path`(.) | | 技术栈 / 关键文件识别；路径须在读允许目录内（§5） |
+| `search_files` | `query*`, `path`(.), `max_results`(10) | | 关键字搜索代码文件（参数名是 `query`，不是 `keyword`）；`path` 须在读允许目录内（§5） |
 | `get_current_dir` | — | | |
 
 ### 知识库
@@ -51,10 +51,10 @@
 
 | 工具 | 参数 | 确认 | 说明 |
 |---|---|---|---|
-| `ast_search` | `pattern*`, `path`(.), `search_by`(name \| parameter \| return \| base \| method) | | stdlib ast |
-| `code_quality_check` | `path`(.), `check_type`(basic \| security \| complexity \| pylint) | | 依赖 pylint / bandit / radon 子进程，缺失时降级说明 |
-| `git_analyze` | `repo_path`(.), `analysis_type`(history \| status \| authors) | | gitpython |
-| `git_commit_gen` | `repo_path`(.), `use_ai`(true) | | |
+| `ast_search` | `pattern*`, `path`(.), `search_by`(name \| parameter \| return \| base \| method) | | stdlib ast；`path` 须在读允许目录内（§5） |
+| `code_quality_check` | `path`(.), `check_type`(basic \| security \| complexity \| pylint) | | 依赖 pylint / bandit / radon 子进程，缺失时降级说明；`path` 须在读允许目录内（§5） |
+| `git_analyze` | `repo_path`(.), `analysis_type`(history \| status \| authors) | | gitpython；`repo_path` 须在读允许目录内（§5） |
+| `git_commit_gen` | `repo_path`(.), `use_ai`(true) | | `repo_path` 须在读允许目录内（§5） |
 
 ### 知识图谱
 
@@ -85,10 +85,14 @@
 | 等级 | 规则（`agent_tools.py` 模式表） | ReAct 处理 |
 |---|---|---|
 | `critical` | `DANGEROUS_PATTERNS`：`rm -rf /`、`dd if=/dev/zero`、`mkfs.`、`> /dev/sda`、`chmod 777 /`、`sudo rm`、`del /f /s /q`、`format `、fork bomb、`mv / `、`cp / `、`ln -sf /` | 直接拦截，回灌 `[安全拦截] …该命令被拒绝执行` |
-| `low` | `READONLY_PATTERNS` 开头：`ls pwd echo cat head tail find grep wc ps which uname whoami date df du top tree file stat`、`git status/log/diff/branch/remote/show`、`python -m pytest --collect-only`、`pip list/freeze`、`ollama list/ps` | 免确认 |
-| `high` | `HIGH_PATTERNS`：`curl|wget … | sh|bash|zsh`；或含 `rm del drop truncate format` | 需确认；子 Agent 一律拒绝 |
-| `medium` | `MEDIUM_PATTERNS`：`pip/npm/yarn/pnpm/brew/apt install`、`git push/commit/reset/checkout/rebase/merge`、`python x.py`、`node x.js`、`make`、`docker run/exec`；或含 `write insert update delete chmod chown mv cp` | 需确认；子 Agent 自动放行 |
+| `low` | `READONLY_PATTERNS`：`ls pwd echo cat head tail find grep wc ps which uname whoami date df du top tree file stat`、`git status/log/diff/branch/remote/show`、`python -m pytest --collect-only`、`pip list/freeze`、`ollama list/ps`。**全部子命令都命中**才算只读（`ls | xargs rm` 不算） | 免确认 |
+| `high` | `HIGH_PATTERNS`：`curl|wget … | sh|bash|zsh`；或子命令首 token ∈ `HIGH_COMMANDS`（`rm rmdir del erase rd drop truncate format mkfs shred`）；或 SQL 客户端 / `-c`/`-e` 载荷里出现 `drop truncate` | 需确认；子 Agent 一律拒绝；`AUTO_CONFIRM` **不放行** |
+| `medium` | `MEDIUM_PATTERNS`：`pip/npm/yarn/pnpm/brew/apt install`、`git push/commit/reset/checkout/rebase/merge`、`python x.py`、`node x.js`、`make`、`docker run/exec`；或子命令首 token ∈ `MEDIUM_COMMANDS`（`mv cp chmod chown tee dd`）、`sed` 且含 `-i`；或 SQL 载荷里出现 `insert update delete alter replace` | 需确认；子 Agent 自动放行 |
 | `low`（其余） | 兜底 | 免确认 |
+
+**关键字为 token 级（F10 P0-1-a）**：命令先按 `|` `&&` `||` `;` 切成子命令（`shlex(punctuation_chars=True)`，解析失败回退空白切分），各子命令剥掉透明前缀（`sudo doas env VAR= xargs nohup time command nice …`）与路径后取命令名比对。因此 `pip show models` / `ls performance/` / `git log --format=%H` / `python rm_all.py` 不再被子串误判。相关纯函数：`keyword_risk(command)`、`is_readonly_command(command)`。
+
+自动确认闸门：`agent_tools.auto_confirm_allows(safety)`（`AUTO_CONFIRM_RISK_LEVELS = ("low","medium")`）由 `react_engine`、`query_interface.handle_exec`、`cli_handlers._confirm`、`agents.base_agent` 四处共用——`CODE_AGENT_AUTO_CONFIRM` / `--yes` 只免除 low / medium，high / critical 仍需人工确认（无交互时返回 `[提示] 高风险命令需人工确认`）。
 
 `config.READONLY_COMMANDS` / `config.DANGEROUS_PATTERNS` 无人引用，改它们不生效。
 
@@ -104,9 +108,14 @@
 
 未调用任何 `ESSENTIAL_TOOLS` 的结果标 `unverified` 并加 `⚠️ 该 Agent 未实际调用 … 以下内容为模型自述、未经验证：` 前缀。
 
-## 5. 写路径边界
+## 5. 读 / 写路径边界
 
-`write_allowed_dirs()` = `os.getcwd()` + 环境变量 `WRITE_ALLOWED_DIRS`（`os.pathsep` 分隔）；`is_path_allowed()` 用 `realpath` 解析符号链接与 `..`。适用于 `write_file` 与 `add_to_knowledge_base`；`read_file` / `list_directory` / `execute_command` 不受限（命令由安全分级约束）。
+| 边界 | 目录集合 | 判定 / 报错 | 适用工具 |
+|---|---|---|---|
+| 写 | `write_allowed_dirs()` = `os.getcwd()` + `WRITE_ALLOWED_DIRS`（`:` 分隔） | `is_path_allowed()` / `path_scope_error()` → `[错误] 路径超出允许范围: …（仅允许 <cwd> 或环境变量 WRITE_ALLOWED_DIRS 指定的目录）` | `write_file`、`add_to_knowledge_base` |
+| 读 | `read_allowed_dirs()` = 写目录 ∪ `READ_ALLOWED_DIRS`（`:` 分隔）∪ 已入库文件所在目录（`file_metadata.list_files()`，不可用时忽略；落在 Gradio 上传根 `$GRADIO_TEMP_DIR` / `<tmp>/gradio` 下的统一折叠为该根一条）。`_normalize_dirs` 丢弃被其他允许目录包含的子目录 | `is_read_allowed()` / `read_scope_error()` → `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）` | `read_file`、`list_directory`、`search_files`、`analyze_project_structure`、`ast_search`、`code_quality_check`、`git_analyze`、`git_commit_gen`（含经 registry 的 CLI `/file`）；Web `WebService.path_read_error()` 复用同一判定，约束 `list_dir` / `file_preview` / `search_in_dir` / `code_symbols` / `code_quality_report` / `graph_build_file` / `code_assist_stream` |
+
+两者都用 `realpath` 解析符号链接与 `..`（F10 P0-1-b）。`execute_command` 不受路径边界约束，由安全分级管；`database_connect` 打开的 SQLite 文件路径也未接边界（数据库工具另有 `safe` 标记）。两端展示：CLI `/config`、Web「系统 → 运行环境」的「允许读目录 / 允许写目录」。
 
 ## 6. 给模型看的版本
 

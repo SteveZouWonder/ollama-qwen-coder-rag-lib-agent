@@ -11,6 +11,156 @@
 
 ### 新增
 
+- **RAG 检索基准脚本（F10 P1-3）**：新增 `scripts/eval_rag.py`，一条命令对真实 Ollama 跑完整检索 + 问答并出报表，
+  调 `SIMILARITY_CUTOFF` / rerank 策略 / hybrid 开关 / 分块参数前后有了可对比的数字，不再靠几条问题人眼看。
+  - 仓库自带评测集：`tests/fixtures/rag_eval_corpus/`（18 个虚构项目文档 + 代码，约 36 KB，无隐私）与
+    `tests/fixtures/rag_eval_cases.json`（38 条：单文档 15 / 多跳 7 / 代码符号 7 / 元查询 4 / 负样本 5）。
+  - 指标（`src/rag_eval.py` 纯函数）：Recall@k、MRR、引用命中（`[n]` 映射到来源文件）、关键词命中、负样本拒答
+    （复用 F9-1 词表）、元查询识别、平均延迟；按类型分组汇总 + 合计；同 tag 有上一份报告时每个指标附 Δ。
+  - 参数 `--hybrid on|off --rerank llm|cross-encoder|none --top-k N --tag NAME [--cases] [--limit] [--type] [--model]`；
+    索引建在临时目录（`RAGEngine(persist_dir=…)` 新参数），**不触碰 `index_storage/` 与 `.cerebro/`**；报告写到
+    `docs/development/rag-eval/reports/{tag}-{日期}.md / .json`，`hybrid-on` / `hybrid-off` 两份基线已随仓库提交。
+  - 文档：`docs/development/TEST_DESIGN.md` §7（样本格式、加样本、指标含义、何时必须跑）、`TESTING_GUIDELINES.md`、README「测试」章节。
+- **OpenAI 兼容后端（F10 P1-2）**：新增 `LLM_PROVIDER=openai`，可把对话模型接到 vLLM / LM Studio / llama.cpp server /
+  内网 OpenAI 兼容网关（`LLM_BASE_URL`、`LLM_API_KEY`），不再必须用 Ollama 跑对话模型；Ollama 自带的 `/v1` 端点也可直接接入。
+  - 新模块 `src/llm_client.py`：`LLMClient` 协议 + `OllamaClient`（NDJSON 流）/ `OpenAICompatClient`（SSE 流、
+    `Authorization: Bearer`、`num_predict → max_tokens`）；ReAct Agent、多 Agent、RAG 综合（LlamaIndex `OpenAILike`）、
+    会话摘要、AI 提交信息、托盘预热与状态轮询全部经它调用，`src/` 内不再有直连 `/api/chat` / `/api/generate` 的代码。
+  - 思考关闭时 openai 模式随请求发送标准字段 `reasoning_effort=none`（`LLM_REASONING_EFFORT` 可改），避免
+    qwen3.5 等思考型模型在兼容端点上把输出预算全部花在 reasoning 上、回答为空；后端不识别时自动去掉重试并记住。
+  - CLI `/config` `/model` 与启动横幅、Web「系统」页显示 `LLM 后端 / 后端地址 / 后端状态（health）`；`/model list` 与 Web
+    模型下拉读取后端 `/v1/models`，后端不提供时回退为当前模型并明确提示「后端未提供模型列表」。
+  - 启动引导在 openai 模式下不再引导安装 Ollama / 拉取对话模型，只探测后端是否可达，并提示「知识库嵌入仍需 Ollama」。
+  - 未设置 `LLM_PROVIDER` 时行为与之前完全一致（请求体逐字节相同）。已知限制：嵌入模型仍由 Ollama 提供；`num_ctx`
+    由后端决定；模型驻留 / 释放为 Ollama 专有能力。
+- **真流式输出（F10 P1-1）**：模型输出改为 Ollama NDJSON 流式接收，最终答案在 CLI 与 Web 逐字出现，不再全程只见
+  "思考中 / 心跳"。默认模型实测首字可见从 **6.6s → 0.2s**（全文到达时间不变）。
+  - CLI：`/ask`、`/agent`、自然语言输入与 `/multi` 的综合回答阶段用 `rich Live` 面板实时刷新（8 帧/秒），
+    完成后按原格式打印完整答案与来源；工具步骤仍走原有面板输出，推理心跳在面板刷新期间静默。
+  - Web：三种模式（RAG / 单 Agent / 多 Agent 整合阶段）的助手气泡随 `token` 事件逐段增长，状态行显示
+    「✍️ 生成回答中…」；心跳只在无任何事件时发送。
+  - 单 Agent 只流式 `Final Answer:` 之后的文本，`Thought / Action` 的中间协议不会闪现在气泡里。
+  - 新环境变量 `LLM_STREAM`（默认 `true`）：设为 `false` 时全部回到整段一次性输出，请求体与旧版完全一致。
+
+### 修复
+
+- **多 Agent 并发锁补齐（F10 P2-1）**：`AgentRegistry` 与 `TaskScheduler` 的 `lock = None` 占位改为真正的
+  `threading.RLock`，注册 / 注销 / 查询与任务登记 / 状态流转全部在锁内进行；并行执行子任务时不再有"字典在迭代中
+  被修改"或计数丢失的风险（16 线程并发注册 / 调度测试）。
+- **命令推荐器偏好文件被测试改写**：`CommandRecommender(config)` 传入的配置此前没有传到 `LearningEngine`（内部总是用
+  `get_config()` 全局单例），导致注入的 `preference_file` / `learning_enabled=False` 形同虚设——在本机跑一次测试套件就会把
+  用户的 `data/recommender_preferences.json` 改成「不显示解释、最多 10 条」，并让 `test_format_recommendations` 在并行
+  测试下随机失败。现在配置真正下传，`learning_enabled=False` 时隐藏 / 显示偏好只改内存不落盘；测试侧 conftest 把推荐器
+  全局配置隔离到临时目录。顺带修正隐藏推荐的过期判断（`timedelta.seconds` 不含天数，隔天同一时段会"再次隐藏"）。
+- **CLI `/ask` 内联文件路径只认 macOS（F10 P3-2 待办 #6）**：问题里带 `/home/u/a.pdf`、`C:\Users\me\scan.png`、
+  `~/notes.md` 等路径时此前不会触发"检测到文件路径 → 自动入库"，只有 `/Users/…` 生效。现改为"绝对路径 + 类型白名单
+  （png / jpg / jpeg / pdf / md / txt）+ 文件确实存在"三重判定，三平台一致；不存在或相对路径不再触发误报。
+- **CLI `/file` 在 Rich 终端不记录到命令推荐历史（待办 #2）**：记录调用误缩进到纯文本分支下，装了 rich 的用户
+  `/file` 从不进入推荐系统；现两种终端都记录。
+- **可选模块"装了但坏了"被当成"未安装"（待办 #1）**：命令推荐系统与知识库管理（技能生成 / 快照）的可用性探测此前
+  `except ImportError` 一把抓，模块内部拼错 / 缺依赖也只显示「模块未安装」。新增 `optional_deps.probe_modules`：
+  只把目标模块本身缺失判为未安装；其他导入错误在终端输出 WARNING 带原始异常，便于排查。
+- **自然语言输入的"知识库未初始化"提示判的不是同一个引擎（待办 #3）**：`handle_natural` 路由用注入的引擎、提示却读
+  全局引擎，现统一用同一个。
+
+### 改进
+
+- **Tesseract 自动探测与缺失提示（F10 P3-1）**：OCR 的 Tesseract 路径不再写死 macOS Homebrew 目录。新增
+  `config.resolve_tesseract_path()`：`TESSERACT_PATH`（已设且存在）→ `PATH` → 各平台常见安装目录（macOS
+  `/opt/homebrew/bin` `/usr/local/bin`、Linux `/usr/bin` `/usr/local/bin`、Windows `%ProgramFiles%` /
+  `%LOCALAPPDATA%\Programs` 下的 `Tesseract-OCR\tesseract.exe`），Linux / Windows 用户装好即用。找不到时不再报
+  底层路径错误，而是提示「未检测到 Tesseract，安装方法见 docs/tutorials/02-installation.md#ocr」并关闭 OCR，
+  图片 / 扫描件入库时跳过并转述同一原因；`TESSERACT_PATH` 指向不存在的文件时明确说明并继续探测。
+  CLI `/config` 新增「Tesseract（OCR）」行、Web「系统 → 运行环境」新增同名行（路径 + 来源 / ❌ 未安装 + 安装文档），
+  知识库状态工具同步显示；`scripts/check_prereqs.sh` / `.ps1` 按同一顺序探测。启动引导（`bootstrap`）在
+  `OCR_ENGINE=tesseract` 且缺失时提示一次（持久标记，之后不再打扰），合并 F5 残留小项「Tesseract 引导提示」。
+
+- **入口层拆包（F10 P2-2，内部结构，行为零变化）**：Web 与 CLI 的五个大文件（2000–2800 行）按功能面拆成包：
+  `web/services/`（`base` + `chat / knowledge / tools / db / graph / system` 六个 mixin 组合为 `WebService`）、
+  `web/formatters.py`（全部 `format_*` 纯函数）+ `web/handlers/`（五个页面的 `build_*_handlers`）+ `web/app.py`
+  只做汇总与装配（2821 → 244 行）；`cli/handlers/`（`base / agent / system / knowledge / files / session / tools / git / db`，
+  `__init__` 汇总 `COMMAND_HANDLERS`）+ `cli/parser.py`（`parse_command / classify_mode`）+ `cli/help_text.py`
+  （`/help` 与教程文案），`query_interface.py` 2274 → 1799 行。`from web.services import WebService`、
+  `from web.app import format_*`、`from cli_handlers import COMMAND_HANDLERS`、`from query_interface import parse_command`
+  等旧导入路径全部保留（兼容重导出），功能与文案一字未改；`packaging/cerebro.spec` 按子包递归收集，打包无需改动。
+  **P3-2 二次拆分**：`query_interface.py` 1799 → 563 行——模块级状态（`console` / `HAS_RICH` / `rag_engine` /
+  `react_engine` / `_progress_state` …）收口到 `cli/state.py`，渲染 / 回调 / RAG 适配 / 命令推荐 / 引擎耦合命令
+  分别外迁至 `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py`，入口只剩解释器自保护、日志、
+  输入与 `main`；225 处测试打桩目标改为实现模块（断言零改动），`/help /stats /config /model /ask /agent` 输出与拆分前逐行一致。
+- **BM25 增量持久化（F10 P2-1）**：混合检索的 BM25 语料改为按片段 id 持久化到 `index_storage/bm25/store.json.gz`
+  （新模块 `bm25_store`），入库 / 删除只做增量 `upsert` / `remove`，索引在首次查询或有变更时用已存的词频直接装配——
+  不再每次入库后全量拉取向量库重新分词。1 万块库入库后首次查询 1.45s → 15ms，冷启动 1.45s → 0.7s；旧库首次查询
+  自动迁移生成 store，文件损坏或分词版本升级时自动全量重建（`TOKENIZER_VERSION`）。
+- **混合检索关闭可见（F10 P2-1）**：文档块数超过 `RAG_HYBRID_MAX_CHUNKS` 时不再静默降级：CLI `/stats` 与 Web
+  知识库页显示「混合检索已关闭：文档块数 N 超过上限 M，可调大 RAG_HYBRID_MAX_CHUNKS」，`query_with_sources` 结果带
+  `meta.hybrid_disabled_reason`；默认上限由 20000 提到 50000（README 注明内存估算）。
+- **多 Agent 请求排队（F10 P2-1）**：新增 `OLLAMA_MAX_CONCURRENCY`（默认 2），进程内同时发往对话后端的 LLM 请求
+  经先到先得的信号量限流；并行子 Agent 不再一起打爆单卡 Ollama 互相拖慢，超出的请求在本地排队，进度显示
+  「⏳ 排队等待模型空闲」，排队时间不计入子任务超时（`metadata.queued_seconds` 可查）。CLI `/config` 与 Web 系统页
+  显示当前并发上限。
+- **回答可中断（F10 P1-1）**：CLI `Ctrl+C` 与 Web「停止」现在会关闭与模型的 HTTP 连接（先 `shutdown` socket
+  再 `close`），读线程立刻退出、模型端随之停止生成，不再等整段生成完才返回。CLI 打印「已中断：…已关闭与模型的连接」；
+  Web 保留中断前已流出的部分回答并注明「⏹️ 已停止」。
+
+### 文档
+
+- **README 瘦身（F10 P3-1）**：`README.md` 1448 → 323 行，只保留定位与演示、下载安装、快速开始（桌面 / CLI / Web
+  三入口）、命令速查表、环境变量表（新增，35 个常用变量一表速查）、模型选择要点、文档索引；其余章节**整段迁入**
+  `docs/tutorials/`（只移动不删除，README 原位留链接）：架构图 / 使用场景 / 技术栈 / 扩展方向 → 01，依赖清单分工 与
+  OCR / Tesseract 安装（新增三平台自动探测表）→ 02，Web 界面详解 / 三模式使用指南 / 高级用法 / 快照·Skills·内容安全 → 04，
+  macOS 首次打开须知 → 05，常见问题速查 → 06，性能优化建议 → 07；新建 **08 配置参考**（`config.py` 注释、接入 OpenAI
+  兼容后端、模型选择补充、OCR 配置、命令推荐）与 **09 开发者指南**（项目结构、Python 路径、核心模块 API、测试与
+  RAG 检索基准），新建 `docs/tutorials/README.md` 教程索引；迁移时顺带修正 4 处过期事实（`TOP_K` 默认 10、覆盖率门禁
+  80%、默认 OCR 引擎 tesseract、`TESSERACT_PATH` 默认自动探测）。
+### 发布流程
+
+- **依赖钉版本（F10 P0-2）**：`requirements.txt` 的全部直接依赖改为 `==` 精确版本（可选依赖的安装命令注释里
+  也写明版本），`requirements-build.txt`（打包）逐项对齐。新用户 `pip install -r requirements.txt` 不会再拉到
+  不兼容的 llama-index / gradio 新版而启动失败。钉版本时顺带把 setuptools、GitPython、pillow 升到已有修复的
+  版本，`pip-audit` 剩余 5 条均为无修复版且已在 CI ignore 列表中说明理由。
+- **新增 `requirements-dev.txt`（F10 P0-2）**：pytest / pytest-cov / pytest-xdist / flake8 / pylint / bandit /
+  pip-audit 从运行时依赖中移出，通过 `-r requirements.txt` 引用；只运行产品的用户不再被迫安装测试工具链，
+  开发者一条 `pip install -r requirements-dev.txt` 装全。`scripts/install_deps.sh` / `.ps1` 增加「是否安装
+  开发测试依赖」一步，`scripts/verify_deps.sh` 分「运行时」「开发/测试」两段校验，`Makefile` 新增
+  `install` / `install-dev` / `test` 目标，README 安装章节给出三份依赖清单的分工表。
+- **CI 三平台矩阵与 PR 触发（F10 P0-2）**：`ci.yml` 增加 `pull_request` 触发，测试作业矩阵扩到
+  ubuntu / macOS / Windows（Python 3.13），覆盖率统计与 Codecov 上传仅在 ubuntu 执行，其余平台跑
+  `--no-cov` 纯回归；flake8 的语法错误 / 未定义名（E9,F63,F7,F82）改为**阻断**，风格检查仍只告警；
+  pip 缓存目录按平台解析、缓存 key 覆盖全部 `requirements*.txt`。PR 现在能在合并前发现跨平台问题。
+- **归档 v0.1.0（F10 P0-2）**：F8（Agent 模式优化）、F9（Web 工具页改版）、F10 P0-1（命令安全与读边界）
+  等 112 条变更从 `[Unreleased]` 归档为 `v0.1.0`，为两个月的成果提供可下载的 Release。
+
+## [v0.1.0] - 2026-09-09
+
+### 修复
+
+- **命令安全分级误报（F10 P0-1）**：`execute_command` 的风险关键字由子串匹配改为 **token 级**——命令先按
+  `|` / `&&` / `||` / `;` 切成子命令，剥掉 `sudo` / `env VAR=` / `xargs` 等前缀后只比对命令名。
+  `pip show models`、`ls performance/`、`git log --format=%H`、`cat information.txt`、`python rm_all.py`
+  不再因含 `del` / `rm` / `format` 子串被判高风险弹确认；`rm -rf build`、`ls | xargs rm`、
+  `sqlite3 a.db "DROP TABLE t"` 仍判 high。只读判定也改为「全部子命令都只读」，`ls | xargs rm` 不再被 `ls` 放行。
+- **读操作路径边界（F10 P0-1）**：`read_file` / `list_directory` / `search_files`（含 CLI `/file`）新增路径边界，
+  只能读取「当前工作目录 + `WRITE_ALLOWED_DIRS` + 新环境变量 `READ_ALLOWED_DIRS` + 已入库文档所在目录」，
+  越界返回 `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）`。
+  此前 Agent 可读取工作区外任意文件（如 `~/.ssh/id_rsa`）。
+  同一边界覆盖 `analyze_project_structure` / `ast_search` / `code_quality_check` / `git_analyze` / `git_commit_gen`，
+  以及 Web「工具」页直接读盘的 7 个入口（目录浏览、文件预览 / 编辑加载、关键词搜索、符号搜索、质量检查、
+  图谱 `@文件`、代码助手）——此前 Agent 被拦的路径在 Web 工作区输入仍可直接预览。搜索目录越界时明确报错，
+  不再伪装成"未找到"。
+- **`CODE_AGENT_AUTO_CONFIRM` / `--yes` 可绕过高风险命令（F10 P0-1）**：自动确认现在只放行 low / medium，
+  high 仍需人工确认；无交互场景拒绝执行并返回 `[提示] 高风险命令需人工确认`（critical 维持直接拦截）。
+  判定收敛到共享层 `agent_tools.auto_confirm_allows()`，由 ReAct 引擎、CLI `/exec`、CLI 确认提示与子 Agent 共用。
+
+### 改进
+
+- **允许目录可见（F10 P0-1）**：新增 CLI `/config` 命令，一行 `key: value` 显示模型 / 自动确认（标注只放行
+  low / medium）/ **允许读目录 · 允许写目录** / 数据与索引目录 / Agent 步数与超时；Web「系统 → 运行环境」
+  同步新增「允许读目录 / 允许写目录」两行，未配置时提示可用 `READ_ALLOWED_DIRS` / `WRITE_ALLOWED_DIRS` 放行。
+  允许目录列表自动收敛：被其他允许目录包含的子目录不再单独列出；Web 上传入库的文件（散落在临时根下的随机
+  哈希目录）统一折叠为上传根目录一条，列表不再随入库数量增长。
+
+### 新增
+
 - **Web「工具」页重构 P3 · 体验打磨（F9，完结）**：
   - **连接记忆**：数据库连接区改为下拉（可直接输入路径），列出最近成功连接过的 8 个 SQLite 库；重启 Web 后仍在，
     不自动连接。状态落盘 `.cerebro/web_tools_state.json`（损坏时按空状态处理）。
@@ -554,6 +704,11 @@
   避免在打包首启（需先做 Ollama 引导与索引加载）时打开空白/无法连接的页面。
 
 ### 文档
+- **F10 立项：工程加固与体验升级**（`docs/features/f10-hardening/`）：基于项目整体评估归纳的 7 类结构性问题
+  （安全分级误判与读边界、依赖未钉版本与发布滞后、非流式与单一 Ollama 后端、无 RAG 评测基准、BM25 全量重建与并发、
+  入口层巨型文件、Tesseract 硬编码与 README 过长），按"用户可感知价值 × 复杂度"拆成 P0–P3 八个独立任务；
+  REQUIREMENTS 含带行号的代码事实、分项需求与可检查验收、Web / CLI 两端规范；PROMPT 按任务分发、各自可独立粘贴。
+  `docs/features/README.md` 加入待实现，`ROADMAP.md` 进行中区按 P 级列出，F5 残留小项「Tesseract 引导提示」并入 P3-1。
 - 清理 `docs/future-feature-design/`：已落地的「跨平台桌面应用打包」「系统能力增强
   （Agent 工具集）」「Web 界面」三份设计文档迁移到 `docs/implemented-features/`
   （重编号为 F5 / F6 / F7，解决与 `f4-command-recommender` 的编号冲突），各自新增

@@ -44,6 +44,13 @@ class TestPackageExports(unittest.TestCase):
         self.assertIsNotNone(CommandRecommender)
         self.assertIsNotNone(RecommendationSource)
 
+    def test_query_interface_marks_recommender_available(self):
+        """query_interface 导入后 RECOMMENDER_AVAILABLE 必须为 True（回归：F10 P3-2-a 曾把导入行误改为 ``state.command_recommender``，被 except ImportError 静默吞掉）。"""
+        import query_interface
+
+        self.assertTrue(query_interface.RECOMMENDER_AVAILABLE)
+        self.assertTrue(query_interface.KNOWLEDGE_MANAGEMENT_AVAILABLE)
+
     def test_all_names_in_all_are_importable(self):
         """__all__ 中声明的每个名称都必须真实存在于包中。"""
         for name in command_recommender.__all__:

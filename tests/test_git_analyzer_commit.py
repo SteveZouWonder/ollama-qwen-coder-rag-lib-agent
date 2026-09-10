@@ -139,7 +139,7 @@ class TestCommitGeneratorRequest:
 
         def fake_post(url, json=None, timeout=None):
             captured.update(url=url, json=json, timeout=timeout)
-            return MagicMock(status_code=200, json=lambda: {"response": "feat: add sub\n\n详情"})
+            return MagicMock(status_code=200, json=lambda: {"message": {"content": "feat: add sub\n\n详情"}})
 
         monkeypatch.setattr(cg, "requests", MagicMock(post=fake_post), raising=False)
         import requests as real_requests
@@ -147,10 +147,13 @@ class TestCommitGeneratorRequest:
         gen = cg.CommitMessageGenerator(".", model="m")
         s = gen._generate_ai_commit_message("diff --git a b")
         assert s.title == "feat: add sub" and s.body == "详情" and s.conventional_type == "feat"
-        assert captured["url"].endswith("/api/generate") and captured["timeout"] == 60
+        # F10 P1-2：由 /api/generate 改为经 llm_client 的 chat 消息格式（/api/chat）
+        assert captured["url"].endswith("/api/chat") and captured["timeout"] == 60
         assert captured["json"]["think"] is False and captured["json"]["stream"] is False
         assert captured["json"]["options"] == {"num_predict": cg.CommitMessageGenerator.NUM_PREDICT}
-        assert "Conventional Commits" in captured["json"]["prompt"] and "diff --git a b" in captured["json"]["prompt"]
+        prompt = captured["json"]["messages"][0]["content"]
+        assert captured["json"]["messages"][0]["role"] == "user"
+        assert "Conventional Commits" in prompt and "diff --git a b" in prompt
 
     def test_non_200_falls_back(self, monkeypatch):
         from git_integration import commit_generator as cg

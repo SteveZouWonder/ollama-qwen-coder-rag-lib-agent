@@ -117,9 +117,13 @@ def make_synthesis_stub(prefix: str = "答案:"):
     需要"答案里带问题"断言的测试用它模拟综合）。"""
     import re
 
-    def _fake(prompt: str) -> str:
+    def _fake(prompt: str, on_token=None, should_stop=None) -> str:
         m = re.search(r"## 问题\n(.+?)(?:\n|$)", prompt or "")
-        return f"{prefix}{m.group(1)}" if m else f"{prefix}".rstrip(":")
+        text = f"{prefix}{m.group(1)}" if m else f"{prefix}".rstrip(":")
+        # F10 P1-1：Web 服务层总会传 on_token；桩按 LLM_STREAM=false 的语义一次性回调完整文本
+        if on_token is not None:
+            on_token(text)
+        return text
 
     return _fake
 
@@ -161,6 +165,27 @@ def isolate_app_state_dir(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="function")
+def isolate_bm25_store(tmp_path_factory, monkeypatch):
+    """全局fixture：把 RAGEngine 默认的索引根目录（``rag_engine.INDEX_DIR``）重定向到临时目录。
+
+    F10 P2-1 起入库 / 删除会把 BM25 store 写到 ``<index_dir>/bm25/store.json.gz``；大量测试用
+    Mock Chroma 构造 ``RAGEngine()``（不传 ``persist_dir``），不隔离会把伪造片段写进真实
+    ``index_storage/bm25/``。Chroma 路径（``VECTOR_DB_PATH``）由各测试自行 Mock，这里不动。
+    """
+    try:
+        import rag_engine  # noqa: F401 - 确保模块已加载，测试中途首次 import 也能拿到重定向后的值
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    tmp_dir = tmp_path_factory.mktemp("index_dir")
+    for name in ("rag_engine", "src.rag_engine"):
+        mod = sys.modules.get(name)
+        if mod is not None and hasattr(mod, "INDEX_DIR"):
+            monkeypatch.setattr(mod, "INDEX_DIR", tmp_dir)
+    yield
+
+
+@pytest.fixture(autouse=True, scope="function")
 def isolate_file_metadata(tmp_path_factory):
     """全局fixture：将文件元数据全局单例隔离到临时目录。
 
@@ -182,6 +207,39 @@ def isolate_file_metadata(tmp_path_factory):
         yield
     finally:
         fm._global_metadata_manager = saved
+
+
+@pytest.fixture(autouse=True, scope="function")
+def isolate_recommender_preferences(tmp_path_factory):
+    """全局fixture：把命令推荐器的全局配置单例指向临时偏好文件。
+
+    ``command_recommender.config.get_config()`` 的默认 ``preference_file`` 是项目根目录
+    ``data/recommender_preferences.json``（用户真实数据）。此前 ``LearningEngine`` 忽略注入配置、
+    总是用该单例，测试里 ``hide_recommendation`` / ``update_display_preferences`` 会直接改写用户文件，
+    并让 ``test_format_recommendations`` 在 xdist 并行下随机失败（另一 worker 刚隐藏了 ``/ask``）。
+    产品侧已修（``LearningEngine(config)``），这里再做一层防御：任何 ``get_config()`` 调用（含
+    ``query_interface`` 无参构造 ``CommandRecommender()``）都拿到临时文件，测试后恢复并 ``reset_config``。
+    ``command_recommender`` 与 ``src.command_recommender`` 是两份模块对象（两条 sys.path），都要隔离。
+    """
+    mods = []
+    for name in ("command_recommender.config", "src.command_recommender.config"):
+        try:
+            mods.append(importlib.import_module(name))
+        except Exception:  # noqa: BLE001
+            continue
+    if not mods:
+        yield
+        return
+
+    tmp_dir = tmp_path_factory.mktemp("recommender_prefs")
+    saved = [(m, getattr(m, "_global_config", None)) for m in mods]
+    for m in mods:
+        m._global_config = m.RecommendationConfig(preference_file=str(tmp_dir / "preferences.json"))
+    try:
+        yield
+    finally:
+        for m, old in saved:
+            m._global_config = old
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -283,19 +341,15 @@ def reset_module_state():
     """
     yield
     
-    # 重置query_interface模块的进度状态
-    if 'query_interface' in sys.modules:
-        module = sys.modules['query_interface']
+    # 重置 CLI 共享状态（F10 P3-2-a：本体在 cli.state，query_interface 只留只读别名）
+    if 'cli.state' in sys.modules:
+        module = sys.modules['cli.state']
         if hasattr(module, '_progress_state'):
             module._progress_state = {
                 'last_line_length': 0,
                 'important_phases': {"executing", "observed", "blocked", "rejected", "final"},
                 'current_thinking_dots': 0
             }
-    
-    # 重置query_interface中的全局rag_engine状态
-    if 'query_interface' in sys.modules:
-        module = sys.modules['query_interface']
         if hasattr(module, 'rag_engine'):
             module.rag_engine = None
     

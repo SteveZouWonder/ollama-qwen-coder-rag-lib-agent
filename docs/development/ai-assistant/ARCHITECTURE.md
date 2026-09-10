@@ -8,8 +8,10 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 ┌──────────────────────── 入口层 ────────────────────────┐
 │  CLI                    Web (Gradio)         Desktop   │
 │  query_interface.py     web/app.py           desktop_  │
-│  cli_handlers.py        web/ui/*             app.py    │
-│                         web/services.py      (托盘)    │
+│  cli/parser.py          web/ui/*             app.py    │
+│  cli/help_text.py       web/handlers/*       (托盘)    │
+│  cli/handlers/*         web/formatters.py              │
+│                         web/services/*                 │
 └──────────────┬──────────────────┬─────────────────────┘
                │                  │  WebService 是 Web 的唯一业务门面
 ┌──────────────▼──────────────────▼─────────────────────┐
@@ -32,12 +34,43 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 │  基础层                                                 │
 │  config.py (env → 常量)   runtime_paths.py (路径解析)    │
 │  prompt_assets.py (prompts/ 加载)   content_security.py │
+│  llm_client.py (LLM 后端抽象：Ollama / OpenAI 兼容)      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**LLM 调用只经 `llm_client`（F10 P1-2）**：编排层 / 能力层 / 入口层里所有"向对话模型发请求"的地方
+（`react_engine._call_model`、`collaboration.llm_helper.complete_text`、`conversation_context._default_complete`、
+`git_integration.commit_generator`、`desktop_app` 预热 / 状态轮询、`bootstrap` / `model_switcher` 的模型列表与健康检查）
+都调用 `llm_client.get_llm_client()` 返回的 `LLMClient`（`chat / list_models / health`），由 `LLM_PROVIDER` 决定是
+`OllamaClient`（`/api/chat` NDJSON、`options` 原样透传）还是 `OpenAICompatClient`（`/v1/chat/completions` SSE、
+`num_predict → max_tokens`、思考关闭时 `reasoning_effort=none`）。RAG 综合走 LlamaIndex：`rag_engine._setup_llm`
+在 openai 模式用 `OpenAILike`；嵌入始终是 `OllamaEmbedding`。`src/` 内除 `llm_client.py` 外不得出现
+`"/api/chat"` / `/api/generate` 字面量（`tests/test_llm_client.py::TestNoDirectEndpointsOutsideLLMClient` 守卫）。
 
 依赖只能自上向下。能力层模块之间不互相 import 编排层；`web/` 只依赖 `WebService`，不直接触碰引擎（测试通过 `WebService(rag_factory=..., react_factory=..., orchestrator_factory=...)` 注入）。
 
 `src/` 内模块以**顶层名**导入（`from config import ...`），`sys.path` 由入口脚本插入 `src/`；打包时 spec 同样 `sys.path.insert(0, "src")`。
+
+### 1.1 入口层内部结构（F10 P2-2 拆包）
+
+| 端 | 模块 | 职责 |
+|---|---|---|
+| Web | `web/services/` | `base.py`（`WebServiceBase`：工厂注入、`StreamEvent`、取消 / 确认、`_bridge` 心跳桥接、惰性单例）+ `chat / knowledge / tools / db / graph / system` 六个 mixin；`__init__.py` 组合为 `WebService` 并重导出全部旧公开名。**唯一接引擎处** |
+| Web | `web/formatters.py` | 全部 `format_*` / `*_rows` / 表头常量 / `ProgressTracker` / `build_graph_figure` 等纯函数 |
+| Web | `web/handlers/` | `build_{chat,knowledge,tools,graph,system}_handlers(service)` 各返回 handler dict（可单测，不依赖 gradio） |
+| Web | `web/app.py` | `build_handlers` 汇总五组 + `headers`，`build_app / launch / serve_blocking`；重导出 `formatters` 全部名字（`from web.app import format_*` 旧路径不变） |
+| Web | `web/ui/*` | Gradio 组件与事件接线（覆盖率排除） |
+| CLI | `cli/parser.py` | `ParsedCommand / parse_command / classify_mode`（纯函数） |
+| CLI | `cli/help_text.py` | `TUTORIAL_TEXT` + `print_help(console, has_rich)`（`/help` 文案内联） |
+| CLI | `cli/handlers/` | `base.py`（`CLIContext`、`_confirm`、`LiveAnswer`）+ `agent / system / knowledge / files / session / tools / git / db`；`__init__.py` 汇总 `COMMAND_HANDLERS` |
+| CLI | `cli/state.py` | 进程内共享状态（`HAS_RICH` 等探测、`console`、`rag_engine / react_engine / last_*_sources / command_recommender`、`_progress_state`）；其他模块 `from cli import state` 后经 `state.xxx` 运行时取值 |
+| CLI | `cli/render.py` | 横幅、教程、工具表、来源表 / 统计表、回答 Panel、`_live_answer`、结构化提示、引用计数 |
+| CLI | `cli/callbacks.py` | `on_step_callback / on_confirm_callback / ask_progress_callback`（读写 `state._progress_state`） |
+| CLI | `cli/rag_adapter.py` | `rag_pipeline` 别名与薄封装、`_cli_ask_progress` 终端进度渲染 |
+| CLI | `cli/recommend.py` | 命令推荐记录 / 展示、会话上下文与健康度提示 |
+| CLI | `cli/engine_commands.py` | `handle_*(ctx, parsed)` 引擎耦合命令（ask / agent / natural / model / think / auto / exec / …）、`_ENGINE_HANDLERS`、`_build_cli_context`、`dispatch_command` |
+| CLI | `query_interface.py` | 入口：解释器自保护、日志、readline / 输入、`main`（argparse + 引擎装配 + REPL）；重导出 `cli.*` 全部公开名（`from query_interface import X` 旧路径不变） |
+| CLI | `cli_handlers.py` | 兼容重导出 shim（`from cli_handlers import X` 仍可用；打桩请以 `cli.handlers.<子模块>` 为目标） |
 
 ## 2. 四种工作模式
 
@@ -54,7 +87,7 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
                 └─ 否则 llm_classify（num_predict=4, timeout=5）→ rag|agent，失败回退 rag
 ```
 
-CLI：`query_interface.handle_natural` → `Config.AUTO_ROUTE and _route_natural_to_agent`。Web：`WebService.chat_auto_stream` 先 yield `progress(phase="route")`，`answer.data["routed_mode"]` 决定渲染路径。
+CLI：`cli.engine_commands.handle_natural` → `Config.AUTO_ROUTE and _route_natural_to_agent`。Web：`WebService.chat_auto_stream` 先 yield `progress(phase="route")`，`answer.data["routed_mode"]` 决定渲染路径。
 
 ### 2.2 RAG — `rag_pipeline.answer_question`
 
@@ -121,6 +154,28 @@ request ─▶ TaskDecomposer.decompose（LLM ≤512 token → 关键词规则�
 - `new_session(carry_summary)` 只承接**已折叠的滚动摘要**；跟随模式（`session_id=None`）不钉死到新会话。
 - CLI 使用进程级单例 `get_conversation_context()`（跟随当前会话）；Web 每次请求按 `gr.State` 里的 `session_id` 新建绑定实例；多 Agent 子角色用 `EphemeralContext`（不读写会话）。
 
+### 2.6 流式回调路径（F10 P1-1，三种模式共用）
+
+所有 LLM 调用都接受可选 `on_token(delta: str)`；**不传时请求保持 `stream: False`，行为与旧版字节级一致**。传入且 `Config.LLM_STREAM`（默认 `true`）开启时改为 `stream: True` 逐行读 NDJSON、每个增量回调一次；`LLM_STREAM=false` 时仍非流式但把完整文本一次性回调，因此消费方无需区分。
+
+```
+                      ┌ CLI：cli_handlers.LiveAnswer.on_token（rich Live(Markdown) 面板，transient；finish() 后按原格式打印全文）
+  on_token ◀──────────┤
+                      └ Web：WebService._token_sink(q, cancel) → StreamEvent("token", delta) → app.on_chat_stream 逐段拼到最后一条气泡
+                                                                                              （answer 到达后以完整文本替换）
+  RAG    answer_question(on_token) → generate_answer → 只有最终综合那次 llm_direct_answer(prompt, on_token, should_stop)
+         → _complete → _stream_complete：Settings.llm.stream_chat(...)，should_stop 为真即 break + gen.close()
+  单 Agent ReActEngine(on_token) / chat(task, on_token) → 每轮 _call_model(on_token=FinalAnswerStream(cb))
+         FinalAnswerStream：缓冲到看见 "Final Answer:" 才转发其后的增量；缓冲区出现 "Action:" 则丢弃本轮
+         _call_model → llm_client.get_llm_client().chat(..., on_token=cb, should_stop=_stop_event.is_set, on_response=_track_response)
+                       （OllamaClient → consume_ndjson_stream；OpenAICompatClient → consume_sse_stream）
+         stop()：置位 + llm_client.abort_response(_active_response)（socket.shutdown + close → 读线程立刻退出、模型停止生成）
+  多 Agent orchestrator.process_request(on_token) → coordinate_task(on_token) → ResultIntegrator.on_token（仅整合阶段）
+         → complete_text(prompt, on_token=…)（子任务执行不流式）
+```
+
+约定：`answer` / 最终返回值仍是**完整文本**（经 `<think>` 剥离、引用校验等后处理），流出的 token 只是原始增量，UI 以最终文本为准；`_bridge` 的心跳只在心跳间隔内没有任何事件（含 token）时发出；单 Agent 在 `_call_model` 返回后再查一次 `_stop_event`，被中断的半截文本不进协议解析。
+
 ## 3. 系统提示层次（`react_engine.build_system_prompt`）
 
 | 层 | 来源 | 作用范围 |
@@ -166,7 +221,8 @@ prompts/                  模型输入资产（只读，版本化）
 | 新增 Agent 工具 | `agent_tools.py` `registry.register(...)`；同步 `prompts/system/PROJECT_RULES.md` 参数名段、`TOOL_USAGE.md`、子角色白名单（如需）与测试 |
 | 新增子 Agent 角色 | `agents/agent_types.py` 加枚举；新建 `agents/xxx_agent.py` 继承 `ReActDelegateAgent`；`agent_config.py` 默认配置；`agent_registry` 注册；`prompts/skills` 的 `roles` 可选值随之扩展 |
 | 新增 / 调整 Agent 行为规范 | `prompts/skills/<name>/SKILL.md`（全局）或 `PROJECT_RULES.md`（产品事实） |
-| 新增 Web 页面 | `web/ui/<page>.py` 构建组件 + `web/app.py build_handlers` 加 handler + `WebService` 加业务方法 |
-| 新增 CLI 命令 | `query_interface.parse_command` 加分支 + `cli_handlers` 处理函数 + `COMMAND_HANDLERS` 表 + README 命令表 |
+| 新增 Web 页面 | `web/ui/<page>.py` 构建组件 + `web/handlers/<page>.py build_<page>_handlers` 加 handler（`web/app.py build_handlers` 汇总）+ `web/formatters.py` 加 `format_*` + `web/services/<page>.py` mixin 加业务方法 |
+| 新增 CLI 命令 | `cli/parser.py parse_command` 加分支（`classify_mode` 归类）+ `cli/handlers/<组>.py` 处理函数 + `cli/handlers/__init__.py COMMAND_HANDLERS` 表 + `cli/help_text.py` 帮助 / 教程文案 + README 命令表 |
 | 新增搜索源 | `web_search/search_engine.py` 实现 `SearchEngine` 子类并加入聚合器 |
 | 新增 OCR 引擎 | `ocr_processor/base.py` 抽象类实现 + `config.OCR_ENGINE` 选项 |
+| 新增 LLM 后端协议 | `llm_client.py` 实现 `LLMClient`（`chat / list_models / health`）+ `make_client` 分支 + `config.LLM_PROVIDERS`；RAG 综合另在 `rag_engine._setup_llm` 选对应 LlamaIndex LLM 类 |

@@ -1,86 +1,88 @@
-# 核心依赖（Python 3.13 兼容的最新版本）
+# 运行时依赖（Python 3.13）
+#
+# 版本已全部钉死（`==`），保证任何机器上 `pip install -r requirements.txt`
+# 装出的环境一致。升级依赖时请同步 requirements-build.txt（打包）与
+# requirements-dev.txt（测试 / 静态检查），并跑 `bash scripts/verify_deps.sh`。
+#
+# 开发 / 测试工具（pytest、flake8、pylint、bandit、pip-audit）见 requirements-dev.txt：
+#   pip install -r requirements-dev.txt
+
 # 先安装构建依赖
-setuptools>=60.0.0
-wheel
+setuptools==84.0.0
+wheel==0.47.0
 
 # 数据处理依赖（使用预编译版本，避免构建错误）
-numpy
-pandas
+numpy==2.4.6
+pandas==2.3.3
 
-llama-index
-llama-index-embeddings-ollama
-llama-index-llms-ollama
-llama-index-readers-file
-llama-index-vector-stores-chroma
+llama-index==0.14.22
+llama-index-embeddings-ollama==0.9.0
+llama-index-llms-ollama==0.10.1
+# OpenAI 兼容后端（LLM_PROVIDER=openai：vLLM / LM Studio / 内网网关；F10 P1-2）
+llama-index-llms-openai-like==0.8.0
+llama-index-readers-file==0.6.0
+llama-index-vector-stores-chroma==0.5.5
 
-# 向量数据库（最新稳定版本）
-chromadb
-posthog>=3.0.0,<4.0.0  # 修复ChromaDB遥测兼容性问题
+# 向量数据库
+chromadb==1.5.9
+posthog==3.25.0  # 修复 ChromaDB 遥测兼容性问题（必须 3.x，4.x 接口不兼容）
 
 # RAG hybrid 召回（dense + BM25 关键词，RRF 融合；RAG_HYBRID=true 默认开启）
-rank_bm25>=0.2.2
+rank_bm25==0.2.2
 
 # 可选：cross-encoder 逐片段 rerank（RERANKER=cross-encoder，默认 llm 不需要）
 # 依赖较重（torch），按需手动安装；未安装时自动回退 llm rerank：
-#   pip install sentence-transformers
+#   pip install sentence-transformers==6.0.1
 # 模型由 RERANKER_MODEL 指定，默认 BAAI/bge-reranker-v2-m3（首次使用自动下载）
 
 # 可选：代码感知分块（CODE_AWARE_CHUNKING=true 默认开启，缺依赖自动回退 SentenceSplitter）
 # 代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）按函数/类切分，引用可定位到符号与行号。
 # 预编译 wheel 约 5 MB（mac/linux glibc>=2.34/win），按需安装：
-#   pip install "tree-sitter-language-pack>=1.16,<2"
+#   pip install tree-sitter-language-pack==1.16.2
 
 # 文档处理
-pypdf>=6.15.0,<7
-pymupdf>=1.25.0  # PDF图像提取（兼容新版本，使用 import pymupdf as fitz）
+pypdf==6.18.0
+pymupdf==1.27.2.3  # PDF 图像提取（使用 import pymupdf as fitz）
 
 # 网络请求
-requests
-urllib3
+requests==2.34.2
+urllib3==2.7.0
 
-# 网络搜索功能（Python 3.13 兼容的最新稳定版本）
-ddgs>=5.3.0  # DuckDuckGo 搜索引擎（网络搜索功能必需，新包名）
-beautifulsoup4>=4.12.0    # 网页内容提取（备选方案）
-trafilatura>=2.0.0        # 网页内容提取（主要方案；<2.0 存在 settings.cfg 缺项问题）
+# 网络搜索功能
+ddgs==9.14.4              # DuckDuckGo 搜索引擎（网络搜索功能必需）
+beautifulsoup4==4.15.0    # 网页内容提取（备选方案）
+trafilatura==2.1.0        # 网页内容提取（主要方案）
 
 # Git 集成功能
-gitpython>=3.1.0          # Git 操作（可选，系统有 git 命令时不需要）
+gitpython==3.1.62         # Git 操作（可选，系统有 git 命令时不需要）
 
 # 知识图谱功能
-networkx>=3.6.0          # 知识图谱构建和查询
+networkx==3.6.1           # 知识图谱构建和查询
 
 # 环境配置
-python-dotenv
+python-dotenv==1.2.2
 
 # 终端美化
-rich
+rich==15.0.0
 
 # 命令行工具
-prompt-toolkit
+prompt-toolkit==3.0.52
 
-# Web 界面（Gradio，Python 3.13 兼容）
-gradio
-plotly                    # 知识图谱 3D/2D 可视化（Web 图谱视图 + /graph-export 离线 HTML）
-
-# 测试工具
-pytest
-pytest-cov
-pytest-xdist
+# Web 界面（Gradio）
+gradio==6.20.0
+plotly==7.0.0             # 知识图谱 3D/2D 可视化（Web 图谱视图 + /graph-export 离线 HTML）
 
 # 桌面应用依赖
-pystray
-pillow
+pystray==0.19.5
+pillow==12.3.0
 
 # OCR 功能依赖（可选）
 # 注意：由于 Python 3.13 兼容性问题，推荐使用 Tesseract OCR
 # PaddleOCR 需要 paddlex，而 paddlex 依赖老版本 pandas（<=1.5.3），不支持 Python 3.13
-# opencv-python 需要与 NumPy 2.x 兼容的版本（4.13.0+）
-# 如需使用 PaddleOCR，请降级到 Python 3.9 或更低版本
 # 推荐安装命令（Python 3.13 兼容）：
-#   pip install pytesseract==0.3.13 pymupdf>=1.25.0 opencv-python>=4.13.0
-# 
-# PaddleOCR 用户（需要 Python 3.9 或更低）：
-#   pip install paddlepaddle==2.6.2 paddleocr==2.7.0.3 pytesseract==0.3.10
+#   pip install pytesseract==0.3.13 opencv-python==4.13.0.92
+# （pymupdf 已在上方作为核心依赖安装）
+# 还需安装系统级 Tesseract，见 docs/tutorials/02-installation.md
 
-# 注意：项目已升级到 Python 3.13.13（推荐）
+# 注意：项目基于 Python 3.13（推荐 3.13.13）
 # 激活虚拟环境：source venv/bin/activate

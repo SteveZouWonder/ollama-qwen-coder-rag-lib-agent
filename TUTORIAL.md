@@ -60,6 +60,21 @@
    - 性能优化
    - 工作流集成
 
+### 参考手册（2026-09-09 自 README 迁入）
+
+8. **[配置参考](docs/tutorials/08-configuration.md)**
+   - `config.py` 常量注释
+   - 接入 OpenAI 兼容后端（vLLM / LM Studio / 内网网关）
+   - 模型选择补充：过度顺从评测、与 IDE 共存的内存实践
+   - OCR 配置、智能命令推荐系统
+
+9. **[开发者指南](docs/tutorials/09-development.md)**
+   - 项目结构与 Python 路径
+   - 核心模块 API 示例
+   - 测试与 RAG 检索基准
+
+完整索引（含每篇从 README 迁入的章节）见 [docs/tutorials/README.md](docs/tutorials/README.md)。
+
 ---
 
 ## 🚀 推荐阅读路径
@@ -97,6 +112,8 @@
 - **[桌面应用使用指南](docs/tutorials/05-desktop-app.md)** - 桌面应用
 - **[故障排除指南](docs/tutorials/06-troubleshooting.md)** - 解决问题
 - **[最佳实践指南](docs/tutorials/07-best-practices.md)** - 提升技能
+- **[配置参考](docs/tutorials/08-configuration.md)** - 配置与后端接入
+- **[开发者指南](docs/tutorials/09-development.md)** - 结构、API 与测试
 
 ---
 
@@ -122,6 +139,7 @@
 ## 📝 文档更新
 
 - **2026-06-10**: 完成文档拆分，创建模块化教程结构
+- **2026-09-09**: README 瘦身（1448 → 325 行），长篇章节迁入 01–07 并新增 08 配置参考、09 开发者指南（F10 P3-1）
 - 持续更新中...
 
 ---

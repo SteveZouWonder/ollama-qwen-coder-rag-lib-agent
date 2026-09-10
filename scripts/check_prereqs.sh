@@ -483,14 +483,39 @@ check_ocr_dependencies() {
     fi
     
     # 检查Tesseract系统级依赖
-    if command -v tesseract &> /dev/null; then
-        tesseract_version=$(tesseract --version 2>&1 | head -n 1)
-        print_result 0 "tesseract 已安装: $tesseract_version"
+    # 与 src/config.py::resolve_tesseract_path 同一顺序：TESSERACT_PATH → PATH → 平台常见目录
+    tesseract_bin=""
+    tesseract_source=""
+    if [ -n "$TESSERACT_PATH" ]; then
+        if [ -x "$TESSERACT_PATH" ]; then
+            tesseract_bin="$TESSERACT_PATH"; tesseract_source="TESSERACT_PATH"
+        else
+            print_result 2 "TESSERACT_PATH=$TESSERACT_PATH 指向的文件不存在，改为自动探测"
+        fi
+    fi
+    if [ -z "$tesseract_bin" ] && command -v tesseract &> /dev/null; then
+        tesseract_bin="$(command -v tesseract)"; tesseract_source="PATH"
+    fi
+    if [ -z "$tesseract_bin" ]; then
+        for cand in /opt/homebrew/bin/tesseract /usr/local/bin/tesseract /usr/bin/tesseract; do
+            if [ -x "$cand" ]; then
+                tesseract_bin="$cand"; tesseract_source="常见安装目录"; break
+            fi
+        done
+    fi
+    if [ -n "$tesseract_bin" ]; then
+        tesseract_version=$("$tesseract_bin" --version 2>&1 | head -n 1)
+        print_result 0 "tesseract 已安装: $tesseract_version ($tesseract_bin，来自 $tesseract_source)"
+        if [ "$tesseract_source" = "常见安装目录" ]; then
+            echo "  提示: tesseract 不在 PATH 中，程序会自动探测到该路径；也可 export TESSERACT_PATH=$tesseract_bin"
+        fi
     else
         print_result 2 "tesseract 未安装 (OCR功能可选)"
+        echo "  安装方法见 docs/tutorials/02-installation.md#ocr"
         echo "  macOS 安装: brew install tesseract tesseract-lang"
         echo "  Linux 安装: sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim"
         echo "  Windows 安装: https://github.com/UB-Mannheim/tesseract/wiki"
+        echo "  已安装但不在 PATH: export TESSERACT_PATH=/path/to/tesseract"
         ocr_module_failures=$((ocr_module_failures + 1))
     fi
     

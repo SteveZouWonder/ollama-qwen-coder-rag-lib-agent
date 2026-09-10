@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import cli_handlers as h
+import cli.handlers.db as h_db  # F10 P2-2：打桩目标为实现所在子模块
 from query_interface import ParsedCommand
 
 
@@ -118,7 +119,7 @@ class TestDbSchema:
 
     def test_exception_recorded(self, monkeypatch):
         ctx, reg = _ctx()
-        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(h_db, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert h.handle_db_schema(ctx, _pc("db_schema", "")) is True
         assert ctx.record_command.call_args.args[2] == "failed"
 
@@ -154,7 +155,7 @@ class TestDbQuery:
 
     def test_exception_recorded(self, monkeypatch):
         ctx, reg = _ctx()
-        monkeypatch.setattr(h, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(h_db, "_db_results", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert h.handle_db_query(ctx, _pc("db_query", "select 1")) is True
         assert ctx.record_command.call_args.args[2] == "failed"
 
@@ -195,6 +196,50 @@ class TestDbWriteConfirm:
         assert h.handle_db_create_table(ctx, _pc("db_create_table", 't {"id": "INTEGER"}')) is False
         assert h.handle_db_insert(ctx, _pc("db_insert", 't {"id": 1}')) is False
         reg.execute.assert_not_called()
+
+
+class TestP01AutoConfirmRiskGate:
+    """F10 P0-1-c：``_confirm`` 的 AUTO_CONFIRM 只放行 low / medium。"""
+
+    @pytest.fixture
+    def auto_confirm_on(self, monkeypatch):
+        from config import Config
+
+        monkeypatch.setattr(Config, "AUTO_CONFIRM", True)
+
+    def test_confirm_without_safety_still_auto_allowed(self, auto_confirm_on):
+        console = MagicMock()
+        assert h._confirm(console) is True
+        console.input.assert_not_called()
+
+    @pytest.mark.parametrize("level", ["low", "medium"])
+    def test_confirm_allows_low_medium(self, auto_confirm_on, level):
+        console = MagicMock()
+        assert h._confirm(console, safety={"risk_level": level}) is True
+        console.input.assert_not_called()
+
+    @pytest.mark.parametrize("level", ["high", "critical"])
+    def test_confirm_rejects_high_without_interaction(self, auto_confirm_on, level):
+        console = MagicMock()
+        console.input.side_effect = EOFError
+        assert h._confirm(console, safety={"risk_level": level}) is False
+        printed = "\n".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+        assert "高风险命令需人工确认" in printed
+
+    def test_db_execute_auto_confirms_insert(self, auto_confirm_on):
+        ctx, reg = _ctx()
+        assert h.handle_db_execute(ctx, _pc("db_execute", "INSERT INTO t VALUES (1)")) is True
+        ctx.console.input.assert_not_called()
+        assert reg.execute.call_args.kwargs.get("auto_confirm") is True
+
+    def test_db_execute_does_not_auto_confirm_drop(self, auto_confirm_on):
+        """``DROP TABLE`` 经 SQL 客户端上下文判为 high，AUTO_CONFIRM 不放行。"""
+        ctx, reg = _ctx()
+        ctx.console.input.side_effect = EOFError
+        assert h.handle_db_execute(ctx, _pc("db_execute", "DROP TABLE t")) is False
+        reg.execute.assert_not_called()
+        printed = "\n".join(str(c.args[0]) for c in ctx.console.print.call_args_list if c.args)
+        assert "高风险命令需人工确认" in printed
 
 
 class TestRealRegistryIntegration:

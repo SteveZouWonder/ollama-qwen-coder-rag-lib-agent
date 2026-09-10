@@ -122,6 +122,7 @@ class MasterAgent(BaseAgent):
         mode: CollaborationMode,
         progress: Optional[Callable[[Dict[str, Any]], None]] = None,
         context=None,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """
         协调任务的完整流程
@@ -134,6 +135,8 @@ class MasterAgent(BaseAgent):
                 ``execute`` | ``agent_step`` | ``task_done`` | ``integrate``。
                 用于 CLI/Web 实时展示"分解 → 调度 → 执行 → 整合"各阶段。
             context: 可选会话上下文，注入给 RAGAgent 用于追问改写/历史注入。
+            on_token: 整合阶段（模型综合最终回答）的增量回调（F10 P1-1）；子任务执行
+                不流式。
             
         Returns:
             Dict[str, Any]: 协调结果
@@ -149,6 +152,9 @@ class MasterAgent(BaseAgent):
         for agent in self.specialized_agents:
             agent.on_progress = agent_progress if progress is not None else None
             agent.conversation_context = context
+        # 整合阶段的流式回调只在本次协作期间生效
+        if hasattr(self.result_integrator, "on_token"):
+            self.result_integrator.on_token = on_token
         
         try:
             # 1. 任务分解
@@ -231,6 +237,8 @@ class MasterAgent(BaseAgent):
             for agent in self.specialized_agents:
                 agent.on_progress = None
                 agent.conversation_context = None
+            if hasattr(self.result_integrator, "on_token"):
+                self.result_integrator.on_token = None
 
     # ---------- 执行策略 ----------
 

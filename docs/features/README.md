@@ -8,7 +8,7 @@
 
 | 编号 | 功能 | 状态 | 目录 |
 |---|---|---|---|
-| — | （暂无） | | |
+| F10 | 工程加固与体验升级：P0 命令安全分级修正 + 读边界 / 依赖钉版本 + 归档发版 + CI 矩阵 · P1 真流式输出 / LLM 后端抽象（Ollama + OpenAI 兼容）/ RAG 评测集与基准脚本 · P2 BM25 持久化增量 + 锁 + 并发限流 / 入口层拆分 · P3 Tesseract 跨平台探测 + README 瘦身 / `query_interface.py` 二次拆分（立项 2026-09-08；P3-2 于 2026-09-09 追加） | ✅ **已完成**（P0–P3-1 于 2026-09-09，P3-2 `query_interface.py` 二次拆分于 2026-09-10：1799 → 563 行，`cli/state.py` 收口状态、五个新模块、225 处打桩迁移、CLI 输出逐行一致） | [f10-hardening/](f10-hardening/) |
 
 ## 已实现
 
@@ -35,7 +35,6 @@
 |---|---|---|
 | 启动时检查新版本并提示 | F5 | 调 GitHub Releases API 比对当前 `APP_VERSION`，托盘 / Web「系统」页提示下载链接。**不做**应用内自更新（需正式签名与公证，成本不匹配） |
 | macOS / Linux 开机自启 | F5 | `AppConfig.autostart` 配置项已存在但未生效；补 launchd plist / XDG `autostart/*.desktop`。Windows 已由 Inno Setup 可选任务覆盖 |
-| `bootstrap.py` 补 Tesseract 检测提示 | F5 | 当前仅引导 Ollama；OCR 依赖缺失时给出安装提示（不自动安装） |
 | Web「系统」页配置可编辑 | F7 | `TOP_K` / `SIMILARITY_CUTOFF` / `CHUNK_SIZE` 等写回 `.env`，重启生效；当前为只读概览 |
 
 ## 已明确不做
@@ -58,4 +57,4 @@
    更新 `ROADMAP.md`、`CHANGELOG.md [Unreleased]`。
 4. 决定不做的项写入「已明确不做」并注明原因，避免重复提出。
 
-**最后更新**: 2026-09-07（F9 全部完成，移入已实现）
+**最后更新**: 2026-09-10（F10 P3-2 完成：`query_interface.py` 1799 → 563 行，模块级状态收口 `cli/state.py`，渲染 / 回调 / RAG 适配 / 推荐 / 引擎耦合命令外迁为 `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py`，225 处测试打桩改打实现模块，F10 全部九项收官；此前 P3-1 完成：Tesseract 三平台自动探测与缺失提示（F5 残留小项并入并移除）、README 1448 → 323 行迁入 docs/tutorials 并新增 08 / 09；此前 P2-1 完成：`bm25_store` 持久化增量、混合检索关闭可见、注册中心 / 调度器 RLock、`OLLAMA_MAX_CONCURRENCY` 并发限流与子任务排队不计超时）

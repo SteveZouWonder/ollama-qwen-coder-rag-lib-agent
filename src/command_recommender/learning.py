@@ -14,9 +14,15 @@ logger = logging.getLogger(__name__)
 class LearningEngine:
     """学习引擎 - 学习用户偏好并调整推荐"""
     
-    def __init__(self):
+    def __init__(self, config=None):
+        """
+        Args:
+            config: 推荐配置（决定 ``preference_file`` 与 ``learning_enabled``）。为 None 时取
+                ``get_config()`` 全局单例。此前无此参数、总是用全局单例，导致 ``CommandRecommender(config)``
+                注入的偏好文件路径被忽略——测试会改写用户真实的 ``data/recommender_preferences.json``。
+        """
         self.preference: Optional[UserPreference] = None
-        self.config = get_config()
+        self.config = config or get_config()
         self._load_preference()
     
     def _load_preference(self):
@@ -25,11 +31,14 @@ class LearningEngine:
         logger.info("用户偏好已加载")
     
     def _save_preference(self):
-        """保存用户偏好"""
-        if self.preference:
-            success = self.config.save_preference(self.preference)
-            if success:
-                logger.info("用户偏好已保存")
+        """保存用户偏好（``learning_enabled=False`` 时只改内存、不落盘）"""
+        if not self.preference:
+            return
+        if not getattr(self.config, "learning_enabled", True):
+            return
+        success = self.config.save_preference(self.preference)
+        if success:
+            logger.info("用户偏好已保存")
     
     def record_command_execution(
         self,

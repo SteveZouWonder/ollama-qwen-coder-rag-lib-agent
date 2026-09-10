@@ -9,6 +9,11 @@ import time
 import logging
 from .agent_types import AgentTask, AgentResult, AgentMessage, AgentType, AgentState
 
+try:  # 共享层的自动确认闸门（agent_tools 不可用时退化为本地默认值）
+    from agent_tools import AUTO_CONFIRM_RISK_LEVELS as _SHARED_AUTO_CONFIRM_RISK_LEVELS
+except ImportError:  # pragma: no cover - 仅在裁剪部署缺少 agent_tools 时触发
+    _SHARED_AUTO_CONFIRM_RISK_LEVELS = ("low", "medium")
+
 
 class BaseAgent(ABC):
     """Agent基类，定义所有Agent的通用接口和行为"""
@@ -177,30 +182,42 @@ class BaseAgent(ABC):
         task.started_at = datetime.now()
 
         holder: Dict[str, Any] = {}
+        # F10 P2-1-d：观测工作线程在 LLM 并发信号量上的排队时间——排队不计入超时，
+        # 并向协调者上报"排队中"（首次排队追加一行，之后只刷新当前状态）
+        tracker = self._make_queue_tracker()
 
         def _worker():
+            self._install_queue_listener(tracker)
             try:
                 holder["result"] = self.process_task(task)
             except Exception as e:  # noqa: BLE001
                 holder["error"] = e
+            finally:
+                self._install_queue_listener(None)
 
         worker = threading.Thread(
             target=_worker, name=f"{self.agent_id}-task", daemon=True)
         worker.start()
-        worker.join(timeout if timeout and timeout > 0 else None)
+        self._join_excluding_queue(worker, timeout, start_time, tracker)
 
         execution_time = time.time() - start_time
+        queued = round(tracker.total(), 2) if tracker is not None else 0.0
         try:
             if worker.is_alive():
-                self.logger.warning(f"Task {task.task_id} timed out after {timeout}s")
+                self.logger.warning(
+                    f"Task {task.task_id} timed out after {timeout}s"
+                    + (f" (excluding {queued}s queued for LLM)" if queued else ""))
                 self.cancel()
                 task.status = task.status.__class__.FAILED
+                meta: Dict[str, Any] = {"timeout": timeout}
+                if queued:
+                    meta["queued_seconds"] = queued
                 return AgentResult(
                     task_id=task.task_id,
                     agent_id=self.agent_id,
                     success=False,
                     output="",
-                    metadata={"timeout": timeout},
+                    metadata=meta,
                     execution_time=execution_time,
                     error_message="timeout",
                 )
@@ -228,6 +245,11 @@ class BaseAgent(ABC):
                     error_message="process_task 未返回结果",
                 )
             result.execution_time = execution_time
+            if queued:
+                try:
+                    result.metadata["queued_seconds"] = queued
+                except Exception:  # noqa: BLE001 - metadata 非 dict 时忽略
+                    pass
             if result.success:
                 task.status = task.status.__class__.COMPLETED
                 task.completed_at = datetime.now()
@@ -237,6 +259,69 @@ class BaseAgent(ABC):
         finally:
             # 失败/超时后恢复 IDLE：状态只表示"当前是否在忙"，不记录历史错误
             self.set_state(AgentState.IDLE)
+
+    # ---------- LLM 排队观测（F10 P2-1-d）----------
+
+    # 超时轮询步长：等待期间每隔这么久重新计算剩余预算（排队时间实时剔除）
+    _JOIN_POLL_SECONDS = 0.25
+
+    def _make_queue_tracker(self):
+        """构造排队观测器；``llm_client`` 不可用时返回 None（行为退化为原来的单次 join）。"""
+        try:
+            from llm_client import QueueWaitTracker
+        except Exception:  # noqa: BLE001
+            return None
+        state = {"announced": False}
+
+        def on_change(waiting: bool, waited_total: float) -> None:
+            if waiting:
+                first = not state["announced"]
+                state["announced"] = True
+                try:
+                    from llm_client import max_concurrency
+                    limit = max_concurrency()
+                except Exception:  # noqa: BLE001
+                    limit = 0
+                hint = f"（并发上限 {limit}）" if limit > 0 else ""
+                event = {
+                    "stage": "agent_step",
+                    "message": f"[{self.agent_id}] ⏳ 排队等待模型空闲{hint}…",
+                    "phase": "queued",
+                }
+                if not first:
+                    event["transient"] = True
+                self.emit_progress(event)
+            else:
+                self.emit_progress({
+                    "stage": "agent_step",
+                    "message": f"[{self.agent_id}] 模型已就位，继续执行（已排队 {waited_total:.1f}s）",
+                    "phase": "queued_done",
+                    "transient": True,
+                })
+
+        return QueueWaitTracker(on_change=on_change)
+
+    @staticmethod
+    def _install_queue_listener(tracker) -> None:
+        try:
+            from llm_client import set_queue_listener
+            set_queue_listener(tracker)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _join_excluding_queue(self, worker: threading.Thread, timeout, start_time: float, tracker) -> None:
+        """等待工作线程；超时预算 = ``timeout`` + 已在 LLM 信号量上排队的时间（排队不计入超时）。"""
+        if not timeout or timeout <= 0:
+            worker.join()
+            return
+        if tracker is None:
+            worker.join(timeout)
+            return
+        while worker.is_alive():
+            remaining = float(timeout) + tracker.total() - (time.time() - start_time)
+            if remaining <= 0:
+                return
+            worker.join(min(remaining, self._JOIN_POLL_SECONDS))
     
     def __repr__(self):
         return f"BaseAgent(id={self.agent_id}, type={self.agent_type}, state={self.state})"
@@ -294,8 +379,9 @@ class ReActDelegateAgent(BaseAgent):
         tools = self.config.get("allowed_tools")
         return set(tools) if tools else set(self.ALLOWED_TOOLS)
 
-    # execute_command 允许自动放行的风险等级（更高等级一律拒绝）
-    AUTO_CONFIRM_RISK_LEVELS = ("low", "medium")
+    # execute_command 允许自动放行的风险等级（更高等级一律拒绝）。
+    # 与共享层 agent_tools.AUTO_CONFIRM_RISK_LEVELS 同一口径，避免两处漂移。
+    AUTO_CONFIRM_RISK_LEVELS = _SHARED_AUTO_CONFIRM_RISK_LEVELS
 
     def _auto_confirm(self, evt: Dict[str, Any]) -> bool:
         """子 Agent 无交互界面，确认策略必须是确定性的：

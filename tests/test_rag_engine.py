@@ -48,6 +48,49 @@ class TestRAGEngineInit:
         mock_embed.assert_called_once()
         mock_chroma.assert_called_once()
 
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_default_storage_follows_config(self, mock_chroma, mock_embed, mock_llm):
+        """未传 persist_dir：Chroma 路径 / 索引目录与 config 一致（行为不变）。"""
+        import rag_engine as rag_module
+        engine = RAGEngine()
+        assert engine.vector_db_path == rag_module.VECTOR_DB_PATH
+        assert engine.index_dir == rag_module.INDEX_DIR
+        assert mock_chroma.call_args.kwargs["path"] == rag_module.VECTOR_DB_PATH
+        assert engine.get_stats()["vector_db_path"] == rag_module.VECTOR_DB_PATH
+
+    @patch("rag_engine.Ollama")
+    @patch("rag_engine.OllamaEmbedding")
+    @patch("rag_engine.chromadb.PersistentClient")
+    def test_persist_dir_redirects_storage(self, mock_chroma, mock_embed, mock_llm, tmp_path):
+        """F10 P1-3：persist_dir 只改本实例的存储位置——Chroma、LlamaIndex 持久化、快照目录、统计。"""
+        import rag_engine as rag_module
+        mock_collection = MagicMock()
+        mock_collection.count.return_value = 3
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        target = tmp_path / "eval-index"
+        engine = RAGEngine(persist_dir=str(target), enable_auto_snapshot=True)
+        assert engine.index_dir == target
+        assert engine.vector_db_path == str(target / "chroma_db")
+        assert mock_chroma.call_args.kwargs["path"] == str(target / "chroma_db")
+        assert engine.get_stats()["vector_db_path"] == str(target / "chroma_db")
+        if engine.snapshot_manager is not None:
+            assert engine.snapshot_manager.index_dir == target
+
+        # _persist_index 写到 persist_dir/llama_index（父目录不存在也会创建）
+        engine.index = MagicMock()
+        engine._persist_index()
+        engine.index.storage_context.persist.assert_called_once_with(persist_dir=str(target / "llama_index"))
+        assert (target / "llama_index").is_dir()
+
+        # load_index 从同一目录读；目录不存在时返回 None
+        other = RAGEngine(persist_dir=str(tmp_path / "empty"))
+        assert other.load_index() is None
+        # 真实 index_storage 路径未被本实例触碰
+        assert str(rag_module.INDEX_DIR) not in engine.vector_db_path
+
 
 class TestRAGEngineBuildIndex:
     """测试构建索引"""
@@ -1146,7 +1189,8 @@ class TestHybridQuery:
         engine.query_with_sources("售价")
         engine.query_with_sources("售价")
         assert coll.get.call_count == 1  # 第二次复用缓存
-        # 入库后失效 → 重建
+        # 入库后"已就位"缓存失效；MagicMock 文档切分失败 → 回退路径拿不到 chunk id → store 标记 stale
+        # → 下次查询全量重建一次（F10 P2-1：能拿到节点的正常路径为增量 upsert，见 test_bm25_store_integration）
         engine.index = MagicMock()
         engine.security_scanner = None
         engine.metadata_manager = None
@@ -1179,17 +1223,22 @@ class TestHybridQuery:
     @patch("rag_engine.chromadb.PersistentClient")
     def test_too_many_chunks_disables_hybrid_with_hint(self, mock_chroma, mock_embed, mock_llm):
         pytest.importorskip("rank_bm25")
-        engine, coll = _mk_engine(mock_chroma, count=20001)
+        import rag_engine as rag_module
+        limit = rag_module.RAG_HYBRID_MAX_CHUNKS  # F10 P2-1-b：默认上限由 20000 提到 50000，这里跟随常量
+        engine, coll = _mk_engine(mock_chroma, count=limit + 1)
         engine.hybrid_enabled = True
         engine.retriever = MagicMock()
         engine.retriever.retrieve.return_value = _dense_response([("x", 0.5, "a", "/a")])
         events = []
         result = engine.query_with_sources("q", progress_callback=lambda e: events.append(e))
         assert result["hybrid"] is False
-        assert any(e["phase"] == "hybrid_off" and "20000" in e["message"] for e in events)
+        assert any(e["phase"] == "hybrid_off" and str(limit) in e["message"] for e in events)
         coll.get.assert_not_called()
-        assert "20001" in (engine._bm25_disabled_reason or "")
-        # 已记录关闭原因 → 后续不再重复检查
+        assert str(limit + 1) in (engine._bm25_disabled_reason or "")
+        # F10 P2-1-b：关闭原因随结果 meta 返回，并给出可调的环境变量
+        assert result["meta"]["hybrid_requested"] is True
+        assert "RAG_HYBRID_MAX_CHUNKS" in result["meta"]["hybrid_disabled_reason"]
+        # 已记录关闭原因 → 后续不再重复检查（bm25_store 惰性属性在超限前不会被创建，count 只查一次）
         engine.query_with_sources("q")
         assert coll.count.call_count == 1
 

@@ -8,7 +8,6 @@ import os
 import argparse
 import logging
 import warnings
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -140,65 +139,49 @@ def _enforce_compatible_interpreter():
 if __name__ == "__main__":
     _enforce_compatible_interpreter()
 
-try:
-    import readline
-    HAS_READLINE = True
-except ImportError:
-    HAS_READLINE = False
+# 终端能力探测（HAS_RICH / HAS_READLINE / HAS_PROMPT_TOOLKIT）、Rich 控制台与运行时状态
+# 已收口到 cli.state（F10 P3-2-a）；本模块函数体内一律经 ``state.xxx`` 运行时取值。
+from cli import state  # noqa: E402
 
-try:
-    from rich.console import Console
+if state.HAS_READLINE:
+    import readline
+
+if state.HAS_RICH:
     from rich.markdown import Markdown
     from rich.panel import Panel
-    from rich.syntax import Syntax
     from rich import box
-    from rich.table import Table
-    from rich.prompt import Prompt
-    from rich.markup import escape
-    HAS_RICH = True
-except ImportError:
-    HAS_RICH = False
-    print("[提示] 安装 rich 可获得更好的输出体验: pip install rich")
 
-    def escape(text):  # type: ignore[misc]  # pragma: no cover - rich 缺失时的兜底
-        return str(text)
-
-try:
+if state.HAS_PROMPT_TOOLKIT:
     from prompt_toolkit import prompt as pt_prompt
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-    HAS_PROMPT_TOOLKIT = True
-except ImportError:
-    HAS_PROMPT_TOOLKIT = False
 
-from config import Config, DATA_DIR, INDEX_DIR, LLM_MODEL, OLLAMA_BASE_URL
-from rag_engine import RAGEngine, build_knowledge_base
+from config import Config, DATA_DIR, INDEX_DIR, LLM_MODEL, OLLAMA_BASE_URL  # noqa: F401 - Config 供 ``qi.Config`` 兼容引用
+from rag_engine import RAGEngine
 from react_engine import ReActEngine
-from agent_tools import registry, CommandSafetyChecker, set_rag_engine
+from agent_tools import set_rag_engine
 from document_loader import load_documents
 import rag_pipeline
 
-# 导入知识库管理功能
-try:
-    from knowledge_to_skills import KnowledgeToSkillsEngine
-    from knowledge_snapshot import KnowledgeSnapshotManager, RestoreHelper
-    KNOWLEDGE_MANAGEMENT_AVAILABLE = True
-except ImportError:
-    KNOWLEDGE_MANAGEMENT_AVAILABLE = False
+# 命令推荐系统是否可用：只把"模块本身不存在"判为未安装，模块内部导入出错会记 WARNING
+# 而不是被吞成"未安装"（F10 P3-2 待办 #1；P3-2-a 的误改就是这样漏过测试的）
+from optional_deps import probe_modules
 
-# 导入命令推荐系统
-try:
-    from command_recommender import CommandRecommender, RecommendationSource
-    RECOMMENDER_AVAILABLE = True
-except ImportError:
-    RECOMMENDER_AVAILABLE = False
+RECOMMENDER_AVAILABLE = probe_modules("command_recommender", feature="命令推荐系统")
+if RECOMMENDER_AVAILABLE:
+    from command_recommender import CommandRecommender
 
-# ==================== 全局状态 ====================
-rag_engine: RAGEngine = None
-react_engine: ReActEngine = None
-last_rag_sources = []
-last_web_sources = []  # 上次回答引用的网络来源（[{title, url}]），供 /sources 展示
-command_recommender: CommandRecommender = None
+# ==================== 全局状态（只读别名） ====================
+# 状态本体在 cli.state；这里的模块级名字仅为 ``from query_interface import HAS_RICH`` 等
+# 旧导入路径保留的**导入时快照**，函数体内不要使用（要经 ``state.xxx`` 取当前值）。
+HAS_RICH = state.HAS_RICH
+HAS_READLINE = state.HAS_READLINE
+HAS_PROMPT_TOOLKIT = state.HAS_PROMPT_TOOLKIT
+rag_engine = state.rag_engine
+react_engine = state.react_engine
+last_rag_sources = state.last_rag_sources
+last_web_sources = state.last_web_sources
+command_recommender = state.command_recommender
 
 
 # ==================== 日志配置 ====================
@@ -270,567 +253,43 @@ def setup_logging(verbose: bool = False):
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
-# ==================== Rich 控制台 ====================
+# ==================== Rich 控制台（只读别名，实现见 cli.state） ====================
 
-def get_console():
-    if HAS_RICH:
-        return Console()
-    else:
-        class FakeConsole:
-            def print(self, *args, **kwargs):
-                print(*args)
-            def input(self, prompt_text):
-                return input(prompt_text)
-            def status(self, msg):
-                class Dummy:
-                    def __enter__(self): return self
-                    def __exit__(self, *a): pass
-                return Dummy()
-        return FakeConsole()
+get_console = state.get_console
+console = state.console
 
-console = get_console()
+# ==================== 教程 / 回调 / 渲染 / 推荐 / RAG 适配（F10 P3-2-b 已外迁，此处重导出） ====================
 
-# ==================== 教程 ====================
+from cli.help_text import TUTORIAL_TEXT  # noqa: E402,F401 - 教程文案已移至 cli.help_text
+from cli.render import (  # noqa: E402,F401
+    CEREBRO_ASCII, print_banner, backend_banner_text,
+    show_tutorial, check_first_run, print_help, print_tools, print_rag_sources,
+    _source_code_location, count_code_sources, print_knowledge_stats,
+    _render_meta_overview, print_web_sources,
+    _render_answer, _live_answer, _print_notices, _citation_summary,
+)
+from cli.callbacks import (  # noqa: E402,F401
+    STEP_PHASE_EMOJI, STEP_PHASE_COLOR, _live_streaming,
+    on_step_callback, on_confirm_callback, ask_progress_callback,
+)
+from cli.rag_adapter import (  # noqa: E402,F401
+    _simple_web_search, _llm_direct_answer, plan_web_search, _merge_search_results,
+    _extract_urls, _is_empty_rag_result, _is_meta_query, _parse_web_sources,
+    _format_kb_context, run_web_search, enrich_with_page_content, _cli_ask_progress,
+    _answer_meta_query, _synthesize_prompt,
+)
+from cli.recommend import (  # noqa: E402,F401
+    show_command_recommendations, record_command_execution, record_conversation,
+    _conversation, _print_health_hint, _health_before,
+)
 
-TUTORIAL_TEXT = """
-欢迎使用 Cerebro 🧠 — 你的第二大脑 + 代码助手！
-
-本工具融合了两套核心能力：
-
-1. 📚 RAG 知识库
-   基于 LlamaIndex + ChromaDB 构建的个人文档检索系统。
-   支持 PDF、Markdown、论文、代码文件等 17 种格式。
-   代码文件（.py/.js/.ts/.java/.go/.rs/.c/.cpp）按函数/类切分，引用可定位到行号。
-   上传文档后，可直接用自然语言查询内容。
-
-2. 🤖 ReAct Agent
-   基于 Ollama + ReAct 架构的代码助手。
-   自动读写文件、执行命令、搜索代码、多步推理。
-   带安全护栏：危险命令自动拦截，修改命令需确认。
-
-快速上手示例：
-
-  # 知识库查询
-  >>> /ask 这篇论文的核心贡献是什么？
-  >>> /ask 总结一下笔记中的关键概念
-
-  # Agent 任务（自动调用工具）
-  >>> /agent 写一个 Python 快速排序，保存到 sort.py，然后运行单元测试
-  >>> /agent 检查 src/main.py 第 20-50 行是否有内存泄漏
-  >>> /agent 搜索项目中所有硬编码的 API Key
-
-  # 多 Agent 协作（代码/测试/文档/审计/知识库专家分工）
-  >>> /multi 写一个快速排序保存到 sort.py 并为它写测试
-  >>> /multi 审计 src/agent_tools.py 的安全问题 --mode competitive
-
-  # 自动路由（默认开）：不加斜杠直接输入，自动判定走知识库还是 Agent
-  >>> 什么是 RAG？                    → 知识库问答
-  >>> 修改 main.py 加上日志           → Agent 处理（用 /ask 可强制知识库）
-
-  # 快捷命令
-  >>> /file main.py          快速读取文件
-  >>> /exec git status       执行命令
-  >>> /add ./新论文.pdf       添加文档到知识库
-  >>> /stats                 查看知识库统计
-
-常用内置命令：
-  /help      显示帮助
-  /tutorial  重新显示本教程
-  /ask       直接查询知识库
-  /agent     进入 Agent 任务模式
-  /multi     多 Agent 协作模式
-  /tools     查看所有可用工具
-  /add       添加文档到知识库
-  /stats     知识库统计
-  /sources   显示上次回答的来源
-  /clear     清空屏幕
-  /history   查看对话历史
-  /summary   查看 Agent 执行摘要
-  /file      快速读取文件
-  /write     交互式写入文件
-  /exec      执行命令（走安全确认）
-  /pwd       显示当前目录
-  /cd        切换目录
-  /model     显示模型信息；/model <name> 热切换模型
-  /think     显示/开关思考模式（/think on|off）
-  /auto      显示/开关自动路由（/auto on|off；开时自然语言自动判定走知识库还是 Agent）
-  /reset     重置 Agent 对话上下文
-  /quit      退出
-
-文件管理命令：
-  /file-list           列出知识库中的所有文件
-  /file-info <path>    查看文件详细信息
-  /file-delete <path>  从知识库删除文件（不删磁盘文件，需确认）
-  /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重（只移除登记，不删向量）
-  /file-stats          显示文件统计信息
-
-知识库快照命令：
-  /snapshot-list / /snapshot-create        列出 / 手动创建快照
-  /snapshot-info <id>                      快照详情（文档清单与文件是否仍存在）
-  /snapshot-restore <id> [--apply [--replace]]  生成恢复脚本 / 直接恢复（追加或替换）
-  /snapshot-delete <id> | /snapshot-prune [N]   删除快照 / 清理自动快照仅保留最近 N 个
-
-会话管理命令：
-  /session-new [title]        创建新会话
-  /session-list               列出所有会话
-  /session-switch <id>        切换到指定会话
-  /session-archive <id>       归档会话
-  /session-delete <id>       删除会话
-  /session-info <id>          查看会话详情
-  /session-search <query>     搜索会话
-  /session-current            显示当前会话信息
-  /session-compress           压缩当前会话历史
-
-网络搜索命令：
-  /web-search <query>         网络搜索（支持 DuckDuckGo）
-  /web-cache status           查看搜索缓存状态
-  /web-cache clear            清空搜索缓存
-  /web-extract <url>          提取网页内容
-
-代码分析命令：
-  /code-ast <pattern>         AST 搜索（函数、类、变量）
-  /code-quality <path>        代码质量检查
-
-Git 命令：
-  /git-analyze [type]         Git 概览表（分支 / 变更数 / 最近 10 次提交）；status 变更文件表 / authors 提交者表
-  /git-commit-gen             AI 生成提交信息
-
-数据库命令（SQLite）：
-  /db-connect <database>      连接并设为当前连接，之后 /db-query /db-execute /db-schema 作用于该库
-  /db-query <sql>             执行查询，结果以表格显示（最多 50 行）
-  /db-schema [table]          表结构表（列 / 类型 / 约束）；不带参数列出全部表
-
-知识图谱命令：
-  /graph-query <文本>         按实体名模糊查询（默认）
-  /graph-query type:<类型>    列出某类型实体（如 type:tool）
-  /graph-query neighbors:<实体>  查询邻居  | path:<A>-><B> 查路径 | similar:<实体> 查相似
-  /graph-build <文本|@文件>   构建知识图谱
-  /graph-summary              图谱概览（节点/边/类型分布）
-  /graph-export [路径] [--3d|--2d] [--focus 实体]  导出交互式 HTML 图谱并在浏览器打开
-"""
-
-def show_tutorial():
-    if HAS_RICH:
-        console.print(Panel(TUTORIAL_TEXT, border_style="cyan", title="使用指引", box=box.ROUNDED))
-    else:
-        print("=" * 60)
-        print(TUTORIAL_TEXT)
-        print("=" * 60)
-
-def check_first_run():
-    if not os.path.exists(Config.FIRST_RUN_MARKER):
-        show_tutorial()
-        try:
-            with open(Config.FIRST_RUN_MARKER, "w") as f:
-                f.write("done")
-        except:
-            pass
-        console.print("\n提示：之后可随时输入 /tutorial 重新查看本教程\n")
-
-# ==================== 回调函数 ====================
-
-# 进度条状态管理
-_progress_state = {
-    "last_line_length": 0,
-    "important_phases": {"executing", "observed", "blocked", "rejected", "final"},
-    "current_thinking_dots": 0
-}
-
-# ReAct 步骤阶段 → CLI 标记 / 颜色（含 P1-8 鲁棒性事件：格式重试、重复、折叠、强制总结、错误）
-STEP_PHASE_EMOJI = {
-    "thinking": "[*]",
-    "action": "[>]",
-    "executing": "[!]",
-    "observed": "[=]",
-    "blocked": "[X]",
-    "rejected": "[-]",
-    "final": "[OK]",
-    "format_retry": "[~]",
-    "repeat": "[R]",
-    "budget_fold": "[F]",
-    "forced_summary": "[!!]",
-    "error": "[E]",
-}
-STEP_PHASE_COLOR = {
-    "thinking": "cyan",
-    "executing": "yellow",
-    "blocked": "red",
-    "rejected": "red",
-    "final": "green",
-    "format_retry": "yellow",
-    "repeat": "yellow",
-    "budget_fold": "magenta",
-    "forced_summary": "red",
-    "error": "red",
-}
-
-def on_step_callback(data: dict):
-    from config import Config
-    
-    if not Config.SHOW_PROGRESS:
-        return
-    
-    step = data.get("step", "?")
-    total = data.get("total", "?")
-    phase = data.get("phase", "?")
-    msg = data.get("message", "")
-
-    phase_emoji = STEP_PHASE_EMOJI.get(phase, "[?]")
-
-    if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
-        from rich.console import Console as RichConsole
-        
-        color = STEP_PHASE_COLOR.get(phase, "white")
-        
-        # 计算进度百分比
-        if step != "?" and total != "?":
-            try:
-                progress_percent = (int(step) / int(total)) * 100
-                progress_bar = "█" * int(progress_percent / 5) + "░" * (20 - int(progress_percent / 5))
-            except:
-                progress_percent = 0
-                progress_bar = "░" * 20
-        else:
-            progress_percent = 0
-            progress_bar = "░" * 20
-        
-        # 根据阶段选择显示策略
-        if phase == "thinking":
-            # 推理期间：单行刷新，添加动态点
-            _progress_state["current_thinking_dots"] = (_progress_state["current_thinking_dots"] + 1) % 4
-            dots = "." * _progress_state["current_thinking_dots"]
-            content = f"[{color}]{phase_emoji} [{step}/{total}] 模型推理中{dots}[/{color}] [dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
-            console.print(content, end="\r")
-            _progress_state["last_line_length"] = len(content)
-            
-        elif phase in _progress_state["important_phases"]:
-            # 重要步骤：换行输出，保留历史记录
-            # 先清理上一行的推理状态
-            if _progress_state["last_line_length"] > 0:
-                console.print(" " * _progress_state["last_line_length"], end="\r")
-                _progress_state["last_line_length"] = 0
-            
-            console.print(
-                f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
-                f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
-            )
-            
-        else:
-            # 其他阶段：也换行输出
-            if _progress_state["last_line_length"] > 0:
-                console.print(" " * _progress_state["last_line_length"], end="\r")
-                _progress_state["last_line_length"] = 0
-                
-            console.print(
-                f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
-                f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
-            )
-            
-    else:
-        # 非rich模式：保持原有行为
-        print(f"[{step}/{total}] {phase_emoji} {msg}")
-
-def on_confirm_callback(data: dict) -> bool:
-    msg = data.get("message", "确认执行?")
-    safety = data.get("safety", {})
-
-    if HAS_RICH:
-        risk = safety.get("risk_level", "unknown")
-        color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(risk, "white")
-        console.print(Panel(
-            f"**{msg}**\n"
-            f"风险等级: [{color}]{risk}[/{color}]",
-            border_style="yellow",
-            title="安全确认",
-            box=box.ROUNDED
-        ))
-    else:
-        print("\n安全确认")
-        print(msg)
-        if safety:
-            print("风险等级: " + safety.get('risk_level', 'unknown'))
-
-    try:
-        answer = console.input("确认执行? (y/n): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\n已取消")
-        return False
-    return answer in ("y", "yes", "是", "确认")
-
-def ask_progress_callback(data: dict):
-    """RAG 查询进度回调函数"""
-    from config import Config
-    
-    if not Config.SHOW_PROGRESS:
-        return
-    
-    phase = data.get("phase", "")
-    msg = data.get("message", "")
-    
-    if HAS_RICH:
-        phase_colors = {
-            "embedding": "cyan",
-            "retrieving": "blue",
-            "scoring": "yellow",
-            "generating": "magenta"
-        }.get(phase, "white")
-        
-        if phase == "scoring":
-            current = data.get("current", 0)
-            total = data.get("total", 1)
-            console.print(f"[dim]🔄 {msg} [progress]{current}/{total}[/progress][/dim]")
-        else:
-            console.print(f"[{phase_colors}]🔄 {msg}[/{phase_colors}]")
-    else:
-        print(f"🔄 {msg}")
-
-# ==================== 界面渲染 ====================
-
-CEREBRO_ASCII = r"""   ____                _
-  / ___|___ _ __ ___ | |__  _ __ ___
- | |   / _ \ '__/ _ \| '_ \| '__/ _ \
- | |__|  __/ | |  __/| |_) | | | (_) |
-  \____\___|_|  \___||_.__/|_|  \___/"""
-
-
-def print_banner():
-    if HAS_RICH:
-        console.print(Panel(
-            f"[bold cyan]{CEREBRO_ASCII}[/bold cyan]\n"
-            "[white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
-            "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
-            f"[green]模型: {LLM_MODEL}[/green] | [green]Ollama: {OLLAMA_BASE_URL}[/green]",
-            border_style="cyan", box=box.ROUNDED
-        ))
-    else:
-        print("=" * 60)
-        print(CEREBRO_ASCII)
-        print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
-        print("=" * 60)
-        print(f"模型: {LLM_MODEL} | Ollama: {OLLAMA_BASE_URL}")
-        print("=" * 60)
-
-def print_help():
-    help_text = """
-内置命令：
-  /help              显示本帮助
-  /tutorial          显示使用指引教程
-  /ask <question>    直接查询知识库（基于上传的文档）
-  /agent <task>      进入 Agent 模式（自动调用工具完成复杂任务）
-  /multi <task>      多 Agent 协作（分解→并行执行→综合）；可加 --mode parallel|sequential|competitive
-  /tools             查看所有可用工具及安全等级
-  /add <path>        添加文档到知识库（PDF/MD/TXT/代码等；代码按函数/类切分，来源带 符号·行号）
-  /stats             显示知识库统计
-  /sources           显示上次知识库回答的来源
-  /clear             清空屏幕
-  /history           显示当前对话历史摘要
-  /summary           显示本次 Agent 执行步骤摘要
-  /file <path>       快速读取文件（不经过模型）
-  /write <path>      交互式写入文件模式
-  /exec <cmd>        快速执行命令（走安全确认流程）
-  /pwd               显示当前工作目录
-  /cd <path>         切换当前工作目录
-  /model             显示当前模型信息（含是否已加载、驻留大小）
-  /model list        列出本机已安装的模型
-  /model <name>      运行时热切换模型并释放旧模型（如 /model qwen3.5:9b）
-  /think             显示思考模式状态（默认关，响应快）
-  /think on|off      运行时开关思考模式（开启需模型支持，如 qwen3.5）
-  /auto              显示自动路由状态（默认开：自然语言先判定走知识库还是 Agent）
-  /auto on|off       运行时开关自动路由（关闭后自然语言一律走知识库问答）
-  /context           查看当前会话上下文（轮数/估算 token/预算/压缩次数/摘要）
-  /compact           手动压缩当前会话历史（最旧轮次折叠进滚动摘要）
-  /reset             清空当前会话上下文（消息与滚动摘要，三种模式共用）
-  /exit 或 /quit     退出程序
-
-连续对话：/ask、自然语言输入与 /agent 都会记住当前会话的上下文，可直接追问
-（如"它多少钱"）；历史超出预算时自动压缩，对话过长会提示新建会话。
-自动路由：不加斜杠的自然语言输入会先判定意图——含路径/代码/命令式动词走 Agent，
-疑问/总结类走知识库；/ask、/agent 显式命令不判定。可用 /auto off 关闭（或环境变量 AUTO_ROUTE=false）。
-
-知识库管理命令（新功能）：
-  /generate-skills   将知识库内容转化为Skills
-  /snapshot-list    查看所有知识库快照
-  /snapshot-create  手动创建知识库快照
-  /snapshot-info <id>     查看快照详情（文档清单、文件是否仍存在、模型配置）
-  /snapshot-restore <id>  生成恢复脚本；加 --apply 直接恢复（追加），--apply --replace 先清空再恢复
-  /snapshot-delete <id>   删除指定快照（需确认）
-  /snapshot-prune [N]     清理自动快照，仅保留最近 N 个（默认 10，手动快照不受影响）
-  /knowledge-summary  查看知识库文档摘要
-
-知识图谱管理命令（新功能）：
-  /graph-query <文本>       按实体名模糊查询（默认）
-  /graph-query type:<类型>  列出某类型实体；另支持 neighbors:/path:/similar: 前缀
-  /graph-build <文本>       从文本构建知识图谱（或 /graph-build @<文件路径>）
-  /graph-summary            图谱概览（节点/边/类型分布）
-  /graph-export [路径] [--3d|--2d] [--types a,b] [--max N] [--focus 实体] [--hops 1|2]
-                            导出自包含的交互式 HTML 图谱并在浏览器打开
-
-数据库管理命令（SQLite）：
-  /db-connect <database>        连接数据库并设为当前连接（默认 sqlite；也可 /db-connect sqlite <database>）
-  /db-query <sql>               在当前连接上执行SQL查询（表格显示，最多 50 行）
-  /db-execute <sql>             在当前连接上执行SQL语句（INSERT/UPDATE/DELETE/DDL）
-  /db-create-table <table> <columns_json>  创建数据库表
-  /db-insert <table> <data_json>           插入数据
-  /db-schema [table]            表结构表（列 / 类型 / 约束）；不带参数列出全部表
-
-文件管理命令（新功能）：
-  /file-list           列出知识库中的所有文件
-  /file-info <path>    查看文件详细信息
-  /file-delete <path>  从知识库删除文件（向量片段 + 图谱来源 + 元数据，不删磁盘文件，需确认）
-  /file-cleanup        清理临时/重复文件
-  /file-deduplicate    手动触发去重（只移除重复登记，不删向量；彻底删除请用 /file-delete）
-  /file-stats          显示文件统计信息
-
-会话管理命令（新功能）：
-  /session-new [title]        创建新会话（加 --carry 可把当前会话摘要带入新会话）
-  /session-list               列出所有会话
-  /session-switch <id>        切换到指定会话
-  /session-archive <id>       归档会话
-  /session-delete <id>       删除会话
-  /session-info <id>          查看会话详情
-  /session-search <query>     搜索会话
-  /session-current            显示当前会话信息
-  /session-compress           压缩当前会话历史（等同 /compact）
-
-网络搜索命令（新功能）：
-  /web-search <query>         网络搜索（支持 DuckDuckGo）
-  /web-cache status           查看搜索缓存状态
-  /web-cache clear            清空搜索缓存
-  /web-extract <url>          提取网页内容
-
-代码分析命令（新功能）：
-  /code-ast <pattern>         AST 搜索（函数、类、变量）
-  /code-quality <path>        代码质量检查
-
-Git 命令（新功能）：
-  /git-analyze [type]         Git 概览表（分支 / 变更 / 最近提交）；status 变更文件表 / authors 提交者表
-  /git-commit-gen             AI 生成提交信息
-
-使用示例：
-  >>> /ask 这篇论文的实验结果是什么？
-  >>> /agent 把 utils.py 里的 print 改成 logging，并运行测试
-  >>> /agent 搜索项目中所有使用硬编码密码的地方
-  >>> /add ~/Downloads/论文.pdf
-  >>> /file src/main.py
-  >>> /generate-skills
-  >>> /snapshot-list
-  >>> /web-search 最新的 Python 稳定版本
-  >>> /code-quality src/
-  >>> /git-analyze
-  >>> /db-connect ./data/app.db
-  >>> /db-query SELECT * FROM users LIMIT 5
-"""
-    if HAS_RICH:
-        console.print(Panel(help_text, border_style="yellow", title="帮助", box=box.ROUNDED))
-    else:
-        print(help_text)
-
-def print_tools():
-    if HAS_RICH:
-        table = Table(title="可用工具", box=box.ROUNDED)
-        table.add_column("工具名", style="cyan", no_wrap=True)
-        table.add_column("安全等级", style="bold")
-        table.add_column("描述", style="dim")
-
-        for name, info in registry.tools.items():
-            safe = info.get("safe", True)
-            if safe:
-                level = "[green]安全[/green]"
-            else:
-                level = "[yellow]需确认[/yellow]"
-            table.add_row(name, level, info["description"])
-        console.print(table)
-        console.print("\n安全规则：")
-        console.print("  [green]安全[/green]   = 只读操作，自动执行")
-        console.print("  [yellow]需确认[/yellow] = 会修改系统，执行前询问")
-        console.print("  [red]危险[/red]     = rm -rf / 等命令会被自动拦截")
-    else:
-        print("=== 可用工具 ===")
-        for name, info in registry.tools.items():
-            safe = "安全" if info.get("safe") else "需确认"
-            print(f"  {name} [{safe}] - {info['description']}")
-
-def print_rag_sources(sources: list):
-    if not sources:
-        console.print("⚠️  没有来源信息", style="yellow")
-        return
-    if HAS_RICH:
-        table = Table(title="📚 参考来源（编号与回答中的 [n] 对应）", show_lines=True)
-        table.add_column("#", style="bold", justify="right", no_wrap=True)
-        table.add_column("文件", style="cyan", no_wrap=True)
-        table.add_column("相似度", style="green", justify="right")
-        table.add_column("引用", justify="right", no_wrap=True)
-        table.add_column("内容片段", style="white")
-
-        for i, src in enumerate(sources, 1):
-            ref = f"[{src.get('ref') or i}]"
-            score = f"{src['score']:.3f}" if src.get('score') else "N/A"
-            if src.get("retriever") == "bm25":
-                score += " (关键词)"
-            content = src['content'][:100] + "..." if len(src['content']) > 100 else src['content']
-            note = (src.get("rerank_note") or "").strip()
-            if note:
-                content += f"\n[dim]相关性：{note}[/dim]"
-            # 代码块：文件名下一行显示 符号 · 行号（可直接定位）
-            file_cell = escape(str(src.get('file', '未知')))
-            loc = _source_code_location(src)
-            if loc:
-                file_cell += f"\n[dim]{escape(loc)}[/dim]"
-            # P0-3：被引用次数（未引用显示 —）
-            cited = src.get("cited")
-            cited_cell = str(cited) if isinstance(cited, int) and cited > 0 else "[dim]—[/dim]"
-            table.add_row(ref, file_cell, score, cited_cell, content)
-        console.print(table)
-    else:
-        print("=== 参考来源 ===")
-        for i, src in enumerate(sources, 1):
-            ref = f"[{src.get('ref') or i}]"
-            score = f"({src['score']:.3f})" if src.get('score') else ""
-            loc = _source_code_location(src)
-            head = f"{ref} {src['file']}" + (f" · {loc}" if loc else "")
-            print(f"  {head} {score}".rstrip())
-            print(f"    {src['content'][:100]}...")
-
-
-def _source_code_location(src: dict) -> str:
-    """代码来源的 ``symbol · L起-止`` 文案；文本来源返回空串。"""
-    parts = []
-    if src.get("symbol"):
-        parts.append(str(src["symbol"]))
-    if src.get("start_line") is not None:
-        parts.append(f"L{src['start_line']}-{src.get('end_line') or src['start_line']}")
-    if src.get("part"):
-        parts.append(f"({src['part']})")
-    return " · ".join(parts)
-
-
-def count_code_sources(sources: list) -> int:
-    """来源中代码块（带 symbol）的数量，用于 /ask 摘要行。"""
-    return sum(1 for s in sources or [] if isinstance(s, dict) and s.get("symbol"))
-
-def print_knowledge_stats():
-    global rag_engine
-    if rag_engine is None:
-        console.print("⚠️  知识库未初始化", style="yellow")
-        return
-    stats = rag_engine.get_stats()
-    if HAS_RICH:
-        table = Table(title="📊 知识库统计", box=box.ROUNDED)
-        table.add_column("项目", style="cyan")
-        table.add_column("值", style="white")
-        for k, v in stats.items():
-            table.add_row(k, str(v))
-        console.print(table)
-    else:
-        print("=== 知识库统计 ===")
-        for k, v in stats.items():
-            print(f"  {k}: {v}")
+# 进度条状态管理：本体在 cli.state._progress_state（此处为只读别名）
+_progress_state = state._progress_state
 
 # ==================== readline 历史 ====================
 
 def setup_readline():
-    if HAS_READLINE:
+    if state.HAS_READLINE:
         try:
             from runtime_paths import home_file
         except ImportError:
@@ -852,1118 +311,30 @@ def setup_readline():
 # ==================== 输入获取 ====================
 
 def get_input(prompt_text: str) -> str:
-    if HAS_PROMPT_TOOLKIT:
+    if state.HAS_PROMPT_TOOLKIT:
         history = FileHistory(str(INDEX_DIR / ".chat_history"))
         return pt_prompt(prompt_text, history=history, auto_suggest=AutoSuggestFromHistory()).strip()
     else:
-        return console.input(prompt_text).strip()
+        return state.console.input(prompt_text).strip()
 
-# ==================== 命令路由（纯函数，可单元测试）====================
+# 命令路由纯函数已移至 cli.parser（F10 P2-2），此处重导出以保持 ``from query_interface import parse_command`` 可用
+from cli.parser import ParsedCommand, classify_mode, parse_command  # noqa: E402,F401
 
-class ParsedCommand:
-    """解析后的命令对象"""
-    def __init__(self, cmd_type: str, raw: str, arg: str = ""):
-        self.cmd_type = cmd_type
-        self.raw = raw
-        self.arg = arg
 
-    def __repr__(self):
-        return f"ParsedCommand({self.cmd_type!r}, arg={self.arg!r})"
+# ==================== 引擎耦合命令 / 上下文装配 / 分发（F10 P3-2-c 已外迁至 cli.engine_commands，此处重导出） ====================
 
-    def __eq__(self, other):
-        if not isinstance(other, ParsedCommand):
-            return False
-        return self.cmd_type == other.cmd_type and self.arg == other.arg
-
-
-def parse_command(user_input: str) -> ParsedCommand:
-    """
-    将用户输入解析为命令类型和参数。
-    纯函数，无外部依赖，可完全单元测试。
-    """
-    user_input = user_input.strip()
-    if not user_input:
-        return ParsedCommand("empty", user_input)
-
-    # 退出命令
-    if user_input in ("/exit", "/quit", "exit", "quit"):
-        return ParsedCommand("quit", user_input)
-
-    # 无参数命令
-    if user_input == "/help":
-        return ParsedCommand("help", user_input)
-    if user_input == "/tutorial":
-        return ParsedCommand("tutorial", user_input)
-    if user_input == "/tools":
-        return ParsedCommand("tools", user_input)
-    if user_input == "/stats":
-        return ParsedCommand("stats", user_input)
-    if user_input == "/sources":
-        return ParsedCommand("sources", user_input)
-    if user_input == "/clear":
-        return ParsedCommand("clear", user_input)
-    if user_input == "/history":
-        return ParsedCommand("history", user_input)
-    if user_input == "/summary":
-        return ParsedCommand("summary", user_input)
-    if user_input == "/reset":
-        return ParsedCommand("reset", user_input)
-    if user_input == "/context":
-        return ParsedCommand("context", user_input)
-    if user_input == "/compact":
-        return ParsedCommand("compact", user_input)
-    if user_input == "/pwd":
-        return ParsedCommand("pwd", user_input)
-    if user_input == "/model":
-        return ParsedCommand("model", user_input)
-    if user_input == "/think":
-        return ParsedCommand("think", user_input)
-    if user_input == "/auto":
-        return ParsedCommand("auto", user_input)
-
-    # 带参数命令（至少一个空格分隔）
-    parts = user_input.split(None, 1)
-    cmd = parts[0]
-    arg = parts[1] if len(parts) > 1 else ""
-
-    if cmd == "/ask":
-        return ParsedCommand("ask", user_input, arg)
-    if cmd == "/agent":
-        return ParsedCommand("agent", user_input, arg)
-    if cmd == "/multi":
-        # /multi <任务> [--mode hierarchy|parallel|sequential|competitive]
-        return ParsedCommand("multi", user_input, arg)
-    if cmd == "/model":
-        # /model <name> 运行时热切换；/model list 列出可选模型
-        return ParsedCommand("model", user_input, arg)
-    if cmd == "/think":
-        # /think on|off 运行时开关思考模式
-        return ParsedCommand("think", user_input, arg)
-    if cmd == "/auto":
-        # /auto on|off 运行时开关入口自动路由
-        return ParsedCommand("auto", user_input, arg)
-    if cmd == "/add":
-        return ParsedCommand("add", user_input, arg)
-    if cmd == "/file":
-        return ParsedCommand("file", user_input, arg)
-    
-    # 知识库管理命令
-    if cmd == "/generate-skills":
-        return ParsedCommand("generate_skills", user_input, arg)
-    if cmd == "/snapshot-list":
-        return ParsedCommand("snapshot_list", user_input, arg)
-    if cmd == "/snapshot-create":
-        return ParsedCommand("snapshot_create", user_input, arg)
-    if cmd == "/snapshot-restore":
-        return ParsedCommand("snapshot_restore", user_input, arg)
-    if cmd == "/snapshot-info":
-        return ParsedCommand("snapshot_info", user_input, arg)
-    if cmd == "/snapshot-delete":
-        return ParsedCommand("snapshot_delete", user_input, arg)
-    if cmd == "/snapshot-prune":
-        return ParsedCommand("snapshot_prune", user_input, arg)
-    if cmd == "/knowledge-summary":
-        return ParsedCommand("knowledge_summary", user_input, arg)
-    
-    # 知识图谱管理命令
-    if cmd == "/graph-query":
-        return ParsedCommand("graph_query", user_input, arg)
-    if cmd == "/graph-build":
-        return ParsedCommand("graph_build", user_input, arg)
-    if cmd == "/graph-summary":
-        return ParsedCommand("graph_summary", user_input, arg)
-    if cmd == "/graph-export":
-        return ParsedCommand("graph_export", user_input, arg)
-    
-    # 数据库管理命令
-    if cmd == "/db-connect":
-        return ParsedCommand("db_connect", user_input, arg)
-    if cmd == "/db-query":
-        return ParsedCommand("db_query", user_input, arg)
-    if cmd == "/db-execute":
-        return ParsedCommand("db_execute", user_input, arg)
-    if cmd == "/db-create-table":
-        return ParsedCommand("db_create_table", user_input, arg)
-    if cmd == "/db-insert":
-        return ParsedCommand("db_insert", user_input, arg)
-    if cmd == "/db-schema":
-        return ParsedCommand("db_schema", user_input, arg)
-
-    # 文件管理命令
-    if cmd == "/file-list":
-        return ParsedCommand("file_list", user_input, arg)
-    if cmd == "/file-info":
-        return ParsedCommand("file_info", user_input, arg)
-    if cmd == "/file-cleanup":
-        return ParsedCommand("file_cleanup", user_input, arg)
-    if cmd == "/file-deduplicate":
-        return ParsedCommand("file_deduplicate", user_input, arg)
-    if cmd == "/file-stats":
-        return ParsedCommand("file_stats", user_input, arg)
-    if cmd == "/file-delete":
-        return ParsedCommand("file_delete", user_input, arg)
-
-    # 会话管理命令
-    if cmd == "/session-new":
-        return ParsedCommand("session_new", user_input, arg)
-    if cmd == "/session-list":
-        return ParsedCommand("session_list", user_input, arg)
-    if cmd == "/session-switch":
-        return ParsedCommand("session_switch", user_input, arg)
-    if cmd == "/session-archive":
-        return ParsedCommand("session_archive", user_input, arg)
-    if cmd == "/session-delete":
-        return ParsedCommand("session_delete", user_input, arg)
-    if cmd == "/session-info":
-        return ParsedCommand("session_info", user_input, arg)
-    if cmd == "/session-search":
-        return ParsedCommand("session_search", user_input, arg)
-    if cmd == "/session-current":
-        return ParsedCommand("session_current", user_input, arg)
-    if cmd == "/session-compress":
-        return ParsedCommand("session_compress", user_input, arg)
-
-    # 网络搜索命令
-    if cmd == "/web-search":
-        return ParsedCommand("web_search", user_input, arg)
-    if cmd == "/web-cache":
-        return ParsedCommand("web_cache", user_input, arg)
-    if cmd == "/web-extract":
-        return ParsedCommand("web_extract", user_input, arg)
-
-    # 代码分析命令
-    if cmd == "/code-ast":
-        return ParsedCommand("code_ast", user_input, arg)
-    if cmd == "/code-quality":
-        return ParsedCommand("code_quality", user_input, arg)
-
-    # Git 命令
-    if cmd == "/git-analyze":
-        return ParsedCommand("git_analyze", user_input, arg)
-    if cmd == "/git-commit-gen":
-        return ParsedCommand("git_commit_gen", user_input, arg)
-
-
-    if cmd == "/write":
-        return ParsedCommand("write", user_input, arg)
-    if cmd == "/exec":
-        return ParsedCommand("exec", user_input, arg)
-    if cmd == "/cd":
-        return ParsedCommand("cd", user_input, arg)
-
-    # 默认：未识别的命令或自然语言输入
-    if user_input.startswith("/"):
-        return ParsedCommand("unknown_cmd", user_input, arg)
-    return ParsedCommand("natural", user_input, user_input)
-
-
-def classify_mode(rag_engine_available: bool, parsed: ParsedCommand) -> str:
-    """
-    根据知识库可用性和解析结果，决定处理模式。
-    返回: "rag" | "agent" | "cmd" | "noop"
-    """
-    cmd_type = parsed.cmd_type
-
-    # 纯命令，不走任何引擎
-    if cmd_type in ("help", "tutorial", "tools", "stats", "sources",
-                     "clear", "history", "summary", "reset", "context", "compact",
-                     "pwd", "cd", "model", "think", "auto", "quit", "empty", "unknown_cmd",
-                     "generate_skills", "snapshot_list", "snapshot_create",
-                     "snapshot_restore", "snapshot_info", "snapshot_delete", "snapshot_prune",
-                     "knowledge_summary",
-                     "graph_query", "graph_build", "graph_summary", "graph_export",
-                     "db_connect", "db_query", "db_execute",
-                     "db_create_table", "db_insert", "db_schema",
-                     "file_list", "file_info", "file_cleanup", "file_deduplicate", "file_stats",
-                     "file_delete",
-                     "session_new", "session_list", "session_switch", "session_archive",
-                     "session_delete", "session_info", "session_search", "session_current",
-                     "session_compress", "web_search", "web_cache", "web_extract",
-                     "code_ast", "code_quality", "git_analyze", "git_commit_gen",
-                     "graph_query", "graph_build", "multi"):
-        return "cmd"
-
-    # 明确指定 RAG
-    if cmd_type == "ask":
-        return "rag"
-    if cmd_type == "add":
-        return "rag"
-
-    # 明确指定 Agent
-    if cmd_type == "agent":
-        return "agent"
-    if cmd_type in ("file", "write", "exec"):
-        return "agent"
-
-    # 自然语言输入：有知识库走 RAG，否则提示
-    if cmd_type == "natural":
-        if rag_engine_available:
-            return "rag"
-        return "agent"  # 无知识库时，让 Agent 尝试处理
-
-    return "noop"
-
-
-# ==================== 命令推荐系统辅助函数 ====================
-
-def show_command_recommendations():
-    """显示命令推荐"""
-    logger.debug(f"show_command_recommendations 调用: command_recommender={command_recommender}")
-    
-    if not command_recommender:
-        logger.debug("command_recommender 为 None")
-        return
-    
-    if not command_recommender.is_enabled():
-        logger.debug("command_recommender 已禁用")
-        return
-    
-    try:
-        recommendations = command_recommender.get_recommendations()
-        logger.debug(f"获得 {len(recommendations) if recommendations else 0} 个推荐")
-        
-        if recommendations:
-            # 默认使用紧凑单行模式，减少视觉噪音
-            formatted = command_recommender.format_recommendations(
-                recommendations, use_rich=HAS_RICH, compact=True
-            )
-            if formatted:
-                console.print(formatted)
-    except Exception as e:
-        logger.error(f"推荐系统错误: {e}")
-        console.print(f"[dim]⚠️  推荐系统错误: {e}[/dim]", style="dim")
-
-def record_command_execution(cmd_type: str, args: str = "", result: str = "", error: str = ""):
-    """记录命令执行到推荐系统"""
-    logger.debug(f"record_command_execution: cmd_type={cmd_type}, args={args!r}")
-    
-    if not command_recommender:
-        logger.debug(f"command_recommender 为 None，无法记录命令: {cmd_type}")
-        return
-    
-    try:
-        # 截断过长的参数，避免污染历史/上下文（如网络搜索结果正文）
-        safe_args = args if len(args) <= 200 else args[:200] + "…"
-        # 记录命令
-        command_recommender.record_command(f"/{cmd_type}", safe_args, result)
-        logger.debug(f"命令已记录: /{cmd_type}")
-        
-        # 记录错误（如果有）
-        if error:
-            command_recommender.record_error(error)
-            logger.debug(f"错误已记录: {error}")
-        
-        # 更新RAG状态（可能变化）
-        if rag_engine:
-            rag_available = rag_engine.retriever is not None
-            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
-            command_recommender.update_rag_status(rag_available, rag_empty)
-            logger.debug(f"RAG状态已更新: available={rag_available}, empty={rag_empty}")
-        
-    except Exception as e:
-        logger.error(f"记录命令失败: {e}")
-
-
-def record_conversation(user_content: str, assistant_content: str, **kwargs):
-    """将一轮对话写入"当前会话"，委托共享层 rag_pipeline.record_conversation。
-
-    可选 ``rewritten`` / ``trace`` / ``progress`` 透传给会话上下文层（自动压缩时
-    的进度事件经 ``progress`` 渲染到终端）。
-    """
-    rag_pipeline.record_conversation(user_content, assistant_content, **kwargs)
-
-
-def _conversation():
-    """进程内共享的会话上下文（跟随"当前会话"）。"""
-    from conversation_context import get_conversation_context
-    return get_conversation_context()
-
-
-def _print_health_hint(pre: dict, question: str = ""):
-    """回答后按上下文健康度打印一行 dim 提示（每会话只提示一次）。"""
-    try:
-        from conversation_context import merge_health, format_suggest_hint
-        conv = _conversation()
-        health = merge_health(pre or {}, conv.health())
-        hint = format_suggest_hint(health)
-        if hint:
-            console.print(f"[dim]{hint}，输入 /session-new（可加 --carry 携带摘要）[/dim]")
-            conv.mark_suggested()
-    except Exception as e:  # noqa: BLE001 - 提示失败不影响主流程
-        logger.debug(f"health hint failed: {e}")
-
-
-def _health_before(question: str) -> dict:
-    """提问前的健康度快照（用于判断空闲/话题漂移）。"""
-    try:
-        return _conversation().health(question)
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-# ==================== 共享 RAG 编排层的 CLI 适配 ====================
-# 以下高级 RAG 逻辑（网络搜索规划、多查询合并、页面增强、元查询直答、
-# 双区综合、0 命中回退）已下沉到 ``rag_pipeline``，供 CLI 与 Web 复用。
-# 这里保留同名薄封装以维持向后兼容（测试/其它模块可能仍引用），实际逻辑
-# 全部转调 rag_pipeline。CLI 独有的 Rich 终端渲染由 _cli_ask_progress 承接。
-
-_simple_web_search = rag_pipeline.simple_web_search
-_llm_direct_answer = rag_pipeline.llm_direct_answer
-plan_web_search = rag_pipeline.plan_web_search
-_merge_search_results = rag_pipeline._merge_search_results
-_extract_urls = rag_pipeline._extract_urls
-_is_empty_rag_result = rag_pipeline.is_empty_rag_result
-_is_meta_query = rag_pipeline.is_meta_query
-_parse_web_sources = rag_pipeline.parse_web_sources
-_synthesize_prompt = rag_pipeline.synthesize_prompt
-_format_kb_context = rag_pipeline.format_kb_context
-
-
-def run_web_search(queries: list) -> str:
-    """兼容封装：执行网络搜索，进度经 CLI 渲染。"""
-    return rag_pipeline.run_web_search(queries, progress=_cli_ask_progress)
-
-
-def enrich_with_page_content(search_result: str) -> str:
-    """兼容封装：页面正文增强，进度经 CLI 渲染。"""
-    return rag_pipeline.enrich_with_page_content(search_result, progress=_cli_ask_progress)
-
-
-def _cli_ask_progress(event: dict):
-    """把 rag_pipeline 的结构化进度事件渲染到 Rich 终端（CLI 专属）。"""
-    stage = event.get("stage", "")
-    msg = event.get("message", "")
-
-    if stage == "meta_overview":
-        _render_meta_overview(event)
-        return
-
-    style_map = {
-        "web_search_start": "cyan",
-        "web_query": "dim",
-        "web_query_empty": "dim",
-        "web_search_done": "green",
-        "web_search_empty": "yellow",
-        "web_search_failed": "yellow",
-        "enrich_start": "dim",
-        "enrich_page_failed": "dim",
-        "enrich_page_blocked": "cyan",   # F9 P1-3：丢弃疑似注入页面
-        "premise_unverified": "yellow",  # F9 P2-2：前提实体未在资料中出现
-        "self_check": "dim",             # F9 P2-1：LLM 自校验
-        "enrich_done": "green",
-        "kb_empty": "yellow",
-        "kb_fallback_search": "cyan",
-        "kb_uninitialized": "yellow",
-        "context_rewrite": "cyan",
-        "context_rewritten": "cyan",
-    }
-    style = style_map.get(stage, "dim")
-    if stage == "thinking":
-        # /think on：模型思维链（已截断 800 字），dim 样式、转义避免被当作 Rich 标记
-        from rich.markup import escape as _escape
-        console.print(f"[dim]{_escape(msg)}[/dim]")
-    elif stage == "fallback":
-        console.print(msg, style="yellow")  # 具体 /agent 提示在回答渲染后由 _run_ask 打印
-    elif stage in ("kb_retrieving", "synthesizing", "model_thinking", "rerank",
-                   "context_compress", "context_compressed"):
-        # 这些"进行中"提示走安静的 dim 行，避免打断 status
-        console.print(f"[dim]{msg}[/dim]")
-    elif msg:
-        console.print(msg, style=style)
-
-
-def _render_meta_overview(event: dict):
-    """CLI 渲染知识库概览（文件列表 + 统计）。"""
-    files = event.get("files") or []
-    stats = event.get("stats") or {}
-    console.print("\n📚 知识库概览:", style="bold blue")
-    if not files:
-        console.print("📭 知识库中暂无已登记的文件。", style="yellow")
-        if stats.get("total_documents"):
-            console.print(
-                f"[dim]（向量库中存在 {stats['total_documents']} 个文档片段，"
-                f"但未登记文件元数据）[/dim]"
-            )
-    else:
-        console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
-        for fm in files:
-            console.print(f"  📄 {fm.get('path')}  [dim]({fm.get('size', '?')})[/dim]")
-
-    if stats:
-        console.print(
-            f"\n[dim]文档片段总数: {stats.get('total_documents', '?')} | "
-            f"Embedding: {stats.get('embed_model', '?')}[/dim]"
-        )
-
-
-def _answer_meta_query() -> bool:
-    """兼容封装：直接渲染知识库概览。"""
-    overview = rag_pipeline.build_meta_overview(rag_engine)
-    _render_meta_overview({"files": overview["files"], "stats": overview["stats"]})
-    return True
-
-
-def print_web_sources(sources: list):
-    """渲染网络来源区块（与知识库来源明确区分）。"""
-    if not sources:
-        return
-    if HAS_RICH:
-        table = Table(title="🌐 网络来源（编号与回答中的 [Wn] 对应）", show_lines=False)
-        table.add_column("#", style="dim", justify="right", no_wrap=True)
-        table.add_column("标题", style="cyan")
-        table.add_column("链接", style="blue")
-        for i, src in enumerate(sources, 1):
-            ref = f"[{src.get('ref') or f'W{i}'}]"
-            table.add_row(ref, src.get("title", ""), src.get("url", ""))
-        console.print(table)
-    else:
-        print("=== 🌐 网络来源 ===")
-        for i, src in enumerate(sources, 1):
-            ref = f"[{src.get('ref') or f'W{i}'}]"
-            print(f"  {ref} {src.get('title', '')}")
-            print(f"     {src.get('url', '')}")
-
-
-def _synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
-    """组装“知识库/网络分区标注”的结构化 prompt，要求 LLM 区分来源并综合总结。"""
-    parts = [
-        "你是一个严谨的问答助手。请根据下面两类来源回答问题，并遵守规则：",
-        "1. 【知识库检索内容】来自用户的本地知识库，是权威且优先的依据；",
-        "2. 【网络搜索补充】来自互联网，仅作补充参考，可能不准确；",
-        "3. 回答中必须明确区分：哪些结论来自知识库、哪些来自网络；",
-        "4. 若两类来源冲突，以知识库为准并指出差异；",
-        "5. 若知识库内容不足以回答，明确说明，再用网络信息补充。",
-        "",
-        f"【问题】\n{question}",
-        "",
-    ]
-    if kb_context:
-        parts.append(f"【知识库检索内容】（本地文档，优先依据）\n{kb_context}")
-    else:
-        parts.append("【知识库检索内容】\n（无相关内容）")
-    parts.append("")
-    if web_context:
-        parts.append(f"【网络搜索补充】（互联网，仅供参考）\n{web_context}")
-    else:
-        parts.append("【网络搜索补充】\n（无）")
-    parts.append("")
-    parts.append("请给出综合回答，并在末尾用一句话说明主要依据来自知识库还是网络。")
-    return "\n".join(parts)
-
-
-# ==================== 与引擎/主循环状态强耦合的命令处理 ====================
-# 这些命令需要直接读写 rag_engine / react_engine / last_rag_sources 等运行时
-# 状态，故保留在本模块（而非 cli_handlers），但同样抽成独立函数，使交互主循环
-# 的分发逻辑保持精简。每个函数返回 should_show_recommendations。
-
-def _render_answer(answer: str):
-    """统一渲染回答文本（Markdown / 纯文本）。"""
-    if HAS_RICH:
-        console.print(Panel(Markdown(answer), border_style="green"))
-    else:
-        print(answer)
-
-
-def _print_notices(notices, position: str = "before") -> None:
-    """渲染 ``answer_question`` 的结构化提示（F9 P0-5）。
-
-    warn → 黄色 ``⚠️ text``，info → dim ``💡 text``；``fallback`` 不在此打印（沿用
-    ``_run_ask`` 末尾的黄色 ``/agent`` 提示行）。``position`` 选择答案 Panel 之前/之后的那组。
-    """
-    from rich.markup import escape as _escape
-    for n in notices or []:
-        if not isinstance(n, dict) or n.get("code") == "fallback":
-            continue
-        if (n.get("position") or "before") != position:
-            continue
-        text = _escape(str(n.get("text") or ""))
-        if not text:
-            continue
-        if n.get("level") == "warn":
-            console.print(f"⚠️ {text}", style="yellow")
-        else:
-            console.print(f"💡 {text}", style="dim")
-
-
-def _citation_summary(citation_check) -> str:
-    """来源摘要行的引用计数文案 ``🔎 引用 {valid}/{total} 有效``；无引用返回空串。"""
-    if not isinstance(citation_check, dict):
-        return ""
-    total = int(citation_check.get("total_refs") or 0)
-    if total <= 0:
-        return ""
-    valid = int(citation_check.get("valid") or 0)
-    return f"🔎 引用 {valid}/{total} 有效"
-
-
-def handle_clear(ctx, parsed):
-    console.clear()
-    print_banner()
-    record_command_execution("clear")
-    return True
-
-
-def handle_history(ctx, parsed):
-    from session_manager import get_session_manager
-    manager = get_session_manager()
-    current = manager.get_current_session()
-    msgs = current.messages if current else []
-    dialog_msgs = [m for m in msgs if m.get("role") in ("user", "assistant")]
-    if not dialog_msgs:
-        console.print("[dim]暂无对话历史[/dim]")
-        return False
-    lines = []
-    for i, m in enumerate(dialog_msgs):
-        role = m.get("role", "?")
-        content = m.get("content", "")[:80].replace("\n", " ")
-        lines.append(f"{i}. [{role}] {content}...")
-    title = f"历史记录 - {current.title}" if current else "历史记录"
-    if HAS_RICH:
-        console.print(Panel("\n".join(lines), title=title, border_style="dim"))
-    else:
-        print("\n".join(lines))
-    record_command_execution("history")
-    return True
-
-
-def handle_summary(ctx, parsed):
-    summary = react_engine.get_step_summary()
-    if HAS_RICH:
-        console.print(Panel(summary, title="执行摘要", border_style="blue"))
-    else:
-        print(summary)
-    record_command_execution("summary")
-    return True
-
-
-def handle_reset(ctx, parsed):
-    """清空当前会话的对话上下文（消息 + 滚动摘要），三种模式共用。"""
-    engine = ctx.react_engine if ctx and ctx.react_engine is not None else react_engine
-    ok = engine.clear_history() if engine is not None else _conversation().clear()
-    if ok:
-        console.print("🔄 当前会话上下文已清空（消息与滚动摘要）", style="green")
-    else:
-        console.print("[dim]当前没有可清空的会话上下文[/dim]")
-    record_command_execution("reset")
-    return True
-
-
-def handle_file(ctx, parsed):
-    path = parsed.arg
-    result = registry.execute("read_file", {"path": path}, auto_confirm=True)
-    if HAS_RICH:
-        console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
-    else:
-        print(result)
-        record_command_execution("read", path)
-    return True
-
-
-def handle_write(ctx, parsed):
-    path = parsed.arg
-    console.print("[yellow]进入写入模式，输入内容（空行结束）:[/yellow]")
-    lines = []
-    while True:
-        try:
-            line = input()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if line == "":
-            break
-        lines.append(line)
-    content = "\n".join(lines)
-    result = registry.execute("write_file", {"path": path, "content": content}, auto_confirm=False)
-    console.print(result)
-    record_command_execution("write", path)
-    return True
-
-
-def handle_exec(ctx, parsed):
-    cmd = parsed.arg
-    safety = CommandSafetyChecker.analyze(cmd)
-    if HAS_RICH:
-        color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(safety['risk_level'], "white")
-        console.print(f"[dim]命令: {cmd}[/dim]")
-        console.print(f"风险等级: [{color}]{safety['risk_level']}[/{color}]")
-    else:
-        print(f"命令: {cmd}")
-        print(f"风险等级: {safety['risk_level']}")
-
-    if safety["is_dangerous"]:
-        console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
-        return False
-    if safety["needs_confirm"] and not Config.AUTO_CONFIRM:
-        try:
-            ans = console.input("确认执行? (y/n): ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("已取消")
-            return False
-        if ans not in ("y", "yes", "是"):
-            console.print("[dim]已取消[/dim]")
-            return False
-
-    result = registry.execute("execute_command", {"command": cmd}, auto_confirm=True)
-    if HAS_RICH:
-        console.print(Panel(result, title="命令输出", border_style="magenta"))
-    else:
-        print(result)
-    record_command_execution("exec", cmd)
-    return True
-
-
-def handle_pwd(ctx, parsed):
-    print(os.getcwd())
-    record_command_execution("pwd")
-    return True
-
-
-def handle_cd(ctx, parsed):
-    path = parsed.arg
-    try:
-        os.chdir(path)
-        console.print(f"[green]已切换到: {os.getcwd()}[/green]")
-        record_command_execution("cd", path)
-        return True
-    except FileNotFoundError:
-        console.print(f"[red]目录不存在: {path}[/red]")
-    except PermissionError:
-        console.print(f"[red]权限不足: {path}[/red]")
-    except Exception as e:  # noqa: BLE001
-        console.print(f"[red]切换失败: {e}[/red]")
-    return False
-
-
-def handle_model(ctx, parsed):
-    """``/model`` 显示当前模型；``/model list`` 列出可选；``/model <name>`` 热切换。
-
-    切换会同步 RAG 引擎（重建 LLM 与检索器）、ReAct 引擎（模型名 +
-    num_ctx）与全局 config（多 Agent 等跟随），并立即释放旧模型避免双驻留。
-    """
-    import model_switcher
-
-    arg = (parsed.arg or "").strip()
-    record_command_execution("model")
-
-    if not arg:
-        info = model_switcher.current_model_info()
-        state = (
-            f"已加载，驻留 {model_switcher.format_size(info['size_bytes'])}"
-            if info["loaded"] else "未加载（首次请求时按需加载）"
-        )
-        console.print(f"[green]模型: {info['model']}[/green]  ({state})")
-        console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
-        console.print(f"[green]Ollama: {react_engine.host if react_engine else Config.OLLAMA_HOST}[/green]")
-        console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
-        others = [m for m in info["loaded_models"] if m != info["model"]]
-        if others:
-            console.print(f"[yellow]提示: 内存中还驻留着其他模型: {', '.join(others)}（可用 ollama stop 释放）[/yellow]")
-        console.print("[dim]用法: /model list 查看可选模型；/model <name> 切换（如 /model qwen3.5:9b）[/dim]")
-        return True
-
-    if arg.lower() in ("list", "ls"):
-        installed = model_switcher.list_installed_models()
-        if not installed:
-            console.print("[red]无法获取模型列表，请确认 Ollama 已启动[/red]")
-            return True
-        loaded = {m["name"] for m in model_switcher.list_loaded_models()}
-        current = Config.LLM_MODEL
-        console.print("[bold]本机已安装模型:[/bold]")
-        for name in installed:
-            marks = []
-            if name == current:
-                marks.append("当前")
-            if name in loaded:
-                marks.append("已加载")
-            suffix = f"  [{'/'.join(marks)}]" if marks else ""
-            console.print(f"  - {name}{suffix}")
-        console.print("[dim]切换: /model <name>[/dim]")
-        return True
-
-    result = model_switcher.switch_model(
-        arg, rag_engine=ctx.rag_engine if ctx else rag_engine,
-        react_engine=ctx.react_engine if ctx else react_engine,
-    )
-    color = "green" if result.ok else "red"
-    console.print(f"[{color}]{result.message}[/{color}]")
-    return True
-
-
-def handle_think(ctx, parsed):
-    """``/think`` 显示思考模式状态；``/think on|off`` 运行时开关。
-
-    同步 RAG 引擎（重建 LLM）与 ReAct 引擎；开启前会校验当前模型是否支持 thinking。
-    """
-    import model_switcher
-
-    arg = (parsed.arg or "").strip()
-    record_command_execution("think")
-
-    if not arg:
-        info = model_switcher.current_model_info()
-        state = "开" if info["think"] else "关"
-        console.print(f"[green]思考模式: {state}  （模型: {info['model']}）[/green]")
-        console.print(
-            "[dim]关闭时响应更快（4B 模型同一问题约 31s → 3s），适合日常查询与工具调用；"
-            "开启时模型先输出思维链再作答，适合复杂推理。用法: /think on | /think off[/dim]"
-        )
-        return True
-
-    flag = model_switcher.parse_think_flag(arg)
-    if flag is None:
-        console.print(f"[red]无法识别参数 '{arg}'，请使用 /think on 或 /think off[/red]")
-        return True
-
-    result = model_switcher.switch_think(
-        flag, rag_engine=ctx.rag_engine if ctx else rag_engine,
-        react_engine=ctx.react_engine if ctx else react_engine,
-    )
-    color = "green" if result.ok else "red"
-    console.print(f"[{color}]{result.message}[/{color}]")
-    return True
-
-
-def handle_auto(ctx, parsed):
-    """``/auto`` 显示自动路由状态；``/auto on|off`` 运行时开关（F8 P3-2）。
-
-    开启时自然语言输入先由 ``intent_router.classify_intent`` 判定走知识库还是
-    Agent；关闭后一律走知识库问答（等价 ``/ask``）。显式命令不受影响。
-    """
-    import model_switcher
-
-    arg = (parsed.arg or "").strip()
-    record_command_execution("auto")
-
-    if not arg:
-        state = "开" if Config.AUTO_ROUTE else "关"
-        console.print(f"[green]自动路由: {state}[/green]")
-        console.print(
-            "[dim]开启时自然语言输入先判定意图：含路径/代码/命令式动词走 Agent，疑问/总结类走知识库，"
-            "模糊时由模型一词判定；关闭后一律走知识库问答。/ask、/agent 显式命令不判定。"
-            "用法: /auto on | /auto off[/dim]"
-        )
-        return True
-
-    flag = model_switcher.parse_think_flag(arg)
-    if flag is None:
-        console.print(f"[red]无法识别参数 '{arg}'，请使用 /auto on 或 /auto off[/red]")
-        return True
-
-    Config.AUTO_ROUTE = flag
-    if flag:
-        console.print("[green]自动路由已开启：自然语言输入将自动判定走知识库还是 Agent[/green]")
-    else:
-        console.print("[green]自动路由已关闭：自然语言输入一律走知识库问答（/agent 可显式使用 Agent）[/green]")
-    return True
-
-
-def handle_ask(ctx, parsed):
-    """知识库查询：可选文件入库 + 网络搜索增强 + RAG/LLM 回答与回退。
-
-    核心编排逻辑已下沉到共享层 ``rag_pipeline.answer_question``（CLI 与 Web
-    共用）；本函数只负责 CLI 特有的内联文件入库、Rich 进度/来源渲染。
-    """
-    return _run_ask(ctx, parsed.arg, cmd_name="ask")
-
-
-def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
-    """``/ask`` 与自然语言输入共用的知识库问答实现（带会话上下文）。"""
-    global last_rag_sources, last_web_sources
-    import re
-
-    original_question = question  # 用于命令记录，避免把搜索结果正文塞进历史
-
-    # 元/概览类问题会在 answer_question 内部识别并通过 meta_overview 事件渲染。
-    # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）——CLI 独有。
-    if not _is_meta_query(original_question):
-        file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
-        file_path_match = re.search(file_pattern, question)
-        if file_path_match:
-            question = _ingest_inline_file(file_path_match.group(), question)
-
-    # 连续对话：提问前先做健康度快照（空闲/话题漂移），并把会话上下文交给编排层
-    # 用于追问改写与综合 prompt 注入。
-    pre_health = _health_before(original_question)
-    try:
-        conv = _conversation()
-    except Exception as e:  # noqa: BLE001 - 会话不可用时退化为无记忆问答
-        logger.warning(f"会话上下文不可用: {e}")
-        conv = None
-
-    # 调用共享编排层：网络搜索规划、双区综合、0 命中回退、元查询直答一体化。
-    rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
-    result = rag_pipeline.answer_question(
-        rag_engine,
-        question,
-        enable_web_search=True,
-        show_progress=Config.SHOW_PROGRESS,
-        progress=_cli_ask_progress,
-        rag_progress_callback=rag_progress,
-        context=conv,
-    )
-
-    # 元查询：概览已在 _cli_ask_progress 中渲染，这里只记录并返回。
-    if result.get("kind") == "meta":
-        last_rag_sources = []
-        last_web_sources = []
-        ctx.last_rag_sources = last_rag_sources
-        ctx.last_web_sources = last_web_sources
-        record_command_execution(cmd_name, original_question)
-        record_conversation(original_question, "[知识库概览]", progress=_cli_ask_progress)
-        return True
-
-    console.print("\n🤖 回答:", style="bold blue")
-    if result.get("rewritten"):
-        # F9 P1-2：质疑类追问复用同一通道，文案改为「重新核对」
-        label = "🔁 用户质疑，重新核对" if result.get("challenge") else "🔗 已理解为"
-        console.print(f"[cyan]{label}：{result['rewritten']}[/cyan]")
-    # F9 P0-5：警示 / 校验等结构化提示与正文分离——before 组在 Panel 上方，after 组在下方
-    notices = result.get("notices") or []
-    _print_notices(notices, position="before")
-    _render_answer(result["answer"])
-    _print_notices(notices, position="after")
-
-    last_rag_sources = result.get("kb_sources", [])
-    last_web_sources = result.get("web_sources", [])
-    ctx.last_rag_sources = last_rag_sources
-    ctx.last_web_sources = last_web_sources
-
-    # 确定性双区块来源展示：明确区分知识库来源与网络来源
-    check = result.get("citation_check")
-    cite = _citation_summary(check)
-    cite_style = "yellow" if (isinstance(check, dict) and check.get("invalid")) else "dim"
-    if last_rag_sources:
-        n_code = count_code_sources(last_rag_sources)
-        suffix = f"（{n_code} 个代码符号）" if n_code else ""
-        # P0-3：同一行追加引用计数；有无效引用时整行黄色
-        console.print(
-            f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}" + (f" · {cite}" if cite else ""),
-            style=cite_style,
-        )
-    elif cite:
-        console.print(f"\n{cite}", style=cite_style)
-    if last_web_sources:
-        console.print()
-        print_web_sources(last_web_sources)
-    if last_rag_sources or last_web_sources:
-        console.print("[dim]输入 /sources 查看完整来源明细（编号与回答中的 [n]/[Wn] 对应）[/dim]")
-
-    # 失败回退：知识库与网络均无结果 → 提示改用单 Agent 工具进一步查找
-    if result.get("kind") == "fallback":
-        fq = result.get("fallback_question") or original_question
-        console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
-
-    record_command_execution(cmd_name, original_question)
-    # 会话记录：正文 + warn 级 notice 各一行（后续轮次据此知道上一答是否有依据）
-    record_conversation(
-        original_question, rag_pipeline.answer_with_notices(result.get("answer", ""), notices),
-        rewritten=result.get("rewritten"), progress=_cli_ask_progress,
-    )
-    _print_health_hint(pre_health, original_question)
-    return True
-
-
-def _ingest_inline_file(file_path: str, question: str) -> str:
-    """将问题中检测到的文件加入知识库，并清洗/补全查询文本后返回。"""
-    import re
-    console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
-    console.print("🔄 正在添加到知识库...", style="yellow")
-    try:
-        from document_loader import load_documents as _load
-        documents = _load(file_path)
-        if not documents:
-            console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
-            return question
-        rag_engine.add_documents(documents, [file_path])
-        if Config.SHOW_PROGRESS:
-            console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
-            total_chars = sum(len(doc.text) for doc in documents)
-            console.print(f"✅ 总字符数: {total_chars}", style="dim")
-        else:
-            console.print("✅ 文件已添加到知识库", style="green")
-        # 移除路径文本、清理空白与标点
-        question = re.sub(re.escape(file_path), '', question)
-        question = re.sub(r'\s+', ' ', question).strip().rstrip('，。,.')
-        vague = ["请帮我检查", "请帮我分析", "分析", "检查", "看一下", "这张图片里面有什么"]
-        if not question or question == "/ask" or question in vague:
-            question = f"刚刚添加的文件中包含什么内容？文件名是 {Path(file_path).name}"
-            print(f"💡 使用精确查询: {question}")
-        else:
-            filename = Path(file_path).name
-            if filename not in question:
-                question = f"{filename} {question}"
-        console.print(f"❓ 查询: {question}", style="cyan")
-    except Exception as e:  # noqa: BLE001
-        console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
-    return question
-
-
-def _augment_with_web_search(question: str) -> str:
-    """兼容封装：按需执行 LLM 规划的网络搜索（逻辑见 rag_pipeline）。"""
-    return rag_pipeline.augment_with_web_search(question, progress=_cli_ask_progress)
-
-
-def _answer_question(question: str, original_question: str, web_search_result: str) -> dict:
-    """兼容封装：根据知识库状态生成回答（逻辑见 rag_pipeline.generate_answer）。"""
-    rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
-    return rag_pipeline.generate_answer(
-        rag_engine,
-        question,
-        original_question,
-        web_search_result,
-        show_progress=Config.SHOW_PROGRESS,
-        progress=_cli_ask_progress,
-        rag_progress_callback=rag_progress,
-    )
-
-
-def handle_agent(ctx, parsed):
-    task = parsed.arg
-    answer = ""
-    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
-    pre_health = _health_before(task)
-    try:
-        answer = engine.chat(task)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]用户中断，任务已停止。[/yellow]")
-        engine.stop()
-        return False
-    except Exception as e:  # noqa: BLE001
-        console.print(f"[red]错误: {e}[/red]")
-        return False
-
-    if HAS_RICH:
-        if "```" in answer or "**" in answer or "#" in answer:
-            console.print(Markdown(answer))
-        else:
-            console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
-    else:
-        print("\n" + "=" * 50)
-        print(answer)
-        print("=" * 50 + "\n")
-
-    if len(engine.step_log) > 1:
-        console.print(f"[dim]本次共执行 {len(engine.step_log)} 步，输入 /summary 查看详情[/dim]")
-    # ReAct 引擎已在 chat() 结束时把本轮（任务 + 最终答案 + 执行摘要）写回会话
-    record_command_execution("agent", task)
-    _print_health_hint(pre_health, task)
-    return True
-
-
-def handle_natural(ctx, parsed):
-    """自然语言输入：与 ``/ask`` 走同一条带会话上下文的问答链路。
-
-    此前直接裸调 ``query_with_sources``、不记录会话、无联网增强，且知识库
-    未初始化时只能提示；现统一到 ``_run_ask``（知识库为空时由编排层自动
-    回退到网络/模型回答），追问同样能结合上下文理解。
-    """
-    text = parsed.arg
-    engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else rag_engine
-    kb_available = bool(engine is not None and getattr(engine, "retriever", None) is not None)
-
-    # F8 P3-2：自动路由——先判定意图，再决定走知识库问答还是 Agent
-    if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
-        return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
-
-    if rag_engine is not None and rag_engine.retriever is None:
-        console.print(
-            "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
-            "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
-        )
-    return _run_ask(ctx, text, cmd_name="natural")
-
-
-def _route_natural_to_agent(ctx, text: str, kb_available: bool) -> bool:
-    """自动路由判定：返回 True 表示应按 Agent 处理（并已打印状态行）。
-
-    判定失败或 Agent 引擎不可用时返回 False（走知识库问答），不影响主流程。
-    """
-    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
-    if engine is None:
-        return False
-    try:
-        from intent_router import classify_intent
-        decision = classify_intent(text, kb_available=kb_available)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("自动路由判定失败，回退知识库问答: %s", e)
-        return False
-    if decision.mode != "agent":
-        return False
-    console.print(
-        f"[cyan]🤖 已按 Agent 模式处理（{decision.reason}；用 /ask 强制知识库；/auto off 关闭自动路由）[/cyan]"
-    )
-    return True
-
-
-def handle_unknown_cmd(ctx, parsed):
-    console.print(f"[yellow]未知命令: {parsed.raw}，输入 /help 查看帮助[/yellow]")
-    return False
-
-
-# 引擎/状态耦合命令的分发表（与 cli_handlers.COMMAND_HANDLERS 互补）
-_ENGINE_HANDLERS = {
-    "clear": handle_clear,
-    "history": handle_history,
-    "summary": handle_summary,
-    "reset": handle_reset,
-    "file": handle_file,
-    "write": handle_write,
-    "exec": handle_exec,
-    "pwd": handle_pwd,
-    "cd": handle_cd,
-    "model": handle_model,
-    "think": handle_think,
-    "auto": handle_auto,
-    "ask": handle_ask,
-    "agent": handle_agent,
-    "natural": handle_natural,
-    "unknown_cmd": handle_unknown_cmd,
-}
-
-
-def _build_cli_context():
-    """构造注入了当前运行时状态/协作函数的 CLIContext。"""
-    from cli_handlers import CLIContext
-    return CLIContext(
-        console=console,
-        has_rich=HAS_RICH,
-        rag_engine=rag_engine,
-        react_engine=react_engine,
-        last_rag_sources=last_rag_sources,
-        last_web_sources=last_web_sources,
-        record_command=record_command_execution,
-        record_conversation=record_conversation,
-        ask_progress_callback=ask_progress_callback,
-        print_help=print_help,
-        print_tools=print_tools,
-        show_tutorial=show_tutorial,
-        print_banner=print_banner,
-        print_knowledge_stats=print_knowledge_stats,
-        print_rag_sources=print_rag_sources,
-        print_web_sources=print_web_sources,
-        load_documents=load_documents,
-        registry=registry,
-        knowledge_management_available=KNOWLEDGE_MANAGEMENT_AVAILABLE,
-    )
-
-
-def dispatch_command(ctx, parsed) -> bool:
-    """根据 parsed.cmd_type 分发到对应 handler，返回是否显示命令推荐。
-
-    优先使用引擎耦合分发表，其次使用 cli_handlers 的自包含命令表。
-    未匹配的类型（如 empty）默认不显示推荐。
-    """
-    from cli_handlers import COMMAND_HANDLERS
-    handler = _ENGINE_HANDLERS.get(parsed.cmd_type) or COMMAND_HANDLERS.get(parsed.cmd_type)
-    if handler is None:
-        return False
-    return handler(ctx, parsed)
-
+from cli.engine_commands import (  # noqa: E402,F401
+    KNOWLEDGE_MANAGEMENT_AVAILABLE,
+    handle_clear, handle_history, handle_summary, handle_reset, handle_file, handle_write,
+    handle_exec, handle_pwd, handle_cd, handle_model, handle_think, handle_auto, handle_ask,
+    _run_ask, _ingest_inline_file, _augment_with_web_search, _answer_question,
+    handle_agent, handle_natural, _route_natural_to_agent, handle_unknown_cmd,
+    _ENGINE_HANDLERS, _build_cli_context, dispatch_command,
+)
 
 # ==================== 主程序 ====================
 
 def main():
-    global rag_engine, react_engine, last_rag_sources, last_web_sources, command_recommender
-
     parser = argparse.ArgumentParser(
         description="Cerebro 🧠 你的第二大脑 + 代码助手 - RAG + Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2023,11 +394,11 @@ def main():
 
     # ==================== 初始化 RAG 引擎 ====================
     if args.clear:
-        rag_engine = RAGEngine()
-        rag_engine.clear_index()
+        state.rag_engine = RAGEngine()
+        state.rag_engine.clear_index()
         return
 
-    rag_engine = RAGEngine()
+    state.rag_engine = RAGEngine()
     if args.data:
         file_types = None
         if args.types:
@@ -2035,19 +406,19 @@ def main():
         documents = load_documents(args.data, file_types)
         if documents:
             # 传入 file_paths：文档缺 file_path 元数据时仍能登记文件元数据
-            rag_engine.build_index(documents, file_paths=[args.data])
+            state.rag_engine.build_index(documents, file_paths=[args.data])
             try:
                 from code_chunker import format_ingest_summary
-                stats = getattr(rag_engine, "last_ingest_stats", None) or {}
+                stats = getattr(state.rag_engine, "last_ingest_stats", None) or {}
                 if stats:
-                    console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
+                    state.console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
             except Exception:  # noqa: BLE001
                 pass
         else:
-            console.print("⚠️  未找到任何文档", style="yellow")
+            state.console.print("⚠️  未找到任何文档", style="yellow")
     else:
-        if not rag_engine.load_index():
-            console.print(
+        if not state.rag_engine.load_index():
+            state.console.print(
                 f"[dim]未找到已有索引。使用 --data 指定数据路径构建知识库。[/dim]\n"
                 f"[dim]默认数据目录: {DATA_DIR}[/dim]"
             )
@@ -2057,40 +428,40 @@ def main():
     if RECOMMENDER_AVAILABLE:
         try:
             logger.info("创建 CommandRecommender 实例")
-            command_recommender = CommandRecommender()
+            state.command_recommender = CommandRecommender()
             logger.info("初始化 CommandRecommender")
-            command_recommender.initialize()
+            state.command_recommender.initialize()
             logger.info("CommandRecommender 初始化完成")
             
             # 更新RAG引擎状态到推荐系统
-            rag_available = rag_engine.retriever is not None
-            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
-            command_recommender.update_rag_status(rag_available, rag_empty)
+            rag_available = state.rag_engine.retriever is not None
+            rag_empty = rag_available and (state.rag_engine.get_stats().get("total_chunks", 0) == 0)
+            state.command_recommender.update_rag_status(rag_available, rag_empty)
             
-            console.print("[dim]💡 智能命令推荐系统已启用[/dim]", style="dim")
-            logger.info(f"命令推荐系统初始化成功: enabled={command_recommender.is_enabled()}")
+            state.console.print("[dim]💡 智能命令推荐系统已启用[/dim]", style="dim")
+            logger.info(f"命令推荐系统初始化成功: enabled={state.command_recommender.is_enabled()}")
         except Exception as e:
-            console.print(f"[dim]⚠️  命令推荐系统初始化失败: {e}[/dim]", style="dim")
+            state.console.print(f"[dim]⚠️  命令推荐系统初始化失败: {e}[/dim]", style="dim")
             logger.error(f"命令推荐系统初始化失败: {e}", exc_info=True)
-            command_recommender = None
+            state.command_recommender = None
     else:
-        console.print("[dim]💡 命令推荐系统模块未安装[/dim]", style="dim")
+        state.console.print("[dim]💡 命令推荐系统模块未安装[/dim]", style="dim")
         logger.warning("推荐系统模块未安装")
-        command_recommender = None
+        state.command_recommender = None
 
     # 将 RAG 引擎注入 Agent 工具
-    set_rag_engine(rag_engine)
+    set_rag_engine(state.rag_engine)
 
     # ==================== 初始化 ReAct 引擎 ====================
     try:
-        react_engine = ReActEngine(
+        state.react_engine = ReActEngine(
             model=args.model,
             host=args.host,
             on_step=on_step_callback,
             on_confirm=on_confirm_callback
         )
     except Exception as e:
-        console.print(f"[red]Agent 引擎初始化失败: {e}[/red]")
+        state.console.print(f"[red]Agent 引擎初始化失败: {e}[/red]")
         import traceback
         traceback.print_exc()
         sys.exit(1)
@@ -2100,43 +471,47 @@ def main():
         conv = _conversation()
         if args.no_history:
             conv.new_session()
-            console.print("[yellow]已新建空会话，以全新上下文开始[/yellow]")
+            state.console.print("[yellow]已新建空会话，以全新上下文开始[/yellow]")
     except Exception as e:  # noqa: BLE001
-        console.print(f"[dim]⚠️ 会话上下文初始化失败（将无记忆运行）: {e}[/dim]")
+        state.console.print(f"[dim]⚠️ 会话上下文初始化失败（将无记忆运行）: {e}[/dim]")
 
     # ==================== 单次模式 ====================
     if args.query:
-        if rag_engine.retriever is None:
-            console.print("❌ 知识库未初始化，请使用 --data 指定数据", style="red")
+        if state.rag_engine.retriever is None:
+            state.console.print("❌ 知识库未初始化，请使用 --data 指定数据", style="red")
             sys.exit(1)
-        console.print(f"🔍 问题: {args.query}\n", style="bold")
+        state.console.print(f"🔍 问题: {args.query}\n", style="bold")
         # F9 P0-1：与 /ask 同一条忠实性管道（只用知识库、不联网、不记录会话）
-        with console.status("[bold green]检索知识库..."):
+        with state.console.status("[bold green]检索知识库..."):
             result = rag_pipeline.answer_question(
-                rag_engine, args.query, enable_web_search=False, show_progress=False, kb_only=True,
+                state.rag_engine, args.query, enable_web_search=False, show_progress=False, kb_only=True,
             )
-        console.print("🤖 回答:", style="bold blue")
+        state.console.print("🤖 回答:", style="bold blue")
         _print_notices(result.get("notices"), position="before")
         _render_answer(result.get("answer", ""))
         _print_notices(result.get("notices"), position="after")
-        last_rag_sources = result.get("kb_sources", [])
-        if last_rag_sources:
-            print_rag_sources(last_rag_sources)
+        state.last_rag_sources = result.get("kb_sources", [])
+        if state.last_rag_sources:
+            print_rag_sources(state.last_rag_sources)
         return
 
     if args.agent:
-        console.print(f"🤖 Agent 任务: {args.agent}\n", style="bold cyan")
+        state.console.print(f"🤖 Agent 任务: {args.agent}\n", style="bold cyan")
+        live = _live_answer(title="Agent")
         try:
-            answer = react_engine.chat(args.agent)
+            answer = state.react_engine.chat(args.agent, on_token=live.on_token)
         except KeyboardInterrupt:
-            console.print("\n[yellow]用户中断[/yellow]")
-            react_engine.stop()
+            live.finish()
+            state.react_engine.stop()
+            state.console.print("\n[yellow]已中断：用户中断，已关闭与模型的连接。[/yellow]")
             return
-        if HAS_RICH:
+        finally:
+            live.finish()
+        if state.HAS_RICH:
             if "```" in answer or "**" in answer or "#" in answer:
-                console.print(Markdown(answer))
+                state.console.print(Markdown(answer))
             else:
-                console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
+                state.console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
         else:
             print("\n" + "=" * 50)
             print(answer)
@@ -2144,12 +519,12 @@ def main():
         return
 
     if args.build_only:
-        if rag_engine.retriever is not None:
-            stats = rag_engine.get_stats()
-            console.print(f"\n✅ 索引构建完成！", style="bold green")
+        if state.rag_engine.retriever is not None:
+            stats = state.rag_engine.get_stats()
+            state.console.print(f"\n✅ 索引构建完成！", style="bold green")
             print_knowledge_stats()
         else:
-            console.print("❌ 索引构建失败", style="red")
+            state.console.print("❌ 索引构建失败", style="red")
         return
 
     # ==================== 交互式模式 ====================
@@ -2159,7 +534,7 @@ def main():
         try:
             user_input = get_input("\n❯ ")
         except (EOFError, KeyboardInterrupt):
-            console.print("\n\n👋 再见！", style="bold green")
+            state.console.print("\n\n👋 再见！", style="bold green")
             break
 
         if not user_input:
@@ -2169,7 +544,7 @@ def main():
 
         # 退出单独处理（需要 break 主循环）
         if parsed.cmd_type == "quit":
-            console.print("👋 再见！", style="bold green")
+            state.console.print("👋 再见！", style="bold green")
             break
 
         # 构造上下文并通过命令表分发。dispatch_command 返回
@@ -2178,8 +553,8 @@ def main():
         should_show_recommendations = dispatch_command(ctx, parsed)
 
         # 处理期间可能更新了运行时状态，同步回模块全局
-        last_rag_sources = ctx.last_rag_sources
-        last_web_sources = ctx.last_web_sources
+        state.last_rag_sources = ctx.last_rag_sources
+        state.last_web_sources = ctx.last_web_sources
 
         # 统一在命令处理完成后显示推荐
         if should_show_recommendations:

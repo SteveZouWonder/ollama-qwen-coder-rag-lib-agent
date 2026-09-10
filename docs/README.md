@@ -2,7 +2,7 @@
 
 ```
 docs/
-├── tutorials/     【用户】  安装、功能、场景、桌面应用、故障排除、最佳实践
+├── tutorials/     【用户】  安装、功能、场景、桌面应用、故障排除、最佳实践、配置参考、开发者指南
 ├── features/      【功能】  每个功能一个目录：设计 + 实现记录 + 状态；索引与路线图
 ├── development/   【开发者】CI/CD、测试设计、内容安全扫描器、文档维护流程
 ├── history/       【归档】  一次性修复报告与实施总结（反映编写当日状态）
@@ -20,6 +20,9 @@ docs/
 | [05 桌面应用使用指南](tutorials/05-desktop-app.md) | 托盘、模型预热、状态监控、打包版 |
 | [06 故障排除指南](tutorials/06-troubleshooting.md) | 依赖冲突、ChromaDB、urllib3、OCR、性能 |
 | [07 最佳实践指南](tutorials/07-best-practices.md) | 知识库组织、提问技巧、安全使用 |
+| [08 配置参考](tutorials/08-configuration.md) | `config.py` 常量注释、接入 OpenAI 兼容后端、模型选择补充、OCR 配置（自 README 迁入） |
+| [09 开发者指南](tutorials/09-development.md) | 项目结构、Python 路径、核心模块 API、测试与 RAG 检索基准（自 README 迁入） |
+| [教程索引](tutorials/README.md) | 每篇内容与 README 迁入章节一览 |
 
 导航页：[TUTORIAL.md](../TUTORIAL.md)
 

@@ -43,6 +43,9 @@ class ResultIntegrator:
         self.use_llm = use_llm
         self.llm_timeout = llm_timeout
         self.last_answer_method: str = "concat"
+        # F10 P1-1：整合阶段 LLM 综合的增量回调（由 MasterAgent.coordinate_task 按次注入）；
+        # 仅在未注入 ``complete`` 时生效（注入的 complete 由调用方自行决定是否流式）。
+        self.on_token: Optional[Callable[[str], None]] = None
     
     def integrate(self, results: List[AgentResult], original_tasks: List[AgentTask] = None,
                   request: str = "") -> Dict[str, Any]:
@@ -181,6 +184,9 @@ class ResultIntegrator:
         try:
             if self._complete is not None:
                 text = self._complete(prompt)
+            elif self.on_token is not None:
+                text = complete_text(prompt, num_predict=1024, timeout=self.llm_timeout,
+                                     on_token=self.on_token)
             else:
                 text = complete_text(prompt, num_predict=1024, timeout=self.llm_timeout)
             text = strip_think(text)

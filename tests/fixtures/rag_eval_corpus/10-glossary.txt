@@ -1,0 +1,28 @@
+Lumen 术语表
+
+Job（任务）
+    一次可执行的工作单元，由可导入路径（如 myapp.tasks.send_email）、参数与可选 cron 表达式组成。
+
+Tick
+    调度器的一次检查周期，长度由 tick_interval 决定（默认 1.0 秒）。每个 tick 领导者把所有到期任务投递到队列。
+
+Lease（租约）
+    Worker 取到任务时获得的独占权，有效期 lease_ttl（默认 45 秒），通过心跳续期。租约过期后任务可被其他 Worker 接管。
+
+Heartbeat（心跳）
+    Worker 周期性刷新租约的动作，间隔 heartbeat_interval（默认 15 秒）。
+
+Misfire
+    任务的计划触发时间已经过去却没有被投递（通常因调度器停机）。在 misfire_grace（默认 60 秒）内补投一次，否则跳过。
+
+Dead-letter（死信）
+    重试次数耗尽或抛出 NonRetryable 的任务，被移入死信队列 lumen:dead，需人工处理。
+
+Leader（领导者）
+    多个调度器实例中唯一负责投递的实例，通过 Redis 分布式锁选出，锁 TTL 30 秒。
+
+Backoff（退避）
+    重试前的等待时间，指数增长：base 2 秒，上限 cap 300 秒，带 50%–100% 抖动。
+
+Priority（优先级）
+    2.4 引入。共 priority_levels 个队列（默认 3），数字越小越先被消费。

@@ -148,7 +148,7 @@ class TestFileListAndInfo:
 class TestSourcesLocation:
     def test_plain_output_shows_symbol_and_lines(self, capsys):
         import query_interface as qi
-        with patch("query_interface.HAS_RICH", False):
+        with patch("cli.state.HAS_RICH", False):
             qi.print_rag_sources([
                 {"file": "rag_engine.py", "score": 0.7, "content": "def _ensure_bm25", "ref": "1",
                  "symbol": "RAGEngine._ensure_bm25", "start_line": 534, "end_line": 581},
@@ -160,7 +160,7 @@ class TestSourcesLocation:
 
     def test_rich_table_includes_location_cell(self):
         import query_interface as qi
-        with patch("query_interface.HAS_RICH", True), patch("query_interface.console") as console:
+        with patch("cli.state.HAS_RICH", True), patch("cli.state.console") as console:
             qi.print_rag_sources([{"file": "a.py", "score": 0.7, "content": "x", "ref": "1",
                                    "symbol": "f", "start_line": 1, "end_line": 3, "part": "1/2"}])
             table = console.print.call_args.args[0]

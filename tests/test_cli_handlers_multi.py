@@ -31,7 +31,7 @@ class _Orch:
         self.calls = []
         self.shutdown_called = 0
 
-    def process_request(self, request, mode, progress=None, context=None):
+    def process_request(self, request, mode, progress=None, context=None, on_token=None):
         self.calls.append({"request": request, "mode": mode, "context": context})
         if progress:
             progress({"stage": "decompose", "message": "🧩 分解任务（模型推理）..."})
@@ -70,7 +70,8 @@ class TestParse:
 
     def test_help_and_tutorial_mention_multi(self):
         import inspect
-        assert "/multi <task>" in inspect.getsource(print_help)
+        from cli.help_text import print_help as help_impl  # F10 P2-2：/help 文案随实现迁至 cli.help_text
+        assert "/multi <task>" in inspect.getsource(help_impl)
         assert "/multi" in TUTORIAL_TEXT
 
 
