@@ -140,13 +140,14 @@ def _enforce_compatible_interpreter():
 if __name__ == "__main__":
     _enforce_compatible_interpreter()
 
-try:
-    import readline
-    HAS_READLINE = True
-except ImportError:
-    HAS_READLINE = False
+# 终端能力探测（HAS_RICH / HAS_READLINE / HAS_PROMPT_TOOLKIT）、Rich 控制台与运行时状态
+# 已收口到 cli.state（F10 P3-2-a）；本模块函数体内一律经 ``state.xxx`` 运行时取值。
+from cli import state  # noqa: E402
 
-try:
+if state.HAS_READLINE:
+    import readline
+
+if state.HAS_RICH:
     from rich.console import Console
     from rich.markdown import Markdown
     from rich.panel import Panel
@@ -155,21 +156,14 @@ try:
     from rich.table import Table
     from rich.prompt import Prompt
     from rich.markup import escape
-    HAS_RICH = True
-except ImportError:
-    HAS_RICH = False
-    print("[提示] 安装 rich 可获得更好的输出体验: pip install rich")
-
+else:
     def escape(text):  # type: ignore[misc]  # pragma: no cover - rich 缺失时的兜底
         return str(text)
 
-try:
+if state.HAS_PROMPT_TOOLKIT:
     from prompt_toolkit import prompt as pt_prompt
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-    HAS_PROMPT_TOOLKIT = True
-except ImportError:
-    HAS_PROMPT_TOOLKIT = False
 
 from config import Config, DATA_DIR, INDEX_DIR, LLM_MODEL, OLLAMA_BASE_URL
 from rag_engine import RAGEngine, build_knowledge_base
@@ -189,17 +183,22 @@ except ImportError:
 
 # 导入命令推荐系统
 try:
-    from command_recommender import CommandRecommender, RecommendationSource
+    from state.command_recommender import CommandRecommender, RecommendationSource
     RECOMMENDER_AVAILABLE = True
 except ImportError:
     RECOMMENDER_AVAILABLE = False
 
-# ==================== 全局状态 ====================
-rag_engine: RAGEngine = None
-react_engine: ReActEngine = None
-last_rag_sources = []
-last_web_sources = []  # 上次回答引用的网络来源（[{title, url}]），供 /sources 展示
-command_recommender: CommandRecommender = None
+# ==================== 全局状态（只读别名） ====================
+# 状态本体在 cli.state；这里的模块级名字仅为 ``from query_interface import HAS_RICH`` 等
+# 旧导入路径保留的**导入时快照**，函数体内不要使用（要经 ``state.xxx`` 取当前值）。
+HAS_RICH = state.HAS_RICH
+HAS_READLINE = state.HAS_READLINE
+HAS_PROMPT_TOOLKIT = state.HAS_PROMPT_TOOLKIT
+rag_engine = state.rag_engine
+react_engine = state.react_engine
+last_rag_sources = state.last_rag_sources
+last_web_sources = state.last_web_sources
+command_recommender = state.command_recommender
 
 
 # ==================== 日志配置 ====================
@@ -271,25 +270,10 @@ def setup_logging(verbose: bool = False):
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
-# ==================== Rich 控制台 ====================
+# ==================== Rich 控制台（只读别名，实现见 cli.state） ====================
 
-def get_console():
-    if HAS_RICH:
-        return Console()
-    else:
-        class FakeConsole:
-            def print(self, *args, **kwargs):
-                print(*args)
-            def input(self, prompt_text):
-                return input(prompt_text)
-            def status(self, msg):
-                class Dummy:
-                    def __enter__(self): return self
-                    def __exit__(self, *a): pass
-                return Dummy()
-        return FakeConsole()
-
-console = get_console()
+get_console = state.get_console
+console = state.console
 
 # ==================== 教程 ====================
 
@@ -298,8 +282,8 @@ from cli.help_text import print_help as _print_help  # noqa: E402
 
 
 def show_tutorial():
-    if HAS_RICH:
-        console.print(Panel(TUTORIAL_TEXT, border_style="cyan", title="使用指引", box=box.ROUNDED))
+    if state.HAS_RICH:
+        state.console.print(Panel(TUTORIAL_TEXT, border_style="cyan", title="使用指引", box=box.ROUNDED))
     else:
         print("=" * 60)
         print(TUTORIAL_TEXT)
@@ -313,16 +297,12 @@ def check_first_run():
                 f.write("done")
         except:
             pass
-        console.print("\n提示：之后可随时输入 /tutorial 重新查看本教程\n")
+        state.console.print("\n提示：之后可随时输入 /tutorial 重新查看本教程\n")
 
 # ==================== 回调函数 ====================
 
-# 进度条状态管理
-_progress_state = {
-    "last_line_length": 0,
-    "important_phases": {"executing", "observed", "blocked", "rejected", "final"},
-    "current_thinking_dots": 0
-}
+# 进度条状态管理：本体在 cli.state._progress_state（此处为只读别名）
+_progress_state = state._progress_state
 
 # ReAct 步骤阶段 → CLI 标记 / 颜色（含 P1-8 鲁棒性事件：格式重试、重复、折叠、强制总结、错误）
 STEP_PHASE_EMOJI = {
@@ -379,7 +359,7 @@ def on_step_callback(data: dict):
 
     phase_emoji = STEP_PHASE_EMOJI.get(phase, "[?]")
 
-    if HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
+    if state.HAS_RICH and Config.PROGRESS_BAR_STYLE == "rich":
         from rich.console import Console as RichConsole
         
         color = STEP_PHASE_COLOR.get(phase, "white")
@@ -399,31 +379,31 @@ def on_step_callback(data: dict):
         # 根据阶段选择显示策略
         if phase == "thinking":
             # 推理期间：单行刷新，添加动态点
-            _progress_state["current_thinking_dots"] = (_progress_state["current_thinking_dots"] + 1) % 4
-            dots = "." * _progress_state["current_thinking_dots"]
+            state._progress_state["current_thinking_dots"] = (state._progress_state["current_thinking_dots"] + 1) % 4
+            dots = "." * state._progress_state["current_thinking_dots"]
             content = f"[{color}]{phase_emoji} [{step}/{total}] 模型推理中{dots}[/{color}] [dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
-            console.print(content, end="\r")
-            _progress_state["last_line_length"] = len(content)
+            state.console.print(content, end="\r")
+            state._progress_state["last_line_length"] = len(content)
             
-        elif phase in _progress_state["important_phases"]:
+        elif phase in state._progress_state["important_phases"]:
             # 重要步骤：换行输出，保留历史记录
             # 先清理上一行的推理状态
-            if _progress_state["last_line_length"] > 0:
-                console.print(" " * _progress_state["last_line_length"], end="\r")
-                _progress_state["last_line_length"] = 0
+            if state._progress_state["last_line_length"] > 0:
+                state.console.print(" " * state._progress_state["last_line_length"], end="\r")
+                state._progress_state["last_line_length"] = 0
             
-            console.print(
+            state.console.print(
                 f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
                 f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
             )
             
         else:
             # 其他阶段：也换行输出
-            if _progress_state["last_line_length"] > 0:
-                console.print(" " * _progress_state["last_line_length"], end="\r")
-                _progress_state["last_line_length"] = 0
+            if state._progress_state["last_line_length"] > 0:
+                state.console.print(" " * state._progress_state["last_line_length"], end="\r")
+                state._progress_state["last_line_length"] = 0
                 
-            console.print(
+            state.console.print(
                 f"[{color}]{phase_emoji} [{step}/{total}] {msg}[/{color}] "
                 f"[dim][{progress_bar}] {progress_percent:.0f}%[/dim]"
             )
@@ -436,10 +416,10 @@ def on_confirm_callback(data: dict) -> bool:
     msg = data.get("message", "确认执行?")
     safety = data.get("safety", {})
 
-    if HAS_RICH:
+    if state.HAS_RICH:
         risk = safety.get("risk_level", "unknown")
         color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(risk, "white")
-        console.print(Panel(
+        state.console.print(Panel(
             f"**{msg}**\n"
             f"风险等级: [{color}]{risk}[/{color}]",
             border_style="yellow",
@@ -453,7 +433,7 @@ def on_confirm_callback(data: dict) -> bool:
             print("风险等级: " + safety.get('risk_level', 'unknown'))
 
     try:
-        answer = console.input("确认执行? (y/n): ").strip().lower()
+        answer = state.console.input("确认执行? (y/n): ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\n已取消")
         return False
@@ -469,7 +449,7 @@ def ask_progress_callback(data: dict):
     phase = data.get("phase", "")
     msg = data.get("message", "")
     
-    if HAS_RICH:
+    if state.HAS_RICH:
         phase_colors = {
             "embedding": "cyan",
             "retrieving": "blue",
@@ -480,9 +460,9 @@ def ask_progress_callback(data: dict):
         if phase == "scoring":
             current = data.get("current", 0)
             total = data.get("total", 1)
-            console.print(f"[dim]🔄 {msg} [progress]{current}/{total}[/progress][/dim]")
+            state.console.print(f"[dim]🔄 {msg} [progress]{current}/{total}[/progress][/dim]")
         else:
-            console.print(f"[{phase_colors}]🔄 {msg}[/{phase_colors}]")
+            state.console.print(f"[{phase_colors}]🔄 {msg}[/{phase_colors}]")
     else:
         print(f"🔄 {msg}")
 
@@ -496,8 +476,8 @@ CEREBRO_ASCII = r"""   ____                _
 
 
 def print_banner():
-    if HAS_RICH:
-        console.print(Panel(
+    if state.HAS_RICH:
+        state.console.print(Panel(
             f"[bold cyan]{CEREBRO_ASCII}[/bold cyan]\n"
             "[white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
             "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
@@ -526,10 +506,10 @@ def backend_banner_text() -> str:
 
 def print_help():
     """打印 ``/help``（文案与渲染见 ``cli.help_text.print_help``）。"""
-    _print_help(console, HAS_RICH)
+    _print_help(state.console, state.HAS_RICH)
 
 def print_tools():
-    if HAS_RICH:
+    if state.HAS_RICH:
         table = Table(title="可用工具", box=box.ROUNDED)
         table.add_column("工具名", style="cyan", no_wrap=True)
         table.add_column("安全等级", style="bold")
@@ -542,11 +522,11 @@ def print_tools():
             else:
                 level = "[yellow]需确认[/yellow]"
             table.add_row(name, level, info["description"])
-        console.print(table)
-        console.print("\n安全规则：")
-        console.print("  [green]安全[/green]   = 只读操作，自动执行")
-        console.print("  [yellow]需确认[/yellow] = 会修改系统，执行前询问")
-        console.print("  [red]危险[/red]     = rm -rf / 等命令会被自动拦截")
+        state.console.print(table)
+        state.console.print("\n安全规则：")
+        state.console.print("  [green]安全[/green]   = 只读操作，自动执行")
+        state.console.print("  [yellow]需确认[/yellow] = 会修改系统，执行前询问")
+        state.console.print("  [red]危险[/red]     = rm -rf / 等命令会被自动拦截")
     else:
         print("=== 可用工具 ===")
         for name, info in registry.tools.items():
@@ -555,9 +535,9 @@ def print_tools():
 
 def print_rag_sources(sources: list):
     if not sources:
-        console.print("⚠️  没有来源信息", style="yellow")
+        state.console.print("⚠️  没有来源信息", style="yellow")
         return
-    if HAS_RICH:
+    if state.HAS_RICH:
         table = Table(title="📚 参考来源（编号与回答中的 [n] 对应）", show_lines=True)
         table.add_column("#", style="bold", justify="right", no_wrap=True)
         table.add_column("文件", style="cyan", no_wrap=True)
@@ -583,7 +563,7 @@ def print_rag_sources(sources: list):
             cited = src.get("cited")
             cited_cell = str(cited) if isinstance(cited, int) and cited > 0 else "[dim]—[/dim]"
             table.add_row(ref, file_cell, score, cited_cell, content)
-        console.print(table)
+        state.console.print(table)
     else:
         print("=== 参考来源 ===")
         for i, src in enumerate(sources, 1):
@@ -612,31 +592,31 @@ def count_code_sources(sources: list) -> int:
     return sum(1 for s in sources or [] if isinstance(s, dict) and s.get("symbol"))
 
 def print_knowledge_stats():
-    if rag_engine is None:
-        console.print("⚠️  知识库未初始化", style="yellow")
+    if state.rag_engine is None:
+        state.console.print("⚠️  知识库未初始化", style="yellow")
         return
-    stats = rag_engine.get_stats()
+    stats = state.rag_engine.get_stats()
     # F10 P2-1-b：hybrid_disabled_reason 单独作为黄色提示行输出，表格里不重复；值为 None 的键不显示
     hybrid_reason = stats.get("hybrid_disabled_reason")
     rows = [(k, v) for k, v in stats.items() if v is not None and k != "hybrid_disabled_reason"]
-    if HAS_RICH:
+    if state.HAS_RICH:
         table = Table(title="📊 知识库统计", box=box.ROUNDED)
         table.add_column("项目", style="cyan")
         table.add_column("值", style="white")
         for k, v in rows:
             table.add_row(k, str(v))
-        console.print(table)
+        state.console.print(table)
     else:
         print("=== 知识库统计 ===")
         for k, v in rows:
             print(f"  {k}: {v}")
     if hybrid_reason:
-        console.print(f"⚠️ {hybrid_reason}", style="yellow")
+        state.console.print(f"⚠️ {hybrid_reason}", style="yellow")
 
 # ==================== readline 历史 ====================
 
 def setup_readline():
-    if HAS_READLINE:
+    if state.HAS_READLINE:
         try:
             from runtime_paths import home_file
         except ImportError:
@@ -658,11 +638,11 @@ def setup_readline():
 # ==================== 输入获取 ====================
 
 def get_input(prompt_text: str) -> str:
-    if HAS_PROMPT_TOOLKIT:
+    if state.HAS_PROMPT_TOOLKIT:
         history = FileHistory(str(INDEX_DIR / ".chat_history"))
         return pt_prompt(prompt_text, history=history, auto_suggest=AutoSuggestFromHistory()).strip()
     else:
-        return console.input(prompt_text).strip()
+        return state.console.input(prompt_text).strip()
 
 # 命令路由纯函数已移至 cli.parser（F10 P2-2），此处重导出以保持 ``from query_interface import parse_command`` 可用
 from cli.parser import ParsedCommand, classify_mode, parse_command  # noqa: E402,F401
@@ -672,36 +652,36 @@ from cli.parser import ParsedCommand, classify_mode, parse_command  # noqa: E402
 
 def show_command_recommendations():
     """显示命令推荐"""
-    logger.debug(f"show_command_recommendations 调用: command_recommender={command_recommender}")
+    logger.debug(f"show_command_recommendations 调用: command_recommender={state.command_recommender}")
     
-    if not command_recommender:
+    if not state.command_recommender:
         logger.debug("command_recommender 为 None")
         return
     
-    if not command_recommender.is_enabled():
+    if not state.command_recommender.is_enabled():
         logger.debug("command_recommender 已禁用")
         return
     
     try:
-        recommendations = command_recommender.get_recommendations()
+        recommendations = state.command_recommender.get_recommendations()
         logger.debug(f"获得 {len(recommendations) if recommendations else 0} 个推荐")
         
         if recommendations:
             # 默认使用紧凑单行模式，减少视觉噪音
-            formatted = command_recommender.format_recommendations(
-                recommendations, use_rich=HAS_RICH, compact=True
+            formatted = state.command_recommender.format_recommendations(
+                recommendations, use_rich=state.HAS_RICH, compact=True
             )
             if formatted:
-                console.print(formatted)
+                state.console.print(formatted)
     except Exception as e:
         logger.error(f"推荐系统错误: {e}")
-        console.print(f"[dim]⚠️  推荐系统错误: {e}[/dim]", style="dim")
+        state.console.print(f"[dim]⚠️  推荐系统错误: {e}[/dim]", style="dim")
 
 def record_command_execution(cmd_type: str, args: str = "", result: str = "", error: str = ""):
     """记录命令执行到推荐系统"""
     logger.debug(f"record_command_execution: cmd_type={cmd_type}, args={args!r}")
     
-    if not command_recommender:
+    if not state.command_recommender:
         logger.debug(f"command_recommender 为 None，无法记录命令: {cmd_type}")
         return
     
@@ -709,19 +689,19 @@ def record_command_execution(cmd_type: str, args: str = "", result: str = "", er
         # 截断过长的参数，避免污染历史/上下文（如网络搜索结果正文）
         safe_args = args if len(args) <= 200 else args[:200] + "…"
         # 记录命令
-        command_recommender.record_command(f"/{cmd_type}", safe_args, result)
+        state.command_recommender.record_command(f"/{cmd_type}", safe_args, result)
         logger.debug(f"命令已记录: /{cmd_type}")
         
         # 记录错误（如果有）
         if error:
-            command_recommender.record_error(error)
+            state.command_recommender.record_error(error)
             logger.debug(f"错误已记录: {error}")
         
         # 更新RAG状态（可能变化）
-        if rag_engine:
-            rag_available = rag_engine.retriever is not None
-            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
-            command_recommender.update_rag_status(rag_available, rag_empty)
+        if state.rag_engine:
+            rag_available = state.rag_engine.retriever is not None
+            rag_empty = rag_available and (state.rag_engine.get_stats().get("total_chunks", 0) == 0)
+            state.command_recommender.update_rag_status(rag_available, rag_empty)
             logger.debug(f"RAG状态已更新: available={rag_available}, empty={rag_empty}")
         
     except Exception as e:
@@ -751,7 +731,7 @@ def _print_health_hint(pre: dict, question: str = ""):
         health = merge_health(pre or {}, conv.health())
         hint = format_suggest_hint(health)
         if hint:
-            console.print(f"[dim]{hint}，输入 /session-new（可加 --carry 携带摘要）[/dim]")
+            state.console.print(f"[dim]{hint}，输入 /session-new（可加 --carry 携带摘要）[/dim]")
             conv.mark_suggested()
     except Exception as e:  # noqa: BLE001 - 提示失败不影响主流程
         logger.debug(f"health hint failed: {e}")
@@ -825,36 +805,36 @@ def _cli_ask_progress(event: dict):
     if stage == "thinking":
         # /think on：模型思维链（已截断 800 字），dim 样式、转义避免被当作 Rich 标记
         from rich.markup import escape as _escape
-        console.print(f"[dim]{_escape(msg)}[/dim]")
+        state.console.print(f"[dim]{_escape(msg)}[/dim]")
     elif stage == "fallback":
-        console.print(msg, style="yellow")  # 具体 /agent 提示在回答渲染后由 _run_ask 打印
+        state.console.print(msg, style="yellow")  # 具体 /agent 提示在回答渲染后由 _run_ask 打印
     elif stage in ("kb_retrieving", "synthesizing", "model_thinking", "rerank",
                    "context_compress", "context_compressed"):
         # 这些"进行中"提示走安静的 dim 行，避免打断 status
-        console.print(f"[dim]{msg}[/dim]")
+        state.console.print(f"[dim]{msg}[/dim]")
     elif msg:
-        console.print(msg, style=style)
+        state.console.print(msg, style=style)
 
 
 def _render_meta_overview(event: dict):
     """CLI 渲染知识库概览（文件列表 + 统计）。"""
     files = event.get("files") or []
     stats = event.get("stats") or {}
-    console.print("\n📚 知识库概览:", style="bold blue")
+    state.console.print("\n📚 知识库概览:", style="bold blue")
     if not files:
-        console.print("📭 知识库中暂无已登记的文件。", style="yellow")
+        state.console.print("📭 知识库中暂无已登记的文件。", style="yellow")
         if stats.get("total_documents"):
-            console.print(
+            state.console.print(
                 f"[dim]（向量库中存在 {stats['total_documents']} 个文档片段，"
                 f"但未登记文件元数据）[/dim]"
             )
     else:
-        console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
+        state.console.print(f"📁 共有 {len(files)} 个文件:", style="cyan")
         for fm in files:
-            console.print(f"  📄 {fm.get('path')}  [dim]({fm.get('size', '?')})[/dim]")
+            state.console.print(f"  📄 {fm.get('path')}  [dim]({fm.get('size', '?')})[/dim]")
 
     if stats:
-        console.print(
+        state.console.print(
             f"\n[dim]文档片段总数: {stats.get('total_documents', '?')} | "
             f"Embedding: {stats.get('embed_model', '?')}[/dim]"
         )
@@ -862,7 +842,7 @@ def _render_meta_overview(event: dict):
 
 def _answer_meta_query() -> bool:
     """兼容封装：直接渲染知识库概览。"""
-    overview = rag_pipeline.build_meta_overview(rag_engine)
+    overview = rag_pipeline.build_meta_overview(state.rag_engine)
     _render_meta_overview({"files": overview["files"], "stats": overview["stats"]})
     return True
 
@@ -871,7 +851,7 @@ def print_web_sources(sources: list):
     """渲染网络来源区块（与知识库来源明确区分）。"""
     if not sources:
         return
-    if HAS_RICH:
+    if state.HAS_RICH:
         table = Table(title="🌐 网络来源（编号与回答中的 [Wn] 对应）", show_lines=False)
         table.add_column("#", style="dim", justify="right", no_wrap=True)
         table.add_column("标题", style="cyan")
@@ -879,7 +859,7 @@ def print_web_sources(sources: list):
         for i, src in enumerate(sources, 1):
             ref = f"[{src.get('ref') or f'W{i}'}]"
             table.add_row(ref, src.get("title", ""), src.get("url", ""))
-        console.print(table)
+        state.console.print(table)
     else:
         print("=== 🌐 网络来源 ===")
         for i, src in enumerate(sources, 1):
@@ -922,8 +902,8 @@ def _synthesize_prompt(question: str, kb_context: str, web_context: str) -> str:
 
 def _render_answer(answer: str):
     """统一渲染回答文本（Markdown / 纯文本）。"""
-    if HAS_RICH:
-        console.print(Panel(Markdown(answer), border_style="green"))
+    if state.HAS_RICH:
+        state.console.print(Panel(Markdown(answer), border_style="green"))
     else:
         print(answer)
 
@@ -932,7 +912,7 @@ def _live_answer(title: str = None):
     """构造终端流式答案渲染器（F10 P1-1；非 Rich 终端为空操作）。"""
     from cli.handlers import LiveAnswer
 
-    return LiveAnswer(console, HAS_RICH, title=title)
+    return LiveAnswer(state.console, state.HAS_RICH, title=title)
 
 
 def _print_notices(notices, position: str = "before") -> None:
@@ -951,9 +931,9 @@ def _print_notices(notices, position: str = "before") -> None:
         if not text:
             continue
         if n.get("level") == "warn":
-            console.print(f"⚠️ {text}", style="yellow")
+            state.console.print(f"⚠️ {text}", style="yellow")
         else:
-            console.print(f"💡 {text}", style="dim")
+            state.console.print(f"💡 {text}", style="dim")
 
 
 def _citation_summary(citation_check) -> str:
@@ -968,7 +948,7 @@ def _citation_summary(citation_check) -> str:
 
 
 def handle_clear(ctx, parsed):
-    console.clear()
+    state.console.clear()
     print_banner()
     record_command_execution("clear")
     return True
@@ -981,7 +961,7 @@ def handle_history(ctx, parsed):
     msgs = current.messages if current else []
     dialog_msgs = [m for m in msgs if m.get("role") in ("user", "assistant")]
     if not dialog_msgs:
-        console.print("[dim]暂无对话历史[/dim]")
+        state.console.print("[dim]暂无对话历史[/dim]")
         return False
     lines = []
     for i, m in enumerate(dialog_msgs):
@@ -989,8 +969,8 @@ def handle_history(ctx, parsed):
         content = m.get("content", "")[:80].replace("\n", " ")
         lines.append(f"{i}. [{role}] {content}...")
     title = f"历史记录 - {current.title}" if current else "历史记录"
-    if HAS_RICH:
-        console.print(Panel("\n".join(lines), title=title, border_style="dim"))
+    if state.HAS_RICH:
+        state.console.print(Panel("\n".join(lines), title=title, border_style="dim"))
     else:
         print("\n".join(lines))
     record_command_execution("history")
@@ -998,9 +978,9 @@ def handle_history(ctx, parsed):
 
 
 def handle_summary(ctx, parsed):
-    summary = react_engine.get_step_summary()
-    if HAS_RICH:
-        console.print(Panel(summary, title="执行摘要", border_style="blue"))
+    summary = state.react_engine.get_step_summary()
+    if state.HAS_RICH:
+        state.console.print(Panel(summary, title="执行摘要", border_style="blue"))
     else:
         print(summary)
     record_command_execution("summary")
@@ -1009,12 +989,12 @@ def handle_summary(ctx, parsed):
 
 def handle_reset(ctx, parsed):
     """清空当前会话的对话上下文（消息 + 滚动摘要），三种模式共用。"""
-    engine = ctx.react_engine if ctx and ctx.react_engine is not None else react_engine
+    engine = ctx.react_engine if ctx and ctx.react_engine is not None else state.react_engine
     ok = engine.clear_history() if engine is not None else _conversation().clear()
     if ok:
-        console.print("🔄 当前会话上下文已清空（消息与滚动摘要）", style="green")
+        state.console.print("🔄 当前会话上下文已清空（消息与滚动摘要）", style="green")
     else:
-        console.print("[dim]当前没有可清空的会话上下文[/dim]")
+        state.console.print("[dim]当前没有可清空的会话上下文[/dim]")
     record_command_execution("reset")
     return True
 
@@ -1022,8 +1002,8 @@ def handle_reset(ctx, parsed):
 def handle_file(ctx, parsed):
     path = parsed.arg
     result = registry.execute("read_file", {"path": path}, auto_confirm=True)
-    if HAS_RICH:
-        console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
+    if state.HAS_RICH:
+        state.console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
     else:
         print(result)
         record_command_execution("read", path)
@@ -1032,7 +1012,7 @@ def handle_file(ctx, parsed):
 
 def handle_write(ctx, parsed):
     path = parsed.arg
-    console.print("[yellow]进入写入模式，输入内容（空行结束）:[/yellow]")
+    state.console.print("[yellow]进入写入模式，输入内容（空行结束）:[/yellow]")
     lines = []
     while True:
         try:
@@ -1044,7 +1024,7 @@ def handle_write(ctx, parsed):
         lines.append(line)
     content = "\n".join(lines)
     result = registry.execute("write_file", {"path": path, "content": content}, auto_confirm=False)
-    console.print(result)
+    state.console.print(result)
     record_command_execution("write", path)
     return True
 
@@ -1052,34 +1032,34 @@ def handle_write(ctx, parsed):
 def handle_exec(ctx, parsed):
     cmd = parsed.arg
     safety = CommandSafetyChecker.analyze(cmd)
-    if HAS_RICH:
+    if state.HAS_RICH:
         color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red"}.get(safety['risk_level'], "white")
-        console.print(f"[dim]命令: {cmd}[/dim]")
-        console.print(f"风险等级: [{color}]{safety['risk_level']}[/{color}]")
+        state.console.print(f"[dim]命令: {cmd}[/dim]")
+        state.console.print(f"风险等级: [{color}]{safety['risk_level']}[/{color}]")
     else:
         print(f"命令: {cmd}")
         print(f"风险等级: {safety['risk_level']}")
 
     if safety["is_dangerous"]:
-        console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
+        state.console.print("[red]该命令被安全系统拦截，拒绝执行。[/red]")
         return False
     # AUTO_CONFIRM 只放行 low / medium；high 仍需人工确认（F10 P0-1-c）
     if safety["needs_confirm"] and not (Config.AUTO_CONFIRM and auto_confirm_allows(safety)):
         if Config.AUTO_CONFIRM:
-            console.print(f"[yellow]{HIGH_RISK_CONFIRM_HINT}"
+            state.console.print(f"[yellow]{HIGH_RISK_CONFIRM_HINT}"
                           f"（自动确认只放行 low / medium）[/yellow]")
         try:
-            ans = console.input("确认执行? (y/n): ").strip().lower()
+            ans = state.console.input("确认执行? (y/n): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("已取消")
             return False
         if ans not in ("y", "yes", "是"):
-            console.print("[dim]已取消[/dim]")
+            state.console.print("[dim]已取消[/dim]")
             return False
 
     result = registry.execute("execute_command", {"command": cmd}, auto_confirm=True)
-    if HAS_RICH:
-        console.print(Panel(result, title="命令输出", border_style="magenta"))
+    if state.HAS_RICH:
+        state.console.print(Panel(result, title="命令输出", border_style="magenta"))
     else:
         print(result)
     record_command_execution("exec", cmd)
@@ -1096,15 +1076,15 @@ def handle_cd(ctx, parsed):
     path = parsed.arg
     try:
         os.chdir(path)
-        console.print(f"[green]已切换到: {os.getcwd()}[/green]")
+        state.console.print(f"[green]已切换到: {os.getcwd()}[/green]")
         record_command_execution("cd", path)
         return True
     except FileNotFoundError:
-        console.print(f"[red]目录不存在: {path}[/red]")
+        state.console.print(f"[red]目录不存在: {path}[/red]")
     except PermissionError:
-        console.print(f"[red]权限不足: {path}[/red]")
+        state.console.print(f"[red]权限不足: {path}[/red]")
     except Exception as e:  # noqa: BLE001
-        console.print(f"[red]切换失败: {e}[/red]")
+        state.console.print(f"[red]切换失败: {e}[/red]")
     return False
 
 
@@ -1123,37 +1103,37 @@ def handle_model(ctx, parsed):
         info = model_switcher.current_model_info()
         provider = info.get("provider") or "ollama"
         if provider == "ollama":
-            state = (
+            state_text = (
                 f"已加载，驻留 {model_switcher.format_size(info['size_bytes'])}"
                 if info["loaded"] else "未加载（首次请求时按需加载）"
             )
-            console.print(f"[green]模型: {info['model']}[/green]  ({state})")
-            console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
-            console.print(f"[green]Ollama: {react_engine.host if react_engine else Config.OLLAMA_HOST}[/green]")
+            state.console.print(f"[green]模型: {info['model']}[/green]  ({state_text})")
+            state.console.print(f"[green]上下文: num_ctx={info['num_ctx']}  思考模式: {'开' if info['think'] else '关'}[/green]")
+            state.console.print(f"[green]Ollama: {state.react_engine.host if state.react_engine else Config.OLLAMA_HOST}[/green]")
         else:
             # OpenAI 兼容后端：驻留 / num_ctx / 思考模式由后端管理，不显示 Ollama 专有状态
-            console.print(f"[green]模型: {info['model']}[/green]")
-            console.print(f"[green]后端: {provider} @ {info.get('base_url') or Config.LLM_BASE_URL}[/green]")
-            console.print("[dim]num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama[/dim]")
-        console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
+            state.console.print(f"[green]模型: {info['model']}[/green]")
+            state.console.print(f"[green]后端: {provider} @ {info.get('base_url') or Config.LLM_BASE_URL}[/green]")
+            state.console.print("[dim]num_ctx / 思考模式由后端决定；嵌入模型仍走 Ollama[/dim]")
+        state.console.print(f"[green]自动确认: {Config.AUTO_CONFIRM}[/green]")
         others = [m for m in info["loaded_models"] if m != info["model"]]
         if others:
-            console.print(f"[yellow]提示: 内存中还驻留着其他模型: {', '.join(others)}（可用 ollama stop 释放）[/yellow]")
-        console.print("[dim]用法: /model list 查看可选模型；/model <name> 切换（如 /model qwen3.5:9b）[/dim]")
+            state.console.print(f"[yellow]提示: 内存中还驻留着其他模型: {', '.join(others)}（可用 ollama stop 释放）[/yellow]")
+        state.console.print("[dim]用法: /model list 查看可选模型；/model <name> 切换（如 /model qwen3.5:9b）[/dim]")
         return True
 
     if arg.lower() in ("list", "ls"):
         installed = model_switcher.list_installed_models()
         notice = model_switcher.models_notice()
         if not installed:
-            console.print(f"[red]{notice or '无法获取模型列表，请确认 Ollama 已启动'}[/red]")
+            state.console.print(f"[red]{notice or '无法获取模型列表，请确认 Ollama 已启动'}[/red]")
             return True
         if notice:
             # openai 模式后端未提供 /v1/models：列表只有当前模型，/model <name> 可切到任意名字
-            console.print(f"[yellow]{notice}[/yellow]")
+            state.console.print(f"[yellow]{notice}[/yellow]")
         loaded = {m["name"] for m in model_switcher.list_loaded_models()}
         current = Config.LLM_MODEL
-        console.print("[bold]本机已安装模型:[/bold]" if not notice else "[bold]可用模型:[/bold]")
+        state.console.print("[bold]本机已安装模型:[/bold]" if not notice else "[bold]可用模型:[/bold]")
         for name in installed:
             marks = []
             if name == current:
@@ -1161,16 +1141,16 @@ def handle_model(ctx, parsed):
             if name in loaded:
                 marks.append("已加载")
             suffix = f"  [{'/'.join(marks)}]" if marks else ""
-            console.print(f"  - {name}{suffix}")
-        console.print("[dim]切换: /model <name>[/dim]")
+            state.console.print(f"  - {name}{suffix}")
+        state.console.print("[dim]切换: /model <name>[/dim]")
         return True
 
     result = model_switcher.switch_model(
-        arg, rag_engine=ctx.rag_engine if ctx else rag_engine,
-        react_engine=ctx.react_engine if ctx else react_engine,
+        arg, rag_engine=ctx.rag_engine if ctx else state.rag_engine,
+        react_engine=ctx.react_engine if ctx else state.react_engine,
     )
     color = "green" if result.ok else "red"
-    console.print(f"[{color}]{result.message}[/{color}]")
+    state.console.print(f"[{color}]{result.message}[/{color}]")
     return True
 
 
@@ -1186,9 +1166,9 @@ def handle_think(ctx, parsed):
 
     if not arg:
         info = model_switcher.current_model_info()
-        state = "开" if info["think"] else "关"
-        console.print(f"[green]思考模式: {state}  （模型: {info['model']}）[/green]")
-        console.print(
+        state_text = "开" if info["think"] else "关"
+        state.console.print(f"[green]思考模式: {state_text}  （模型: {info['model']}）[/green]")
+        state.console.print(
             "[dim]关闭时响应更快（4B 模型同一问题约 31s → 3s），适合日常查询与工具调用；"
             "开启时模型先输出思维链再作答，适合复杂推理。用法: /think on | /think off[/dim]"
         )
@@ -1196,15 +1176,15 @@ def handle_think(ctx, parsed):
 
     flag = model_switcher.parse_think_flag(arg)
     if flag is None:
-        console.print(f"[red]无法识别参数 '{arg}'，请使用 /think on 或 /think off[/red]")
+        state.console.print(f"[red]无法识别参数 '{arg}'，请使用 /think on 或 /think off[/red]")
         return True
 
     result = model_switcher.switch_think(
-        flag, rag_engine=ctx.rag_engine if ctx else rag_engine,
-        react_engine=ctx.react_engine if ctx else react_engine,
+        flag, rag_engine=ctx.rag_engine if ctx else state.rag_engine,
+        react_engine=ctx.react_engine if ctx else state.react_engine,
     )
     color = "green" if result.ok else "red"
-    console.print(f"[{color}]{result.message}[/{color}]")
+    state.console.print(f"[{color}]{result.message}[/{color}]")
     return True
 
 
@@ -1220,9 +1200,9 @@ def handle_auto(ctx, parsed):
     record_command_execution("auto")
 
     if not arg:
-        state = "开" if Config.AUTO_ROUTE else "关"
-        console.print(f"[green]自动路由: {state}[/green]")
-        console.print(
+        state_text = "开" if Config.AUTO_ROUTE else "关"
+        state.console.print(f"[green]自动路由: {state_text}[/green]")
+        state.console.print(
             "[dim]开启时自然语言输入先判定意图：含路径/代码/命令式动词走 Agent，疑问/总结类走知识库，"
             "模糊时由模型一词判定；关闭后一律走知识库问答。/ask、/agent 显式命令不判定。"
             "用法: /auto on | /auto off[/dim]"
@@ -1231,14 +1211,14 @@ def handle_auto(ctx, parsed):
 
     flag = model_switcher.parse_think_flag(arg)
     if flag is None:
-        console.print(f"[red]无法识别参数 '{arg}'，请使用 /auto on 或 /auto off[/red]")
+        state.console.print(f"[red]无法识别参数 '{arg}'，请使用 /auto on 或 /auto off[/red]")
         return True
 
     Config.AUTO_ROUTE = flag
     if flag:
-        console.print("[green]自动路由已开启：自然语言输入将自动判定走知识库还是 Agent[/green]")
+        state.console.print("[green]自动路由已开启：自然语言输入将自动判定走知识库还是 Agent[/green]")
     else:
-        console.print("[green]自动路由已关闭：自然语言输入一律走知识库问答（/agent 可显式使用 Agent）[/green]")
+        state.console.print("[green]自动路由已关闭：自然语言输入一律走知识库问答（/agent 可显式使用 Agent）[/green]")
     return True
 
 
@@ -1253,7 +1233,6 @@ def handle_ask(ctx, parsed):
 
 def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
     """``/ask`` 与自然语言输入共用的知识库问答实现（带会话上下文）。"""
-    global last_rag_sources, last_web_sources
     import re
 
     original_question = question  # 用于命令记录，避免把搜索结果正文塞进历史
@@ -1281,7 +1260,7 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
     live = _live_answer()
     try:
         result = rag_pipeline.answer_question(
-            rag_engine,
+            state.rag_engine,
             question,
             enable_web_search=True,
             show_progress=Config.SHOW_PROGRESS,
@@ -1292,61 +1271,61 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
         )
     except KeyboardInterrupt:
         live.finish()
-        console.print("\n[yellow]已中断，已关闭与模型的连接。[/yellow]")
+        state.console.print("\n[yellow]已中断，已关闭与模型的连接。[/yellow]")
         return False
     finally:
         live.finish()
 
     # 元查询：概览已在 _cli_ask_progress 中渲染，这里只记录并返回。
     if result.get("kind") == "meta":
-        last_rag_sources = []
-        last_web_sources = []
-        ctx.last_rag_sources = last_rag_sources
-        ctx.last_web_sources = last_web_sources
+        state.last_rag_sources = []
+        state.last_web_sources = []
+        ctx.last_rag_sources = state.last_rag_sources
+        ctx.last_web_sources = state.last_web_sources
         record_command_execution(cmd_name, original_question)
         record_conversation(original_question, "[知识库概览]", progress=_cli_ask_progress)
         return True
 
-    console.print("\n🤖 回答:", style="bold blue")
+    state.console.print("\n🤖 回答:", style="bold blue")
     if result.get("rewritten"):
         # F9 P1-2：质疑类追问复用同一通道，文案改为「重新核对」
         label = "🔁 用户质疑，重新核对" if result.get("challenge") else "🔗 已理解为"
-        console.print(f"[cyan]{label}：{result['rewritten']}[/cyan]")
+        state.console.print(f"[cyan]{label}：{result['rewritten']}[/cyan]")
     # F9 P0-5：警示 / 校验等结构化提示与正文分离——before 组在 Panel 上方，after 组在下方
     notices = result.get("notices") or []
     _print_notices(notices, position="before")
     _render_answer(result["answer"])
     _print_notices(notices, position="after")
 
-    last_rag_sources = result.get("kb_sources", [])
-    last_web_sources = result.get("web_sources", [])
-    ctx.last_rag_sources = last_rag_sources
-    ctx.last_web_sources = last_web_sources
+    state.last_rag_sources = result.get("kb_sources", [])
+    state.last_web_sources = result.get("web_sources", [])
+    ctx.last_rag_sources = state.last_rag_sources
+    ctx.last_web_sources = state.last_web_sources
 
     # 确定性双区块来源展示：明确区分知识库来源与网络来源
     check = result.get("citation_check")
     cite = _citation_summary(check)
     cite_style = "yellow" if (isinstance(check, dict) and check.get("invalid")) else "dim"
-    if last_rag_sources:
-        n_code = count_code_sources(last_rag_sources)
+    if state.last_rag_sources:
+        n_code = count_code_sources(state.last_rag_sources)
         suffix = f"（{n_code} 个代码符号）" if n_code else ""
         # P0-3：同一行追加引用计数；有无效引用时整行黄色
-        console.print(
-            f"\n📚 基于知识库 {len(last_rag_sources)} 个片段{suffix}" + (f" · {cite}" if cite else ""),
+        state.console.print(
+            f"\n📚 基于知识库 {len(state.last_rag_sources)} 个片段{suffix}" + (f" · {cite}" if cite else ""),
             style=cite_style,
         )
     elif cite:
-        console.print(f"\n{cite}", style=cite_style)
-    if last_web_sources:
-        console.print()
-        print_web_sources(last_web_sources)
-    if last_rag_sources or last_web_sources:
-        console.print("[dim]输入 /sources 查看完整来源明细（编号与回答中的 [n]/[Wn] 对应）[/dim]")
+        state.console.print(f"\n{cite}", style=cite_style)
+    if state.last_web_sources:
+        state.console.print()
+        print_web_sources(state.last_web_sources)
+    if state.last_rag_sources or state.last_web_sources:
+        state.console.print("[dim]输入 /sources 查看完整来源明细（编号与回答中的 [n]/[Wn] 对应）[/dim]")
 
     # 失败回退：知识库与网络均无结果 → 提示改用单 Agent 工具进一步查找
     if result.get("kind") == "fallback":
         fq = result.get("fallback_question") or original_question
-        console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
+        state.console.print(f"\n💡 知识库与网络均未找到相关内容，可试试：[bold]/agent {fq}[/bold]", style="yellow")
 
     record_command_execution(cmd_name, original_question)
     # 会话记录：正文 + warn 级 notice 各一行（后续轮次据此知道上一答是否有依据）
@@ -1361,21 +1340,21 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
 def _ingest_inline_file(file_path: str, question: str) -> str:
     """将问题中检测到的文件加入知识库，并清洗/补全查询文本后返回。"""
     import re
-    console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
-    console.print("🔄 正在添加到知识库...", style="yellow")
+    state.console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
+    state.console.print("🔄 正在添加到知识库...", style="yellow")
     try:
         from document_loader import load_documents as _load
         documents = _load(file_path)
         if not documents:
-            console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
+            state.console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
             return question
-        rag_engine.add_documents(documents, [file_path])
+        state.rag_engine.add_documents(documents, [file_path])
         if Config.SHOW_PROGRESS:
-            console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
+            state.console.print(f"✅ 已加载 {len(documents)} 个文档", style="green")
             total_chars = sum(len(doc.text) for doc in documents)
-            console.print(f"✅ 总字符数: {total_chars}", style="dim")
+            state.console.print(f"✅ 总字符数: {total_chars}", style="dim")
         else:
-            console.print("✅ 文件已添加到知识库", style="green")
+            state.console.print("✅ 文件已添加到知识库", style="green")
         # 移除路径文本、清理空白与标点
         question = re.sub(re.escape(file_path), '', question)
         question = re.sub(r'\s+', ' ', question).strip().rstrip('，。,.')
@@ -1387,9 +1366,9 @@ def _ingest_inline_file(file_path: str, question: str) -> str:
             filename = Path(file_path).name
             if filename not in question:
                 question = f"{filename} {question}"
-        console.print(f"❓ 查询: {question}", style="cyan")
+        state.console.print(f"❓ 查询: {question}", style="cyan")
     except Exception as e:  # noqa: BLE001
-        console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
+        state.console.print(f"⚠️ 添加文件失败，直接查询现有知识库: {e}", style="yellow")
     return question
 
 
@@ -1402,7 +1381,7 @@ def _answer_question(question: str, original_question: str, web_search_result: s
     """兼容封装：根据知识库状态生成回答（逻辑见 rag_pipeline.generate_answer）。"""
     rag_progress = ask_progress_callback if Config.SHOW_PROGRESS else None
     return rag_pipeline.generate_answer(
-        rag_engine,
+        state.rag_engine,
         question,
         original_question,
         web_search_result,
@@ -1415,7 +1394,7 @@ def _answer_question(question: str, original_question: str, web_search_result: s
 def handle_agent(ctx, parsed):
     task = parsed.arg
     answer = ""
-    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else state.react_engine
     pre_health = _health_before(task)
     # F10 P1-1：Final Answer 逐 token 刷新实时面板（工具步骤仍走 on_step 面板输出）；
     # Ctrl+C 时 engine.stop() 关闭流式连接。
@@ -1427,28 +1406,28 @@ def handle_agent(ctx, parsed):
     except KeyboardInterrupt:
         live.finish()
         engine.stop()
-        console.print("\n[yellow]已中断：用户中断，任务已停止，已关闭与模型的连接。[/yellow]")
+        state.console.print("\n[yellow]已中断：用户中断，任务已停止，已关闭与模型的连接。[/yellow]")
         return False
     except Exception as e:  # noqa: BLE001
         live.finish()
-        console.print(f"[red]错误: {e}[/red]")
+        state.console.print(f"[red]错误: {e}[/red]")
         return False
     finally:
         engine.on_token = prev_sink
         live.finish()
 
-    if HAS_RICH:
+    if state.HAS_RICH:
         if "```" in answer or "**" in answer or "#" in answer:
-            console.print(Markdown(answer))
+            state.console.print(Markdown(answer))
         else:
-            console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
+            state.console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
     else:
         print("\n" + "=" * 50)
         print(answer)
         print("=" * 50 + "\n")
 
     if len(engine.step_log) > 1:
-        console.print(f"[dim]本次共执行 {len(engine.step_log)} 步，输入 /summary 查看详情[/dim]")
+        state.console.print(f"[dim]本次共执行 {len(engine.step_log)} 步，输入 /summary 查看详情[/dim]")
     # ReAct 引擎已在 chat() 结束时把本轮（任务 + 最终答案 + 执行摘要）写回会话
     record_command_execution("agent", task)
     _print_health_hint(pre_health, task)
@@ -1463,15 +1442,15 @@ def handle_natural(ctx, parsed):
     回退到网络/模型回答），追问同样能结合上下文理解。
     """
     text = parsed.arg
-    engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else rag_engine
+    engine = ctx.rag_engine if (ctx is not None and getattr(ctx, "rag_engine", None) is not None) else state.rag_engine
     kb_available = bool(engine is not None and getattr(engine, "retriever", None) is not None)
 
     # F8 P3-2：自动路由——先判定意图，再决定走知识库问答还是 Agent
     if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
         return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
 
-    if rag_engine is not None and rag_engine.retriever is None:
-        console.print(
+    if state.rag_engine is not None and state.rag_engine.retriever is None:
+        state.console.print(
             "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
             "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"
         )
@@ -1483,7 +1462,7 @@ def _route_natural_to_agent(ctx, text: str, kb_available: bool) -> bool:
 
     判定失败或 Agent 引擎不可用时返回 False（走知识库问答），不影响主流程。
     """
-    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else react_engine
+    engine = ctx.react_engine if (ctx is not None and getattr(ctx, "react_engine", None) is not None) else state.react_engine
     if engine is None:
         return False
     try:
@@ -1494,14 +1473,14 @@ def _route_natural_to_agent(ctx, text: str, kb_available: bool) -> bool:
         return False
     if decision.mode != "agent":
         return False
-    console.print(
+    state.console.print(
         f"[cyan]🤖 已按 Agent 模式处理（{decision.reason}；用 /ask 强制知识库；/auto off 关闭自动路由）[/cyan]"
     )
     return True
 
 
 def handle_unknown_cmd(ctx, parsed):
-    console.print(f"[yellow]未知命令: {parsed.raw}，输入 /help 查看帮助[/yellow]")
+    state.console.print(f"[yellow]未知命令: {parsed.raw}，输入 /help 查看帮助[/yellow]")
     return False
 
 
@@ -1530,12 +1509,12 @@ def _build_cli_context():
     """构造注入了当前运行时状态/协作函数的 CLIContext。"""
     from cli.handlers import CLIContext
     return CLIContext(
-        console=console,
-        has_rich=HAS_RICH,
-        rag_engine=rag_engine,
-        react_engine=react_engine,
-        last_rag_sources=last_rag_sources,
-        last_web_sources=last_web_sources,
+        console=state.console,
+        has_rich=state.HAS_RICH,
+        rag_engine=state.rag_engine,
+        react_engine=state.react_engine,
+        last_rag_sources=state.last_rag_sources,
+        last_web_sources=state.last_web_sources,
         record_command=record_command_execution,
         record_conversation=record_conversation,
         ask_progress_callback=ask_progress_callback,
@@ -1568,8 +1547,6 @@ def dispatch_command(ctx, parsed) -> bool:
 # ==================== 主程序 ====================
 
 def main():
-    global rag_engine, react_engine, last_rag_sources, last_web_sources, command_recommender
-
     parser = argparse.ArgumentParser(
         description="Cerebro 🧠 你的第二大脑 + 代码助手 - RAG + Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1629,11 +1606,11 @@ def main():
 
     # ==================== 初始化 RAG 引擎 ====================
     if args.clear:
-        rag_engine = RAGEngine()
-        rag_engine.clear_index()
+        state.rag_engine = RAGEngine()
+        state.rag_engine.clear_index()
         return
 
-    rag_engine = RAGEngine()
+    state.rag_engine = RAGEngine()
     if args.data:
         file_types = None
         if args.types:
@@ -1641,19 +1618,19 @@ def main():
         documents = load_documents(args.data, file_types)
         if documents:
             # 传入 file_paths：文档缺 file_path 元数据时仍能登记文件元数据
-            rag_engine.build_index(documents, file_paths=[args.data])
+            state.rag_engine.build_index(documents, file_paths=[args.data])
             try:
                 from code_chunker import format_ingest_summary
-                stats = getattr(rag_engine, "last_ingest_stats", None) or {}
+                stats = getattr(state.rag_engine, "last_ingest_stats", None) or {}
                 if stats:
-                    console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
+                    state.console.print(f"📦 {format_ingest_summary(stats)}", style="dim")
             except Exception:  # noqa: BLE001
                 pass
         else:
-            console.print("⚠️  未找到任何文档", style="yellow")
+            state.console.print("⚠️  未找到任何文档", style="yellow")
     else:
-        if not rag_engine.load_index():
-            console.print(
+        if not state.rag_engine.load_index():
+            state.console.print(
                 f"[dim]未找到已有索引。使用 --data 指定数据路径构建知识库。[/dim]\n"
                 f"[dim]默认数据目录: {DATA_DIR}[/dim]"
             )
@@ -1663,40 +1640,40 @@ def main():
     if RECOMMENDER_AVAILABLE:
         try:
             logger.info("创建 CommandRecommender 实例")
-            command_recommender = CommandRecommender()
+            state.command_recommender = CommandRecommender()
             logger.info("初始化 CommandRecommender")
-            command_recommender.initialize()
+            state.command_recommender.initialize()
             logger.info("CommandRecommender 初始化完成")
             
             # 更新RAG引擎状态到推荐系统
-            rag_available = rag_engine.retriever is not None
-            rag_empty = rag_available and (rag_engine.get_stats().get("total_chunks", 0) == 0)
-            command_recommender.update_rag_status(rag_available, rag_empty)
+            rag_available = state.rag_engine.retriever is not None
+            rag_empty = rag_available and (state.rag_engine.get_stats().get("total_chunks", 0) == 0)
+            state.command_recommender.update_rag_status(rag_available, rag_empty)
             
-            console.print("[dim]💡 智能命令推荐系统已启用[/dim]", style="dim")
-            logger.info(f"命令推荐系统初始化成功: enabled={command_recommender.is_enabled()}")
+            state.console.print("[dim]💡 智能命令推荐系统已启用[/dim]", style="dim")
+            logger.info(f"命令推荐系统初始化成功: enabled={state.command_recommender.is_enabled()}")
         except Exception as e:
-            console.print(f"[dim]⚠️  命令推荐系统初始化失败: {e}[/dim]", style="dim")
+            state.console.print(f"[dim]⚠️  命令推荐系统初始化失败: {e}[/dim]", style="dim")
             logger.error(f"命令推荐系统初始化失败: {e}", exc_info=True)
-            command_recommender = None
+            state.command_recommender = None
     else:
-        console.print("[dim]💡 命令推荐系统模块未安装[/dim]", style="dim")
+        state.console.print("[dim]💡 命令推荐系统模块未安装[/dim]", style="dim")
         logger.warning("推荐系统模块未安装")
-        command_recommender = None
+        state.command_recommender = None
 
     # 将 RAG 引擎注入 Agent 工具
-    set_rag_engine(rag_engine)
+    set_rag_engine(state.rag_engine)
 
     # ==================== 初始化 ReAct 引擎 ====================
     try:
-        react_engine = ReActEngine(
+        state.react_engine = ReActEngine(
             model=args.model,
             host=args.host,
             on_step=on_step_callback,
             on_confirm=on_confirm_callback
         )
     except Exception as e:
-        console.print(f"[red]Agent 引擎初始化失败: {e}[/red]")
+        state.console.print(f"[red]Agent 引擎初始化失败: {e}[/red]")
         import traceback
         traceback.print_exc()
         sys.exit(1)
@@ -1706,47 +1683,47 @@ def main():
         conv = _conversation()
         if args.no_history:
             conv.new_session()
-            console.print("[yellow]已新建空会话，以全新上下文开始[/yellow]")
+            state.console.print("[yellow]已新建空会话，以全新上下文开始[/yellow]")
     except Exception as e:  # noqa: BLE001
-        console.print(f"[dim]⚠️ 会话上下文初始化失败（将无记忆运行）: {e}[/dim]")
+        state.console.print(f"[dim]⚠️ 会话上下文初始化失败（将无记忆运行）: {e}[/dim]")
 
     # ==================== 单次模式 ====================
     if args.query:
-        if rag_engine.retriever is None:
-            console.print("❌ 知识库未初始化，请使用 --data 指定数据", style="red")
+        if state.rag_engine.retriever is None:
+            state.console.print("❌ 知识库未初始化，请使用 --data 指定数据", style="red")
             sys.exit(1)
-        console.print(f"🔍 问题: {args.query}\n", style="bold")
+        state.console.print(f"🔍 问题: {args.query}\n", style="bold")
         # F9 P0-1：与 /ask 同一条忠实性管道（只用知识库、不联网、不记录会话）
-        with console.status("[bold green]检索知识库..."):
+        with state.console.status("[bold green]检索知识库..."):
             result = rag_pipeline.answer_question(
-                rag_engine, args.query, enable_web_search=False, show_progress=False, kb_only=True,
+                state.rag_engine, args.query, enable_web_search=False, show_progress=False, kb_only=True,
             )
-        console.print("🤖 回答:", style="bold blue")
+        state.console.print("🤖 回答:", style="bold blue")
         _print_notices(result.get("notices"), position="before")
         _render_answer(result.get("answer", ""))
         _print_notices(result.get("notices"), position="after")
-        last_rag_sources = result.get("kb_sources", [])
-        if last_rag_sources:
-            print_rag_sources(last_rag_sources)
+        state.last_rag_sources = result.get("kb_sources", [])
+        if state.last_rag_sources:
+            print_rag_sources(state.last_rag_sources)
         return
 
     if args.agent:
-        console.print(f"🤖 Agent 任务: {args.agent}\n", style="bold cyan")
+        state.console.print(f"🤖 Agent 任务: {args.agent}\n", style="bold cyan")
         live = _live_answer(title="Agent")
         try:
-            answer = react_engine.chat(args.agent, on_token=live.on_token)
+            answer = state.react_engine.chat(args.agent, on_token=live.on_token)
         except KeyboardInterrupt:
             live.finish()
-            react_engine.stop()
-            console.print("\n[yellow]已中断：用户中断，已关闭与模型的连接。[/yellow]")
+            state.react_engine.stop()
+            state.console.print("\n[yellow]已中断：用户中断，已关闭与模型的连接。[/yellow]")
             return
         finally:
             live.finish()
-        if HAS_RICH:
+        if state.HAS_RICH:
             if "```" in answer or "**" in answer or "#" in answer:
-                console.print(Markdown(answer))
+                state.console.print(Markdown(answer))
             else:
-                console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
+                state.console.print(Panel(answer, border_style="green", title="Agent", box=box.ROUNDED))
         else:
             print("\n" + "=" * 50)
             print(answer)
@@ -1754,12 +1731,12 @@ def main():
         return
 
     if args.build_only:
-        if rag_engine.retriever is not None:
-            stats = rag_engine.get_stats()
-            console.print(f"\n✅ 索引构建完成！", style="bold green")
+        if state.rag_engine.retriever is not None:
+            stats = state.rag_engine.get_stats()
+            state.console.print(f"\n✅ 索引构建完成！", style="bold green")
             print_knowledge_stats()
         else:
-            console.print("❌ 索引构建失败", style="red")
+            state.console.print("❌ 索引构建失败", style="red")
         return
 
     # ==================== 交互式模式 ====================
@@ -1769,7 +1746,7 @@ def main():
         try:
             user_input = get_input("\n❯ ")
         except (EOFError, KeyboardInterrupt):
-            console.print("\n\n👋 再见！", style="bold green")
+            state.console.print("\n\n👋 再见！", style="bold green")
             break
 
         if not user_input:
@@ -1779,7 +1756,7 @@ def main():
 
         # 退出单独处理（需要 break 主循环）
         if parsed.cmd_type == "quit":
-            console.print("👋 再见！", style="bold green")
+            state.console.print("👋 再见！", style="bold green")
             break
 
         # 构造上下文并通过命令表分发。dispatch_command 返回
@@ -1788,8 +1765,8 @@ def main():
         should_show_recommendations = dispatch_command(ctx, parsed)
 
         # 处理期间可能更新了运行时状态，同步回模块全局
-        last_rag_sources = ctx.last_rag_sources
-        last_web_sources = ctx.last_web_sources
+        state.last_rag_sources = ctx.last_rag_sources
+        state.last_web_sources = ctx.last_web_sources
 
         # 统一在命令处理完成后显示推荐
         if should_show_recommendations:

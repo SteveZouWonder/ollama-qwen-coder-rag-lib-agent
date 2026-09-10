@@ -341,19 +341,15 @@ def reset_module_state():
     """
     yield
     
-    # 重置query_interface模块的进度状态
-    if 'query_interface' in sys.modules:
-        module = sys.modules['query_interface']
+    # 重置 CLI 共享状态（F10 P3-2-a：本体在 cli.state，query_interface 只留只读别名）
+    if 'cli.state' in sys.modules:
+        module = sys.modules['cli.state']
         if hasattr(module, '_progress_state'):
             module._progress_state = {
                 'last_line_length': 0,
                 'important_phases': {"executing", "observed", "blocked", "rejected", "final"},
                 'current_thinking_dots': 0
             }
-    
-    # 重置query_interface中的全局rag_engine状态
-    if 'query_interface' in sys.modules:
-        module = sys.modules['query_interface']
         if hasattr(module, 'rag_engine'):
             module.rag_engine = None
     

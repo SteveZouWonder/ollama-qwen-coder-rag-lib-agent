@@ -17,7 +17,7 @@ def env(monkeypatch):
     console = MagicMock()
     registry = MagicMock()
     registry.execute.return_value = "ok"
-    monkeypatch.setattr(qi, "console", console)
+    monkeypatch.setattr("cli.state.console", console)
     monkeypatch.setattr(qi, "registry", registry)
     monkeypatch.setattr(qi, "record_command_execution", MagicMock())
     return console, registry

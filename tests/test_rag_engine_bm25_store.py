@@ -366,8 +366,8 @@ class TestSurfaces:
             "hybrid": "已关闭：文档块数 60000 超过上限 50000",
             "hybrid_disabled_reason": "文档块数 60000 超过上限 50000，可调大 RAG_HYBRID_MAX_CHUNKS",
         }
-        monkeypatch.setattr(qi, "rag_engine", engine)
-        monkeypatch.setattr(qi, "HAS_RICH", False)
+        monkeypatch.setattr("cli.state.rag_engine", engine)
+        monkeypatch.setattr("cli.state.HAS_RICH", False)
         qi.print_knowledge_stats()
         out = capsys.readouterr().out
         assert "total_documents: 60000" in out and "hybrid: 已关闭" in out

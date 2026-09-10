@@ -22,7 +22,7 @@ def _printed(mock_console):
 
 class TestHandleModelShow:
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_loaded_with_other_resident(self, mock_info, mock_console, _rec):
         mock_info.return_value = {
@@ -38,7 +38,7 @@ class TestHandleModelShow:
         assert "/model <name>" in out
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_not_loaded(self, mock_info, mock_console, _rec):
         mock_info.return_value = {
@@ -53,7 +53,7 @@ class TestHandleModelShow:
 
 class TestHandleModelList:
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.list_loaded_models", return_value=[{"name": "qwen3.5:4b"}])
     @patch("model_switcher.list_installed_models", return_value=["qwen3.5:4b", "qwen3.5:9b"])
     def test_list_marks_current_and_loaded(self, _inst, _loaded, mock_console, _rec):
@@ -64,7 +64,7 @@ class TestHandleModelList:
         assert "- qwen3.5:9b" in out
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.list_installed_models", return_value=[])
     def test_list_when_ollama_down(self, _inst, mock_console, _rec):
         qi.handle_model(_ctx(), _parsed("ls"))
@@ -73,7 +73,7 @@ class TestHandleModelList:
 
 class TestHandleModelSwitch:
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_model")
     def test_switch_passes_ctx_engines(self, mock_switch, mock_console, _rec):
         mock_switch.return_value = SimpleNamespace(ok=True, message="已切换到 qwen3.5:9b")
@@ -85,7 +85,7 @@ class TestHandleModelSwitch:
         assert "已切换到 qwen3.5:9b" in _printed(mock_console)
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_model")
     def test_switch_failure_printed_red(self, mock_switch, mock_console, _rec):
         mock_switch.return_value = SimpleNamespace(ok=False, message="模型 'x' 未安装")
@@ -102,7 +102,7 @@ def _parsed_think(arg=""):
 
 class TestHandleThink:
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_status(self, mock_info, mock_console, _rec):
         mock_info.return_value = {"model": "qwen3.5:4b", "num_ctx": 16384, "think": False,
@@ -113,7 +113,7 @@ class TestHandleThink:
         assert "/think on" in out
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_invalid_arg(self, mock_switch, mock_console, _rec):
         qi.handle_think(_ctx(), _parsed_think("maybe"))
@@ -121,7 +121,7 @@ class TestHandleThink:
         mock_switch.assert_not_called()
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_enable_passes_ctx_engines(self, mock_switch, mock_console, _rec):
         mock_switch.return_value = SimpleNamespace(ok=True, enabled=True, changed=True, message="思考模式已开启")
@@ -131,7 +131,7 @@ class TestHandleThink:
         assert "[green]思考模式已开启" in _printed(mock_console)
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_disable_chinese_word(self, mock_switch, mock_console, _rec):
         mock_switch.return_value = SimpleNamespace(ok=True, enabled=False, changed=True, message="思考模式已关闭")
@@ -139,7 +139,7 @@ class TestHandleThink:
         assert mock_switch.call_args[0][0] is False
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_rejected_printed_red(self, mock_switch, mock_console, _rec):
         mock_switch.return_value = SimpleNamespace(ok=False, enabled=False, changed=False, message="不支持思考模式")
@@ -156,7 +156,7 @@ def _parsed_auto(arg=""):
 
 class TestHandleAuto:
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     def test_show_status_on(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         assert qi.handle_auto(_ctx(), _parsed_auto("")) is True
@@ -165,14 +165,14 @@ class TestHandleAuto:
         _rec.assert_called_with("auto")
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     def test_show_status_off(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
         qi.handle_auto(_ctx(), _parsed_auto(""))
         assert "自动路由: 关" in _printed(mock_console)
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     def test_toggle_off_then_on(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         assert qi.handle_auto(_ctx(), _parsed_auto("off")) is True
@@ -183,7 +183,7 @@ class TestHandleAuto:
         assert "已开启" in _printed(mock_console)
 
     @patch("query_interface.record_command_execution")
-    @patch("query_interface.console")
+    @patch("cli.state.console")
     def test_invalid_arg_keeps_state(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
         qi.handle_auto(_ctx(), _parsed_auto("maybe"))

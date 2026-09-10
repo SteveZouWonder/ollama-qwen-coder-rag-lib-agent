@@ -246,7 +246,7 @@ class TestAutoRouteParse:
         import query_interface as qi
         assert "/auto" in qi.TUTORIAL_TEXT
         from unittest.mock import patch
-        with patch.object(qi, "console"), patch.object(qi, "HAS_RICH", False), \
+        with patch("cli.state.console"), patch("cli.state.HAS_RICH", False), \
                 patch("builtins.print") as mock_print:
             qi.print_help()
         out = "\n".join(str(c.args[0]) for c in mock_print.call_args_list)

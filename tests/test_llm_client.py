@@ -888,7 +888,7 @@ class TestCLIProviderAware:
         from query_interface import ParsedCommand
 
         out = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
         with patch("requests.get", return_value=_resp(404, {})):
             assert qi.handle_model(None, ParsedCommand("model", "/model", "")) is True
         text = "\n".join(out)
@@ -899,7 +899,7 @@ class TestCLIProviderAware:
         from query_interface import ParsedCommand
 
         out = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
         with patch("requests.get", return_value=_resp(404, {})):
             assert qi.handle_model(None, ParsedCommand("model", "/model list", "list")) is True
         text = "\n".join(out)
@@ -910,7 +910,7 @@ class TestCLIProviderAware:
         from query_interface import ParsedCommand
 
         out = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: out.append(str(a[0]) if a else "")))
         with patch("requests.get", side_effect=ConnectionError("down")):
             assert qi.handle_model(None, ParsedCommand("model", "/model list", "list")) is True
         assert any("ollama serve" in line for line in out)

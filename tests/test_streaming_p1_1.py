@@ -852,7 +852,7 @@ class TestCliStreamingWiring:
         monkeypatch.setattr(qi, "_conversation", lambda: None)
         ctx = _cli_ctx()
         printed = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
         assert qi._run_ask(ctx, "问题") is False
         assert callable(seen["on_token"])
         assert any("已中断" in p for p in printed)
@@ -874,7 +874,7 @@ class TestCliStreamingWiring:
         monkeypatch.setattr(qi, "_health_before", lambda q: {})
         monkeypatch.setattr(qi, "_print_health_hint", lambda *a, **k: None)
         monkeypatch.setattr(qi, "record_command_execution", lambda *a, **k: None)
-        monkeypatch.setattr(qi, "console", MagicMock())
+        monkeypatch.setattr("cli.state.console", MagicMock())
         from query_interface import ParsedCommand
         assert qi.handle_agent(_cli_ctx(react_engine=engine), ParsedCommand("agent", "/agent 做事", "做事")) is True
         engine.chat.assert_called_once_with("做事")
@@ -889,7 +889,7 @@ class TestCliStreamingWiring:
         engine.chat.side_effect = KeyboardInterrupt
         monkeypatch.setattr(qi, "_health_before", lambda q: {})
         printed = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
         from query_interface import ParsedCommand
         assert qi.handle_agent(_cli_ctx(react_engine=engine), ParsedCommand("agent", "/agent x", "x")) is False
         engine.stop.assert_called_once()
@@ -901,7 +901,7 @@ class TestCliStreamingWiring:
 
         monkeypatch.setattr(qi.Config, "SHOW_PROGRESS", True)
         printed = []
-        monkeypatch.setattr(qi, "console", MagicMock(print=lambda *a, **k: printed.append(a)))
+        monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: printed.append(a)))
         monkeypatch.setattr(LiveAnswer, "streaming", classmethod(lambda cls: True))
         qi.on_step_callback({"step": "?", "total": "?", "phase": "thinking", "transient": True, "message": "模型推理中."})
         assert printed == []
