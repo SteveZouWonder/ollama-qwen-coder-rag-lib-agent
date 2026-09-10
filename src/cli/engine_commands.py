@@ -11,6 +11,7 @@
 """
 import logging
 import os
+import re
 from pathlib import Path
 
 import rag_pipeline
@@ -38,13 +39,13 @@ try:
 except ImportError:  # pragma: no cover - rich 缺失时由 state.HAS_RICH 走纯文本分支
     pass
 
-# 导入知识库管理功能
-try:
-    from knowledge_to_skills import KnowledgeToSkillsEngine
-    from knowledge_snapshot import KnowledgeSnapshotManager, RestoreHelper
-    KNOWLEDGE_MANAGEMENT_AVAILABLE = True
-except ImportError:
-    KNOWLEDGE_MANAGEMENT_AVAILABLE = False
+# 知识库管理功能（技能生成 / 快照）是否可用：只把"模块本身不存在"判为未安装，
+# 模块内部导入出错会记 WARNING 而不是被吞成"未安装"（F10 P3-2 待办 #1）
+from optional_deps import probe_modules
+
+KNOWLEDGE_MANAGEMENT_AVAILABLE = probe_modules(
+    "knowledge_to_skills", "knowledge_snapshot", feature="知识库管理（技能生成 / 快照）",
+)
 
 
 # ==================== 与引擎/主循环状态强耦合的命令处理 ====================
@@ -111,7 +112,7 @@ def handle_file(ctx, parsed):
         state.console.print(Panel(result, title=f"文件: {path}", border_style="blue"))
     else:
         print(result)
-        record_command_execution("read", path)
+    record_command_execution("read", path)
     return True
 
 
@@ -338,17 +339,14 @@ def handle_ask(ctx, parsed):
 
 def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
     """``/ask`` 与自然语言输入共用的知识库问答实现（带会话上下文）。"""
-    import re
-
     original_question = question  # 用于命令记录，避免把搜索结果正文塞进历史
 
     # 元/概览类问题会在 answer_question 内部识别并通过 meta_overview 事件渲染。
     # 检测用户是否在问题中提供了本地文件路径（图片/PDF/MD/TXT 等）——CLI 独有。
     if not _is_meta_query(original_question):
-        file_pattern = r'/Users/[^\s\)]+\.(png|jpg|jpeg|PNG|JPG|JPEG|pdf|PDF|md|MD|txt|TXT)'
-        file_path_match = re.search(file_pattern, question)
-        if file_path_match:
-            question = _ingest_inline_file(file_path_match.group(), question)
+        inline_path = _detect_inline_file(question)
+        if inline_path:
+            question = _ingest_inline_file(inline_path, question)
 
     # 连续对话：提问前先做健康度快照（空闲/话题漂移），并把会话上下文交给编排层
     # 用于追问改写与综合 prompt 注入。
@@ -442,14 +440,36 @@ def _run_ask(ctx, question: str, cmd_name: str = "ask") -> bool:
     return True
 
 
+# 可内联入库的文件类型（与历史行为一致：图片 / PDF / Markdown / 纯文本）
+_INLINE_FILE_EXTS = ("png", "jpg", "jpeg", "pdf", "md", "txt")
+# 绝对路径候选：POSIX ``/…`` 或 ``~/…``、Windows ``C:\…`` / ``C:/…``；到空白 / 括号 / 引号为止
+_INLINE_FILE_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|~[\\/]|/)[^\s()\[\]<>\"'|]*?\.(?:%s)\b" % "|".join(_INLINE_FILE_EXTS),
+    re.IGNORECASE,
+)
+
+
+def _detect_inline_file(question: str) -> str | None:
+    """从问题文本中找出第一个**真实存在**的本地文件绝对路径；没有返回 None。
+
+    F10 P3-2 待办 #6：此前正则写死 ``/Users/`` 前缀，Linux ``/home/…``、Windows 盘符路径
+    都不会触发内联入库。现改为"形似绝对路径 + 扩展名白名单 + ``os.path.isfile``"三重判定，
+    相对路径 / 不存在的路径不触发（避免把 URL 片段或误写路径当成文件去加载）。
+    """
+    for m in _INLINE_FILE_RE.finditer(question or ""):
+        candidate = m.group(0)
+        if os.path.isfile(os.path.expanduser(candidate)):
+            return candidate
+    return None
+
+
 def _ingest_inline_file(file_path: str, question: str) -> str:
     """将问题中检测到的文件加入知识库，并清洗/补全查询文本后返回。"""
-    import re
     state.console.print(f"📄 检测到文件路径: {file_path}", style="yellow")
     state.console.print("🔄 正在添加到知识库...", style="yellow")
     try:
         from document_loader import load_documents as _load
-        documents = _load(file_path)
+        documents = _load(os.path.expanduser(file_path))
         if not documents:
             state.console.print("⚠️ 无法加载文件，直接查询现有知识库", style="yellow")
             return question
@@ -554,7 +574,7 @@ def handle_natural(ctx, parsed):
     if Config.AUTO_ROUTE and _route_natural_to_agent(ctx, text, kb_available):
         return handle_agent(ctx, ParsedCommand("agent", parsed.raw, text))
 
-    if state.rag_engine is not None and state.rag_engine.retriever is None:
+    if engine is not None and getattr(engine, "retriever", None) is None:
         state.console.print(
             "[dim]知识库未初始化，将根据网络搜索/模型直接回答；"
             "可用 /add <文件> 添加文档，或 /agent <任务> 使用 Agent 模式[/dim]"

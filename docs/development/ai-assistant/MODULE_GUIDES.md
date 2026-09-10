@@ -28,6 +28,10 @@
 - `app_state_dir(rel)` 返回 `.cerebro/<rel>`，并在目标不存在时从旧 `.devin/<rel>` 一次性搬迁。`cwd_data_dir` 为兼容别名（语义已不相对 cwd）。
 - 新增任何"程序生成的持久化数据"都走 `app_state_dir`，不要自己拼相对路径。
 
+### `optional_deps.py`（F10 P3-2）
+- `probe_modules(*modules, feature=)`：可选模块可用性探测。只把 `ModuleNotFoundError` 且 `e.name` 为目标模块（或其子模块）判为"未安装"（DEBUG）；其他导入异常记 WARNING 带原文并返回 False。
+- 入口层的 `RECOMMENDER_AVAILABLE` / `KNOWLEDGE_MANAGEMENT_AVAILABLE` 用它；新增 `X_AVAILABLE` 探测请用它而不是 `try/except ImportError`（`rag_engine.py` 的三处旧写法待迁）。
+
 ### `prompt_assets.py`
 - 定位 `prompts/`（三层：内置 → `user_data_dir()/prompts` → `AGENT_PROMPTS_DIR`），`load_project_rules()`、`load_skills()`、`render_skills(role)`、`describe()`。
 - Skill frontmatter 只支持 `key: value`、`[a, b]`、`- item` 子集，不引入 PyYAML。

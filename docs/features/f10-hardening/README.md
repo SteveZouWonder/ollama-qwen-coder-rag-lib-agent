@@ -96,7 +96,7 @@ P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 
 按文件：`test_cli_handlers_context.py` 100（a 77 + c 23）· `test_query_interface_render.py → test_cli_render.py` 72 + 24 导入（a 72、b 26）· `test_cli_handlers_model.py` 30（a 15 + c 15）· `test_streaming_p1_1.py` 10（a 4 + c 6）· `test_cli_code_chunking.py` 3 · `test_llm_client.py` 3 · `test_query_interface_exec_safety.py` 3（a 1 + c 2）· `test_query_interface_parse.py` 2 · `test_rag_engine_bm25_store.py` 2。剩余 `monkeypatch.setattr(qi.Config, …)` 22 处未动——`qi.Config` 就是 `config.Config` 对象本身，与命名空间无关。
 
-提交：`48c9402` P3-2-a → `f731540` a 回归修复（见差异 #3）→ `0e45323` P3-2-b → `da334e8` P3-2-c → 本次 P3-2-d 文档。
+提交：`48c9402` P3-2-a → `f731540` a 回归修复（见差异 #3）→ `0e45323` P3-2-b → `da334e8` P3-2-c → `d2f2e8d` P3-2-d 文档 → 后续 fix 提交处理待办 #1 / #2 / #3 / #6（+20 测试，3612 passed，92.35%）。
 
 ### P3-1 Tesseract 跨平台探测 + README 瘦身（2026-09-09）
 
@@ -590,16 +590,16 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 | 6 | 「`test_cli_code_chunking.py` 的打桩目标改到对应新模块」 | 其 3 处 `patch("query_interface.HAS_RICH / console")` 在 a 步已改为 `cli.state.*`，b 步无需再动 | 它打的是状态而非函数。 |
 | 7 | 收集数「与 P2-2 后一致（3528 / 36）」 | 起点即为 **3591 / 36**（P3-1 在 P2-2 之后新增 63 个）；拆分三步收集数不变，a 回归修复 +1 → 3592 | 需求写于 P3-1 之前。 |
 
-P3-2 实施中发现、按「纯重构不改逻辑」原则**未处理**的待办：
+P3-2 实施中发现的待办。#1 / #2 / #3 / #6 已在同分支提交处理（纯重构提交之后单独一个 fix 提交，先写复现测试再修）；#4 / #5 / #7 留待后续：
 
-| # | 位置 | 问题 | 建议 |
+| # | 位置 | 问题 | 处理 |
 |---|---|---|---|
-| 1 | `query_interface.py` / `cli/engine_commands.py` 顶部 `try: from command_recommender import … except ImportError: RECOMMENDER_AVAILABLE = False`（`KNOWLEDGE_MANAGEMENT_AVAILABLE` 同款） | 任何 ImportError（含依赖内部的拼写错误 / 缺第三方包）都被静默判为"未安装"，本次 a 步的误改就是这样漏过全量测试的 | 只捕获 `ModuleNotFoundError` 且校验 `e.name` 为目标包；或启动时 `--verbose` 打印异常原文。已补一条回归用例兜底 |
-| 2 | `cli/engine_commands.handle_file` | 非 Rich 分支才 `record_command_execution("read", path)`，Rich 分支不记录（缩进层级不同，疑似历史缩进错误） | 确认意图后把记录移到 `if/else` 之外，两端一致 |
-| 3 | `cli/engine_commands.handle_natural` | 已算出 `engine`（ctx 优先）与 `kb_available`，随后判断「知识库未初始化」时却直接读 `state.rag_engine` 而非 `engine` | 统一用 `engine`；行为面改动，需同步测试 |
+| 1 | `query_interface.py` / `cli/engine_commands.py` 顶部 `try: from command_recommender import … except ImportError: RECOMMENDER_AVAILABLE = False`（`KNOWLEDGE_MANAGEMENT_AVAILABLE` 同款） | 任何 ImportError（含依赖内部的拼写错误 / 缺第三方包）都被静默判为"未安装"，本次 a 步的误改就是这样漏过全量测试的 | ✅ 新增 `src/optional_deps.py::probe_modules`：目标模块本身缺失 → DEBUG；其他导入异常 → WARNING 带原文；`query_interface.RECOMMENDER_AVAILABLE` 与 `engine_commands.KNOWLEDGE_MANAGEMENT_AVAILABLE` 改用之；6 个测试。`rag_engine.py` 的 `SNAPSHOT / SECURITY / FILE_METADATA_AVAILABLE` 三处同款属共享层，未动，记为后续 |
+| 2 | `cli/engine_commands.handle_file` | 非 Rich 分支才 `record_command_execution("read", path)`，Rich 分支不记录（缩进层级不同，疑似历史缩进错误） | ✅ 记录移到 `if/else` 之外；参数化测试 Rich / 非 Rich 均记录。Web 端 `/file` 对应的 `read_file` 走 `services/tools.py` 无推荐历史概念，无需改 |
+| 3 | `cli/engine_commands.handle_natural` | 已算出 `engine`（ctx 优先）与 `kb_available`，随后判断「知识库未初始化」时却直接读 `state.rag_engine` 而非 `engine` | ✅ 统一用 `engine`（ctx 优先）；2 个测试覆盖 ctx 与全局不一致的两个方向 |
 | 4 | `cli/engine_commands._augment_with_web_search / _answer_question`、`cli/rag_adapter._answer_meta_query / run_web_search / enrich_with_page_content` 及 9 个 `rag_pipeline` 别名 | 仓库内除测试外无调用方（兼容封装） | 下个版本标记 deprecated；测试改为直接测 `rag_pipeline` 后删除 |
 | 5 | `cli/state.py` / `query_interface.py` 顶层 `HAS_RICH = state.HAS_RICH` 等导入时快照 | `tests/` 与 `src/` 已无依赖这些别名的地方（全部改打 `cli.state`），仅为外部 `from query_interface import HAS_RICH` 保留 | 与 `cli_handlers.py` shim 一起在下一个 minor 版本移除 |
-| 6 | `cli/engine_commands._run_ask` 用正则 `r'/Users/[^\s\)]+\.(png\|jpg\|…)'` 检测问题里的本地文件路径 | 只识别 macOS `/Users/` 前缀，Linux `/home/`、Windows 盘符路径不触发内联入库（与 P3-1 跨平台目标不一致） | 改为 `os.path.isabs` + 存在性检查 |
+| 6 | `cli/engine_commands._run_ask` 用正则 `r'/Users/[^\s\)]+\.(png\|jpg\|…)'` 检测问题里的本地文件路径 | 只识别 macOS `/Users/` 前缀，Linux `/home/`、Windows 盘符路径不触发内联入库（与 P3-1 跨平台目标不一致） | ✅ 新增 `_detect_inline_file`：POSIX `/…` / `~/…` / Windows `C:\…` 三类绝对路径 + 扩展名白名单（不变）+ `os.path.isfile`（`~` 展开）；返回问题中的原文以便剔除，入库时展开。不存在 / 相对路径不再触发。7 个测试（含端到端 `_run_ask` Linux 路径）。Web 端无内联路径逻辑（走上传），仅 CLI |
 | 7 | `main` 227 行（argparse + 引导 + 引擎装配 + 三种单次模式 + REPL） | `query_interface.py` 已 563 行达标，未按 §4 备选方案再抽 `cli/repl.py` | 若后续要给 REPL 加功能（如多行输入），届时抽 `run_loop(args)` |
 
 ### P3-1

@@ -22,6 +22,7 @@ ollama-qwen-coder-rag-lib/
 ├── react_engine.py        # ReAct 推理引擎（qwen3.5:4b，支持运行时热切换）
 ├── llm_client.py          # LLM 后端抽象：Ollama /api/chat 与 OpenAI 兼容 /v1/chat/completions（LLM_PROVIDER）
 ├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
+├── optional_deps.py       # 可选模块探测（区分未安装 / 装了但导入出错）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
 ├── conversation_context.py # 连续对话上下文（会话记忆、token 预算、滚动压缩、追问改写）
 ├── query_interface.py     # 统一 CLI 入口（解释器自保护 / 日志 / 输入 / main；重导出 cli.* 公开名）

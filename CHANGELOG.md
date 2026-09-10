@@ -52,6 +52,16 @@
   用户的 `data/recommender_preferences.json` 改成「不显示解释、最多 10 条」，并让 `test_format_recommendations` 在并行
   测试下随机失败。现在配置真正下传，`learning_enabled=False` 时隐藏 / 显示偏好只改内存不落盘；测试侧 conftest 把推荐器
   全局配置隔离到临时目录。顺带修正隐藏推荐的过期判断（`timedelta.seconds` 不含天数，隔天同一时段会"再次隐藏"）。
+- **CLI `/ask` 内联文件路径只认 macOS（F10 P3-2 待办 #6）**：问题里带 `/home/u/a.pdf`、`C:\Users\me\scan.png`、
+  `~/notes.md` 等路径时此前不会触发"检测到文件路径 → 自动入库"，只有 `/Users/…` 生效。现改为"绝对路径 + 类型白名单
+  （png / jpg / jpeg / pdf / md / txt）+ 文件确实存在"三重判定，三平台一致；不存在或相对路径不再触发误报。
+- **CLI `/file` 在 Rich 终端不记录到命令推荐历史（待办 #2）**：记录调用误缩进到纯文本分支下，装了 rich 的用户
+  `/file` 从不进入推荐系统；现两种终端都记录。
+- **可选模块"装了但坏了"被当成"未安装"（待办 #1）**：命令推荐系统与知识库管理（技能生成 / 快照）的可用性探测此前
+  `except ImportError` 一把抓，模块内部拼错 / 缺依赖也只显示「模块未安装」。新增 `optional_deps.probe_modules`：
+  只把目标模块本身缺失判为未安装；其他导入错误在终端输出 WARNING 带原始异常，便于排查。
+- **自然语言输入的"知识库未初始化"提示判的不是同一个引擎（待办 #3）**：`handle_natural` 路由用注入的引擎、提示却读
+  全局引擎，现统一用同一个。
 
 ### 改进
 

@@ -163,12 +163,13 @@ from agent_tools import set_rag_engine
 from document_loader import load_documents
 import rag_pipeline
 
-# 导入命令推荐系统
-try:
-    from command_recommender import CommandRecommender, RecommendationSource
-    RECOMMENDER_AVAILABLE = True
-except ImportError:
-    RECOMMENDER_AVAILABLE = False
+# 命令推荐系统是否可用：只把"模块本身不存在"判为未安装，模块内部导入出错会记 WARNING
+# 而不是被吞成"未安装"（F10 P3-2 待办 #1；P3-2-a 的误改就是这样漏过测试的）
+from optional_deps import probe_modules
+
+RECOMMENDER_AVAILABLE = probe_modules("command_recommender", feature="命令推荐系统")
+if RECOMMENDER_AVAILABLE:
+    from command_recommender import CommandRecommender
 
 # ==================== 全局状态（只读别名） ====================
 # 状态本体在 cli.state；这里的模块级名字仅为 ``from query_interface import HAS_RICH`` 等
