@@ -183,7 +183,7 @@ except ImportError:
 
 # 导入命令推荐系统
 try:
-    from state.command_recommender import CommandRecommender, RecommendationSource
+    from command_recommender import CommandRecommender, RecommendationSource
     RECOMMENDER_AVAILABLE = True
 except ImportError:
     RECOMMENDER_AVAILABLE = False
