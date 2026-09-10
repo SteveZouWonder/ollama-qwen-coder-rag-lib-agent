@@ -44,6 +44,7 @@
 
 ### 修复
 
+- **Windows 下 `READ_ALLOWED_DIRS` / `WRITE_ALLOWED_DIRS` 失效**：目录列表写死按冒号拆分，`C:\\data` 被拆成 `C` 与 `\\data`，放行的目录永远匹配不上（读 / 写工具一律报「路径超出允许范围」）；改为按系统路径分隔符拆分（macOS / Linux 冒号、Windows 分号），路径比较改为大小写不敏感（Windows 文件系统语义）。
 - **Windows 托盘弹窗阻塞**：`show_popup` 在 Windows 直接调用模态 `MessageBoxW`，退出应用 / 预热完成 / 状态检查等流程会卡到用户点击弹窗为止，`duration` 形同虚设（CI windows-latest 也因此在 `quit_app` 测试处无声挂起）。现改为后台线程 + 带超时的 `MessageBoxTimeoutW`（到期自动关闭，与 macOS / Linux 语义一致，不可用时回退 `MessageBoxW`）；顺带把 `TrayApp` / `DesktopApp` 中两份与 `BaseApp` 一字不差的 `show_popup` 副本合并。
 - **多 Agent 并发锁补齐（F10 P2-1）**：`AgentRegistry` 与 `TaskScheduler` 的 `lock = None` 占位改为真正的
   `threading.RLock`，注册 / 注销 / 查询与任务登记 / 状态流转全部在锁内进行；并行执行子任务时不再有"字典在迭代中

@@ -2,6 +2,7 @@
 """
 test_agent_tools_safety.py — 命令安全分析器单元测试（参数化全覆盖）
 """
+import os
 import pytest
 from agent_tools import CommandSafetyChecker
 
@@ -372,7 +373,7 @@ class TestP01ReadBoundary:
         ro2 = tmp_path.parent / f"{tmp_path.name}_ro2"
         for d in (ro1, ro2):
             d.mkdir(exist_ok=True)
-        monkeypatch.setenv("READ_ALLOWED_DIRS", f"{ro1}: {ro2} :")
+        monkeypatch.setenv("READ_ALLOWED_DIRS", f"{ro1}{os.pathsep} {ro2} {os.pathsep}")
         dirs = read_allowed_dirs()
         assert str(ro1) in dirs and str(ro2) in dirs
         assert is_read_allowed(str(ro1 / "a.txt"))
@@ -455,9 +456,27 @@ class TestP01ReadBoundary:
         sub = tmp_path / "sub"
         sub.mkdir()
         monkeypatch.setenv("WRITE_ALLOWED_DIRS", str(sub))
-        monkeypatch.setenv("READ_ALLOWED_DIRS", f"{sub}:{sub / 'deep'}")
+        monkeypatch.setenv("READ_ALLOWED_DIRS", f"{sub}{os.pathsep}{sub / 'deep'}")
         assert write_allowed_dirs() == [str(tmp_path.resolve())]
         assert read_allowed_dirs() == [str(tmp_path.resolve())]
+
+    def test_dirs_env_split_on_os_pathsep(self, tmp_path, monkeypatch):
+        """目录列表按系统路径分隔符拆分：Windows 盘符里的冒号不能被当作分隔符（CI windows 首跑 60+ 失败的根因）。"""
+        from agent_tools import _split_dirs_env
+        monkeypatch.setenv("READ_ALLOWED_DIRS", os.pathsep.join(["C:\\data\\docs", "", "D:\\x"]) if os.name == "nt"
+                           else os.pathsep.join(["/data/docs", "", "/x"]))
+        parts = _split_dirs_env("READ_ALLOWED_DIRS")
+        assert len(parts) == 2 and all(":" in p or p.startswith("/") for p in parts)
+        monkeypatch.setattr(os, "pathsep", ";")
+        monkeypatch.setenv("READ_ALLOWED_DIRS", "C:\\data;D:\\x")
+        assert _split_dirs_env("READ_ALLOWED_DIRS") == ["C:\\data", "D:\\x"]
+
+    def test_subpath_compare_is_case_insensitive_on_windows(self, monkeypatch):
+        from agent_tools import _is_subpath
+        monkeypatch.setattr(os.path, "normcase", lambda p: p.replace("/", "\\").lower())
+        monkeypatch.setattr(os, "sep", "\\")
+        assert _is_subpath("C:\\Users\\Me\\a.txt", "c:\\users\\me")
+        assert not _is_subpath("C:\\Users\\Meow\\a.txt", "c:\\users\\me")
 
     def test_parent_dir_absorbs_child_regardless_of_order(self, tmp_path, monkeypatch):
         from agent_tools import _normalize_dirs

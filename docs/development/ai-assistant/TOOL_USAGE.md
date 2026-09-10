@@ -112,8 +112,8 @@
 
 | 边界 | 目录集合 | 判定 / 报错 | 适用工具 |
 |---|---|---|---|
-| 写 | `write_allowed_dirs()` = `os.getcwd()` + `WRITE_ALLOWED_DIRS`（`:` 分隔） | `is_path_allowed()` / `path_scope_error()` → `[错误] 路径超出允许范围: …（仅允许 <cwd> 或环境变量 WRITE_ALLOWED_DIRS 指定的目录）` | `write_file`、`add_to_knowledge_base` |
-| 读 | `read_allowed_dirs()` = 写目录 ∪ `READ_ALLOWED_DIRS`（`:` 分隔）∪ 已入库文件所在目录（`file_metadata.list_files()`，不可用时忽略；落在 Gradio 上传根 `$GRADIO_TEMP_DIR` / `<tmp>/gradio` 下的统一折叠为该根一条）。`_normalize_dirs` 丢弃被其他允许目录包含的子目录 | `is_read_allowed()` / `read_scope_error()` → `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）` | `read_file`、`list_directory`、`search_files`、`analyze_project_structure`、`ast_search`、`code_quality_check`、`git_analyze`、`git_commit_gen`（含经 registry 的 CLI `/file`）；Web `WebService.path_read_error()` 复用同一判定，约束 `list_dir` / `file_preview` / `search_in_dir` / `code_symbols` / `code_quality_report` / `graph_build_file` / `code_assist_stream` |
+| 写 | `write_allowed_dirs()` = `os.getcwd()` + `WRITE_ALLOWED_DIRS`（`os.pathsep` 分隔：POSIX `:`、Windows `;`） | `is_path_allowed()` / `path_scope_error()` → `[错误] 路径超出允许范围: …（仅允许 <cwd> 或环境变量 WRITE_ALLOWED_DIRS 指定的目录）` | `write_file`、`add_to_knowledge_base` |
+| 读 | `read_allowed_dirs()` = 写目录 ∪ `READ_ALLOWED_DIRS`（`os.pathsep` 分隔）∪ 已入库文件所在目录（`file_metadata.list_files()`，不可用时忽略；落在 Gradio 上传根 `$GRADIO_TEMP_DIR` / `<tmp>/gradio` 下的统一折叠为该根一条）。`_normalize_dirs` 丢弃被其他允许目录包含的子目录 | `is_read_allowed()` / `read_scope_error()` → `[错误] 路径超出允许范围: …（允许读取 …；可设置环境变量 READ_ALLOWED_DIRS 放行）` | `read_file`、`list_directory`、`search_files`、`analyze_project_structure`、`ast_search`、`code_quality_check`、`git_analyze`、`git_commit_gen`（含经 registry 的 CLI `/file`）；Web `WebService.path_read_error()` 复用同一判定，约束 `list_dir` / `file_preview` / `search_in_dir` / `code_symbols` / `code_quality_report` / `graph_build_file` / `code_assist_stream` |
 
 两者都用 `realpath` 解析符号链接与 `..`（F10 P0-1-b）。`execute_command` 不受路径边界约束，由安全分级管；`database_connect` 打开的 SQLite 文件路径也未接边界（数据库工具另有 `safe` 标记）。两端展示：CLI `/config`、Web「系统 → 运行环境」的「允许读目录 / 允许写目录」。
 
