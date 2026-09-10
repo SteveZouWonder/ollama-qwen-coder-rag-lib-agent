@@ -45,6 +45,10 @@
 ### 修复
 
 - **Windows 下 `READ_ALLOWED_DIRS` / `WRITE_ALLOWED_DIRS` 失效**：目录列表写死按冒号拆分，`C:\\data` 被拆成 `C` 与 `\\data`，放行的目录永远匹配不上（读 / 写工具一律报「路径超出允许范围」）；改为按系统路径分隔符拆分（macOS / Linux 冒号、Windows 分号），路径比较改为大小写不敏感（Windows 文件系统语义）。
+- **Windows 下解释器自保护找不到 venv**：`find_venv_python` 只找 `venv/bin/python`，Windows 的 `venv\\Scripts\\python.exe` 永远匹配不上，用系统 Python 误启动时无法自动切换；现按平台选布局。
+- **Windows 下 Git 提交信息中文乱码**：`git_integration` 的子进程输出未指定编码，Windows 默认 cp1252 把 UTF-8 中文解成乱码（`/git-commit-gen` 生成与回显都受影响）；统一 `encoding="utf-8", errors="replace"`。
+- **OCR 缓存键含文件名非法字符时静默丢缓存**：哈希串含 `<>:"/\\|?*` 时直接拼文件名在 Windows 写失败；现退化为其 sha256 作为文件名。
+- **托盘 `LogManager.setup_logging` 重复调用泄漏文件句柄**：`basicConfig` 在根 logger 已有 handler 时不做任何事，但参数里的 `FileHandler` 已打开文件；改为 `force=True` 显式替换并关闭旧 handler。
 - **Windows 托盘弹窗阻塞**：`show_popup` 在 Windows 直接调用模态 `MessageBoxW`，退出应用 / 预热完成 / 状态检查等流程会卡到用户点击弹窗为止，`duration` 形同虚设（CI windows-latest 也因此在 `quit_app` 测试处无声挂起）。现改为后台线程 + 带超时的 `MessageBoxTimeoutW`（到期自动关闭，与 macOS / Linux 语义一致，不可用时回退 `MessageBoxW`）；顺带把 `TrayApp` / `DesktopApp` 中两份与 `BaseApp` 一字不差的 `show_popup` 副本合并。
 - **多 Agent 并发锁补齐（F10 P2-1）**：`AgentRegistry` 与 `TaskScheduler` 的 `lock = None` 占位改为真正的
   `threading.RLock`，注册 / 注销 / 查询与任务登记 / 状态流转全部在锁内进行；并行执行子任务时不再有"字典在迭代中

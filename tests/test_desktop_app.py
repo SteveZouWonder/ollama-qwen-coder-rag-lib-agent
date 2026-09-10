@@ -144,8 +144,13 @@ class TestLogManager(unittest.TestCase):
         self.test_log_file = Path(self.test_dir) / "test.log"
         
     def tearDown(self):
-        """清理测试环境"""
-        shutil.rmtree(self.test_dir)
+        """清理测试环境（先关闭指向临时目录的 FileHandler，Windows 上文件被占用时目录删不掉）"""
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if isinstance(h, logging.FileHandler) and str(h.baseFilename).startswith(self.test_dir):
+                root.removeHandler(h)
+                h.close()
+        shutil.rmtree(self.test_dir, ignore_errors=True)
         
     def test_setup_logging(self):
         """测试设置日志系统"""

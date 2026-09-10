@@ -138,13 +138,16 @@ class LogManager:
         """设置日志系统"""
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         
+        # force=True：根 logger 已有 handler 时 basicConfig 默认什么都不做，但参数里的 FileHandler
+        # 已经把文件打开了——句柄泄漏（Windows 上日志目录因此删不掉）。显式替换旧 handler 并关闭。
         logging.basicConfig(
             level=level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(self.log_file, encoding='utf-8'),
                 logging.StreamHandler()
-            ]
+            ],
+            force=True,
         )
         
         self.logger = logging.getLogger(__name__)

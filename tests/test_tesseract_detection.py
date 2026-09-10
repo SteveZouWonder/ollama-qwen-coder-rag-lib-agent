@@ -97,6 +97,7 @@ class TestResolveOrder:
         exe = tmp_path / "tesseract"
         exe.write_text("")
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows 的 expanduser 读 USERPROFILE
         monkeypatch.setenv("TESSERACT_PATH", "~/tesseract")
         assert cfg.resolve_tesseract_path() == str(exe)
 

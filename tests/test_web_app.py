@@ -2251,9 +2251,10 @@ class TestWorkspaceFormatters:
 
     def test_join_entry_and_search_rows(self):
         from web.app import SEARCH_HEADERS, join_entry, search_rows
-        assert join_entry("/p", "📁", "src") == ("/p/src", True)
-        assert join_entry("/p", "📄", "a.py") == ("/p/a.py", False)
-        assert join_entry("", "📄", "a.py") == ("./a.py", False)
+        import os
+        assert join_entry("/p", "📁", "src") == (os.path.join("/p", "src"), True)
+        assert join_entry("/p", "📄", "a.py") == (os.path.join("/p", "a.py"), False)
+        assert join_entry("", "📄", "a.py") == (os.path.join(".", "a.py"), False)
         assert join_entry("/p", "📁", "") == ("", False)
         assert SEARCH_HEADERS == ["文件", "行", "内容"]
         assert search_rows([{"file": "a", "line": 2, "text": "t"}]) == [["a", 2, "t"]] and search_rows([]) == []
@@ -2368,10 +2369,11 @@ class TestWorkspaceHandlers:
         import os
         from web.app import abbreviate_home, format_dir_breadcrumb
         home = os.path.expanduser("~")
-        assert abbreviate_home(home) == "~" and abbreviate_home(os.path.join(home, "x", "y")) == "~/x/y"
+        sep = os.sep
+        assert abbreviate_home(home) == "~" and abbreviate_home(os.path.join(home, "x", "y")) == f"~{sep}x{sep}y"
         assert abbreviate_home("/opt/data") == "/opt/data" and abbreviate_home("") == ""
         assert abbreviate_home(home + "x") == home + "x"  # 前缀相同但不是子目录
-        assert format_dir_breadcrumb({"path": os.path.join(home, "p"), "entries": []}) == "📂 `~/p` · 0 项"
+        assert format_dir_breadcrumb({"path": os.path.join(home, "p"), "entries": []}) == f"📂 `~{sep}p` · 0 项"
         svc = make_service_mock()
         svc.list_dir.return_value = {"path": os.path.join(home, "p"), "parent": home, "entries": []}
         assert build_handlers(svc)["on_list_dir"]("p", False)[2] == "~/p"

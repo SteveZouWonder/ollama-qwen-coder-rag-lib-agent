@@ -10,6 +10,7 @@ test_query_interface_interpreter_guard.py
 第三方依赖前检测版本，必要时自动用项目虚拟环境解释器重新执行。
 """
 import os
+import pytest
 
 from query_interface import (
     ensure_compatible_interpreter,
@@ -129,6 +130,27 @@ class TestFindVenvPython:
 
         assert find_venv_python(str(script)) is None
 
+    def test_uses_platform_venv_layout(self, tmp_path, monkeypatch):
+        """Windows venv 是 ``Scripts\\python.exe``，POSIX 是 ``bin/python``；此前只找后者，Windows 用户永远"未找到 venv"。"""
+        script = tmp_path / "src" / "query_interface.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("# placeholder\n")
+        sub, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+        py = tmp_path / "venv" / sub / exe
+        py.parent.mkdir(parents=True)
+        py.write_text("")
+        os.chmod(py, 0o755)
+        assert find_venv_python(str(script)) == str(py)
+
+    def test_other_platform_layout_not_recognized(self, tmp_path):
+        root = tmp_path / "proj"
+        script = root / "src" / "q.py"
+        script.parent.mkdir(parents=True); script.write_text("")
+        other = root / "venv" / ("bin" if os.name == "nt" else "Scripts") / ("python" if os.name == "nt" else "python.exe")
+        other.parent.mkdir(parents=True); other.write_text(""); os.chmod(other, 0o755)
+        assert find_venv_python(str(script)) is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows 无 POSIX 执行位，os.access(X_OK) 恒为 True")
     def test_ignores_non_executable_python(self, tmp_path):
         """非可执行的 python 文件不应被当作有效解释器。"""
         venv_bin = tmp_path / "venv" / "bin"

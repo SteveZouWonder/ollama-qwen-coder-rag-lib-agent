@@ -973,7 +973,7 @@ class TestRestoreHelper(unittest.TestCase):
         self.assertTrue(os.path.exists(output_file))
         
         # 验证脚本内容
-        with open(output_file, 'r') as f:
+        with open(output_file, 'r', encoding='utf-8') as f:
             script_content = f.read()
         
         self.assertIn("test_script", script_content)
