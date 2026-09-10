@@ -24,8 +24,8 @@ ollama-qwen-coder-rag-lib/
 ├── model_switcher.py      # 模型热切换（校验/同步引擎/释放旧模型，CLI 与 Web 共用）
 ├── agent_tools.py         # 工具链（文件/命令/搜索 + RAG 查询/添加）
 ├── conversation_context.py # 连续对话上下文（会话记忆、token 预算、滚动压缩、追问改写）
-├── query_interface.py     # 统一 CLI 入口（主循环 / 渲染 / 引擎耦合命令）
-├── cli/                   # CLI 入口层子包：parser.py 命令路由 · help_text.py 帮助与教程 · handlers/ 命令处理器（COMMAND_HANDLERS）
+├── query_interface.py     # 统一 CLI 入口（解释器自保护 / 日志 / 输入 / main；重导出 cli.* 公开名）
+├── cli/                   # CLI 入口层子包：state.py 共享状态 · parser.py 命令路由 · help_text.py 帮助与教程 · render.py 渲染 · callbacks.py 回调 · rag_adapter.py RAG 适配 · recommend.py 命令推荐 · engine_commands.py 引擎耦合命令与分发 · handlers/ 命令处理器（COMMAND_HANDLERS）
 ├── cli_handlers.py        # 兼容重导出（实现已迁至 cli/handlers/）
 ├── web/                   # Web 入口层：services/ 业务门面（唯一接引擎）· formatters.py 纯格式化 · handlers/ 页面处理器 · app.py 汇总与装配 · ui/ Gradio 接线
 ├── knowledge_to_skills.py # 知识库到Skill智能转化引擎
@@ -289,7 +289,7 @@ pytest tests/ --cov=src --cov-report=html
 - **tests/test_react_engine.py** - ReAct推理引擎测试
 - **tests/test_agent_tools_*.py** - 工具链测试
 - **tests/test_knowledge_*.py** - 知识管理测试
-- **tests/test_query_interface_*.py** - 查询接口测试
+- **tests/test_query_interface_*.py / test_cli_*.py** - CLI 入口与命令处理器测试
 - **tests/multi_agent/** - 多Agent系统测试
 - **tests/test_web_search.py** - 网络搜索功能测试
 - **tests/test_ocr_*.py** - OCR功能测试

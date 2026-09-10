@@ -2,7 +2,7 @@
 
 ## 实施状态
 
-**进行中**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 / P3-1 已完成 2026-09-09；仅 P3-2 待实现） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
+✅ **已完成**（P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 / P3-1 于 2026-09-09、P3-2 于 2026-09-10 完成） · 立项 2026-09-08 · 分支 `docs/f10-hardening`
 · 目标：针对项目评估发现的 7 类结构性问题，按"用户可感知价值 × 复杂度"分 P0–P3 九个独立任务逐项落地（P3-2 为 P2-2 实施后追加的遗留项）
 
 | 编号 | 主题 | 价值 | 复杂度 | 依赖 | 状态 | 完成日期 | 提交 |
@@ -15,7 +15,7 @@
 | P2-1 | BM25 持久化增量（`bm25_store`）· 混合检索关闭可见 · RLock 补齐 · Ollama 并发信号量 | 中 | 中高 | P1-2 / P1-3（可选） | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P2-2 | 入口层拆分：`web/services/`、`web/handlers/` + `formatters.py`、`cli/handlers/` + `cli/parser.py`（纯重构） | 低（间接） | 高 | P1 全部合入 | **已完成** | 2026-09-09 | 见下方实现记录 |
 | P3-1 | Tesseract 跨平台探测与缺失提示 · README 瘦身到 ≤400 行 | 低 | 低 | — | ✅ **已完成** | 2026-09-09 | 见下方实现记录 |
-| P3-2 | `query_interface.py` 二次拆分：`cli/state.py` 收口模块级状态 · `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py` · 223 处测试打桩目标迁移（纯重构，P2-2 遗留） | 低（间接） | 中 | P2-2 | 待实现 | | |
+| P3-2 | `query_interface.py` 二次拆分：`cli/state.py` 收口模块级状态 · `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py` · 225 处测试打桩目标迁移（纯重构，P2-2 遗留） | 低（间接） | 中 | P2-2 | ✅ **已完成** | 2026-09-10 | 见下方实现记录 |
 
 ## 文档导读
 
@@ -53,6 +53,50 @@ P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 ```
 
 ## 实现记录
+
+### P3-2 `query_interface.py` 二次拆分（纯重构 + 打桩迁移，行为零变化）（2026-09-10）
+
+按 a → b → c 三步各自提交并全量测试，函数体逐字搬移；仅有的两处清理：删 `_synthesize_prompt` 被函数定义覆盖的别名行（F811）、删随段搬走后无用的导入行。
+
+| 子项 | 实现位置 | 做了什么 |
+|---|---|---|
+| P3-2-a 状态收口 | **新增** `src/cli/state.py`（78 行）；`src/query_interface.py` 1799 → 1776；`tests/conftest.py` | `state.py` 集中：`HAS_READLINE / HAS_RICH / HAS_PROMPT_TOOLKIT` 探测（含缺 rich 时的 `[提示]` 打印）、`get_console()` / `console`（含 `FakeConsole`）、`rag_engine / react_engine / last_rag_sources / last_web_sources / command_recommender`、`_progress_state`；采用**模块级变量**方案（保持 `patch("cli.state.console")` 形态）。`query_interface`：`from cli import state`，函数体内 227 处引用改为 `state.xxx` 运行时取值（脚本替换 + 人工核对：跳过 kwarg 名 / 字符串字面量 / 注释；`handle_model / handle_think / handle_auto` 里的局部变量 `state` 改名 `state_text` 避免遮蔽；删除两处 `global` 声明，`main` 改为直接给 `state.rag_engine` 等赋值）；顶层保留 `HAS_RICH = state.HAS_RICH` 等**导入时快照**别名与 `get_console = state.get_console`。`conftest.reset_module_state` 改为重置 `cli.state._progress_state / rag_engine`。 |
+| P3-2-b 渲染 / 回调 / 适配 / 推荐外迁 | **新增** `src/cli/render.py`（246 行）、`cli/callbacks.py`（174）、`cli/rag_adapter.py`（116）、`cli/recommend.py`（108）；`query_interface.py` 1776 → 1211；`tests/test_query_interface_render.py` → `test_cli_render.py`（`git mv`） | 按 `# ====` 分段整段搬移：`render` = 教程 / `print_help` 零参包装 / `print_tools` / `print_rag_sources` + `_source_code_location` + `count_code_sources` / `print_knowledge_stats` / `_render_meta_overview` / `print_web_sources` / `_render_answer` / `_live_answer` / `_print_notices` / `_citation_summary`；`callbacks` = `STEP_PHASE_*` / `_live_streaming` / 三个回调；`rag_adapter` = `rag_pipeline` 别名（9 个，**去掉第 10 个 `_synthesize_prompt` 别名**，函数定义保留）+ `run_web_search / enrich_with_page_content / _cli_ask_progress / _answer_meta_query / _synthesize_prompt`；`recommend` = 推荐记录 / 展示 + `_conversation / _print_health_hint / _health_before`。各新模块顶部 `from cli import state`，rich 组件在模块顶 `try/except ImportError`（缺失时由 `state.HAS_RICH` 走纯文本分支）。`query_interface` 顶部显式列名重导出（含下划线名）。 |
+| P3-2-c 引擎耦合命令外迁 | **新增** `src/cli/engine_commands.py`（649 行）；`cli/render.py` 246 → 283；`query_interface.py` 1211 → **563** | `engine_commands` = `KNOWLEDGE_MANAGEMENT_AVAILABLE` 探测 + 16 个 `handle_*(ctx, parsed)`（签名不改）+ `_run_ask / _ingest_inline_file / _augment_with_web_search / _answer_question / _route_natural_to_agent` + `_ENGINE_HANDLERS` + `_build_cli_context()` + `dispatch_command()`。`CEREBRO_ASCII / print_banner / backend_banner_text` 并入 `cli/render.py`（见差异 #1）。`query_interface` 只留：解释器自保护、`setup_logging`、`setup_readline / get_input`、`main`；顶部重导出 `engine_commands` 全部 25 个名字；删除无用导入 `Console / Syntax / Table / Prompt / escape / build_knowledge_base / registry / CommandSafetyChecker / auto_confirm_allows / HIGH_RISK_CONFIRM_HINT / Path / KnowledgeToSkillsEngine / KnowledgeSnapshotManager / RestoreHelper / _print_help`（均随段搬走，仓库内无外部引用）。`cli/__init__.py` 文档补九个子模块职责。 |
+| P3-2-d 配套 | `TEST_DESIGN.md`、`ARCHITECTURE.md §1.1`、`MODULE_GUIDES.md` 入口层、`CODE_STANDARDS.md §1 / §6`、`TESTING_GUIDELINES.md`、`AGENTS.md`、`docs/tutorials/09-development.md`、`CHANGELOG.md`、本文件、`docs/features/README.md` | 目录职责表 / 单例表 / 打桩指引改为新结构；`cerebro.spec` 与 `pytest.ini` 无需改（子包递归收集、omit 路径未变）。 |
+
+拆分前后行数：
+
+| 文件 | P2-2 后（`01f3a20`） | a | b | c（最终） | 上限 |
+|---|---|---|---|---|---|
+| `src/query_interface.py` | 1799 | 1776 | 1211 | **563** | ≤800 ✓ |
+| `src/cli/state.py` | — | 78 | 78 | 78 | ≤700 ✓ |
+| `src/cli/render.py` | — | — | 246 | 283 | ≤700 ✓ |
+| `src/cli/callbacks.py` | — | — | 174 | 174 | ≤700 ✓ |
+| `src/cli/rag_adapter.py` | — | — | 116 | 116 | ≤700 ✓ |
+| `src/cli/recommend.py` | — | — | 108 | 108 | ≤700 ✓ |
+| `src/cli/engine_commands.py` | — | — | — | **649** | ≤700 ✓ |
+| `src/cli/parser.py` / `help_text.py` / `__init__.py` | 252 / 251 / 8 | 同 | 同 | 252 / 251 / 18 | — |
+| 合计（`query_interface` + `cli/*.py`，不含 handlers） | 2310 | 2394 | 2444 | 2492 | 增量 182 行 = 5 个模块头 docstring + 导入 + `query_interface` 重导出块 |
+
+测试打桩目标迁移（`patch("query_interface.X")` / `patch.object(qi, "X")` / `monkeypatch.setattr(qi, "X")` → 实现模块）：
+
+| 目标名 | 处数 | 新目标 | 步骤 |
+|---|---|---|---|
+| `console` | 72 | `cli.state.console` | a |
+| `HAS_RICH` | 65 | `cli.state.HAS_RICH` | a |
+| `rag_engine` | 23 | `cli.state.rag_engine` | a |
+| `react_engine` | 9 | `cli.state.react_engine` | a |
+| `record_command_execution` | 38 | `cli.engine_commands.record_command_execution` | c |
+| `_health_before` | 3 | `cli.engine_commands._health_before` | c |
+| `_conversation` / `_print_health_hint` / `registry` | 1 / 1 / 1 | `cli.engine_commands.*` | c |
+| `os.path.exists` | 2 | `cli.render.os.path.exists` | b |
+| 导入行（`from query_interface import on_step_callback / ask_progress_callback / STEP_PHASE_COLOR / print_web_sources / Config`） | 24 | `cli.callbacks` / `cli.render` / `config` | b |
+| **合计** | **225 + 24 导入** | | |
+
+按文件：`test_cli_handlers_context.py` 100（a 77 + c 23）· `test_query_interface_render.py → test_cli_render.py` 72 + 24 导入（a 72、b 26）· `test_cli_handlers_model.py` 30（a 15 + c 15）· `test_streaming_p1_1.py` 10（a 4 + c 6）· `test_cli_code_chunking.py` 3 · `test_llm_client.py` 3 · `test_query_interface_exec_safety.py` 3（a 1 + c 2）· `test_query_interface_parse.py` 2 · `test_rag_engine_bm25_store.py` 2。剩余 `monkeypatch.setattr(qi.Config, …)` 22 处未动——`qi.Config` 就是 `config.Config` 对象本身，与命名空间无关。
+
+提交：`48c9402` P3-2-a → `f731540` a 回归修复（见差异 #3）→ `0e45323` P3-2-b → `da334e8` P3-2-c → 本次 P3-2-d 文档。
 
 ### P3-1 Tesseract 跨平台探测 + README 瘦身（2026-09-09）
 
@@ -158,6 +202,21 @@ P3-1 Tesseract + README → P3-2 query_interface 二次拆分（P2-2 遗留）
 | P0-2-c 归档 | `CHANGELOG.md`、`docs/features/ROADMAP.md` | `python scripts/bump_changelog.py bump --version 0.1.0 --date 2026-09-09` 把 `[Unreleased]` 的 **112 条**一级要点归档为 `## [v0.1.0] - 2026-09-09`（F8 / F9 为破坏性体验升级，按 minor 递增）；新 `[Unreleased]` 只写 P0-2 自身的「发布流程」4 条。ROADMAP「当前版本」由 v0.0.13 改为 v0.1.0。**未打 tag、未推送**，命令交由用户执行。 |
 
 ## 验证结果
+
+### P3-2（2026-09-10）
+
+| 项 | 结果 |
+|---|---|
+| 全量测试 | 每步提交后各跑 `./venv/bin/python -m pytest -q -n 4`：a **3591 passed / 36 skipped, 92.26%** → a 回归修复 3592（+1 回归用例）→ b 3592, 92.26% → c **3592 passed / 36 skipped, 92.27%**（门禁 80%）。起点 3591 / 36（P3-1 后，比 P2-2 时的 3528 多出 P3-1 的 63 个）；拆分自身未增减测试。 |
+| 现有测试断言 | **一条未改**；只改了打桩目标模块（225 处）、导入路径（24 处）、一次 `git mv` |
+| 行数上限 | `query_interface.py` 563 ≤800 ✓；`cli/*.py` 最大 `engine_commands.py` 649 ≤700 ✓ |
+| 剩余对 `query_interface` 命名空间的打桩 | `grep -rnE 'patch\("query_interface\.\|patch\.object\(qi, "\|setattr\(qi, "' tests/` → **0**（≤10 ✓）；`qi.Config` 22 处不计（打的是 `config.Config` 属性） |
+| flake8 | `flake8 --select=E9,F63,F7,F82,F811 src/query_interface.py src/cli/` → **无输出**（`_synthesize_prompt` F811 消除）；P2-2 记录的 9 条 F401 中 8 条随段搬走 / 删除，剩 `Config`（`qi.Config` 兼容引用，加 noqa 说明）与重导出块（noqa F401） |
+| 公开名兼容 | 脚本比对 `01f3a20` 的 `query_interface` 131 个顶层名 → 现在 `hasattr(qi, n)` 仅缺 15 个：`Console / Syntax / Table / Prompt / escape / Path`（rich / 标准库导入）、`CommandSafetyChecker / auto_confirm_allows / HIGH_RISK_CONFIRM_HINT / registry / build_knowledge_base / KnowledgeToSkillsEngine / KnowledgeSnapshotManager / RestoreHelper`（随段搬走的第三方导入，`grep tests/ src/` 无经 `query_interface` 的引用）、`_print_help`（内部别名）。全部为非公开名。 |
+| CLI 逐行对照（无 LLM 命令） | 脚本 `printf '/help\n/stats\n/config\n/model\n/model list\n/think\n/auto\n/tools\n/pwd\n/exec echo hello-p32\n/unknowncmd\n/quit' \| python src/query_interface.py --no-history`（`COLUMNS=120 TERM=dumb`），在 **`eabb0ef`（P3-2 前）worktree 与当前分支各跑一次**，路径归一化后 `diff` → **378 行完全一致**（含 `/stats` 表、`/config` 14 行、`/model` / `/model list` / `/think` / `/auto` 状态行、`/tools` 表、`/exec` 风险等级 + 命令输出面板、未知命令提示）。对照 **`01f3a20`（P2-2 后）** 的差异仅两类：P3-1 新增的 `/help` 一行「/ Tesseract」与 `/config` 的「Tesseract（OCR）」行；`/stats` 表格列宽随 `vector_db_path` 长度不同（worktree 路径 vs 项目路径）——归一化空白后一致。 |
+| CLI 对照（LLM 命令，qwen3.5:4b） | `/ask 项目的测试覆盖率门禁是多少？` → `/agent 读取 README.md 的前 5 行并原样返回` → `/sources`：两边均走完 规划 → 联网 → 检索 10 → rerank → 流式综合 → 回答面板 → `📚 基于知识库 5 个片段 · 🔎 引用 N/N 有效` → 网络来源表 → `/sources` 提示；Agent 3 步完成 + `本次共执行 3 步`；`/sources` 双区表。结构 / 文案逐行一致，差异只在模型生成内容（引用 10/10 vs 11/11、答案措辞）与一条依赖生成内容的健康度提示「话题似乎已切换」（`topic_drift` 按关键词重叠判定，两次答案不同导致一次触发一次不触发）。 |
+| 单次模式 | `--query "HTTP/3 用什么传输层协议？"` → 回答面板「QUIC（基于 UDP）」+ 来源表；`--agent "运行 pwd 并只返回结果"` → 1 步 `execute_command` + Agent 面板输出项目路径。 |
+| 运行时状态一致性 | `import query_interface as qi; qi.console is cli.state.console and qi._progress_state is cli.state._progress_state` → True；`qi.RECOMMENDER_AVAILABLE / KNOWLEDGE_MANAGEMENT_AVAILABLE` → True（新增回归用例） |
 
 ### P3-1（2026-09-09）
 
@@ -518,6 +577,30 @@ Web「系统 → 运行环境」（`format_env_info(WebService().env_info())` �
 > 浏览器截图未提交：本次在无头环境实现，用 service → formatter 的真实渲染输出替代（系统页即 `gr.Markdown(format_env_info(...))`，无额外交互逻辑）。
 
 ## 与需求的差异
+
+### P3-2
+
+| # | 需求 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | 「`print_banner` / `backend_banner_text`（横幅依赖 argparse 结果，留在入口）」 | 二者与 `CEREBRO_ASCII` 一并搬到 **`cli/render.py`**，`query_interface` 重导出 | 核对代码：`print_banner` 不读 argparse，只读 `LLM_MODEL` 常量与 `describe_backend()`；而 `handle_clear`（搬入 `engine_commands`）要调用 `print_banner`——留在入口会造成 `engine_commands → query_interface → engine_commands` 循环导入。`tests/test_cli_render.py` 的 `from query_interface import print_banner` 与 `test_llm_client.py` 的 `qi.backend_banner_text()` 经重导出仍可用。 |
+| 2 | 「打桩 223 处」「`grep … \| wc -l` ≤10」 | 实际迁移 **225** 处（脚本按正则精确统计：`console` 72 / `HAS_RICH` 65 / `record_command_execution` 38 / `rag_engine` 23 / `react_engine` 9 / `_health_before` 3 / `os.path.exists` 2 / 其余各 1），迁移后剩 **0** | 立项时 §0.10 是人工估数（80 / 66 / 40 / 24）；`Config.AUTO_ROUTE / AUTO_CONFIRM / SHOW_PROGRESS / LLM_MODEL` 共 22 处是 `setattr(qi.Config, …)`——改的是 `config.Config` 类属性，与 `query_interface` 命名空间无关，无需也不应迁移。 |
+| 3 | 「纯移动，行为零变化」 | P3-2-a 的替换脚本把 `from command_recommender import …` 误改为 `from state.command_recommender import …`，被 `except ImportError` 静默吞掉 → `RECOMMENDER_AVAILABLE=False`，CLI 启动会打「命令推荐系统模块未安装」；全量测试**未能发现**（既有 `test_package_exports` 只测包本身可导入）。b 步 pyflakes 报 `state.command_recommender` 才发现，单独提交 `f731540` 修复并新增 `test_query_interface_marks_recommender_available` | 正则替换缩进 ≥4 的行时，`try:` 块内的 `from command_recommender import` 也被当作函数体处理。已在 b / c 两步改为「只替换函数体内引用 + 对比 diff 逐行核对」。这类「`except ImportError` 吞掉的可选依赖」是既有隐患，记入待办。 |
+| 4 | 「`from cli.render import *` 形式 + 显式下划线名」 | 全部用**显式列名**的 `from cli.render import (a, b, _c, …)`，不用 `*` | 名字总数 66 个可列出；显式列表让 flake8 / IDE 能看到重导出集合，也避免 `*` 把新模块顶部的 `state` / `Config` / `os` 等导入再次注入 `query_interface`。 |
+| 5 | 「`_progress_state` 五类打桩改为 `cli.state.*`」 | `_progress_state` 无测试直接打桩（`test_query_interface_progress.py` 只构造本地字典断言结构），仅 `conftest.reset_module_state` 引用；已改指 `cli.state` | 核实 §0.10 时该项为 0 处。 |
+| 6 | 「`test_cli_code_chunking.py` 的打桩目标改到对应新模块」 | 其 3 处 `patch("query_interface.HAS_RICH / console")` 在 a 步已改为 `cli.state.*`，b 步无需再动 | 它打的是状态而非函数。 |
+| 7 | 收集数「与 P2-2 后一致（3528 / 36）」 | 起点即为 **3591 / 36**（P3-1 在 P2-2 之后新增 63 个）；拆分三步收集数不变，a 回归修复 +1 → 3592 | 需求写于 P3-1 之前。 |
+
+P3-2 实施中发现、按「纯重构不改逻辑」原则**未处理**的待办：
+
+| # | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| 1 | `query_interface.py` / `cli/engine_commands.py` 顶部 `try: from command_recommender import … except ImportError: RECOMMENDER_AVAILABLE = False`（`KNOWLEDGE_MANAGEMENT_AVAILABLE` 同款） | 任何 ImportError（含依赖内部的拼写错误 / 缺第三方包）都被静默判为"未安装"，本次 a 步的误改就是这样漏过全量测试的 | 只捕获 `ModuleNotFoundError` 且校验 `e.name` 为目标包；或启动时 `--verbose` 打印异常原文。已补一条回归用例兜底 |
+| 2 | `cli/engine_commands.handle_file` | 非 Rich 分支才 `record_command_execution("read", path)`，Rich 分支不记录（缩进层级不同，疑似历史缩进错误） | 确认意图后把记录移到 `if/else` 之外，两端一致 |
+| 3 | `cli/engine_commands.handle_natural` | 已算出 `engine`（ctx 优先）与 `kb_available`，随后判断「知识库未初始化」时却直接读 `state.rag_engine` 而非 `engine` | 统一用 `engine`；行为面改动，需同步测试 |
+| 4 | `cli/engine_commands._augment_with_web_search / _answer_question`、`cli/rag_adapter._answer_meta_query / run_web_search / enrich_with_page_content` 及 9 个 `rag_pipeline` 别名 | 仓库内除测试外无调用方（兼容封装） | 下个版本标记 deprecated；测试改为直接测 `rag_pipeline` 后删除 |
+| 5 | `cli/state.py` / `query_interface.py` 顶层 `HAS_RICH = state.HAS_RICH` 等导入时快照 | `tests/` 与 `src/` 已无依赖这些别名的地方（全部改打 `cli.state`），仅为外部 `from query_interface import HAS_RICH` 保留 | 与 `cli_handlers.py` shim 一起在下一个 minor 版本移除 |
+| 6 | `cli/engine_commands._run_ask` 用正则 `r'/Users/[^\s\)]+\.(png\|jpg\|…)'` 检测问题里的本地文件路径 | 只识别 macOS `/Users/` 前缀，Linux `/home/`、Windows 盘符路径不触发内联入库（与 P3-1 跨平台目标不一致） | 改为 `os.path.isabs` + 存在性检查 |
+| 7 | `main` 227 行（argparse + 引导 + 引擎装配 + 三种单次模式 + REPL） | `query_interface.py` 已 563 行达标，未按 §4 备选方案再抽 `cli/repl.py` | 若后续要给 REPL 加功能（如多行输入），届时抽 `run_loop(args)` |
 
 ### P3-1
 

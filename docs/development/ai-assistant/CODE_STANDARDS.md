@@ -11,7 +11,7 @@
 - 类型提示：公共函数写完整签名；返回 dict 的函数在 docstring 中列出字段。
 - Docstring 用中文，首段一句话说职责；说明"为什么这样做"（历史 bug、约束）比复述代码更有价值。
 - 每个模块顶部 docstring 说明职责与在分层中的位置（新模块必须有，`MODULE_GUIDES.md` 以它为准）。
-- 入口层文件规模（F10 P2-2 起）：`web/app.py` ≤300 行；`web/services/*.py`、`web/handlers/*.py` 单文件 ≤800 行；`cli/handlers/*.py` ≤600 行。新增 Web 功能按页面落到对应 `services/<页>.py` mixin + `handlers/<页>.py` + `formatters.py`；新增 CLI 命令落到 `cli/handlers/<组>.py` 并登记 `COMMAND_HANDLERS`，不要再往 `query_interface.py` / 旧 `cli_handlers.py` shim 里加代码。拆包保留的兼容重导出（`web.app` → `formatters`、`cli_handlers` → `cli.handlers`）只为旧导入路径服务，新代码直接从实现模块导入；`monkeypatch` / `patch` 的目标必须是实现所在模块。
+- 入口层文件规模（F10 P2-2 起，P3-2 补齐 CLI）：`web/app.py` ≤300 行；`web/services/*.py`、`web/handlers/*.py` 单文件 ≤800 行；`cli/*.py` ≤700 行；`cli/handlers/*.py` ≤600 行；`query_interface.py` ≤800 行。新增 Web 功能按页面落到对应 `services/<页>.py` mixin + `handlers/<页>.py` + `formatters.py`；新增 CLI 命令落到 `cli/handlers/<组>.py` 并登记 `COMMAND_HANDLERS`（需直接读写引擎状态的才进 `cli/engine_commands.py` 的 `_ENGINE_HANDLERS`），渲染进 `cli/render.py`，不要再往 `query_interface.py` / 旧 `cli_handlers.py` shim 里加代码。CLI 模块读共享状态一律 `from cli import state` + 函数体内 `state.console`，禁止 `from cli.state import console`（导入时固化，patch 失效）。拆包保留的兼容重导出（`web.app` → `formatters`、`cli_handlers` → `cli.handlers`）只为旧导入路径服务，新代码直接从实现模块导入；`monkeypatch` / `patch` 的目标必须是实现所在模块。
 
 ## 2. 配置与环境变量
 
@@ -50,7 +50,7 @@
 | `_rag_engine` | `agent_tools` | `set_rag_engine(None)`（conftest `reset_module_state`） |
 | `_global_metadata_manager` | `file_metadata` | conftest `isolate_file_metadata` |
 | `_graph_builder` / `_DEFAULT_PERSIST_PATH_OVERRIDE` | `knowledge_graph.graph_builder` | conftest `isolate_knowledge_graph` |
-| `react_engine` / `rag_engine` 模块全局 | `query_interface` | conftest `reset_module_state` |
+| `rag_engine` / `react_engine` / `console` / `HAS_RICH` / `_progress_state` / `last_*_sources` / `command_recommender` 模块级变量 | `cli.state`（F10 P3-2；`query_interface` 顶层只剩导入时快照别名） | conftest `reset_module_state` 重置 `_progress_state / rag_engine`；测试 `patch("cli.state.<name>")`，调用方模块内经 `state.<name>` 运行时取值 |
 
 - 新增单例要同时提供 `reset_*()` 与 conftest 隔离；能用依赖注入（工厂参数）就不要单例。
 - "跟随当前会话"的 `ConversationContext`（`session_id=None`）不得把 `session_id` 写死（历史 bug）。

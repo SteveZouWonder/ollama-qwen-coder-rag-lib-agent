@@ -63,7 +63,13 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
 | CLI | `cli/parser.py` | `ParsedCommand / parse_command / classify_mode`（纯函数） |
 | CLI | `cli/help_text.py` | `TUTORIAL_TEXT` + `print_help(console, has_rich)`（`/help` 文案内联） |
 | CLI | `cli/handlers/` | `base.py`（`CLIContext`、`_confirm`、`LiveAnswer`）+ `agent / system / knowledge / files / session / tools / git / db`；`__init__.py` 汇总 `COMMAND_HANDLERS` |
-| CLI | `query_interface.py` | 主循环、渲染、引擎耦合命令（`_ENGINE_HANDLERS`）与模块级状态；重导出 parser / help_text 公开名 |
+| CLI | `cli/state.py` | 进程内共享状态（`HAS_RICH` 等探测、`console`、`rag_engine / react_engine / last_*_sources / command_recommender`、`_progress_state`）；其他模块 `from cli import state` 后经 `state.xxx` 运行时取值 |
+| CLI | `cli/render.py` | 横幅、教程、工具表、来源表 / 统计表、回答 Panel、`_live_answer`、结构化提示、引用计数 |
+| CLI | `cli/callbacks.py` | `on_step_callback / on_confirm_callback / ask_progress_callback`（读写 `state._progress_state`） |
+| CLI | `cli/rag_adapter.py` | `rag_pipeline` 别名与薄封装、`_cli_ask_progress` 终端进度渲染 |
+| CLI | `cli/recommend.py` | 命令推荐记录 / 展示、会话上下文与健康度提示 |
+| CLI | `cli/engine_commands.py` | `handle_*(ctx, parsed)` 引擎耦合命令（ask / agent / natural / model / think / auto / exec / …）、`_ENGINE_HANDLERS`、`_build_cli_context`、`dispatch_command` |
+| CLI | `query_interface.py` | 入口：解释器自保护、日志、readline / 输入、`main`（argparse + 引擎装配 + REPL）；重导出 `cli.*` 全部公开名（`from query_interface import X` 旧路径不变） |
 | CLI | `cli_handlers.py` | 兼容重导出 shim（`from cli_handlers import X` 仍可用；打桩请以 `cli.handlers.<子模块>` 为目标） |
 
 ## 2. 四种工作模式
@@ -81,7 +87,7 @@ Cerebro 是本地优先的"知识库 + Agent"助手。本文描述当前代码�
                 └─ 否则 llm_classify（num_predict=4, timeout=5）→ rag|agent，失败回退 rag
 ```
 
-CLI：`query_interface.handle_natural` → `Config.AUTO_ROUTE and _route_natural_to_agent`。Web：`WebService.chat_auto_stream` 先 yield `progress(phase="route")`，`answer.data["routed_mode"]` 决定渲染路径。
+CLI：`cli.engine_commands.handle_natural` → `Config.AUTO_ROUTE and _route_natural_to_agent`。Web：`WebService.chat_auto_stream` 先 yield `progress(phase="route")`，`answer.data["routed_mode"]` 决定渲染路径。
 
 ### 2.2 RAG — `rag_pipeline.answer_question`
 

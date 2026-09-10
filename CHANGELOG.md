@@ -73,6 +73,10 @@
   （`/help` 与教程文案），`query_interface.py` 2274 → 1799 行。`from web.services import WebService`、
   `from web.app import format_*`、`from cli_handlers import COMMAND_HANDLERS`、`from query_interface import parse_command`
   等旧导入路径全部保留（兼容重导出），功能与文案一字未改；`packaging/cerebro.spec` 按子包递归收集，打包无需改动。
+  **P3-2 二次拆分**：`query_interface.py` 1799 → 563 行——模块级状态（`console` / `HAS_RICH` / `rag_engine` /
+  `react_engine` / `_progress_state` …）收口到 `cli/state.py`，渲染 / 回调 / RAG 适配 / 命令推荐 / 引擎耦合命令
+  分别外迁至 `cli/{render,callbacks,rag_adapter,recommend,engine_commands}.py`，入口只剩解释器自保护、日志、
+  输入与 `main`；225 处测试打桩目标改为实现模块（断言零改动），`/help /stats /config /model /ask /agent` 输出与拆分前逐行一致。
 - **BM25 增量持久化（F10 P2-1）**：混合检索的 BM25 语料改为按片段 id 持久化到 `index_storage/bm25/store.json.gz`
   （新模块 `bm25_store`），入库 / 删除只做增量 `upsert` / `remove`，索引在首次查询或有变更时用已存的词频直接装配——
   不再每次入库后全量拉取向量库重新分词。1 万块库入库后首次查询 1.45s → 15ms，冷启动 1.45s → 0.7s；旧库首次查询

@@ -54,7 +54,7 @@
 ```
 src/                    代码（顶层模块名导入：from config import ...）
 src/web/                Web 入口：services/（业务门面，唯一接引擎）· formatters.py（纯格式化）· handlers/（页面处理器）· app.py（汇总 + 装配）· ui/（Gradio 接线）
-src/cli/                CLI 入口：parser.py（命令路由）· help_text.py（帮助 / 教程文案）· handlers/（命令处理器 + COMMAND_HANDLERS）；query_interface.py 保留主循环与引擎耦合命令
+src/cli/                CLI 入口：state.py（共享状态，patch 目标）· parser.py（命令路由）· help_text.py（帮助 / 教程文案）· render.py（渲染）· callbacks.py（回调）· rag_adapter.py（RAG 编排适配）· recommend.py（命令推荐）· engine_commands.py（引擎耦合命令 + 分发）· handlers/（命令处理器 + COMMAND_HANDLERS）；query_interface.py 只留自保护 / 日志 / 输入 / main
 prompts/                产品 Agent 的模型输入资产（PROJECT_RULES / Skills），随 App 打包
 config/                 用户运行时配置（app_config.json）
 data/                   默认文档入库目录（用户资料，gitignored）
@@ -89,7 +89,7 @@ bash scripts/verify_deps.sh                     # 依赖校验
 ### 需求分析（强制）
 
 - **从用户体验与 UI 设计角度分析问题。** 收到需求或缺陷时，先回答：用户在什么场景、想达成什么、当前路径卡在哪；再给方案。方案要说明入口是否直观、步骤是否最少、结果是否结构化可读、危险操作是否有确认、失败是否有明确提示，而不是只描述"调用哪个函数"。
-- **同时考虑 Web UI 与 CLI 两个入口。** 本项目的功能面在 `src/web/`（Gradio：`services/` 业务 → `handlers/` + `formatters.py` 呈现 → `ui/` 接线）与 `src/cli/`（`handlers/` 命令处理器 + `parser.py`）+ `src/query_interface.py`（主循环与引擎耦合命令）各有一份呈现层。任何需求分析必须逐一说明：该问题在两端是否都存在、方案在两端各如何落地（或明确说明某端不做及原因）。共用逻辑放共享层（`agent_tools` / `database_tools` / `git_integration` 等），禁止只修一端；改 CLI 行为须同步 `cli/help_text.py` 的 `print_help` / `TUTORIAL_TEXT`，改 Web 须同步页面文案。
+- **同时考虑 Web UI 与 CLI 两个入口。** 本项目的功能面在 `src/web/`（Gradio：`services/` 业务 → `handlers/` + `formatters.py` 呈现 → `ui/` 接线）与 `src/cli/`（`handlers/` + `engine_commands.py` 命令处理器、`render.py` 呈现、`parser.py` 路由、`state.py` 状态）+ `src/query_interface.py`（入口 `main`）各有一份呈现层。任何需求分析必须逐一说明：该问题在两端是否都存在、方案在两端各如何落地（或明确说明某端不做及原因）。共用逻辑放共享层（`agent_tools` / `database_tools` / `git_integration` 等），禁止只修一端；改 CLI 行为须同步 `cli/help_text.py` 的 `print_help` / `TUTORIAL_TEXT`，改 Web 须同步页面文案。
 - **优先修复共有缺陷，再做单端增强。** 排优先级时，两端共有的功能性 Bug > 影响主路径的体验问题 > 单端的锦上添花；需求文档按此分 P 级并给出可检查的验收。
 - 需求文档模板见 `docs/features/f8-agent-modes-optimization/` 与 `docs/features/f9-web-tools-revamp/`（REQUIREMENTS §0 代码事实 + 分 P 级需求 + UI 规范 + 按 P 级分发的 PROMPT）。
 

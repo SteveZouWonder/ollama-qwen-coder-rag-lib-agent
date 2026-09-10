@@ -19,7 +19,7 @@
 | `document_loader.py` | 145 | **≥ 90%** | Mock 读取器 + 文件发现 |
 | `rag_engine.py` | 274 | **≥ 90%** | Mock 外部依赖 + Agent 接口 |
 | `react_engine.py` | 296 | **≥ 90%** | Mock HTTP + 解析逻辑 + 安全拦截 |
-| `query_interface.py` | 719 | **≥ 85%** | 纯函数 `parse_command`/`classify_mode` + 渲染函数 |
+| `query_interface.py` + `cli/*.py` | 563 + 1929（F10 P3-2 后：`state` 78 / `parser` 252 / `help_text` 251 / `render` 283 / `callbacks` 174 / `rag_adapter` 116 / `recommend` 108 / `engine_commands` 649） | **≥ 85%** | 纯函数 `cli.parser`；渲染 / 回调 / 引擎命令经 `patch("cli.state.console")` 等打桩实现模块 |
 | **整体** | 1836 | **≥ 95%** | 不含 example.py |
 
 ---
@@ -51,19 +51,20 @@ tests/
 ├── test_rag_engine.py             # RAG 引擎（Mock Ollama/ChromaDB/LlamaIndex）
 ├── test_react_engine.py           # ReAct 引擎（Mock requests.post）
 ├── test_query_interface_parse.py  # 命令解析（100% 覆盖所有分支）
-└── test_query_interface_render.py # 渲染函数（Mock HAS_RICH）
+└── test_cli_render.py             # 渲染 / 回调函数（Mock cli.state.HAS_RICH；原 test_query_interface_render.py）
 ```
 
 ---
 
 ## 4. 关键测试策略
 
-### query_interface.py — 抽离纯函数后可达 85%+
+### query_interface.py / cli/ — 抽离纯函数后可达 85%+
 
-重构后新增 `ParsedCommand` 类、`parse_command()`、`classify_mode()` 三个纯函数：
+`cli/parser.py` 的 `ParsedCommand` 类、`parse_command()`、`classify_mode()` 三个纯函数：
 - `parse_command`：覆盖所有 20+ 命令分支 + 空输入 + 未知命令 + 自然语言
 - `classify_mode`：覆盖所有 cmd_type × rag_engine_available 组合
-- 渲染函数：`print_banner`, `print_help`, `print_tools`, `print_rag_sources`, `print_knowledge_stats` — Mock `HAS_RICH` 为 True/False 分别测试
+- 渲染函数（`cli/render.py`）：`print_banner`, `print_help`, `print_tools`, `print_rag_sources`, `print_knowledge_stats` — `patch("cli.state.HAS_RICH")` 为 True/False 分别测试，控制台用 `patch("cli.state.console")`
+- 引擎耦合命令（`cli/engine_commands.py`）：`handle_*` 直接调用；引擎 / 来源打 `cli.state.rag_engine` 等，协作函数（`record_command_execution` / `_health_before` …）打 `cli.engine_commands.<name>`（**搬到哪个模块就打那个模块**，F10 P3-2）
 
 ### agent_tools.py — 安全分析器参数化
 
@@ -130,7 +131,7 @@ Phase 2（临时目录 / 简单 Mock）
 Phase 3（重型 Mock）
   ├── test_rag_engine.py
   ├── test_react_engine.py
-  └── test_query_interface_render.py
+  └── test_cli_render.py
 ```
 
 ---

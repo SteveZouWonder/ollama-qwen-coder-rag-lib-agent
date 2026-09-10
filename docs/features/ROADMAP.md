@@ -31,7 +31,7 @@
 | 高 | F10 P0：~~命令安全分级修正（token 级匹配、读路径边界、`AUTO_CONFIRM` 不放行 high）~~ **P0-1 已完成 2026-09-09**；依赖钉版本 + `requirements-dev.txt`、CI PR 触发与三平台矩阵、CHANGELOG 归档发版 v0.1.0 **P0-2 已完成 2026-09-09** | [F10](f10-hardening/) |
 | 中高 | F10 P1：~~真流式输出（Web token 事件 / CLI rich Live、可中断）~~ **P1-1 已完成 2026-09-09**；~~LLM 后端抽象层（Ollama / OpenAI 兼容，接入 vLLM / LM Studio）~~ **P1-2 已完成 2026-09-09**；~~RAG 评测集与基准脚本~~ **P1-3 已完成 2026-09-09** | [F10](f10-hardening/) |
 | 中 | F10 P2：~~BM25 持久化增量 + 混合检索关闭可见 + 并发锁与 Ollama 限流~~ **P2-1 已完成 2026-09-09**；~~入口层拆分（`web/services/`、`web/handlers/`、`cli/`，纯重构）~~ **P2-2 已完成 2026-09-09** | [F10](f10-hardening/) |
-| 低 | F10 P3：~~Tesseract 跨平台探测与缺失提示（合并原残留小项）、README 瘦身~~ **P3-1 已完成 2026-09-09**；`query_interface.py` 二次拆分（P3-2，P2-2 遗留） | [F10](f10-hardening/) |
+| 低 | F10 P3：~~Tesseract 跨平台探测与缺失提示（合并原残留小项）、README 瘦身~~ **P3-1 已完成 2026-09-09**；~~`query_interface.py` 二次拆分（P3-2，P2-2 遗留）~~ **P3-2 已完成 2026-09-10** | [F10](f10-hardening/) |
 | 低 | 残留小项：启动时新版本检查提示、macOS / Linux 自启动、Web 配置可编辑 | [features/README.md](README.md)「残留小项」 |
 
 ## 已明确不做
@@ -51,4 +51,4 @@
 
 ---
 
-**最后更新**: 2026-09-09（F10 P0-1 / P0-2 / P1-1 / P1-2 / P1-3 / P2-1 / P2-2 / P3-1 完成，余 P3-2）
+**最后更新**: 2026-09-10（F10 九项全部完成，P3-2 `query_interface.py` 二次拆分收官）
