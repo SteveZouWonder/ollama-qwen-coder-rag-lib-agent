@@ -25,6 +25,28 @@ from desktop_app import (
 )
 import signal
 
+import pytest
+
+
+def _close_root_file_handlers(prefix=None):
+    """关闭并移除根 logger 上的 FileHandler（可按路径前缀筛选）。
+
+    LogManager.setup_logging 把 FileHandler 挂在根 logger 上；Windows 上文件被打开时
+    所在目录删不掉（WinError 32），tearDown / 后续测试 rmtree 会失败，必须先关句柄。
+    """
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler) and (prefix is None or str(h.baseFilename).startswith(prefix)):
+            root.removeHandler(h)
+            h.close()
+
+
+@pytest.fixture(autouse=True)
+def _release_log_files():
+    """每个测试结束后释放根 logger 持有的日志文件（如默认 logs/app.log），避免跨测试文件锁。"""
+    yield
+    _close_root_file_handlers()
+
 class TestAppConfig(unittest.TestCase):
     """AppConfig 类的单元测试"""
     
@@ -145,11 +167,7 @@ class TestLogManager(unittest.TestCase):
         
     def tearDown(self):
         """清理测试环境（先关闭指向临时目录的 FileHandler，Windows 上文件被占用时目录删不掉）"""
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            if isinstance(h, logging.FileHandler) and str(h.baseFilename).startswith(self.test_dir):
-                root.removeHandler(h)
-                h.close()
+        _close_root_file_handlers(self.test_dir)
         shutil.rmtree(self.test_dir, ignore_errors=True)
         
     def test_setup_logging(self):
@@ -603,7 +621,8 @@ class TestIntegration(unittest.TestCase):
         self.test_status_file = Path(self.test_dir) / "test_status.log"
         
     def tearDown(self):
-        """清理测试环境"""
+        """清理测试环境（先关闭 setup_logging 打开的 test.log，Windows 上否则删不掉目录）"""
+        _close_root_file_handlers(self.test_dir)
         shutil.rmtree(self.test_dir)
         
     def test_full_config_workflow(self):
@@ -1450,14 +1469,18 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
     """TrayApp 通知反馈的单元测试"""
     
     def setUp(self):
-        """设置测试环境"""
+        """设置测试环境（状态文件重定向到临时目录：此前 show_status 用例读写并 rmtree 真实项目 logs/，
+        Windows 上 logs/app.log 被根 logger 占用时直接 PermissionError）"""
         self.test_dir = tempfile.mkdtemp()
         self.test_config_file = Path(self.test_dir) / "test_config.json"
         self.logger = Mock()
         self.config = AppConfig(self.test_config_file)
+        self._status_patch = patch("desktop_app.STATUS_FILE", Path(self.test_dir) / "status.log")
+        self._status_patch.start()
         
     def tearDown(self):
         """清理测试环境"""
+        self._status_patch.stop()
         shutil.rmtree(self.test_dir)
         
     @unittest.skip("弹窗相关测试已禁用")
@@ -1555,14 +1578,8 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         mock_notify.assert_called()
         mock_popup.assert_called_once()
         
-        # 清理
+        # 清理（目录由 tearDown 统一删除）
         tray_app.status_file.unlink()
-        if tray_app.status_file.parent.exists() and tray_app.status_file.parent.is_dir():
-            try:
-                tray_app.status_file.parent.rmdir()
-            except OSError:
-                # 目录可能不为空，使用shutil清理
-                shutil.rmtree(tray_app.status_file.parent)
         
     @patch('desktop_app.Image')
     @patch('desktop_app.ImageDraw')
@@ -1610,14 +1627,8 @@ class TestTrayAppNotificationFeedback(unittest.TestCase):
         mock_notify.assert_called()
         mock_popup.assert_called_once()
         
-        # 清理
+        # 清理（目录由 tearDown 统一删除）
         tray_app.status_file.unlink()
-        if tray_app.status_file.parent.exists() and tray_app.status_file.parent.is_dir():
-            try:
-                tray_app.status_file.parent.rmdir()
-            except OSError:
-                # 目录可能不为空，使用shutil清理
-                shutil.rmtree(tray_app.status_file.parent)
         
     def test_tray_app_has_status_file_attribute(self):
         """测试TrayApp有status_file属性"""

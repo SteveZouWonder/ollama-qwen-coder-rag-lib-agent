@@ -22,7 +22,7 @@ def _real_git(monkeypatch):
 
 def _repo(path, commits=1):
     def git(*args):
-        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True, encoding="utf-8")
 
     git("init", "-q", "-b", "main")
     git("config", "user.email", "t@example.com")
@@ -74,7 +74,9 @@ class TestCommit:
         git("add", ".")
         r = GitAnalyzer(str(tmp_path)).commit("feat: 标题\n\n正文说明")
         assert r["ok"] is True and len(r["hash7"]) >= 7 and r["subject"] == "feat: 标题" and r["error"] == ""
-        log = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=tmp_path, capture_output=True, text=True).stdout
+        log = subprocess.run(
+            ["git", "log", "-1", "--format=%B"], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
+        ).stdout  # 显式 UTF-8：Windows 默认 cp1252 会把中文提交信息解成乱码
         assert "正文说明" in log
         assert GitAnalyzer(str(tmp_path)).get_commit_preview()["has_staged"] is False
 

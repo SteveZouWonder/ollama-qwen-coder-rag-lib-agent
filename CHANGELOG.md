@@ -48,6 +48,7 @@
 - **Windows 下解释器自保护找不到 venv**：`find_venv_python` 只找 `venv/bin/python`，Windows 的 `venv\\Scripts\\python.exe` 永远匹配不上，用系统 Python 误启动时无法自动切换；现按平台选布局。
 - **Windows 下 Git 提交信息中文乱码**：`git_integration` 的子进程输出未指定编码，Windows 默认 cp1252 把 UTF-8 中文解成乱码（`/git-commit-gen` 生成与回显都受影响）；统一 `encoding="utf-8", errors="replace"`。
 - **OCR 缓存键含文件名非法字符时静默丢缓存**：哈希串含 `<>:"/\\|?*` 时直接拼文件名在 Windows 写失败；现退化为其 sha256 作为文件名。
+- **Windows 下 `TESSERACT_PATH=~/...` 展示为混合分隔符**：`~` 展开后形如 `C:\Users\x/tesseract`，原样出现在 CLI `/config` 与 Web「系统 → 运行环境」；现 `normpath` 统一为平台原生分隔符。
 - **托盘 `LogManager.setup_logging` 重复调用泄漏文件句柄**：`basicConfig` 在根 logger 已有 handler 时不做任何事，但参数里的 `FileHandler` 已打开文件；改为 `force=True` 显式替换并关闭旧 handler。
 - **Windows 托盘弹窗阻塞**：`show_popup` 在 Windows 直接调用模态 `MessageBoxW`，退出应用 / 预热完成 / 状态检查等流程会卡到用户点击弹窗为止，`duration` 形同虚设（CI windows-latest 也因此在 `quit_app` 测试处无声挂起）。现改为后台线程 + 带超时的 `MessageBoxTimeoutW`（到期自动关闭，与 macOS / Linux 语义一致，不可用时回退 `MessageBoxW`）；顺带把 `TrayApp` / `DesktopApp` 中两份与 `BaseApp` 一字不差的 `show_popup` 副本合并。
 - **多 Agent 并发锁补齐（F10 P2-1）**：`AgentRegistry` 与 `TaskScheduler` 的 `lock = None` 占位改为真正的
@@ -72,6 +73,7 @@
 ### 改进
 
 - **测试卡死可诊断**：`pytest-timeout` 进入开发依赖，单个测试超过 10 分钟即打印全部线程栈并中止（Windows 无 signal，统一 thread 方式）；CI `build-and-test` 作业加 40 分钟上限。起因是 Windows 作业曾在 `test_desktop_app` 段无输出挂起、无栈可查。
+- **CI windows-latest 测试套件转绿**：17 个失败 + 1 个 teardown 错误全部是测试自身的 POSIX 假设，源码无需改动——`~` 展开只设 `HOME`（Windows 只读 `USERPROFILE`）、`*_ALLOWED_DIRS` 仍用冒号拼接、硬造 `venv/bin/python`、`git log` 子进程未指定 UTF-8、`write_text` 换行被转成 `\r\n` 后按字符数比字节数、`list_dir("/")` 期望 `/`、用 `/` 切文件名；以及 Windows 独有的文件锁：根 logger 持有的 `FileHandler` 未关就 `rmtree`、托盘状态测试读写并删除真实项目 `logs/`、`temp_dir` fixture 在 cwd 仍在其中时删目录。测试改为平台无关写法，`test_desktop_app` 每个用例后释放根 logger 日志句柄、托盘状态文件重定向到临时目录。pylint 步骤单独开 `PYTHONUTF8=1`（Windows runner cp1252 stdout 回显中文源码行时崩溃、`--exit-zero` 失效），不影响 pytest 的默认编码语义。
 - **Tesseract 自动探测与缺失提示（F10 P3-1）**：OCR 的 Tesseract 路径不再写死 macOS Homebrew 目录。新增
   `config.resolve_tesseract_path()`：`TESSERACT_PATH`（已设且存在）→ `PATH` → 各平台常见安装目录（macOS
   `/opt/homebrew/bin` `/usr/local/bin`、Linux `/usr/bin` `/usr/local/bin`、Windows `%ProgramFiles%` /

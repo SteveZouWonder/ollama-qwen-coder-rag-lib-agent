@@ -2376,4 +2376,4 @@ class TestWorkspaceHandlers:
         assert format_dir_breadcrumb({"path": os.path.join(home, "p"), "entries": []}) == f"📂 `~{sep}p` · 0 项"
         svc = make_service_mock()
         svc.list_dir.return_value = {"path": os.path.join(home, "p"), "parent": home, "entries": []}
-        assert build_handlers(svc)["on_list_dir"]("p", False)[2] == "~/p"
+        assert build_handlers(svc)["on_list_dir"]("p", False)[2] == f"~{sep}p"

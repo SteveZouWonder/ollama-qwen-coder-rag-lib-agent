@@ -582,7 +582,7 @@ class TestWritePathBoundary:
         for d in (project, extra1, extra2):
             d.mkdir()
         monkeypatch.chdir(project)
-        monkeypatch.setenv("WRITE_ALLOWED_DIRS", f"{extra1}: {extra2} :")
+        monkeypatch.setenv("WRITE_ALLOWED_DIRS", f"{extra1}{os.pathsep} {extra2} {os.pathsep}")
         assert len(write_allowed_dirs()) == 3
         assert is_path_allowed(str(extra1 / "x.md"))
         assert is_path_allowed(str(extra2 / "deep" / "y.md"))

@@ -72,6 +72,11 @@ jobs:
 
     - name: Lint with pylint
       shell: bash
+      # 仅 lint 步骤开 UTF-8 mode：Windows runner stdout 默认 cp1252，pylint 回显含中文 / 全角字符的
+      # 源码行时 UnicodeEncodeError 崩溃（exit 123，--exit-zero 对崩溃无效）。不加到 job 全局，
+      # 否则 pytest 也跑在 UTF-8 mode 下，会掩盖真实 Windows 用户默认编码下的问题。
+      env:
+        PYTHONUTF8: "1"
       run: |
         git ls-files '*.py' | xargs -r pylint --exit-zero --output-format=text
       continue-on-error: true

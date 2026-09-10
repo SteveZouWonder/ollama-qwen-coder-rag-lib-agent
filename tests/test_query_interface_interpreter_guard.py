@@ -19,6 +19,16 @@ from query_interface import (
 )
 
 
+def _make_venv_python(root, venv_dir="venv"):
+    """按当前平台布局造一个可执行的 venv 解释器：Windows ``Scripts\\python.exe``，POSIX ``bin/python``。"""
+    sub, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    py = root / venv_dir / sub / exe
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\n")
+    os.chmod(py, 0o755)
+    return py
+
+
 class TestEnsureCompatibleInterpreter:
     """ensure_compatible_interpreter 决策逻辑测试。"""
 
@@ -42,12 +52,8 @@ class TestEnsureCompatibleInterpreter:
 
     def test_old_version_with_venv_returns_reexec(self, tmp_path):
         """版本过低且存在 venv 时返回 reexec。"""
-        # 构造一个带 venv/bin/python 的临时项目结构
-        venv_bin = tmp_path / "venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        py = venv_bin / "python"
-        py.write_text("#!/bin/sh\n")
-        os.chmod(py, 0o755)
+        # 构造一个带 venv 解释器的临时项目结构（布局随平台）
+        _make_venv_python(tmp_path)
         fake_script = tmp_path / "src" / "query_interface.py"
         fake_script.parent.mkdir(parents=True)
         fake_script.write_text("# placeholder\n")
@@ -95,12 +101,8 @@ class TestFindVenvPython:
     """find_venv_python 路径查找测试。"""
 
     def test_finds_venv_in_parent_directory(self, tmp_path):
-        """能在脚本上层目录找到 venv/bin/python。"""
-        venv_bin = tmp_path / "venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        py = venv_bin / "python"
-        py.write_text("#!/bin/sh\n")
-        os.chmod(py, 0o755)
+        """能在脚本上层目录找到 venv 解释器。"""
+        py = _make_venv_python(tmp_path)
         script = tmp_path / "src" / "query_interface.py"
         script.parent.mkdir(parents=True)
         script.write_text("# placeholder\n")
@@ -110,11 +112,7 @@ class TestFindVenvPython:
 
     def test_finds_dot_venv(self, tmp_path):
         """支持 .venv 目录。"""
-        venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        py = venv_bin / "python"
-        py.write_text("#!/bin/sh\n")
-        os.chmod(py, 0o755)
+        py = _make_venv_python(tmp_path, ".venv")
         script = tmp_path / "src" / "query_interface.py"
         script.parent.mkdir(parents=True)
         script.write_text("# placeholder\n")
