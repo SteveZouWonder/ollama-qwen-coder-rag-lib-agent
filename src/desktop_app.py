@@ -295,6 +295,21 @@ class StatusMonitor:
             pass
 
 # ==================== 应用基类 ====================
+
+def _windows_message_box(title: str, message: str, duration: int = 2000) -> None:
+    """Windows 弹窗：优先 ``MessageBoxTimeoutW``（user32 未文档化但自 XP 起一直存在，到期自动关闭），
+    不可用时回退到阻塞的 ``MessageBoxW``。应在后台线程调用。"""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    flags = 0x00000000 | 0x00010000  # MB_OK | MB_SETFOREGROUND
+    timeout_box = getattr(user32, "MessageBoxTimeoutW", None)
+    if timeout_box is not None:
+        timeout_box(None, message, title, flags, 0, int(duration))
+    else:
+        user32.MessageBoxW(None, message, title, flags)
+
+
 class BaseApp:
     """应用基类，提供公共功能"""
     
@@ -353,9 +368,13 @@ class BaseApp:
                              stderr=subprocess.DEVNULL, timeout=duration//1000 + 2)
                 
             elif system == "Windows":
-                import ctypes
-                MessageBox = ctypes.windll.user32.MessageBoxW
-                MessageBox(None, message, title, 0)
+                # MessageBoxW 是模态阻塞调用：直接在调用线程里弹会把 quit_app / 预热完成等流程
+                # 卡到用户点击为止，duration 也形同虚设（CI 上曾因此无声挂起）。改为后台线程 +
+                # 带超时的 MessageBoxTimeoutW，与 macOS / Linux 的"提示几秒自动消失"语义一致。
+                threading.Thread(
+                    target=_windows_message_box, args=(title, message, duration),
+                    name="popup", daemon=True,
+                ).start()
                 
             elif system == "Linux":
                 # 尝试使用zenity（如果可用）
@@ -898,50 +917,6 @@ class TrayApp(BaseApp):
         except Exception as e:
             self.logger.warning(f"显示通知失败: {e}")
     
-    def show_popup(self, title: str, message: str, duration: int = 2000):
-        """显示弹窗提示"""
-        import platform
-        system = platform.system()
-        
-        try:
-            if system == "Darwin":  # macOS
-                applescript = f'''
-                tell application "System Events"
-                    display dialog "{message}" buttons {{"OK"}} default button "OK" with title "{title}" with icon note
-                end tell
-                '''
-                subprocess.run(["osascript", "-e", applescript], 
-                             stderr=subprocess.DEVNULL, timeout=duration//1000 + 2)
-                
-            elif system == "Windows":
-                import ctypes
-                MessageBox = ctypes.windll.user32.MessageBoxW
-                MessageBox(None, message, title, 0)
-                
-            elif system == "Linux":
-                # 尝试使用zenity（如果可用）
-                try:
-                    subprocess.run([
-                        "zenity", "--info",
-                        f"--text={message}",
-                        f"--title={title}",
-                        f"--timeout={duration//1000}"
-                    ], stderr=subprocess.DEVNULL, timeout=duration//1000 + 2)
-                except FileNotFoundError:
-                    # zenity不可用，使用tkinter作为后备
-                    try:
-                        import tkinter as tk
-                        from tkinter import messagebox
-                        root = tk.Tk()
-                        root.withdraw()
-                        root.after(duration, root.destroy)
-                        messagebox.showinfo(title, message)
-                    except ImportError:
-                        # tkinter也不可用，跳过
-                        pass
-        except Exception as e:
-            self.logger.warning(f"显示弹窗失败: {e}")
-    
     def show_status(self):
         """显示系统状态"""
         self.logger.info("显示状态")
@@ -1281,51 +1256,6 @@ class DesktopApp(BaseApp):
         except Exception as e:
             self.logger.warning(f"显示通知失败: {e}")
     
-    def show_popup(self, title: str, message: str, duration: int = 2000):
-        """显示弹窗提示"""
-        import platform
-        system = platform.system()
-        
-        try:
-            if system == "Darwin":  # macOS
-                applescript = f'''
-                tell application "System Events"
-                    display dialog "{message}" buttons {{"OK"}} default button "OK" with title "{title}" with icon note
-                end tell
-                '''
-                subprocess.run(["osascript", "-e", applescript], 
-                             stderr=subprocess.DEVNULL, timeout=duration//1000 + 2)
-                
-            elif system == "Windows":
-                import ctypes
-                MessageBox = ctypes.windll.user32.MessageBoxW
-                MessageBox(None, message, title, 0)
-                
-            elif system == "Linux":
-                # 尝试使用zenity（如果可用）
-                try:
-                    subprocess.run([
-                        "zenity", "--info",
-                        f"--text={message}",
-                        f"--title={title}",
-                        f"--timeout={duration//1000}"
-                    ], stderr=subprocess.DEVNULL, timeout=duration//1000 + 2)
-                except FileNotFoundError:
-                    # zenity不可用，使用tkinter作为后备
-                    try:
-                        import tkinter as tk
-                        from tkinter import messagebox
-                        root = tk.Tk()
-                        root.withdraw()
-                        root.after(duration, root.destroy)
-                        messagebox.showinfo(title, message)
-                    except ImportError:
-                        # tkinter也不可用，跳过
-                        pass
-        except Exception as e:
-            self.logger.warning(f"显示弹窗失败: {e}")
-    
-        
     def warm_up_models(self):
         """模型预热"""
         if not self.config.get("warm_up_on_startup"):

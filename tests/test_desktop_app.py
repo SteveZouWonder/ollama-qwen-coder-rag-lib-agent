@@ -10,6 +10,7 @@ import shutil
 import logging
 import requests
 import time
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import sys
@@ -2374,6 +2375,71 @@ class TestWebInterface(unittest.TestCase):
         self.tray.quit_app()
         proc.terminate.assert_called_once()
         self.assertIsNone(self.tray.web_process)
+
+
+class TestShowPopupWindows(unittest.TestCase):
+    """Windows 弹窗不得阻塞调用线程（CI windows-latest 曾在 test_quit_app 卡死：MessageBoxW 等待点击）。"""
+
+    def setUp(self):
+        self.tray = TrayApp(Mock(), Mock())
+
+    def _wait(self, pred, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def test_show_popup_windows_runs_in_background_thread(self):
+        import desktop_app
+        calls = []
+        with patch('platform.system', return_value='Windows'), \
+             patch.object(desktop_app, '_windows_message_box',
+                          side_effect=lambda *a: calls.append((a, threading.current_thread().name))):
+            t0 = time.monotonic()
+            self.tray.show_popup("标题", "消息", duration=1500)
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)  # 调用方立即返回
+        self.assertTrue(self._wait(lambda: calls))
+        (args, thread_name), = calls
+        self.assertEqual(args, ("标题", "消息", 1500))
+        self.assertEqual(thread_name, "popup")
+
+    def test_quit_app_returns_promptly_on_windows(self):
+        import desktop_app
+        self.tray.icon = Mock()
+        with patch('platform.system', return_value='Windows'), \
+             patch.object(desktop_app, '_windows_message_box', side_effect=lambda *a: time.sleep(0.3)):
+            t0 = time.monotonic()
+            self.tray.quit_app()
+            self.assertLess(time.monotonic() - t0, 0.25)
+        self.assertFalse(self.tray.running)
+        self.tray.icon.stop.assert_called_once()
+
+    def test_windows_message_box_prefers_timeout_variant(self):
+        import desktop_app
+        user32 = Mock()
+        fake_ctypes = Mock()
+        fake_ctypes.windll.user32 = user32
+        with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+            desktop_app._windows_message_box("T", "M", 1500)
+        user32.MessageBoxTimeoutW.assert_called_once_with(None, "M", "T", 0x10000, 0, 1500)
+        user32.MessageBoxW.assert_not_called()
+
+    def test_windows_message_box_falls_back_to_blocking(self):
+        import desktop_app
+        user32 = Mock(spec=["MessageBoxW"])
+        fake_ctypes = Mock()
+        fake_ctypes.windll.user32 = user32
+        with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+            desktop_app._windows_message_box("T", "M", 1500)
+        user32.MessageBoxW.assert_called_once_with(None, "M", "T", 0x10000)
+
+    def test_show_popup_single_implementation(self):
+        """三处一字不差的 show_popup 副本已合并到 BaseApp，子类不再各自复制。"""
+        self.assertIs(TrayApp.show_popup, BaseApp.show_popup)
+        self.assertIs(DesktopApp.show_popup, BaseApp.show_popup)
 
 
 if __name__ == '__main__':
