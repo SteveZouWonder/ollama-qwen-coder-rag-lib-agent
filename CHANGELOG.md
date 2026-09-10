@@ -65,6 +65,7 @@
 
 ### 改进
 
+- **测试卡死可诊断**：`pytest-timeout` 进入开发依赖，单个测试超过 10 分钟即打印全部线程栈并中止（Windows 无 signal，统一 thread 方式）；CI `build-and-test` 作业加 40 分钟上限。起因是 Windows 作业曾在 `test_desktop_app` 段无输出挂起、无栈可查。
 - **Tesseract 自动探测与缺失提示（F10 P3-1）**：OCR 的 Tesseract 路径不再写死 macOS Homebrew 目录。新增
   `config.resolve_tesseract_path()`：`TESSERACT_PATH`（已设且存在）→ `PATH` → 各平台常见安装目录（macOS
   `/opt/homebrew/bin` `/usr/local/bin`、Linux `/usr/bin` `/usr/local/bin`、Windows `%ProgramFiles%` /
