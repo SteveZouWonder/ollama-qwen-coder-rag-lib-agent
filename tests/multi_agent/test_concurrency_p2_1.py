@@ -174,6 +174,16 @@ class TestSchedulerLock:
 # P2-1-d：LLM 并发信号量
 # ---------------------------------------------------------------------------
 
+def wait_until(pred, timeout=3.0):
+    """轮询直到 ``pred()`` 为真；CI 上线程调度延迟不可控，用它代替固定 ``time.sleep``。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 @pytest.fixture
 def slow_ollama(monkeypatch):
     """替换 requests.post：每次调用睡 ``delay`` 秒并返回一条 Ollama chat 响应，记录并发峰值。"""
@@ -358,7 +368,6 @@ class TestLLMSlot:
     def test_queue_tracker_records_wait_and_notifies(self, slow_ollama):
         llm_client.set_max_concurrency(1)
         client = llm_client.OllamaClient("http://x")
-        slow_ollama["delay"] = 0.3
         events = []
         tracker = llm_client.QueueWaitTracker(on_change=lambda w, t: events.append((w, round(t, 3))))
 
@@ -372,17 +381,19 @@ class TestLLMSlot:
             finally:
                 llm_client.set_queue_listener(None)
 
+        # 用状态轮询代替固定 sleep：CI（尤其 macOS runner + xdist）线程调度延迟不可控，
+        # 固定 0.05s / 0.1s 会出现 holder 尚未占槽或 waiter 尚未排队的竞态（PR #47 首跑失败）
+        slow_ollama["delay"] = 1.0  # holder 占槽足够久，给慢 runner 上的 waiter 留出可观测的排队窗口
         t1 = threading.Thread(target=holder)
         t1.start()
-        time.sleep(0.05)
+        assert wait_until(lambda: slow_ollama["running"] == 1), "holder 未在时限内占到槽位"
         t2 = threading.Thread(target=waiter)
         t2.start()
-        time.sleep(0.1)
-        assert tracker.waiting is True and tracker.total() >= 0.05  # 进行中的等待实时可见
-        assert llm_client.slot_stats()["queued"] == 1
+        assert wait_until(lambda: tracker.waiting is True and tracker.total() >= 0.05), "waiter 未进入排队"
+        assert llm_client.slot_stats()["queued"] == 1  # 进行中的等待实时可见
         t1.join(); t2.join()
         assert tracker.waiting is False and tracker.queue_count == 1
-        assert 0.15 <= tracker.waited <= 0.6 and abs(tracker.total() - tracker.waited) < 1e-6
+        assert 0.05 <= tracker.waited <= 1.5 and abs(tracker.total() - tracker.waited) < 1e-6
         assert events[0][0] is True and events[-1][0] is False and events[-1][1] == round(tracker.waited, 3)
 
     def test_tracker_callback_errors_are_swallowed(self):
@@ -484,7 +495,7 @@ class TestSerialSubAgentsNoTimeout:
         # 先用另一线程占住唯一槽位 0.4s
         blocker = threading.Thread(target=lambda: llm_client.OllamaClient("http://x").chat([{"role": "user", "content": "x"}]))
         blocker.start()
-        time.sleep(0.05)
+        assert wait_until(lambda: slow_ollama["running"] == 1), "blocker 未在时限内占到槽位"
         events = []
         agent.on_progress = events.append
         r = agent.execute_task_with_timeout(task)
