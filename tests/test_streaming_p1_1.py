@@ -848,8 +848,8 @@ class TestCliStreamingWiring:
             raise KeyboardInterrupt
 
         monkeypatch.setattr(rag_pipeline, "answer_question", fake_answer)
-        monkeypatch.setattr(qi, "_health_before", lambda q: {})
-        monkeypatch.setattr(qi, "_conversation", lambda: None)
+        monkeypatch.setattr("cli.engine_commands._health_before", lambda q: {})
+        monkeypatch.setattr("cli.engine_commands._conversation", lambda: None)
         ctx = _cli_ctx()
         printed = []
         monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
@@ -871,9 +871,9 @@ class TestCliStreamingWiring:
             return "完成"
 
         engine.chat.side_effect = chat
-        monkeypatch.setattr(qi, "_health_before", lambda q: {})
-        monkeypatch.setattr(qi, "_print_health_hint", lambda *a, **k: None)
-        monkeypatch.setattr(qi, "record_command_execution", lambda *a, **k: None)
+        monkeypatch.setattr("cli.engine_commands._health_before", lambda q: {})
+        monkeypatch.setattr("cli.engine_commands._print_health_hint", lambda *a, **k: None)
+        monkeypatch.setattr("cli.engine_commands.record_command_execution", lambda *a, **k: None)
         monkeypatch.setattr("cli.state.console", MagicMock())
         from query_interface import ParsedCommand
         assert qi.handle_agent(_cli_ctx(react_engine=engine), ParsedCommand("agent", "/agent 做事", "做事")) is True
@@ -887,7 +887,7 @@ class TestCliStreamingWiring:
 
         engine = MagicMock()
         engine.chat.side_effect = KeyboardInterrupt
-        monkeypatch.setattr(qi, "_health_before", lambda q: {})
+        monkeypatch.setattr("cli.engine_commands._health_before", lambda q: {})
         printed = []
         monkeypatch.setattr("cli.state.console", MagicMock(print=lambda *a, **k: printed.append(str(a[0]) if a else "")))
         from query_interface import ParsedCommand

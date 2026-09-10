@@ -21,7 +21,7 @@ def _printed(mock_console):
 
 
 class TestHandleModelShow:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_loaded_with_other_resident(self, mock_info, mock_console, _rec):
@@ -37,7 +37,7 @@ class TestHandleModelShow:
         assert "qwen3.5:9b" in out  # 提示其他驻留模型
         assert "/model <name>" in out
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_not_loaded(self, mock_info, mock_console, _rec):
@@ -52,7 +52,7 @@ class TestHandleModelShow:
 
 
 class TestHandleModelList:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.list_loaded_models", return_value=[{"name": "qwen3.5:4b"}])
     @patch("model_switcher.list_installed_models", return_value=["qwen3.5:4b", "qwen3.5:9b"])
@@ -63,7 +63,7 @@ class TestHandleModelList:
         assert "qwen3.5:4b  [当前/已加载]" in out
         assert "- qwen3.5:9b" in out
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.list_installed_models", return_value=[])
     def test_list_when_ollama_down(self, _inst, mock_console, _rec):
@@ -72,7 +72,7 @@ class TestHandleModelList:
 
 
 class TestHandleModelSwitch:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_model")
     def test_switch_passes_ctx_engines(self, mock_switch, mock_console, _rec):
@@ -84,7 +84,7 @@ class TestHandleModelSwitch:
         )
         assert "已切换到 qwen3.5:9b" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_model")
     def test_switch_failure_printed_red(self, mock_switch, mock_console, _rec):
@@ -101,7 +101,7 @@ def _parsed_think(arg=""):
 
 
 class TestHandleThink:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.current_model_info")
     def test_show_status(self, mock_info, mock_console, _rec):
@@ -112,7 +112,7 @@ class TestHandleThink:
         assert "思考模式: 关" in out
         assert "/think on" in out
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_invalid_arg(self, mock_switch, mock_console, _rec):
@@ -120,7 +120,7 @@ class TestHandleThink:
         assert "无法识别参数" in _printed(mock_console)
         mock_switch.assert_not_called()
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_enable_passes_ctx_engines(self, mock_switch, mock_console, _rec):
@@ -130,7 +130,7 @@ class TestHandleThink:
         mock_switch.assert_called_once_with(True, rag_engine=ctx.rag_engine, react_engine=ctx.react_engine)
         assert "[green]思考模式已开启" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_disable_chinese_word(self, mock_switch, mock_console, _rec):
@@ -138,7 +138,7 @@ class TestHandleThink:
         qi.handle_think(_ctx(), _parsed_think("关"))
         assert mock_switch.call_args[0][0] is False
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     @patch("model_switcher.switch_think")
     def test_rejected_printed_red(self, mock_switch, mock_console, _rec):
@@ -155,7 +155,7 @@ def _parsed_auto(arg=""):
 
 
 class TestHandleAuto:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_show_status_on(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -164,14 +164,14 @@ class TestHandleAuto:
         assert "自动路由: 开" in out and "/auto off" in out
         _rec.assert_called_with("auto")
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_show_status_off(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
         qi.handle_auto(_ctx(), _parsed_auto(""))
         assert "自动路由: 关" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_toggle_off_then_on(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -182,7 +182,7 @@ class TestHandleAuto:
         assert qi.Config.AUTO_ROUTE is True
         assert "已开启" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_invalid_arg_keeps_state(self, mock_console, _rec, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)

@@ -3,7 +3,7 @@
 教程 / 帮助包装、工具表、知识库来源表、网络来源表、知识库统计、知识库概览、
 回答 Panel、流式答案面板、结构化提示与引用计数文案。全部经 ``state.console`` /
 ``state.HAS_RICH`` / ``state.rag_engine`` 运行时取值；横幅 ``print_banner`` 依赖入口
-argparse 结果，留在 ``query_interface``。
+横幅 ``print_banner`` / ``backend_banner_text`` 也在此（``handle_clear`` 需要，且避免与入口模块循环导入）。
 """
 import os
 
@@ -11,7 +11,7 @@ from agent_tools import registry
 from cli import state
 from cli.help_text import TUTORIAL_TEXT
 from cli.help_text import print_help as _print_help
-from config import Config
+from config import Config, LLM_MODEL, OLLAMA_BASE_URL
 
 try:
     from rich.markdown import Markdown
@@ -22,6 +22,43 @@ try:
 except ImportError:  # pragma: no cover - rich 缺失时由 state.HAS_RICH 走纯文本分支
     def escape(text):  # type: ignore[misc]
         return str(text)
+
+
+CEREBRO_ASCII = r"""   ____                _
+  / ___|___ _ __ ___ | |__  _ __ ___
+ | |   / _ \ '__/ _ \| '_ \| '__/ _ \
+ | |__|  __/ | |  __/| |_) | | | (_) |
+  \____\___|_|  \___||_.__/|_|  \___/"""
+
+
+def print_banner():
+    if state.HAS_RICH:
+        state.console.print(Panel(
+            f"[bold cyan]{CEREBRO_ASCII}[/bold cyan]\n"
+            "[white]🧠 你的第二大脑 + 代码助手[/white]   [dim]v4.1[/dim]\n"
+            "[dim]RAG 知识库 | ReAct Agent | 本地 Ollama | 安全护栏[/dim]\n"
+            f"[green]模型: {LLM_MODEL}[/green] | [green]{backend_banner_text()}[/green]",
+            border_style="cyan", box=box.ROUNDED
+        ))
+    else:
+        print("=" * 60)
+        print(CEREBRO_ASCII)
+        print("    Cerebro 🧠 你的第二大脑 + 代码助手  v4.1")
+        print("=" * 60)
+        print(f"模型: {LLM_MODEL} | {backend_banner_text()}")
+        print("=" * 60)
+
+
+def backend_banner_text() -> str:
+    """横幅中的后端一段：ollama 模式保持 ``Ollama: <url>``，openai 模式显示 ``后端: openai @ <url>``。"""
+    try:
+        from llm_client import describe_backend
+        info = describe_backend()
+    except Exception:  # noqa: BLE001
+        return f"Ollama: {OLLAMA_BASE_URL}"
+    if info.get("provider") == "openai":
+        return f"后端: openai @ {info.get('base_url', '')}"
+    return f"Ollama: {info.get('base_url') or OLLAMA_BASE_URL}"
 
 
 def show_tutorial():

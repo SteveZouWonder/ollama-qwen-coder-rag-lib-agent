@@ -202,7 +202,7 @@ class TestSessionNewCarry:
 # ==================== /reset ====================
 
 class TestReset:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_reset_clears_session_via_engine(self, mock_console, _rec, conv):
         conv.record("q", "a")
@@ -213,7 +213,7 @@ class TestReset:
         engine.clear_history.assert_called_once()
         assert "已清空" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_reset_without_engine_uses_context(self, mock_console, _rec, conv):
         conv.record("q", "a")
@@ -222,7 +222,7 @@ class TestReset:
         assert conv.all_messages() == []
         assert "已清空" in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_reset_nothing_to_clear(self, mock_console, _rec, conv):
         engine = MagicMock()
@@ -241,7 +241,7 @@ def _answer(**kw):
 
 
 class TestRunAsk:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_ask_passes_context_and_records(self, mock_console, _rec, conv):
         captured = {}
@@ -265,7 +265,7 @@ class TestRunAsk:
         assert [m["content"] for m in msgs] == ["它多少钱", "2999 元"]
         assert conv.session().messages[0]["rewritten"] == "DJI OSMO 360 多少钱"
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_natural_input_uses_same_path_and_records(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=None)
@@ -278,7 +278,7 @@ class TestRunAsk:
         assert [m["content"] for m in conv.all_messages()] == ["你好啊", "回答"]
         _rec.assert_called_with("natural", "你好啊")
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_notices_rendered_before_and_after_panel(self, mock_console, _rec, conv):
         """F9 P0-5：warn → 黄色 ⚠️ 行且在 Panel 之前；after 组在 Panel 之后；fallback 不单独打印。"""
@@ -308,7 +308,7 @@ class TestRunAsk:
         # 会话记录：正文 + warn 行
         assert conv.all_messages()[-1]["content"] == "正文\n\n[no_evidence] 无资料依据 · 模型自身知识"
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_citation_summary_line_and_style(self, mock_console, _rec, conv):
         """F9 P0-3：来源摘要行追加 ``🔎 引用 v/t 有效``；invalid>0 整行 yellow，否则 dim。"""
@@ -332,7 +332,7 @@ class TestRunAsk:
         line = next(c for c in mock_console.print.call_args_list if c.args and "📚 基于知识库" in str(c.args[0]))
         assert "🔎 引用 1/1 有效" in str(line.args[0]) and line.kwargs.get("style") == "dim"
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_citation_summary_web_only(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
@@ -348,7 +348,7 @@ class TestRunAsk:
         assert qi._citation_summary({"total_refs": 0}) == ""
         assert qi._citation_summary({"total_refs": 3, "valid": 2}) == "🔎 引用 2/3 有效"
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_challenge_rewritten_label(self, mock_console, _rec, conv):
         """F9 P1-2：challenge=True 时 cyan 行文案为「🔁 用户质疑，重新核对」，复用同一通道。"""
@@ -361,7 +361,7 @@ class TestRunAsk:
         assert "[cyan]🔁 用户质疑，重新核对：重新核对：DJI 售价（用户认为：3999）[/cyan]" in out
         assert "已理解为" not in out
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_meta_query_recorded(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
@@ -371,7 +371,7 @@ class TestRunAsk:
             qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask 知识库里有什么", "知识库里有什么"))
         assert conv.all_messages()[-1]["content"] == "[知识库概览]"
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_health_hint_printed_once(self, mock_console, _rec, conv):
         # 预置 2 次压缩 → 触发建议
@@ -390,7 +390,7 @@ class TestRunAsk:
         assert "建议新建会话" in first and "/session-new" in first
         assert "建议新建会话" not in second
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_context_unavailable_degrades(self, mock_console, _rec, monkeypatch):
         def boom():
@@ -409,7 +409,7 @@ class TestRunAsk:
             assert qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q")) is True
         assert captured["context"] is None
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_agent_does_not_double_record(self, mock_console, _rec, conv):
         engine = MagicMock()
@@ -431,7 +431,7 @@ class TestRunAsk:
 # ==================== F8 P2：编号来源 / fallback 提示 / thinking ====================
 
 class TestAskP2Display:
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_fallback_kind_prints_agent_hint(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
@@ -445,7 +445,7 @@ class TestAskP2Display:
         out = _printed(mock_console)
         assert "/agent 冷门" in out and "均未找到相关内容" in out
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_answer_kind_has_no_agent_hint(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
@@ -455,7 +455,7 @@ class TestAskP2Display:
             qi.handle_ask(_cli_ctx(rag_engine=rag), ParsedCommand("ask", "/ask q", "q"))
         assert "/agent" not in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_sources_hint_mentions_numbering(self, mock_console, _rec, conv):
         rag = MagicMock(retriever=object())
@@ -597,7 +597,7 @@ class TestNaturalAutoRoute:
         engine.step_log = [{"phase": "final"}]
         return engine
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_agent_intent_routes_to_agent_with_hint(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -618,7 +618,7 @@ class TestNaturalAutoRoute:
         assert conv.all_messages() == []
         _rec.assert_called_with("agent", text)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_rag_intent_uses_run_ask(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -634,7 +634,7 @@ class TestNaturalAutoRoute:
         assert [m["content"] for m in conv.all_messages()] == ["什么是 RAG？", "回答"]
         _rec.assert_called_with("natural", "什么是 RAG？")
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_auto_off_same_input_goes_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", False)
@@ -653,7 +653,7 @@ class TestNaturalAutoRoute:
         classify.assert_not_called()
         assert [m["content"] for m in conv.all_messages()] == [text, "回答"]
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_kb_unavailable_passed_to_classifier(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -676,7 +676,7 @@ class TestNaturalAutoRoute:
         engine.chat.assert_called_once_with("你好啊")
         assert "知识库未初始化" not in _printed(mock_console)
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_no_react_engine_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -688,7 +688,7 @@ class TestNaturalAutoRoute:
             assert qi.handle_natural(_cli_ctx(rag_engine=rag), ParsedCommand("natural", text, text)) is True
         assert [m["content"] for m in conv.all_messages()] == [text, "回答"]
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_classifier_error_falls_back_to_rag(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
@@ -704,7 +704,7 @@ class TestNaturalAutoRoute:
                                      ParsedCommand("natural", text, text)) is True
         engine.chat.assert_not_called()
 
-    @patch("query_interface.record_command_execution")
+    @patch("cli.engine_commands.record_command_execution")
     @patch("cli.state.console")
     def test_explicit_ask_and_agent_skip_classifier(self, mock_console, _rec, conv, monkeypatch):
         monkeypatch.setattr(qi.Config, "AUTO_ROUTE", True)
