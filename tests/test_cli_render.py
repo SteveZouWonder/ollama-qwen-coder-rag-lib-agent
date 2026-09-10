@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-test_query_interface_render.py — 渲染函数单元测试（Mock HAS_RICH）
+test_cli_render.py — CLI 渲染 / 回调函数单元测试（Mock cli.state.HAS_RICH；F10 P3-2-b 由 test_query_interface_render.py 改名）
 """
 from unittest.mock import patch
 
-from query_interface import (
-    print_banner, print_help, print_tools, print_rag_sources,
-    print_knowledge_stats, show_tutorial, check_first_run,
-    on_step_callback, on_confirm_callback, )
+from query_interface import print_banner
+from cli.render import (
+    print_help, print_tools, print_rag_sources,
+    print_knowledge_stats, show_tutorial, check_first_run, print_web_sources, )
+from cli.callbacks import on_step_callback, on_confirm_callback, ask_progress_callback, STEP_PHASE_COLOR
 
 
 class TestOnStepCallback:
@@ -52,7 +53,7 @@ class TestOnStepCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_on_step_robustness_phase_rich(self, mock_console):
-        from query_interface import STEP_PHASE_COLOR
+        from cli.callbacks import STEP_PHASE_COLOR
         on_step_callback({"step": 2, "phase": "budget_fold", "message": "折叠"})
         last = str(mock_console.print.call_args_list[-1])
         assert "[F]" in last and "折叠" in last and STEP_PHASE_COLOR["budget_fold"] in last
@@ -212,13 +213,13 @@ class TestCheckFirstRun:
 
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
-    @patch("query_interface.os.path.exists")
+    @patch("cli.render.os.path.exists")
     def test_first_run_shows_tutorial(self, mock_exists, mock_console, temp_dir):
         mock_exists.return_value = False
         check_first_run()
         mock_console.print.assert_called()
 
-    @patch("query_interface.os.path.exists")
+    @patch("cli.render.os.path.exists")
     def test_not_first_run_skips(self, mock_exists):
         mock_exists.return_value = True
         check_first_run()
@@ -233,10 +234,10 @@ class TestEnhancedOnStepCallback:
     def test_on_step_basic_functionality(self, mock_console):
         # 测试基本功能，不测试配置控制
         # 注意：由于Config在模块级别导入，这里只能测试基本调用
-        from query_interface import on_step_callback as original_callback
+        from cli.callbacks import on_step_callback as original_callback
         
         # 临时修改 Config.SHOW_PROGRESS
-        from query_interface import Config
+        from config import Config
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
         
@@ -248,8 +249,8 @@ class TestEnhancedOnStepCallback:
 
     @patch("cli.state.HAS_RICH", False)
     def test_on_step_without_rich(self, capsys):
-        from query_interface import on_step_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import on_step_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -264,7 +265,7 @@ class TestEnhancedOnStepCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_on_step_progress_calculation(self, mock_console):
-        from query_interface import Config
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -285,8 +286,8 @@ class TestEnhancedOnStepCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_on_step_different_phases(self, mock_console):
-        from query_interface import on_step_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import on_step_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -305,8 +306,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_embedding(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -319,8 +320,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_retrieving(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -333,8 +334,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_scoring(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -352,8 +353,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_generating(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -365,8 +366,8 @@ class TestAskProgressCallback:
 
     @patch("cli.state.HAS_RICH", False)
     def test_ask_progress_callback_without_rich(self, capsys):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -380,8 +381,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_full_workflow(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -400,8 +401,8 @@ class TestAskProgressCallback:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_ask_progress_callback_unknown_phase(self, mock_console):
-        from query_interface import ask_progress_callback as original_callback
-        from query_interface import Config
+        from cli.callbacks import ask_progress_callback as original_callback
+        from config import Config
         
         original_value = Config.SHOW_PROGRESS
         Config.SHOW_PROGRESS = True
@@ -458,7 +459,7 @@ class TestPrintSourcesNumbered:
 
     @patch("cli.state.HAS_RICH", False)
     def test_web_sources_show_w_ref(self, capsys):
-        from query_interface import print_web_sources
+        from cli.render import print_web_sources
         print_web_sources([{"title": "T", "url": "http://x", "ref": "W1"}, {"title": "U", "url": "http://y"}])
         out = capsys.readouterr().out
         assert "[W1] T" in out and "[W2] U" in out
@@ -466,7 +467,7 @@ class TestPrintSourcesNumbered:
     @patch("cli.state.HAS_RICH", True)
     @patch("cli.state.console")
     def test_web_sources_rich(self, mock_console):
-        from query_interface import print_web_sources
+        from cli.render import print_web_sources
         print_web_sources([{"title": "T", "url": "http://x", "ref": "W1"}])
         table = mock_console.print.call_args.args[0]
         cells = [str(c) for col in table.columns for c in col._cells]
