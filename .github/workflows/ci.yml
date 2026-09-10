@@ -11,6 +11,8 @@ on:
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
+    # 全量测试三平台均在 10 分钟内；超时视为卡死（配合 pytest.ini 的 pytest-timeout 出栈）
+    timeout-minutes: 40
 
     strategy:
       fail-fast: false
