@@ -91,7 +91,7 @@ class TestResolveOrder:
         monkeypatch.setenv("TESSERACT_PATH", "/custom/tess")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         monkeypatch.setattr(os.path, "exists", _exists_only("/custom/tess", "/usr/bin/tesseract"))
-        assert cfg.resolve_tesseract_path() == "/custom/tess"
+        assert cfg.resolve_tesseract_path() == os.path.normpath("/custom/tess")  # 源码 normpath，Windows 为反斜杠
 
     def test_env_path_expands_user(self, monkeypatch, no_env, tmp_path):
         exe = tmp_path / "tesseract"
@@ -112,12 +112,12 @@ class TestResolveOrder:
         monkeypatch.setattr(cfg, "TESSERACT_PATH", "/from/const")
         monkeypatch.setattr("shutil.which", lambda name: None)
         monkeypatch.setattr(os.path, "exists", _exists_only("/from/const"))
-        assert cfg.resolve_tesseract_path() == "/from/const"
+        assert cfg.resolve_tesseract_path() == os.path.normpath("/from/const")
 
     def test_explicit_arg_overrides_env(self, monkeypatch, no_env):
         monkeypatch.setenv("TESSERACT_PATH", "/env/tess")
         monkeypatch.setattr(os.path, "exists", _exists_only("/env/tess", "/arg/tess"))
-        assert cfg.resolve_tesseract_path(env_path="/arg/tess") == "/arg/tess"
+        assert cfg.resolve_tesseract_path(env_path="/arg/tess") == os.path.normpath("/arg/tess")
 
     def test_which_wins_over_candidates(self, monkeypatch, no_env):
         monkeypatch.setattr("shutil.which", lambda name: "/somewhere/on/path/tesseract")
@@ -204,7 +204,7 @@ class TestDescribe:
         monkeypatch.setenv("TESSERACT_PATH", "/custom/tess")
         monkeypatch.setattr(os.path, "exists", _exists_only("/custom/tess"))
         d = cfg.describe_tesseract()
-        assert d == {"path": "/custom/tess", "source": "env", "installed": True, "hint": None}
+        assert d == {"path": os.path.normpath("/custom/tess"), "source": "env", "installed": True, "hint": None}
 
     def test_path_source(self, monkeypatch, no_env):
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
