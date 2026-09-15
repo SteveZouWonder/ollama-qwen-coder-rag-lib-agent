@@ -374,7 +374,18 @@ _SCOPE_HINT_MAX_DIRS = 5
 
 
 def _is_subpath(child: str, parent: str) -> bool:
+    # Windows 路径大小写不敏感（``C:\\Users`` 与 ``c:\\users`` 同一目录），统一 normcase 后比较；POSIX 下是恒等变换
+    child, parent = os.path.normcase(child), os.path.normcase(parent)
     return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _split_dirs_env(name: str) -> List[str]:
+    """按**系统路径分隔符**拆分目录列表环境变量（POSIX ``:``、Windows ``;``）。
+
+    此前写死 ``split(":")``，在 Windows 会把 ``C:\\data`` 拆成 ``C`` 与 ``\\data``，导致允许目录
+    形同虚设——CI windows-latest 首跑 60+ 个读 / 写边界测试因此全部报「路径超出允许范围」。
+    """
+    return [d for d in os.getenv(name, "").split(os.pathsep) if d.strip()]
 
 
 def _normalize_dirs(dirs) -> List[str]:
@@ -402,9 +413,9 @@ def _upload_root() -> str:
 
 
 def write_allowed_dirs() -> List[str]:
-    """允许写入/入库的目录：当前工作目录 + ``WRITE_ALLOWED_DIRS``（冒号分隔）。"""
+    """允许写入/入库的目录：当前工作目录 + ``WRITE_ALLOWED_DIRS``（``os.pathsep`` 分隔：POSIX 冒号、Windows 分号）。"""
     dirs = [os.getcwd()]
-    dirs.extend(os.getenv(WRITE_ALLOWED_DIRS_ENV, "").split(":"))
+    dirs.extend(_split_dirs_env(WRITE_ALLOWED_DIRS_ENV))
     return _normalize_dirs(dirs)
 
 
@@ -437,7 +448,7 @@ def _indexed_document_dirs() -> List[str]:
 def read_allowed_dirs() -> List[str]:
     """允许读取的目录：写允许目录 ∪ ``READ_ALLOWED_DIRS`` ∪ 已入库文件所在目录。"""
     dirs = list(write_allowed_dirs())
-    dirs.extend(os.getenv(READ_ALLOWED_DIRS_ENV, "").split(":"))
+    dirs.extend(_split_dirs_env(READ_ALLOWED_DIRS_ENV))
     dirs.extend(_indexed_document_dirs())
     return _normalize_dirs(dirs)
 
@@ -446,10 +457,7 @@ def _within(path: str, bases: List[str]) -> bool:
     if not path or not str(path).strip():
         return False
     real = os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
-    for base in bases:
-        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
-            return True
-    return False
+    return any(_is_subpath(real, base) for base in bases)
 
 
 def is_path_allowed(path: str) -> bool:

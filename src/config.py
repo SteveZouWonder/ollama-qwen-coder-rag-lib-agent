@@ -400,7 +400,9 @@ def _locate_tesseract(env_path: str, platform: str = None) -> tuple:
     import shutil
 
     if env_path:
-        expanded = os.path.expanduser(env_path)
+        # normpath：Windows 上 ``~/tesseract`` 展开后是 ``C:\Users\x/tesseract`` 混合分隔符，
+        # 会原样出现在 CLI /config 与 Web「运行环境」里；统一成平台原生分隔符。
+        expanded = os.path.normpath(os.path.expanduser(env_path))
         if os.path.exists(expanded):
             return expanded, "env"
         # 用户显式指定却不存在：继续探测但不静默"修正"用户配置——describe_tesseract() 会把

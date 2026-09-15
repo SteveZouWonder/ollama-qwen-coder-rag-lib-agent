@@ -315,9 +315,9 @@ def temp_dir():
     """
     temp_dir = Path(tempfile.mkdtemp())
     yield temp_dir
-    # 清理临时目录
+    # 清理临时目录（Windows 上若仍有句柄 / cwd 占用则忽略，不让 teardown 把通过的测试标成 ERROR）
     if temp_dir.exists():
-        shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="function")  

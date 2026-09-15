@@ -45,12 +45,15 @@ def find_venv_python(start_path):
         找到的可执行 Python 解释器路径字符串；未找到返回 None。
     """
     current = os.path.dirname(os.path.abspath(start_path))
+    # POSIX 为 venv/bin/python，Windows 为 venv\Scripts\python.exe（此前只找前者，Windows 用户永远"未找到 venv"）
+    layouts = (("Scripts", "python.exe"),) if os.name == "nt" else (("bin", "python"),)
     # 向上最多查找 5 层目录，寻找 venv / .venv
     for _ in range(5):
         for venv_dir in ("venv", ".venv"):
-            candidate = os.path.join(current, venv_dir, "bin", "python")
-            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                return candidate
+            for sub, exe in layouts:
+                candidate = os.path.join(current, venv_dir, sub, exe)
+                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                    return candidate
         parent = os.path.dirname(current)
         if parent == current:
             break

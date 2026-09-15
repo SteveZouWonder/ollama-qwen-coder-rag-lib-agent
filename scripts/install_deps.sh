@@ -191,7 +191,7 @@ fi
 # 方法2.6：安装开发/测试依赖（可选，requirements-dev.txt）
 echo ""
 echo -e "${BLUE}是否安装开发/测试依赖（requirements-dev.txt）？${NC}"
-echo "包含 pytest / pytest-cov / pytest-xdist / flake8 / pylint / bandit / pip-audit"
+echo "包含 pytest / pytest-cov / pytest-xdist / pytest-timeout / flake8 / pylint / bandit / pip-audit"
 echo "仅在需要跑测试或静态检查时安装；只运行产品可以跳过"
 read -p "是否安装开发/测试依赖? (y/n): " install_dev
 

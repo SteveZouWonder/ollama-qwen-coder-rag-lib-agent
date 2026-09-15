@@ -103,7 +103,7 @@ class TestDocumentAnalyzer(unittest.TestCase):
     def tearDown(self):
         """清理测试环境"""
         if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)  # Windows: Chroma 仍持有 sqlite 句柄
     
     def test_extract_topics_generic_keywords(self):
         """测试从通用关键词提取主题"""
@@ -354,7 +354,7 @@ class TestSkillGenerator(unittest.TestCase):
     def tearDown(self):
         """清理测试环境"""
         if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)  # Windows: Chroma 仍持有 sqlite 句柄
     
     def test_generate_config(self):
         """测试配置生成"""
@@ -529,7 +529,7 @@ class TestKnowledgeToSkillsEngine(unittest.TestCase):
     def tearDown(self):
         """清理测试环境"""
         if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)  # Windows: Chroma 仍持有 sqlite 句柄
     
     @patch('knowledge_to_skills.chromadb.PersistentClient')
     def test_engine_initialization(self, mock_chroma):
@@ -655,7 +655,7 @@ class TestIntegration(unittest.TestCase):
     def tearDown(self):
         """清理测试环境"""
         if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)  # Windows: Chroma 仍持有 sqlite 句柄
     
     def test_full_workflow_simulation(self):
         """测试完整工作流程模拟"""
