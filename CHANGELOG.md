@@ -138,6 +138,11 @@
   pip 缓存目录按平台解析、缓存 key 覆盖全部 `requirements*.txt`。PR 现在能在合并前发现跨平台问题。
 - **归档 v0.1.0（F10 P0-2）**：F8（Agent 模式优化）、F9（Web 工具页改版）、F10 P0-1（命令安全与读边界）
   等 112 条变更从 `[Unreleased]` 归档为 `v0.1.0`，为两个月的成果提供可下载的 Release。
+- **依赖安全升级**：urllib3 2.7.0 → 2.8.0（修复 HTTPS 代理 TLS 配置被忽略、chunk-size 行无限缓冲、
+  chunked Deflate 死循环三处漏洞），pypdf 6.18.0 → 6.19.0（加固恶意 PDF 解析）；
+  `requirements_alternative.txt` 的 chromadb 对齐到 1.5.9、pypdf 对齐到 6.19.0。
+- **修复不稳定测试**：`test_tokens_after_cancel_are_dropped` 改为由消费方收到首个 token 后再触发取消，
+  消除后台线程抢先置位取消导致首个 token 也被丢弃、macOS CI 偶发失败的问题。
 
 ## [v0.1.0] - 2026-09-09
 

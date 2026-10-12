@@ -649,18 +649,30 @@ class TestWebServiceTokenEvents:
         assert "heartbeat" not in kinds
 
     def test_tokens_after_cancel_are_dropped(self):
+        import threading
+
         from tests.test_web_services import FakeReact
+
+        # 取消由消费方在收到 "a" 之后触发，后台线程等到取消生效再推 "b"。
+        # 若在后台线程里直接 stop_current()，可能先于消费循环取走 "a" 就置位取消，
+        # 导致 "a" 也被丢弃（macOS CI 偶发 [] == ['a']）。
+        cancelled = threading.Event()
 
         class Streaming(FakeReact):
             def chat(self, user_input, on_token=None):
                 on_token("a")
-                svc.stop_current()
+                assert cancelled.wait(timeout=5), "消费方未在收到 'a' 后触发取消"
                 on_token("b")  # 取消后应被丢弃
                 return "ab"
 
         svc = self._svc(react_factory=lambda on_step=None, on_confirm=None, context=None: Streaming(
             on_step=on_step, on_confirm=on_confirm, context=context))
-        events = list(svc.agent_chat_stream("q"))
+        events = []
+        for event in svc.agent_chat_stream("q"):
+            events.append(event)
+            if event.kind == "token" and event.message == "a":
+                svc.stop_current()
+                cancelled.set()
         tokens = [e.message for e in events if e.kind == "token"]
         assert tokens == ["a"]
         assert events[-1].kind == "cancelled"

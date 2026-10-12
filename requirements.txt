@@ -41,12 +41,12 @@ rank_bm25==0.2.2
 #   pip install tree-sitter-language-pack==1.16.2
 
 # 文档处理
-pypdf==6.18.0
+pypdf==6.19.0
 pymupdf==1.27.2.3  # PDF 图像提取（使用 import pymupdf as fitz）
 
 # 网络请求
 requests==2.34.2
-urllib3==2.7.0
+urllib3==2.8.0
 
 # 网络搜索功能
 ddgs==9.14.4              # DuckDuckGo 搜索引擎（网络搜索功能必需）
