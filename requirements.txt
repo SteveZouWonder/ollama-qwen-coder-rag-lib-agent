@@ -45,7 +45,7 @@ rank_bm25==0.2.2
 #   pip install tree-sitter-language-pack==1.16.2
 
 # 文档处理
-pypdf==6.21.4
+pypdf==7.1.1
 pymupdf==1.27.2.3  # PDF 图像提取（使用 import pymupdf as fitz）
 
 # 网络请求
