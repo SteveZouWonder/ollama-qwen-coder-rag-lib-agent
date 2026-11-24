@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -26,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.node_parser.interface import NodeParser
 from llama_index.core.node_parser.node_utils import build_nodes_from_splits
+from llama_index.core.node_parser.text.utils import split_by_regex
 from llama_index.core.schema import BaseNode, MetadataMode, TextNode
 from pydantic import Field, PrivateAttr
 
@@ -571,6 +573,9 @@ def split_code(
 
 _EXCLUDED_META_KEYS = ("start_line", "end_line", "chunk_strategy", "language", "part")
 
+# 兜底句子切分用的正则：按句末标点（含中英文）切句，不依赖 nltk 语料。
+_SENTENCE_FALLBACK_REGEX = r"[^。！？!?\.]+[。！？!?\.]?"
+
 
 class LanguageAwareNodeParser(NodeParser):
     """按文件类型分派：代码文件走 tree-sitter，其余走 ``SentenceSplitter``。"""
@@ -581,6 +586,8 @@ class LanguageAwareNodeParser(NodeParser):
     min_chars: int = Field(default=CODE_CHUNK_MIN_CHARS, gt=0)
     _parsers: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _fallback_reasons: Dict[str, str] = PrivateAttr(default_factory=dict)
+    _regex_splitter: Optional[Any] = PrivateAttr(default=None)
+    _use_regex_splitter: bool = PrivateAttr(default=False)
 
     @classmethod
     def class_name(cls) -> str:
@@ -620,7 +627,7 @@ class LanguageAwareNodeParser(NodeParser):
         return out
 
     def _parse_text_node(self, node: BaseNode, language: Optional[str]) -> List[BaseNode]:
-        parsed = self.text_splitter._parse_nodes([node])
+        parsed = self._split_text(node)
         key = node.metadata.get("file_path") or node.metadata.get("file_name") or node.node_id
         strategy = "text"
         if language and self.code_enabled:
@@ -630,6 +637,33 @@ class LanguageAwareNodeParser(NodeParser):
             n.metadata["chunk_strategy"] = strategy
             self._exclude_meta(n)
         return parsed
+
+    def _split_text(self, node: BaseNode) -> List[BaseNode]:
+        """用通用切分器切文本；nltk 语料不可用时退化为正则切句。"""
+        if not self._use_regex_splitter:
+            try:
+                return self.text_splitter._parse_nodes([node])
+            except Exception as e:  # noqa: BLE001 - 语料缺失/被拒绝加载时仍要能分块
+                self._use_regex_splitter = True
+                logging.getLogger(__name__).warning(
+                    "句子切分语料不可用，改用标点正则切句（不影响入库，仅切分粒度略粗）: %s", e
+                )
+        return self._regex_fallback_splitter()._parse_nodes([node])
+
+    def _regex_fallback_splitter(self) -> SentenceSplitter:
+        """构造不依赖 nltk 的句子切分器（首次使用时创建并复用）。
+
+        nltk 3.10 起拒绝从「组/其他可写」目录加载语料（GitHub 运行器的
+        toolcache 即如此），且部分用户环境同样如此；此时按标点切句，
+        避免整篇文档直接入库。
+        """
+        if self._regex_splitter is None:
+            self._regex_splitter = SentenceSplitter(
+                chunk_size=self.text_splitter.chunk_size,
+                chunk_overlap=self.text_splitter.chunk_overlap,
+                chunking_tokenizer_fn=split_by_regex(_SENTENCE_FALLBACK_REGEX),
+            )
+        return self._regex_splitter
 
     def _parse_code_node(self, node: BaseNode, language: str) -> Optional[List[BaseNode]]:
         key = node.metadata.get("file_path") or node.metadata.get("file_name") or node.node_id

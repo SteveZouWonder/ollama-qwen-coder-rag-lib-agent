@@ -56,6 +56,7 @@
 | 两个阈值混用 | `SIMILARITY_CUTOFF`(0.3) 是底层召回保护（保住元查询）；`KB_RELEVANCE_THRESHOLD`(0.45) 是命中判定。纯向量分数分不开话题，命中判定要过 rerank。 |
 | 元查询走向量 | "知识库里有什么"若走检索会命中噪音。**规则**：`is_meta_query` 固定短语 + 正则先拦。 |
 | `load_index()` 未设切分器 | 启动加载已有索引后追加文档落到 LlamaIndex 默认 `SentenceSplitter(1024/200)`。**规则**：三条入库路径共用 `node_parser`。 |
+| nltk 语料是否可用随环境变 | nltk ≥3.10 拒绝从「组/其他可写」目录加载语料（GitHub Ubuntu 运行器的 toolcache 即如此），llama-index 的 `SentenceSplitter` 随之抛错；旧代码静默回退成整篇 `insert`，只有 ubuntu CI 报错。`code_chunker._split_text` 现在捕获后改用「中英文句末标点」正则切句（仍分块，打 WARNING）。**规则**：不要为修这个降级 nltk 到 3.9.x——那几十条 CVE 正是 3.10 加固的对象，`pip-audit` 会拦。 |
 | `run_web_search` 丢查询 | 曾只取第一个有效查询。**规则**：合并所有查询按 URL 去重，正文提取前 3 页。 |
 | 图谱 `clear()` 落盘 | 默认把空图写回磁盘抹掉数据。**规则**：`clear(persist=False)` 默认不落盘。 |
 | num_ctx 不限 | qwen3.5 默认 256K 撑爆显存。**规则**：`resolve_num_ctx` 按参数量推导。 |

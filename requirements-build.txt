@@ -3,7 +3,7 @@
 #
 # 版本与 requirements.txt 一一对应（全部 `==`）；升级时两份文件同步改。
 
-setuptools==84.0.0
+setuptools==84.2.1
 wheel==0.47.0
 
 numpy==2.4.6
@@ -16,6 +16,9 @@ llama-index-llms-ollama==0.10.1
 llama-index-llms-openai-like==0.8.0
 llama-index-readers-file==0.6.0
 llama-index-vector-stores-chroma==0.5.5
+# nltk 3.9.x 有一批已披露漏洞，3.10 起拒绝从「组/其他可写」目录加载语料（安全加固）；
+# GitHub Ubuntu 运行器的 toolcache 属于这种权限，code_chunker 会降级为正则切句。
+nltk==3.10.4
 
 chromadb==1.5.9
 posthog==3.25.0
@@ -25,7 +28,7 @@ rank_bm25==0.2.2
 # 代码感知分块（打包版内置；源码安装为可选依赖）
 tree-sitter-language-pack==1.16.2
 
-pypdf==6.19.0
+pypdf==6.21.4
 pymupdf==1.27.2.3
 
 requests==2.34.2
@@ -35,7 +38,7 @@ ddgs==9.14.4
 beautifulsoup4==4.15.0
 trafilatura==2.1.0
 
-gitpython==3.1.62
+gitpython==3.2.1
 
 networkx==3.6.1
 
@@ -44,10 +47,11 @@ rich==15.0.0
 prompt-toolkit==3.0.52
 
 pystray==0.19.5
-pillow==12.3.0
+pillow==13.0.0
 
 # Web UI（托盘「打开 Web UI」与 --web）
-gradio==6.20.0
+# 6.32.0 起 gradio 把 pillow 约束放宽到 <14.0，才能与 pillow==13.0.0 共存（6.20.0 要求 pillow<13.0）
+gradio==6.32.0
 # 知识图谱 3D/2D 可视化（自包含 plotly.js 随包分发）
 plotly==7.0.0
 
