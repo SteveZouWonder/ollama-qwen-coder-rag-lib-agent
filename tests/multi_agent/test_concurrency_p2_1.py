@@ -224,29 +224,34 @@ def _reset_concurrency():
 class TestFairSemaphore:
     def test_fifo_order(self):
         sem = llm_client.FairSemaphore(1)
-        assert sem.acquire() is True
+        assert sem.acquire() is True  # 主线程先占住唯一槽位，保证后续都在排队
         order = []
-        started = threading.Barrier(4)
-        ready = []
 
         def waiter(i):
-            started.wait(timeout=5)
-            time.sleep(0.02 * i)  # 错开到达顺序
-            ready.append(i)
-            with sem:
+            sem.acquire()
+            try:
                 order.append(i)
                 time.sleep(0.02)
+            finally:
+                sem.release()
 
-        threads = [threading.Thread(target=waiter, args=(i,)) for i in range(3)]
-        for t in threads:
+        threads = []
+        for i in range(3):
+            t = threading.Thread(target=waiter, args=(i,))
             t.start()
-        started.wait(timeout=5)
-        time.sleep(0.2)  # 三个都已排队
+            threads.append(t)
+            # 逐个确认已排进队列再启动下一个。若靠 sleep 错开到达顺序，线程可能在
+            # append 与 acquire 之间被抢占，导致顺序断言偶发失败（macOS CI 曾出现）。
+            deadline = time.monotonic() + 5
+            while len(sem._waiters) < i + 1:  # noqa: SLF001 - 断言排队状态是测试本意
+                assert time.monotonic() < deadline, "waiter 未能排进 FairSemaphore 队列"
+                time.sleep(0.005)
+
         assert sem.acquire(blocking=False) is False
         sem.release()
         for t in threads:
             t.join(timeout=5)
-        assert order == ready == [0, 1, 2]
+        assert order == [0, 1, 2]
 
     def test_non_blocking_and_over_release(self):
         sem = llm_client.FairSemaphore(2)

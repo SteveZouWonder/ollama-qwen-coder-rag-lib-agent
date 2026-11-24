@@ -341,7 +341,7 @@ class RAGEngine:
                 if fp in per_file and per_file[fp]["chunk_strategy"] == "text":
                     per_file[fp]["chunk_strategy"] = f"text(fallback:{reason})"
         except Exception as e:  # noqa: BLE001 - 切分失败回退 LlamaIndex 内部路径
-            logging.getLogger(__name__).debug("统一切分失败，回退内部切分: %s", e)
+            logging.getLogger(__name__).warning("统一切分失败，回退内部切分（整篇入库）: %s", e)
             return None, {}
         self.last_ingest_stats = per_file
         if progress_callback and total:

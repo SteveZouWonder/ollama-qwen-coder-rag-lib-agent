@@ -8,7 +8,7 @@
 #   pip install -r requirements-dev.txt
 
 # 先安装构建依赖
-setuptools==84.0.0
+setuptools==84.2.1
 wheel==0.47.0
 
 # 数据处理依赖（使用预编译版本，避免构建错误）
@@ -22,6 +22,10 @@ llama-index-llms-ollama==0.10.1
 llama-index-llms-openai-like==0.8.0
 llama-index-readers-file==0.6.0
 llama-index-vector-stores-chroma==0.5.5
+# nltk 3.9.x 有一批已披露漏洞（pip-audit 报 75 条），3.10 起改为拒绝从「组/其他可写」
+# 目录加载语料（安全加固）。GitHub Ubuntu 运行器的 toolcache 正属于这种权限，会让
+# llama-index 的句子切分拿不到语料；code_chunker 对此已降级为正则切句，故这里跟 3.10。
+nltk==3.10.4
 
 # 向量数据库
 chromadb==1.5.9
@@ -41,7 +45,7 @@ rank_bm25==0.2.2
 #   pip install tree-sitter-language-pack==1.16.2
 
 # 文档处理
-pypdf==6.19.0
+pypdf==6.21.4
 pymupdf==1.27.2.3  # PDF 图像提取（使用 import pymupdf as fitz）
 
 # 网络请求
@@ -54,7 +58,7 @@ beautifulsoup4==4.15.0    # 网页内容提取（备选方案）
 trafilatura==2.1.0        # 网页内容提取（主要方案）
 
 # Git 集成功能
-gitpython==3.1.62         # Git 操作（可选，系统有 git 命令时不需要）
+gitpython==3.2.1        # Git 操作（可选，系统有 git 命令时不需要）
 
 # 知识图谱功能
 networkx==3.6.1           # 知识图谱构建和查询
@@ -69,7 +73,8 @@ rich==15.0.0
 prompt-toolkit==3.0.52
 
 # Web 界面（Gradio）
-gradio==6.20.0
+# 6.32.0 起 gradio 把 pillow 约束放宽到 <14.0，才能与下方 pillow==13.0.0 共存（6.20.0 要求 pillow<13.0）
+gradio==6.32.0
 plotly==7.0.0             # 知识图谱 3D/2D 可视化（Web 图谱视图 + /graph-export 离线 HTML）
 
 # 桌面应用依赖

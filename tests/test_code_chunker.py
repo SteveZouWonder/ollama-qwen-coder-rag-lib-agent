@@ -265,6 +265,41 @@ class TestParserFallbacks:
         assert "symbol" not in nodes[0].excluded_embed_metadata_keys  # symbol 进 embedding
 
 
+class TestSentenceCorpusFallback:
+    """nltk 语料不可用时退化为正则切句，不能整篇入库。
+
+    触发场景：nltk 3.10 起拒绝从「组/其他可写」目录加载语料（GitHub Ubuntu 运行器的
+    toolcache 即是），llama-index 的 SentenceSplitter 随之抛错。
+    """
+
+    def _doc(self, text):
+        return Document(text=text, metadata={"file_name": "a.md", "file_path": "/kb/a.md", "file_type": ".md"})
+
+    def _broken_splitter(self, calls=None):
+        class Broken(code_chunker.SentenceSplitter):
+            def _parse_nodes(self, nodes, show_progress=False, **kwargs):
+                if calls is not None:
+                    calls.append(1)
+                raise LookupError("Resource 'stopwords' not found")
+
+        return Broken(chunk_size=32, chunk_overlap=0)
+
+    def test_unavailable_corpus_falls_back_to_regex_sentences(self):
+        parser = LanguageAwareNodeParser(text_splitter=self._broken_splitter(), code_enabled=False)
+        nodes = parser.get_nodes_from_documents([self._doc("第一句。第二句！第三句？" * 10)])
+        assert len(nodes) > 1
+        assert all(n.metadata["chunk_strategy"] == "text" for n in nodes)
+        assert parser._use_regex_splitter is True
+
+    def test_fallback_is_reused_for_later_documents(self):
+        calls = []
+        parser = LanguageAwareNodeParser(text_splitter=self._broken_splitter(calls), code_enabled=False)
+        parser.get_nodes_from_documents([self._doc("A。B。")])
+        nodes = parser.get_nodes_from_documents([self._doc("C。D。")])
+        assert len(calls) == 1  # 只探测一次，之后直接用正则切分器
+        assert nodes
+
+
 # ==================== 真实 tree-sitter 解析（缺依赖时仅跳过本节）====================
 
 try:

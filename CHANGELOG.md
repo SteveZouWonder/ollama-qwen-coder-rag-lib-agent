@@ -143,6 +143,20 @@
   `requirements_alternative.txt` 的 chromadb 对齐到 1.5.9、pypdf 对齐到 6.19.0。
 - **修复不稳定测试**：`test_tokens_after_cancel_are_dropped` 改为由消费方收到首个 token 后再触发取消，
   消除后台线程抢先置位取消导致首个 token 也被丢弃、macOS CI 偶发失败的问题。
+- **pillow 升到 13.0.0，gradio 同步升到 6.32.0**：gradio 6.20.0 要求 `pillow<13.0`，直接升 pillow 会让
+  `pip install -r requirements.txt`（CI 的 Build / build-and-test 全部在安装阶段）`ResolutionImpossible`；
+  gradio 6.32.0 起放宽到 `pillow<14.0`，两处一起升才能装上。开关机、托盘图标与 Web 界面均无行为变化。
+  代码里只用到 `PIL.Image` / `ImageDraw`，未受影响。
+- **依赖安全升级（pip-audit 清零）**：`gitpython 3.1.62 → 3.2.1`、`pypdf 6.19.0 → 6.21.4`
+  （`llama-index-readers-file` 要求 `pypdf<7`，故取 6.x 最高版）、`setuptools 84.0.0 → 84.2.1`，
+  三份 requirements 同步；此前 pip-audit 报的 25 条 CVE（git 仓库 / PDF 解析 / 打包工具链）全部落到有修复的版本。
+- **固定 `nltk==3.10.4`，切分器补正则降级**：nltk 3.9.x 有一批已披露漏洞（pip-audit 在 3.9.4 上报 75 条），
+  3.10 起还拒绝从「组/其他可写」目录加载语料（安全加固）——GitHub Ubuntu 运行器的 toolcache 正是这种权限，
+  导致 llama-index 的句子切分拿不到语料、入库时退化为整篇插入（`test_add_documents_inserts_presplit_nodes_with_progress`
+  在 ubuntu 上因此失败，macOS / Windows 正常）。现在语料不可用时自动改按中英文句末标点切句，
+  仍能正常分块入库，并打一条 WARNING 说明粒度略粗。
+- **修复不稳定测试**：`test_fifo_order` 改为逐线程确认已排进 `FairSemaphore` 队列再启动下一个，
+  不再靠 `sleep` 错开到达顺序；此前线程在记录到达与 `acquire` 之间被抢占会让顺序断言偶发失败（macOS CI）。
 
 ## [v0.1.0] - 2026-09-09
 
